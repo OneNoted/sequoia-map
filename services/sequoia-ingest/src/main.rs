@@ -664,14 +664,14 @@ async fn report_territory(
             update.idempotency_key.as_deref(),
             state.cfg.max_idempotency_key_len,
         ) {
-                Some(Some(normalized)) => normalized,
-                Some(None) => territory_idempotency_hash(&authed.reporter_id, &update),
-                None => {
-                    rejected += 1;
-                    register_malformed(&state, &authed.reporter_id, &ip).await;
-                    continue;
-                }
-            };
+            Some(Some(normalized)) => normalized,
+            Some(None) => territory_idempotency_hash(&authed.reporter_id, &update),
+            None => {
+                rejected += 1;
+                register_malformed(&state, &authed.reporter_id, &ip).await;
+                continue;
+            }
+        };
 
         if !claim_idempotency_key(&state, &idempotency_key).await {
             rejected += 1;
@@ -1256,6 +1256,36 @@ fn quorum_satisfied(distinct_reporters: usize, distinct_origins: usize, threshol
     distinct_reporters >= required && distinct_origins >= required
 }
 
+fn canonicalize_json_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+            let mut canonical = serde_json::Map::with_capacity(entries.len());
+            for (key, child) in entries {
+                canonical.insert(key, canonicalize_json_value(child));
+            }
+            serde_json::Value::Object(canonical)
+        }
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(canonicalize_json_value)
+                .collect::<Vec<_>>(),
+        ),
+        primitive => primitive,
+    }
+}
+
+fn canonical_json_bytes<T: Serialize>(value: &T) -> Vec<u8> {
+    serde_json::to_value(value)
+        .ok()
+        .map(canonicalize_json_value)
+        .and_then(|canonical| serde_json::to_vec(&canonical).ok())
+        .unwrap_or_default()
+}
+
 fn territory_claim_hash(update: &CanonicalTerritoryUpdate) -> String {
     let mut canonical = update.clone();
     canonical.idempotency_key = None;
@@ -1263,14 +1293,14 @@ fn territory_claim_hash(update: &CanonicalTerritoryUpdate) -> String {
         // Quorum should compare semantic claim data, not reporter-local metadata.
         runtime.provenance = None;
     }
-    let payload = serde_json::to_vec(&canonical).unwrap_or_default();
+    let payload = canonical_json_bytes(&canonical);
     let mut hasher = Sha256::new();
     hasher.update(&payload);
     hex::encode(hasher.finalize())
 }
 
 fn territory_idempotency_hash(reporter_id: &str, update: &CanonicalTerritoryUpdate) -> String {
-    let payload = serde_json::to_vec(update).unwrap_or_default();
+    let payload = canonical_json_bytes(update);
     let mut hasher = Sha256::new();
     hasher.update(reporter_id.as_bytes());
     hasher.update(&payload);
@@ -1728,6 +1758,7 @@ mod tests {
     };
     use axum::http::{HeaderMap, HeaderValue};
     use sequoia_shared::{CanonicalTerritoryUpdate, DataProvenance, TerritoryRuntimeData};
+    use std::collections::HashMap;
     use std::net::{IpAddr, SocketAddr};
 
     fn runtime_with_scalar_provenance(
@@ -1808,6 +1839,62 @@ mod tests {
         assert_ne!(
             territory_idempotency_hash("reporter-a", &first),
             territory_idempotency_hash("reporter-b", &first)
+        );
+    }
+
+    #[test]
+    fn territory_claim_hash_is_stable_for_semantically_equal_map_payloads() {
+        let mut first_runtime =
+            runtime_with_scalar_provenance("2026-02-28T20:00:00Z", "2026-02-28T19:59:58Z", 1);
+        let mut first_extra_scrapes = HashMap::new();
+        first_extra_scrapes.insert(
+            "omega".to_string(),
+            serde_json::json!({"z": 1, "a": [2, 3]}),
+        );
+        first_extra_scrapes.insert(
+            "alpha".to_string(),
+            serde_json::json!({"nested": {"k2": 2, "k1": 1}}),
+        );
+        first_runtime.extra_scrapes = Some(first_extra_scrapes);
+
+        let mut second_runtime =
+            runtime_with_scalar_provenance("2026-02-28T20:00:00Z", "2026-02-28T19:59:58Z", 1);
+        let mut second_extra_scrapes = HashMap::new();
+        second_extra_scrapes.insert(
+            "alpha".to_string(),
+            serde_json::json!({"nested": {"k1": 1, "k2": 2}}),
+        );
+        second_extra_scrapes.insert(
+            "omega".to_string(),
+            serde_json::json!({"a": [2, 3], "z": 1}),
+        );
+        second_runtime.extra_scrapes = Some(second_extra_scrapes);
+
+        let first = CanonicalTerritoryUpdate {
+            territory: "Ragni Plains".to_string(),
+            guild: None,
+            acquired: None,
+            location: None,
+            resources: None,
+            connections: None,
+            runtime: Some(first_runtime),
+            idempotency_key: Some("id-a".to_string()),
+        };
+        let second = CanonicalTerritoryUpdate {
+            territory: "Ragni Plains".to_string(),
+            guild: None,
+            acquired: None,
+            location: None,
+            resources: None,
+            connections: None,
+            runtime: Some(second_runtime),
+            idempotency_key: Some("id-a".to_string()),
+        };
+
+        assert_eq!(territory_claim_hash(&first), territory_claim_hash(&second));
+        assert_eq!(
+            territory_idempotency_hash("reporter-a", &first),
+            territory_idempotency_hash("reporter-a", &second)
         );
     }
 
@@ -1938,7 +2025,10 @@ mod tests {
     #[test]
     fn normalize_territory_name_rejects_empty_control_or_too_long_values() {
         let long_name = "A".repeat(65);
-        assert_eq!(normalize_territory_name("  Ragni Plains  ", 64), Some("Ragni Plains"));
+        assert_eq!(
+            normalize_territory_name("  Ragni Plains  ", 64),
+            Some("Ragni Plains")
+        );
         assert_eq!(normalize_territory_name("   ", 64), None);
         assert_eq!(normalize_territory_name("Ragni\u{0008} Plains", 64), None);
         assert_eq!(normalize_territory_name(&long_name, 64), None);

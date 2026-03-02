@@ -44,11 +44,13 @@ pub async fn ingest_territory(
     let mut runtime_updates: Vec<TerritoryRuntimeChange> = Vec::new();
     let mut ownership_updates: Vec<TerritoryChange> = Vec::new();
     let mut override_updates: Vec<(String, IngestTerritoryOverride)> = Vec::new();
+    let mut snapshot_event: Option<PreSerializedEvent> = None;
     let timestamp = Utc::now().to_rfc3339();
     let mut latest_seq: u64;
     let mut accepted_payloads: Vec<CanonicalTerritoryUpdate> = Vec::new();
     let cached_colors = state.guild_colors.read().await.clone();
     let cached_colors_normalized = build_guild_color_lookup(&cached_colors);
+    let mut needs_snapshot_event = false;
 
     {
         let mut snapshot = state.live_snapshot.write().await;
@@ -62,6 +64,7 @@ pub async fn ingest_territory(
 
             let mut changed = false;
             let mut ownership_changed = false;
+            let mut non_event_field_changed = false;
             let previous_guild = territory.guild.clone();
             let now = Utc::now();
             let mut observed_at = now;
@@ -100,6 +103,7 @@ pub async fn ingest_territory(
             {
                 territory.location = location;
                 changed = true;
+                non_event_field_changed = true;
             }
 
             if let Some(resources) = update.resources.clone()
@@ -107,6 +111,7 @@ pub async fn ingest_territory(
             {
                 territory.resources = resources;
                 changed = true;
+                non_event_field_changed = true;
             }
 
             if let Some(connections) = update.connections.clone()
@@ -114,6 +119,7 @@ pub async fn ingest_territory(
             {
                 territory.connections = connections;
                 changed = true;
+                non_event_field_changed = true;
             }
 
             if let Some(runtime) = update.runtime.clone() {
@@ -140,6 +146,12 @@ pub async fn ingest_territory(
             if !changed {
                 rejected += 1;
                 continue;
+            }
+
+            if non_event_field_changed && !ownership_changed {
+                // `update`/`runtime_update` events do not carry all non-ownership fields in this path.
+                // Emit a sequenced snapshot event so clients always converge after accepted corrections.
+                needs_snapshot_event = true;
             }
 
             if ownership_changed {
@@ -182,8 +194,9 @@ pub async fn ingest_territory(
             applied += 1;
         }
 
-        let event_count =
-            u64::from(!ownership_updates.is_empty()) + u64::from(!runtime_updates.is_empty());
+        let event_count = u64::from(!ownership_updates.is_empty())
+            + u64::from(!runtime_updates.is_empty())
+            + u64::from(needs_snapshot_event);
         let mut reserved_seq = if event_count > 0 {
             reserve_next_seq_block(&state, event_count)?
         } else {
@@ -220,9 +233,21 @@ pub async fn ingest_territory(
             });
         }
 
+        if needs_snapshot_event {
+            reserved_seq = next_seq(reserved_seq)?;
+            latest_seq = reserved_seq;
+        }
+
         if latest_seq != snapshot.seq {
             let (snapshot_json, territories_json, live_state_json, ownership_json) =
                 serialize_all_formats(latest_seq, &timestamp, &snapshot.territories)?;
+
+            if needs_snapshot_event {
+                snapshot_event = Some(PreSerializedEvent::Snapshot {
+                    seq: latest_seq,
+                    json: Arc::clone(&snapshot_json),
+                });
+            }
 
             snapshot.seq = latest_seq;
             snapshot.timestamp = timestamp.clone();
@@ -253,6 +278,10 @@ pub async fn ingest_territory(
     }
     if let Err(e) = persist_authoritative_scalar_sample(&state, &accepted_payloads).await {
         warn!("failed to persist authoritative scalar sample: {e}");
+    }
+
+    if let Some(event) = snapshot_event {
+        outgoing.push(event);
     }
 
     for event in outgoing {
@@ -666,15 +695,15 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use chrono::{DateTime, Duration, Utc};
     use sequoia_shared::{
-        CanonicalTerritoryBatch, CanonicalTerritoryUpdate, DataProvenance, GuildRef, Region,
-        SeasonScalarSample, Territory, TerritoryRuntimeData, VisibilityClass,
+        CanonicalTerritoryBatch, CanonicalTerritoryUpdate, DataProvenance, GuildRef, LiveState,
+        Region, SeasonScalarSample, Territory, TerritoryRuntimeData, VisibilityClass,
     };
 
     use crate::routes::ingest::{
         constant_time_eq, ingest_territory, is_duplicate_scalar_sample,
         sanitize_override_observed_at, should_replace_ingest_override,
     };
-    use crate::state::{AppState, IngestTerritoryOverride};
+    use crate::state::{AppState, IngestTerritoryOverride, PreSerializedEvent};
 
     #[tokio::test]
     async fn ingest_ownership_change_rehydrates_cached_guild_color() {
@@ -965,6 +994,101 @@ mod tests {
         assert!(
             state.latest_scalar_sample.read().await.is_none(),
             "ownership-only update should not sample scalar from stale runtime provenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn location_only_updates_bump_seq_refresh_live_state_and_emit_snapshot_event() {
+        let mut state = AppState::new(None);
+        state.internal_ingest_token = Some("expected-token-that-is-long-enough".to_string());
+
+        let mut event_rx = state.event_tx.subscribe();
+        let initial_acquired = Utc::now();
+        {
+            let mut snapshot = state.live_snapshot.write().await;
+            snapshot.territories.insert(
+                "Alpha".to_string(),
+                Territory {
+                    guild: GuildRef {
+                        uuid: "guild-uuid".to_string(),
+                        name: "Guild".to_string(),
+                        prefix: "GLD".to_string(),
+                        color: None,
+                    },
+                    acquired: initial_acquired,
+                    location: Region {
+                        start: [0, 0],
+                        end: [1, 1],
+                    },
+                    resources: Default::default(),
+                    connections: Vec::new(),
+                    runtime: None,
+                },
+            );
+        }
+
+        let updated_location = Region {
+            start: [5, 5],
+            end: [6, 6],
+        };
+        let batch = CanonicalTerritoryBatch {
+            generated_at: Utc::now().to_rfc3339(),
+            updates: vec![CanonicalTerritoryUpdate {
+                territory: "Alpha".to_string(),
+                guild: None,
+                acquired: None,
+                location: Some(updated_location.clone()),
+                resources: None,
+                connections: None,
+                runtime: None,
+                idempotency_key: None,
+            }],
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-internal-ingest-token",
+            HeaderValue::from_static("expected-token-that-is-long-enough"),
+        );
+
+        let response = ingest_territory(State(state.clone()), headers, Json(batch))
+            .await
+            .expect("ingest should accept valid internal token");
+        let latest_seq = response.0["latest_seq"]
+            .as_u64()
+            .expect("response should include latest_seq");
+        assert!(latest_seq > 0);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("snapshot event should be published")
+            .expect("snapshot event should be readable");
+        match event {
+            PreSerializedEvent::Snapshot { seq, .. } => assert_eq!(seq, latest_seq),
+            _ => panic!("location-only ingest should emit a snapshot event"),
+        }
+
+        let snapshot = state.live_snapshot.read().await;
+        assert_eq!(snapshot.seq, latest_seq);
+        assert_eq!(
+            snapshot
+                .territories
+                .get("Alpha")
+                .expect("territory should exist")
+                .location,
+            updated_location
+        );
+
+        let live_state: LiveState = serde_json::from_slice(snapshot.live_state_json.as_ref())
+            .expect("live_state payload should deserialize");
+        assert_eq!(live_state.seq, latest_seq);
+        assert_eq!(
+            live_state
+                .territories
+                .get("Alpha")
+                .expect("territory should exist in live_state payload")
+                .location,
+            updated_location
         );
     }
 
