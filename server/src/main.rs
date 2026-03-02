@@ -60,6 +60,7 @@ async fn main() {
         {
             Ok(Some(seq)) if seq > 0 => {
                 state.next_seq.store(seq as u64, Ordering::Relaxed);
+                state.next_seq_reserved.store(seq as u64, Ordering::Relaxed);
                 tracing::info!("Initialized stream sequence counter from DB at {seq}");
             }
             Ok(_) => {

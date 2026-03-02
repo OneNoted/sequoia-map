@@ -46,39 +46,9 @@ pub fn passive_sr_per_5s(territory_count: usize, scalar: f64) -> f64 {
     passive_sr_per_hour(territory_count, scalar) / 720.0
 }
 
-/// Infer scalar using regression-weighted units from observed rating delta.
-pub fn infer_scalar_weighted(
-    delta_rating: f64,
-    delta_secs: f64,
-    territory_count: usize,
-) -> Option<f64> {
-    if !delta_rating.is_finite() || !delta_secs.is_finite() || delta_secs <= 0.0 {
-        return None;
-    }
-    let units = weighted_units(territory_count);
-    if units <= 0.0 {
-        return None;
-    }
-    Some(delta_rating * 3600.0 / (delta_secs * BASE_HOURLY_SR * units))
-}
-
-/// Infer scalar using raw territory count only (diagnostic comparator).
-pub fn infer_scalar_raw(delta_rating: f64, delta_secs: f64, territory_count: usize) -> Option<f64> {
-    if !delta_rating.is_finite() || !delta_secs.is_finite() || delta_secs <= 0.0 {
-        return None;
-    }
-    if territory_count == 0 {
-        return None;
-    }
-    Some(delta_rating * 3600.0 / (delta_secs * BASE_HOURLY_SR * territory_count as f64))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        BASE_HOURLY_SR, infer_scalar_raw, infer_scalar_weighted, passive_sr_per_5s,
-        passive_sr_per_hour, weighted_units,
-    };
+    use super::{passive_sr_per_5s, passive_sr_per_hour, weighted_units};
 
     fn assert_close(actual: f64, expected: f64) {
         let diff = (actual - expected).abs();
@@ -106,22 +76,5 @@ mod tests {
         let hourly = passive_sr_per_hour(9, 2.5);
         let per_5s = passive_sr_per_5s(9, 2.5);
         assert_close(per_5s * 720.0, hourly);
-    }
-
-    #[test]
-    fn inference_helpers_recover_weighted_and_raw_scalars() {
-        let weighted_scalar = 3.0;
-        let raw_scalar = 2.4;
-        let n = 5usize;
-        let dt = 300.0;
-
-        let weighted_delta = BASE_HOURLY_SR * weighted_scalar * weighted_units(n) * (dt / 3600.0);
-        let inferred_weighted =
-            infer_scalar_weighted(weighted_delta, dt, n).expect("weighted scalar should infer");
-        assert_close(inferred_weighted, weighted_scalar);
-
-        let raw_delta = BASE_HOURLY_SR * raw_scalar * n as f64 * (dt / 3600.0);
-        let inferred_raw = infer_scalar_raw(raw_delta, dt, n).expect("raw scalar should infer");
-        assert_close(inferred_raw, raw_scalar);
     }
 }

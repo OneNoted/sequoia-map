@@ -15,7 +15,7 @@ use sequoia_shared::history::{
 use serde::Deserialize;
 
 use crate::config::RETENTION_DAYS;
-use crate::state::AppState;
+use crate::state::{AppState, build_guild_color_lookup, lookup_guild_color};
 
 type HistoryEventRow = (
     i64,
@@ -41,6 +41,8 @@ type HistoryBoundsRow = (
     Option<i64>,
 );
 type SeasonScalarRow = (DateTime<Utc>, i32, f64, f64, f64, i32);
+const AUTHORITATIVE_SCALAR_CONFIDENCE_MIN: f64 = 0.99;
+const AUTHORITATIVE_SCALAR_SAMPLE_COUNT: i32 = 1;
 type SeasonObservationRow = (
     DateTime<Utc>,
     i32,
@@ -112,14 +114,15 @@ fn with_fallback_color(
     color: Option<(u8, u8, u8)>,
     guild_name: &str,
     fallback_colors: &HashMap<String, (u8, u8, u8)>,
+    fallback_colors_normalized: &HashMap<String, (u8, u8, u8)>,
 ) -> Option<(u8, u8, u8)> {
-    color.or_else(|| fallback_colors.get(guild_name).copied())
+    color.or_else(|| lookup_guild_color(fallback_colors, fallback_colors_normalized, guild_name))
 }
 
 async fn merged_fallback_colors(
     state: &AppState,
     pool: &sqlx::PgPool,
-) -> Result<HashMap<String, (u8, u8, u8)>, StatusCode> {
+) -> Result<(HashMap<String, (u8, u8, u8)>, HashMap<String, (u8, u8, u8)>), StatusCode> {
     let mut fallback_colors = state.guild_colors.read().await.clone();
     let persisted_rows: Vec<(String, i16, i16, i16)> =
         sqlx::query_as("SELECT guild_name, color_r, color_g, color_b FROM guild_color_cache")
@@ -135,7 +138,8 @@ async fn merged_fallback_colors(
         fallback_colors.entry(guild_name).or_insert(color);
     }
 
-    Ok(fallback_colors)
+    let fallback_colors_normalized = build_guild_color_lookup(&fallback_colors);
+    Ok((fallback_colors, fallback_colors_normalized))
 }
 
 fn cmp_by_rating_then_territories_then_name(
@@ -375,22 +379,26 @@ pub async fn history_at(
     Query(query): Query<AtQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let pool = state.db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let max_replay_events = state.max_history_replay_events;
 
     let target: DateTime<Utc> = query
         .t
         .parse::<DateTime<Utc>>()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    let fallback_colors = merged_fallback_colors(&state, pool).await?;
+    let (fallback_colors, fallback_colors_normalized) =
+        merged_fallback_colors(&state, pool).await?;
 
     let season_scalar_fut = async {
         sqlx::query_as::<_, SeasonScalarRow>(
             "SELECT sampled_at, season_id, scalar_weighted, scalar_raw, confidence, sample_count \
              FROM season_scalar_samples \
-             WHERE sampled_at <= $1 \
+             WHERE sampled_at <= $1 AND confidence >= $2 AND sample_count = $3 \
              ORDER BY sampled_at DESC \
              LIMIT 1",
         )
         .bind(target)
+        .bind(AUTHORITATIVE_SCALAR_CONFIDENCE_MIN)
+        .bind(AUTHORITATIVE_SCALAR_SAMPLE_COUNT)
         .fetch_optional(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
@@ -442,16 +450,22 @@ pub async fn history_at(
                    '1970-01-01T00:00:00Z'::timestamptz \
                  ) \
                AND recorded_at <= $2 \
-             ORDER BY stream_seq ASC",
+             ORDER BY stream_seq ASC \
+             LIMIT $3",
         )
         .bind(target)
         .bind(target)
+        .bind(max_replay_events.saturating_add(1))
         .fetch_all(pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
     };
     let (season_scalar, snapshot_row, event_rows) =
         tokio::try_join!(season_scalar_fut, snapshot_fut, events_fut)?;
+
+    if event_rows.len() as i64 > max_replay_events {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
 
     let mut ownership = match snapshot_row {
         Some((_id, _created_at, ownership_json)) => {
@@ -478,6 +492,7 @@ pub async fn history_at(
             parse_rgb_triplet(guild_color_r, guild_color_g, guild_color_b),
             &guild_name,
             &fallback_colors,
+            &fallback_colors_normalized,
         );
         ownership.insert(
             territory,
@@ -492,8 +507,12 @@ pub async fn history_at(
     }
 
     for record in ownership.values_mut() {
-        record.guild_color =
-            with_fallback_color(record.guild_color, &record.guild_name, &fallback_colors);
+        record.guild_color = with_fallback_color(
+            record.guild_color,
+            &record.guild_name,
+            &fallback_colors,
+            &fallback_colors_normalized,
+        );
     }
 
     let mut guild_names: Vec<String> = ownership
@@ -536,7 +555,8 @@ pub async fn history_events(
         Some(seq) => Some(i64::try_from(seq).map_err(|_| StatusCode::BAD_REQUEST)?),
         None => None,
     };
-    let fallback_colors = merged_fallback_colors(&state, pool).await?;
+    let (fallback_colors, fallback_colors_normalized) =
+        merged_fallback_colors(&state, pool).await?;
 
     let rows: Vec<HistoryEventRow> = if let Some(after_seq) = after_seq {
         sqlx::query_as(
@@ -599,12 +619,14 @@ pub async fn history_events(
             parse_rgb_triplet(guild_color_r, guild_color_g, guild_color_b),
             &guild_name,
             &fallback_colors,
+            &fallback_colors_normalized,
         );
         let prev_guild_color = prev_guild_name.as_deref().and_then(|name| {
             with_fallback_color(
                 parse_rgb_triplet(prev_guild_color_r, prev_guild_color_g, prev_guild_color_b),
                 name,
                 &fallback_colors,
+                &fallback_colors_normalized,
             )
         });
 
@@ -639,24 +661,32 @@ pub async fn history_sr_samples(
 ) -> Result<impl IntoResponse, StatusCode> {
     let pool = state.db.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
     let (from, to) = parse_time_window(&query.from, &query.to)?;
+    let max_sample_rows = state.max_history_sr_sample_rows;
 
-    let season_sr_rows: Vec<SeasonObservation> = sqlx::query_as::<_, SeasonObservationRow>(
+    let season_sr_rows: Vec<SeasonObservationRow> = sqlx::query_as::<_, SeasonObservationRow>(
         "SELECT observed_at, season_id, guild_name, guild_uuid, guild_prefix, territory_count, \
                 season_rating, sr_gain_5m, sample_rank \
          FROM season_guild_observations \
          WHERE observed_at > $1 AND observed_at <= $2 \
          ORDER BY observed_at ASC, sample_rank ASC NULLS LAST, season_rating DESC, \
-                  territory_count DESC, guild_name ASC",
+                  territory_count DESC, guild_name ASC \
+         LIMIT $3",
     )
     .bind(from)
     .bind(to)
+    .bind(max_sample_rows.saturating_add(1))
     .fetch_all(pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .into_iter()
-    .map(SeasonObservation::from)
-    .collect();
-    let samples = build_sr_samples(season_sr_rows);
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if season_sr_rows.len() as i64 > max_sample_rows {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    let samples = build_sr_samples(
+        season_sr_rows
+            .into_iter()
+            .map(SeasonObservation::from)
+            .collect(),
+    );
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -1329,6 +1359,7 @@ mod tests {
 
         let before = Utc::now() - chrono::TimeDelta::minutes(30);
         let sample_time = Utc::now() - chrono::TimeDelta::minutes(5);
+        let inferred_sample_time = Utc::now() - chrono::TimeDelta::minutes(1);
         let after = Utc::now();
 
         sqlx::query(
@@ -1340,11 +1371,25 @@ mod tests {
         .bind(29_i32)
         .bind(2.15_f64)
         .bind(2.40_f64)
-        .bind(0.72_f64)
-        .bind(5_i32)
+        .bind(0.99_f64)
+        .bind(1_i32)
         .execute(&pool)
         .await
-        .expect("insert scalar sample");
+        .expect("insert authoritative scalar sample");
+        sqlx::query(
+            "INSERT INTO season_scalar_samples \
+             (sampled_at, season_id, scalar_weighted, scalar_raw, confidence, sample_count) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(inferred_sample_time)
+        .bind(29_i32)
+        .bind(9.99_f64)
+        .bind(9.99_f64)
+        .bind(0.42_f64)
+        .bind(25_i32)
+        .execute(&pool)
+        .await
+        .expect("insert inferred scalar sample");
 
         let state = AppState::new(Some(pool));
         let (addr, server_handle) = spawn_test_server(state).await;
@@ -1372,7 +1417,7 @@ mod tests {
             .season_scalar
             .expect("season scalar should be attached");
         assert_eq!(sample.season_id, 29);
-        assert_eq!(sample.sample_count, 5);
+        assert_eq!(sample.sample_count, 1);
         assert!((sample.scalar_weighted - 2.15).abs() < 1e-9);
 
         let at_before_url = {

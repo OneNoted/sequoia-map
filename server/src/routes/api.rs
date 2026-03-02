@@ -26,6 +26,7 @@ pub async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
         "territories": territory_count,
+        "live_wars": 0,
         "guild_cache_size": state.guild_cache.len(),
         "history_available": state.db.is_some(),
         "seq_live_handoff_v1": state.seq_live_handoff_v1,
@@ -38,6 +39,10 @@ pub async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
             "guilds_online_cache_hits_total": observability.guilds_online_cache_hits_total,
             "guilds_online_cache_misses_total": observability.guilds_online_cache_misses_total,
             "guilds_online_upstream_errors_total": observability.guilds_online_upstream_errors_total,
+            "ingest_reports_total": observability.ingest_reports_total,
+            "ingest_reports_rejected_total": observability.ingest_reports_rejected_total,
+            "ingest_reports_applied_total": observability.ingest_reports_applied_total,
+            "ingest_reports_degraded_total": observability.ingest_reports_degraded_total,
         }
     }))
 }
@@ -258,6 +263,50 @@ fn render_prometheus_metrics(
         body,
         "sequoia_guilds_online_upstream_errors_total {}",
         observability.guilds_online_upstream_errors_total
+    );
+
+    let _ = writeln!(
+        body,
+        "# HELP sequoia_ingest_reports_total Total internal ingest reports received."
+    );
+    let _ = writeln!(body, "# TYPE sequoia_ingest_reports_total counter");
+    let _ = writeln!(
+        body,
+        "sequoia_ingest_reports_total {}",
+        observability.ingest_reports_total
+    );
+
+    let _ = writeln!(
+        body,
+        "# HELP sequoia_ingest_reports_rejected_total Total internal ingest reports rejected."
+    );
+    let _ = writeln!(body, "# TYPE sequoia_ingest_reports_rejected_total counter");
+    let _ = writeln!(
+        body,
+        "sequoia_ingest_reports_rejected_total {}",
+        observability.ingest_reports_rejected_total
+    );
+
+    let _ = writeln!(
+        body,
+        "# HELP sequoia_ingest_reports_applied_total Total internal ingest reports applied."
+    );
+    let _ = writeln!(body, "# TYPE sequoia_ingest_reports_applied_total counter");
+    let _ = writeln!(
+        body,
+        "sequoia_ingest_reports_applied_total {}",
+        observability.ingest_reports_applied_total
+    );
+
+    let _ = writeln!(
+        body,
+        "# HELP sequoia_ingest_reports_degraded_total Total internal ingest reports applied in degraded confidence mode."
+    );
+    let _ = writeln!(body, "# TYPE sequoia_ingest_reports_degraded_total counter");
+    let _ = writeln!(
+        body,
+        "sequoia_ingest_reports_degraded_total {}",
+        observability.ingest_reports_degraded_total
     );
 
     body
@@ -610,6 +659,10 @@ mod tests {
             guilds_online_cache_hits_total: 8,
             guilds_online_cache_misses_total: 2,
             guilds_online_upstream_errors_total: 1,
+            ingest_reports_total: 11,
+            ingest_reports_rejected_total: 2,
+            ingest_reports_applied_total: 8,
+            ingest_reports_degraded_total: 1,
         };
 
         let metrics = render_prometheus_metrics(42, 5, true, false, observability);
@@ -628,6 +681,10 @@ mod tests {
         assert!(metrics.contains("sequoia_guilds_online_cache_hits_total 8"));
         assert!(metrics.contains("sequoia_guilds_online_cache_misses_total 2"));
         assert!(metrics.contains("sequoia_guilds_online_upstream_errors_total 1"));
+        assert!(metrics.contains("sequoia_ingest_reports_total 11"));
+        assert!(metrics.contains("sequoia_ingest_reports_rejected_total 2"));
+        assert!(metrics.contains("sequoia_ingest_reports_applied_total 8"));
+        assert!(metrics.contains("sequoia_ingest_reports_degraded_total 1"));
     }
 
     #[test]

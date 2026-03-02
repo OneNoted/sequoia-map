@@ -20,11 +20,26 @@ pub const DEFAULT_DB_MAX_CONNECTIONS: u32 = 10;
 pub const DEFAULT_UPSTREAM_HTTP_TIMEOUT_SECS: u64 = 10;
 pub const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 3;
 pub const SERVER_PORT: u16 = 3000;
+pub const DEFAULT_CANONICAL_OVERRIDE_TTL_SECS: u64 = 180;
+pub const DEFAULT_API_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_MAX_INGEST_UPDATES_PER_REQUEST: usize = 1024;
+pub const DEFAULT_MAX_HISTORY_REPLAY_EVENTS: i64 = 20_000;
+pub const DEFAULT_MAX_HISTORY_SR_SAMPLE_ROWS: i64 = 20_000;
+pub const MIN_INTERNAL_INGEST_TOKEN_LEN: usize = 24;
 
 // History feature
 pub const SNAPSHOT_INTERVAL_SECS: u64 = 21600; // every 6 hours
 pub const RETENTION_DAYS: i64 = 365;
 pub const RETENTION_CHECK_SECS: u64 = 86400; // daily
+
+const INTERNAL_INGEST_TOKEN_REJECTED_VALUES: &[&str] = &[
+    "changeme",
+    "change-me",
+    "dev-internal-ingest-token",
+    "default",
+    "placeholder",
+    "test-token",
+];
 
 pub fn seq_live_handoff_v1_enabled() -> bool {
     std::env::var("SEQ_LIVE_HANDOFF_V1")
@@ -84,4 +99,88 @@ pub fn guilds_online_max_concurrency() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY)
+}
+
+pub fn internal_ingest_token() -> Option<String> {
+    std::env::var("INTERNAL_INGEST_TOKEN")
+        .or_else(|_| std::env::var("internal_ingest_token"))
+        .ok()
+        .and_then(|value| sanitize_internal_ingest_token(&value))
+}
+
+pub fn api_body_limit_bytes() -> usize {
+    std::env::var("API_BODY_LIMIT_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_API_BODY_LIMIT_BYTES)
+}
+
+pub fn max_ingest_updates_per_request() -> usize {
+    std::env::var("MAX_INGEST_UPDATES_PER_REQUEST")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_INGEST_UPDATES_PER_REQUEST)
+}
+
+pub fn max_history_replay_events() -> i64 {
+    std::env::var("MAX_HISTORY_REPLAY_EVENTS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_HISTORY_REPLAY_EVENTS)
+}
+
+pub fn max_history_sr_sample_rows() -> i64 {
+    std::env::var("MAX_HISTORY_SR_SAMPLE_ROWS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_HISTORY_SR_SAMPLE_ROWS)
+}
+
+pub fn canonical_override_ttl() -> Duration {
+    std::env::var("CANONICAL_OVERRIDE_TTL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_CANONICAL_OVERRIDE_TTL_SECS))
+}
+
+fn sanitize_internal_ingest_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() < MIN_INTERNAL_INGEST_TOKEN_LEN {
+        return None;
+    }
+    let normalized = trimmed.to_ascii_lowercase();
+    if INTERNAL_INGEST_TOKEN_REJECTED_VALUES.contains(&normalized.as_str()) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_internal_ingest_token;
+
+    #[test]
+    fn sanitize_internal_ingest_token_rejects_short_or_placeholder_values() {
+        assert_eq!(sanitize_internal_ingest_token(""), None);
+        assert_eq!(sanitize_internal_ingest_token("test-token"), None);
+        assert_eq!(
+            sanitize_internal_ingest_token("  dev-internal-ingest-token  "),
+            None
+        );
+        assert_eq!(sanitize_internal_ingest_token("0123456789"), None);
+    }
+
+    #[test]
+    fn sanitize_internal_ingest_token_accepts_long_non_placeholder_values() {
+        assert_eq!(
+            sanitize_internal_ingest_token("  this-is-a-long-random-token-value-12345 "),
+            Some("this-is-a-long-random-token-value-12345".to_string())
+        );
+    }
 }

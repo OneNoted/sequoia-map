@@ -2,6 +2,7 @@ use std::path::Path;
 
 use axum::{
     Router,
+    extract::DefaultBodyLimit,
     extract::Request,
     http::{HeaderValue, header},
     middleware::{self, Next},
@@ -14,6 +15,7 @@ use crate::routes;
 use crate::state::AppState;
 
 pub(crate) fn build_app(state: AppState) -> Router {
+    let api_body_limit = crate::config::api_body_limit_bytes();
     let static_assets = Router::new()
         .fallback_service(
             ServeDir::new("client/dist")
@@ -44,8 +46,20 @@ pub(crate) fn build_app(state: AppState) -> Router {
             axum::routing::get(routes::api::get_season_scalar_current),
         )
         .route(
+            "/api/wars/live",
+            axum::routing::get(routes::ingest::get_live_wars),
+        )
+        .route(
             "/api/events",
             axum::routing::get(routes::sse::territory_events),
+        )
+        .route(
+            "/api/internal/ingest/territory",
+            axum::routing::post(routes::ingest::ingest_territory),
+        )
+        .route(
+            "/api/internal/ingest/heartbeat",
+            axum::routing::post(routes::ingest::heartbeat),
         )
         .route("/api/health", axum::routing::get(routes::api::health))
         .route("/api/metrics", axum::routing::get(routes::api::metrics))
@@ -75,6 +89,7 @@ pub(crate) fn build_app(state: AppState) -> Router {
         );
 
     app.layer(CompressionLayer::new())
+        .layer(DefaultBodyLimit::max(api_body_limit))
         .fallback_service(static_assets)
         .with_state(state)
 }

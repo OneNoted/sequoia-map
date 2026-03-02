@@ -1,5 +1,4 @@
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,17 +9,16 @@ use serde::Deserialize;
 use sqlx::{Postgres, QueryBuilder};
 use tracing::{info, warn};
 
-use sequoia_shared::{
-    SeasonScalarCurrent, SeasonScalarSample, infer_scalar_raw, infer_scalar_weighted,
-};
+use sequoia_shared::{SeasonScalarCurrent, SeasonScalarSample};
 
 use crate::config::WYNNCRAFT_GUILD_URL;
 use crate::state::AppState;
 
-const ESTIMATOR_INTERVAL_SECS: u64 = 300;
-const SCALAR_CANDIDATE_GUILDS: usize = 8;
+const OBSERVATION_INTERVAL_SECS: u64 = 300;
 const LEADERBOARD_SAMPLE_GUILDS: usize = 50;
-const MAX_REASONABLE_SCALAR: f64 = 20.0;
+const AUTHORITATIVE_CONFIDENCE_MIN: f64 = 0.99;
+const AUTHORITATIVE_SAMPLE_COUNT: i32 = 1;
+
 type LatestScalarSampleRow = (DateTime<Utc>, i32, f64, f64, f64, i32);
 
 #[derive(Debug, Clone)]
@@ -28,14 +26,6 @@ struct CandidateGuild {
     guild_name: String,
     guild_uuid: String,
     guild_prefix: String,
-    territory_count: usize,
-}
-
-#[derive(Debug, Clone)]
-struct GuildObservation {
-    observed_at: DateTime<Utc>,
-    season_id: i32,
-    rating: i64,
     territory_count: usize,
 }
 
@@ -48,13 +38,6 @@ struct GuildSeasonSnapshot {
     season_id: i32,
     rating: i64,
     territory_count: usize,
-}
-
-#[derive(Debug, Clone)]
-struct ScalarEstimate {
-    season_id: i32,
-    scalar_weighted: f64,
-    scalar_raw: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,27 +53,25 @@ struct GuildPayload {
 
 pub async fn run(state: AppState) {
     let Some(pool) = state.db.as_ref().cloned() else {
-        warn!("season scalar estimator disabled: no database configured");
+        warn!("season guild observation sampler disabled: no database configured");
         return;
     };
 
     info!(
-        interval_secs = ESTIMATOR_INTERVAL_SECS,
-        scalar_candidate_guilds = SCALAR_CANDIDATE_GUILDS,
+        interval_secs = OBSERVATION_INTERVAL_SECS,
         leaderboard_sample_guilds = LEADERBOARD_SAMPLE_GUILDS,
-        "season scalar estimator started"
+        "season guild observation sampler started (scalar inference disabled; authoritative ingest only)"
     );
 
     warm_cache(&state).await;
 
-    let mut interval = tokio::time::interval(Duration::from_secs(ESTIMATOR_INTERVAL_SECS));
-    let mut previous: HashMap<String, GuildObservation> = HashMap::new();
+    let mut interval = tokio::time::interval(Duration::from_secs(OBSERVATION_INTERVAL_SECS));
 
     loop {
         interval.tick().await;
 
-        if let Err(e) = sample_once(&state, &pool, &mut previous).await {
-            warn!(error = %e, "season scalar estimator tick failed");
+        if let Err(e) = sample_once(&state, &pool).await {
+            warn!(error = %e, "season guild observation sampler tick failed");
         }
     }
 }
@@ -100,24 +81,15 @@ pub async fn warm_cache(state: &AppState) {
         return;
     };
     if let Err(e) = refresh_latest_scalar_cache(state, pool).await {
-        warn!(error = %e, "failed to warm season scalar cache from database");
+        warn!(error = %e, "failed to warm authoritative season scalar cache from database");
     }
 }
 
-async fn sample_once(
-    state: &AppState,
-    pool: &sqlx::PgPool,
-    previous: &mut HashMap<String, GuildObservation>,
-) -> Result<(), String> {
+async fn sample_once(state: &AppState, pool: &sqlx::PgPool) -> Result<(), String> {
     let sampled_candidates = top_candidate_guilds(state, LEADERBOARD_SAMPLE_GUILDS).await;
     if sampled_candidates.is_empty() {
         return Ok(());
     }
-    let scalar_candidates: HashSet<&str> = sampled_candidates
-        .iter()
-        .take(SCALAR_CANDIDATE_GUILDS)
-        .map(|candidate| candidate.guild_name.as_str())
-        .collect();
 
     let now = Utc::now();
     let futures = sampled_candidates
@@ -129,93 +101,7 @@ async fn sample_once(
         return Ok(());
     }
 
-    let mut estimates: Vec<ScalarEstimate> = Vec::new();
-    for snapshot in &snapshots {
-        if scalar_candidates.contains(snapshot.guild_name.as_str())
-            && let Some(prev) = previous.get(&snapshot.guild_name)
-            && let Some(estimate) = derive_scalar_estimate(prev, snapshot)
-        {
-            estimates.push(estimate);
-        }
-
-        previous.insert(
-            snapshot.guild_name.clone(),
-            GuildObservation {
-                observed_at: snapshot.observed_at,
-                season_id: snapshot.season_id,
-                rating: snapshot.rating,
-                territory_count: snapshot.territory_count,
-            },
-        );
-    }
-
-    let keep: HashSet<&str> = sampled_candidates
-        .iter()
-        .map(|candidate| candidate.guild_name.as_str())
-        .collect();
-    previous.retain(|guild_name, _| keep.contains(guild_name.as_str()));
-
-    persist_guild_observations(pool, &snapshots).await?;
-
-    if estimates.is_empty() {
-        return Ok(());
-    }
-
-    let Some((season_id, season_estimates)) = select_dominant_season(estimates) else {
-        return Ok(());
-    };
-    if season_estimates.is_empty() {
-        return Ok(());
-    }
-
-    let mut weighted: Vec<f64> = season_estimates.iter().map(|e| e.scalar_weighted).collect();
-    let mut raw: Vec<f64> = season_estimates.iter().map(|e| e.scalar_raw).collect();
-
-    let scalar_weighted = median(&mut weighted).ok_or("missing weighted scalar median")?;
-    let scalar_raw = median(&mut raw).ok_or("missing raw scalar median")?;
-
-    let spread = iqr(&weighted);
-    let confidence = compute_confidence(season_estimates.len(), scalar_weighted, spread);
-    let sample_count = i32::try_from(season_estimates.len()).unwrap_or(i32::MAX);
-
-    sqlx::query(
-        "INSERT INTO season_scalar_samples \
-         (sampled_at, season_id, scalar_weighted, scalar_raw, confidence, sample_count) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
-    )
-    .bind(now)
-    .bind(season_id)
-    .bind(scalar_weighted)
-    .bind(scalar_raw)
-    .bind(confidence)
-    .bind(sample_count)
-    .execute(pool)
-    .await
-    .map_err(|e| format!("insert season scalar sample: {e}"))?;
-
-    let sample = SeasonScalarSample {
-        sampled_at: now.to_rfc3339(),
-        season_id,
-        scalar_weighted,
-        scalar_raw,
-        confidence,
-        sample_count: u32::try_from(sample_count.max(0)).unwrap_or(u32::MAX),
-    };
-    if let Some(cached_sample) = build_cached_scalar_sample(sample.clone()) {
-        let mut latest = state.latest_scalar_sample.write().await;
-        *latest = Some(cached_sample);
-    }
-
-    info!(
-        season_id,
-        sample_count,
-        scalar_weighted = format_args!("{scalar_weighted:.4}"),
-        scalar_raw = format_args!("{scalar_raw:.4}"),
-        confidence = format_args!("{confidence:.4}"),
-        "persisted season scalar sample"
-    );
-
-    Ok(())
+    persist_guild_observations(pool, &snapshots).await
 }
 
 async fn persist_guild_observations(
@@ -347,12 +233,15 @@ async fn refresh_latest_scalar_cache(state: &AppState, pool: &sqlx::PgPool) -> R
     let row: Option<LatestScalarSampleRow> = sqlx::query_as(
         "SELECT sampled_at, season_id, scalar_weighted, scalar_raw, confidence, sample_count \
          FROM season_scalar_samples \
+         WHERE confidence >= $1 AND sample_count = $2 \
          ORDER BY sampled_at DESC \
          LIMIT 1",
     )
+    .bind(AUTHORITATIVE_CONFIDENCE_MIN)
+    .bind(AUTHORITATIVE_SAMPLE_COUNT)
     .fetch_optional(pool)
     .await
-    .map_err(|e| format!("load latest season scalar sample: {e}"))?;
+    .map_err(|e| format!("load latest authoritative season scalar sample: {e}"))?;
 
     let cached = row
         .map(
@@ -483,118 +372,10 @@ fn latest_season_rating(season_ranks: &HashMap<String, GuildSeasonRank>) -> Opti
         .max_by_key(|(season_id, _)| *season_id)
 }
 
-fn derive_scalar_estimate(
-    previous: &GuildObservation,
-    current: &GuildSeasonSnapshot,
-) -> Option<ScalarEstimate> {
-    if previous.season_id != current.season_id {
-        return None;
-    }
-    if previous.territory_count != current.territory_count {
-        return None;
-    }
-
-    let delta_secs = (current.observed_at - previous.observed_at).num_seconds() as f64;
-    if delta_secs <= 0.0 {
-        return None;
-    }
-    let delta_rating = current.rating as f64 - previous.rating as f64;
-    if delta_rating <= 0.0 {
-        return None;
-    }
-
-    let scalar_weighted = infer_scalar_weighted(delta_rating, delta_secs, current.territory_count)?;
-    let scalar_raw = infer_scalar_raw(delta_rating, delta_secs, current.territory_count)?;
-    if !(0.0..=MAX_REASONABLE_SCALAR).contains(&scalar_weighted) {
-        return None;
-    }
-    if !(0.0..=MAX_REASONABLE_SCALAR).contains(&scalar_raw) {
-        return None;
-    }
-
-    Some(ScalarEstimate {
-        season_id: current.season_id,
-        scalar_weighted,
-        scalar_raw,
-    })
-}
-
-fn select_dominant_season(estimates: Vec<ScalarEstimate>) -> Option<(i32, Vec<ScalarEstimate>)> {
-    let mut grouped: HashMap<i32, Vec<ScalarEstimate>> = HashMap::new();
-    for estimate in estimates {
-        grouped
-            .entry(estimate.season_id)
-            .or_default()
-            .push(estimate);
-    }
-
-    grouped
-        .into_iter()
-        .max_by(|(season_a, vec_a), (season_b, vec_b)| {
-            vec_a
-                .len()
-                .cmp(&vec_b.len())
-                .then_with(|| season_a.cmp(season_b))
-        })
-}
-
-fn median(values: &mut [f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-    let mid = values.len() / 2;
-    if values.len().is_multiple_of(2) {
-        Some((values[mid - 1] + values[mid]) / 2.0)
-    } else {
-        Some(values[mid])
-    }
-}
-
-fn percentile(sorted_values: &[f64], p: f64) -> f64 {
-    if sorted_values.is_empty() {
-        return 0.0;
-    }
-    if sorted_values.len() == 1 {
-        return sorted_values[0];
-    }
-    let idx = p.clamp(0.0, 1.0) * (sorted_values.len() as f64 - 1.0);
-    let low = idx.floor() as usize;
-    let high = idx.ceil() as usize;
-    if low == high {
-        return sorted_values[low];
-    }
-    let frac = idx - low as f64;
-    sorted_values[low] + (sorted_values[high] - sorted_values[low]) * frac
-}
-
-fn iqr(sorted_values: &[f64]) -> f64 {
-    if sorted_values.len() < 2 {
-        return 0.0;
-    }
-    let p25 = percentile(sorted_values, 0.25);
-    let p75 = percentile(sorted_values, 0.75);
-    (p75 - p25).abs()
-}
-
-fn compute_confidence(sample_count: usize, median_weighted: f64, spread: f64) -> f64 {
-    if sample_count == 0 {
-        return 0.0;
-    }
-    let sample_factor = (sample_count as f64 / SCALAR_CANDIDATE_GUILDS as f64).clamp(0.0, 1.0);
-    let baseline = median_weighted.abs().max(1e-6);
-    let normalized_spread = spread / baseline;
-    let spread_factor = (1.0 / (1.0 + normalized_spread * 6.0)).clamp(0.0, 1.0);
-    (sample_factor * spread_factor).clamp(0.0, 1.0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        GuildObservation, GuildSeasonRank, GuildSeasonSnapshot, compute_confidence,
-        derive_scalar_estimate, latest_season_rating, select_dominant_season,
-    };
-    use chrono::{TimeDelta, Utc};
+    use super::{GuildSeasonRank, GuildSeasonSnapshot, latest_season_rating, rank_snapshots};
+    use chrono::Utc;
     use std::collections::HashMap;
 
     #[test]
@@ -610,68 +391,41 @@ mod tests {
     }
 
     #[test]
-    fn derive_scalar_estimate_skips_on_season_or_territory_change() {
+    fn rank_snapshots_orders_by_rating_territories_then_name() {
         let now = Utc::now();
-        let previous = GuildObservation {
-            observed_at: now - TimeDelta::minutes(5),
-            season_id: 29,
-            rating: 1000,
-            territory_count: 5,
-        };
-        let changed_season = GuildSeasonSnapshot {
-            guild_name: "Guild".to_string(),
-            guild_uuid: "uuid".to_string(),
-            guild_prefix: "TAG".to_string(),
-            observed_at: now,
-            season_id: 30,
-            rating: 1100,
-            territory_count: 5,
-        };
-        let changed_territories = GuildSeasonSnapshot {
-            guild_name: "Guild".to_string(),
-            guild_uuid: "uuid".to_string(),
-            guild_prefix: "TAG".to_string(),
-            observed_at: now,
-            season_id: 29,
-            rating: 1100,
-            territory_count: 6,
-        };
-
-        assert!(derive_scalar_estimate(&previous, &changed_season).is_none());
-        assert!(derive_scalar_estimate(&previous, &changed_territories).is_none());
-    }
-
-    #[test]
-    fn select_dominant_season_picks_largest_group_then_latest_key() {
-        let dominant = select_dominant_season(vec![
-            super::ScalarEstimate {
+        let snapshots = vec![
+            GuildSeasonSnapshot {
+                guild_name: "Beta".to_string(),
+                guild_uuid: "u2".to_string(),
+                guild_prefix: "B".to_string(),
+                observed_at: now,
                 season_id: 29,
-                scalar_weighted: 1.2,
-                scalar_raw: 1.1,
+                rating: 2000,
+                territory_count: 10,
             },
-            super::ScalarEstimate {
+            GuildSeasonSnapshot {
+                guild_name: "Alpha".to_string(),
+                guild_uuid: "u1".to_string(),
+                guild_prefix: "A".to_string(),
+                observed_at: now,
                 season_id: 29,
-                scalar_weighted: 1.4,
-                scalar_raw: 1.3,
+                rating: 2000,
+                territory_count: 12,
             },
-            super::ScalarEstimate {
-                season_id: 28,
-                scalar_weighted: 0.8,
-                scalar_raw: 0.9,
+            GuildSeasonSnapshot {
+                guild_name: "Gamma".to_string(),
+                guild_uuid: "u3".to_string(),
+                guild_prefix: "G".to_string(),
+                observed_at: now,
+                season_id: 29,
+                rating: 1500,
+                territory_count: 20,
             },
-        ])
-        .expect("dominant season should exist");
+        ];
 
-        assert_eq!(dominant.0, 29);
-        assert_eq!(dominant.1.len(), 2);
-    }
-
-    #[test]
-    fn compute_confidence_increases_with_more_samples_and_lower_spread() {
-        let low = compute_confidence(1, 2.0, 1.2);
-        let high = compute_confidence(8, 2.0, 0.05);
-        assert!(high > low);
-        assert!((0.0..=1.0).contains(&low));
-        assert!((0.0..=1.0).contains(&high));
+        let ranks = rank_snapshots(&snapshots);
+        assert_eq!(ranks.get("Alpha"), Some(&1));
+        assert_eq!(ranks.get("Beta"), Some(&2));
+        assert_eq!(ranks.get("Gamma"), Some(&3));
     }
 }

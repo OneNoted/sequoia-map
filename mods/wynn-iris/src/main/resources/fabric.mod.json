@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "wynn_iris",
+  "version": "${version}",
+  "name": "Wynn Iris",
+  "description": "Reports Wynncraft advancement territory observations to Wynn Iris ingest.",
+  "authors": [
+    "Iris"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "io.iris.reporter.IrisReporterClient"
+    ]
+  },
+  "mixins": [
+    "wynn-iris.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.17.0",
+    "minecraft": "~${minecraft_version}",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

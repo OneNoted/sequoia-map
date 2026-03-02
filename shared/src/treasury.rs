@@ -39,8 +39,8 @@ impl TreasuryLevel {
     /// Minecraft-style color as RGB bytes.
     pub fn color_rgb(self) -> (u8, u8, u8) {
         match self {
-            Self::VeryLow => (85, 255, 85),
-            Self::Low => (170, 170, 170),
+            Self::VeryLow => (0, 170, 0),
+            Self::Low => (85, 255, 85),
             Self::Medium => (255, 255, 85),
             Self::High => (85, 255, 85),
             Self::VeryHigh => (85, 255, 255),

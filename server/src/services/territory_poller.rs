@@ -11,8 +11,11 @@ use sequoia_shared::{GuildRef, Territory, TerritoryChange, TerritoryMap};
 use sqlx::{Postgres, QueryBuilder};
 use tracing::{info, warn};
 
-use crate::config::{POLL_INTERVAL_SECS, WYNNCRAFT_TERRITORY_URL};
-use crate::state::{AppState, ExtraTerrInfo, GuildColorMap, PreSerializedEvent};
+use crate::config::{POLL_INTERVAL_SECS, WYNNCRAFT_TERRITORY_URL, canonical_override_ttl};
+use crate::state::{
+    AppState, ExtraTerrInfo, GuildColorMap, IngestTerritoryOverride, PreSerializedEvent,
+    build_guild_color_lookup, lookup_guild_color,
+};
 
 type SequencedUpdates = Vec<(u64, TerritoryChange)>;
 type PersistResultFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
@@ -25,6 +28,8 @@ pub async fn run(state: AppState) {
     let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
     let mut cached_extra: HashMap<String, ExtraTerrInfo> = HashMap::new();
     let mut cached_colors: GuildColorMap = HashMap::new();
+    let mut cached_colors_normalized: GuildColorMap = HashMap::new();
+    let override_ttl = canonical_override_ttl();
 
     loop {
         interval.tick().await;
@@ -32,6 +37,7 @@ pub async fn run(state: AppState) {
         match fetch_territories(&state.http_client).await {
             Ok(mut new_map) => {
                 let mut supplemental_changed = false;
+                let cached_ingest_overrides = state.ingest_overrides.read().await.clone();
 
                 // Refresh local cached supplemental data only when upstream fetchers mark it dirty.
                 if state.extra_data_dirty.swap(false, Ordering::AcqRel) {
@@ -40,11 +46,19 @@ pub async fn run(state: AppState) {
                 }
                 if state.guild_colors_dirty.swap(false, Ordering::AcqRel) {
                     cached_colors = state.guild_colors.read().await.clone();
+                    cached_colors_normalized = build_guild_color_lookup(&cached_colors);
                     supplemental_changed = true;
                 }
 
                 // Always merge from local caches so ownership changes don't drop supplemental fields.
-                merge_supplemental_data(&mut new_map, &cached_extra, &cached_colors);
+                merge_supplemental_data(
+                    &mut new_map,
+                    &cached_extra,
+                    &cached_colors,
+                    &cached_colors_normalized,
+                    &cached_ingest_overrides,
+                    override_ttl,
+                );
 
                 process_polled_map(&state, new_map, supplemental_changed).await;
             }
@@ -59,13 +73,37 @@ fn merge_supplemental_data(
     new_map: &mut TerritoryMap,
     cached_extra: &HashMap<String, ExtraTerrInfo>,
     cached_colors: &GuildColorMap,
+    cached_colors_normalized: &GuildColorMap,
+    cached_ingest_overrides: &HashMap<String, IngestTerritoryOverride>,
+    override_ttl: Duration,
 ) {
+    let now = Utc::now();
+    let ttl =
+        chrono::Duration::from_std(override_ttl).unwrap_or_else(|_| chrono::Duration::seconds(180));
+
     for (name, terr) in new_map.iter_mut() {
         if let Some(info) = cached_extra.get(name) {
             terr.resources = info.resources.clone();
             terr.connections = info.connections.clone();
         }
-        if let Some(&rgb) = cached_colors.get(&terr.guild.name) {
+        if let Some(override_info) = cached_ingest_overrides.get(name)
+            && now.signed_duration_since(override_info.observed_at) <= ttl
+        {
+            if let Some(guild) = &override_info.guild {
+                terr.guild = guild.clone();
+            }
+            if let Some(acquired) = override_info.acquired {
+                terr.acquired = acquired;
+            }
+            if let Some(runtime) = &override_info.runtime {
+                terr.runtime = Some(runtime.clone());
+            }
+        }
+        // Re-apply canonical guild color after ingest ownership overrides.
+        if terr.guild.color.is_none()
+            && let Some(rgb) =
+                lookup_guild_color(cached_colors, cached_colors_normalized, &terr.guild.name)
+        {
             terr.guild.color = Some(rgb);
         }
     }
@@ -101,11 +139,31 @@ async fn process_polled_map_with<F>(
         return;
     }
 
-    let initial_seq = state.next_seq.load(Ordering::Relaxed);
-    let mut seq_cursor = initial_seq;
+    let reserved_count = if has_removals {
+        1_u64
+    } else {
+        match u64::try_from(changes.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                warn!("too many territory changes to reserve sequence range");
+                return;
+            }
+        }
+    };
+    let mut seq_cursor = if reserved_count > 0 {
+        match reserve_next_seq_block(state, reserved_count) {
+            Some(base) => base,
+            None => {
+                warn!("sequence counter overflow while reserving sequence range");
+                return;
+            }
+        }
+    } else {
+        live_seq
+    };
     let mut outgoing = Vec::new();
     let mut sequenced_updates: SequencedUpdates = Vec::new();
-    let emit_snapshot_event = has_removals;
+    let emit_snapshot_event = has_removals || supplemental_changed;
 
     if has_removals {
         let Some(seq) = seq_cursor.checked_add(1) else {
@@ -211,7 +269,7 @@ async fn process_polled_map_with<F>(
         current.timestamp = live_timestamp;
     }
 
-    if seq_cursor != initial_seq {
+    if seq_cursor > state.next_seq.load(Ordering::Relaxed) {
         state.next_seq.store(seq_cursor, Ordering::Relaxed);
     }
 
@@ -245,6 +303,33 @@ fn serialize_update_event(
         Err(e) => {
             warn!("failed to serialize {context}: {e}");
             None
+        }
+    }
+}
+
+fn reserve_next_seq_block(state: &AppState, count: u64) -> Option<u64> {
+    if count == 0 {
+        return Some(
+            state
+                .next_seq_reserved
+                .load(Ordering::Relaxed)
+                .max(state.next_seq.load(Ordering::Relaxed)),
+        );
+    }
+
+    loop {
+        let reserved = state.next_seq_reserved.load(Ordering::Relaxed);
+        let committed = state.next_seq.load(Ordering::Relaxed);
+        let base = reserved.max(committed);
+        let next = base.checked_add(count)?;
+        match state.next_seq_reserved.compare_exchange_weak(
+            reserved,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return Some(base),
+            Err(_) => continue,
         }
     }
 }
@@ -547,6 +632,7 @@ impl From<RawTerritory> for Territory {
             location: value.location,
             resources: value.resources,
             connections: value.connections,
+            runtime: None,
         }
     }
 }
@@ -564,7 +650,11 @@ fn compute_diff(old: &TerritoryMap, new: &TerritoryMap) -> Vec<TerritoryChange> 
 
     for (name, new_territory) in new {
         let changed = match old.get(name) {
-            Some(old_territory) => old_territory.guild.uuid != new_territory.guild.uuid,
+            Some(old_territory) => {
+                old_territory.guild.uuid != new_territory.guild.uuid
+                    || old_territory.guild.name != new_territory.guild.name
+                    || old_territory.guild.prefix != new_territory.guild.prefix
+            }
             None => true, // new territory
         };
 
@@ -589,6 +679,7 @@ fn compute_diff(old: &TerritoryMap, new: &TerritoryMap) -> Vec<TerritoryChange> 
                 location: new_territory.location.clone(),
                 resources: new_territory.resources.clone(),
                 connections: new_territory.connections.clone(),
+                runtime: new_territory.runtime.clone(),
             });
         }
     }
@@ -606,6 +697,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::time::Duration;
 
     use super::{
         UNCLAIMED_GUILD_NAME, UNCLAIMED_GUILD_PREFIX, UNCLAIMED_GUILD_UUID, compute_diff,
@@ -636,6 +728,7 @@ mod tests {
             },
             resources: Default::default(),
             connections: Vec::new(),
+            runtime: None,
         }
     }
 
@@ -710,6 +803,29 @@ mod tests {
 
         let diff = compute_diff(&old, &new);
         assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn compute_diff_detects_same_uuid_guild_metadata_changes() {
+        let mut old = TerritoryMap::new();
+        old.insert("Alpha".to_string(), territory("g1", "GuildOne", "G1"));
+
+        let mut new = TerritoryMap::new();
+        new.insert("Alpha".to_string(), territory("g1", "GuildRenamed", "GRN"));
+
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].territory, "Alpha");
+        assert_eq!(diff[0].guild.uuid, "g1");
+        assert_eq!(diff[0].guild.name, "GuildRenamed");
+        assert_eq!(diff[0].guild.prefix, "GRN");
+        assert_eq!(
+            diff[0]
+                .previous_guild
+                .as_ref()
+                .map(|guild| guild.name.as_str()),
+            Some("GuildOne")
+        );
     }
 
     #[test]
@@ -829,10 +945,10 @@ mod tests {
         })
         .await;
 
-        assert!(matches!(
-            rx.try_recv(),
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-        ));
+        match rx.try_recv() {
+            Ok(PreSerializedEvent::Snapshot { seq, .. }) => assert_eq!(seq, 31),
+            other => panic!("expected supplemental tick to emit snapshot event, got {other:?}"),
+        }
         {
             let current = state.live_snapshot.read().await;
             assert_eq!(current.seq, 31);
@@ -875,7 +991,14 @@ mod tests {
         let mut cached_colors = HashMap::new();
         cached_colors.insert("GuildTwo".to_string(), (1, 2, 3));
 
-        merge_supplemental_data(&mut new_map, &HashMap::new(), &cached_colors);
+        merge_supplemental_data(
+            &mut new_map,
+            &HashMap::new(),
+            &cached_colors,
+            &crate::state::build_guild_color_lookup(&cached_colors),
+            &HashMap::new(),
+            Duration::from_secs(180),
+        );
         assert_eq!(
             new_map
                 .get("Alpha")
@@ -907,6 +1030,32 @@ mod tests {
                 serde_json::json!([1, 2, 3])
             );
         }
+    }
+
+    #[test]
+    fn merge_supplemental_data_matches_guild_colors_case_insensitively() {
+        let mut new_map = single_territory_map("g2", "  AVICIA  ", "AVO");
+        let mut cached_colors = HashMap::new();
+        cached_colors.insert("Avicia".to_string(), (16, 16, 254));
+        let normalized = crate::state::build_guild_color_lookup(&cached_colors);
+
+        merge_supplemental_data(
+            &mut new_map,
+            &HashMap::new(),
+            &cached_colors,
+            &normalized,
+            &HashMap::new(),
+            Duration::from_secs(180),
+        );
+
+        assert_eq!(
+            new_map
+                .get("Alpha")
+                .expect("territory should exist")
+                .guild
+                .color,
+            Some((16, 16, 254))
+        );
     }
 
     #[tokio::test]

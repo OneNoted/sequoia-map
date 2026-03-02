@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::ingest::TerritoryRuntimeChange;
 use crate::territory::{GuildRef, Region, Resources, TerritoryMap};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +16,12 @@ pub enum TerritoryEvent {
         #[serde(default)]
         seq: u64,
         changes: Vec<TerritoryChange>,
+        timestamp: String,
+    },
+    RuntimeUpdate {
+        #[serde(default)]
+        seq: u64,
+        updates: Vec<TerritoryRuntimeChange>,
         timestamp: String,
     },
 }
@@ -37,4 +44,7 @@ pub struct TerritoryChange {
     pub resources: Resources,
     #[serde(default)]
     pub connections: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::ingest::TerritoryRuntimeData>,
 }

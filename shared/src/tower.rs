@@ -76,7 +76,7 @@ const HQ_EXTERNAL_BONUS: f64 = 0.25;
 /// Apply connection and HQ multipliers to a base stat value.
 ///
 /// `connections` = number of allied-owned connected territories.
-/// `externals` = number of external connections (BFS within 3 hops).
+/// `externals` = number of allied-owned territories reachable within 3 hops.
 pub fn calc_stat(base: f64, is_hq: bool, connections: u32, externals: u32) -> f64 {
     let conn_mult = 1.0 + (connections as f64 * CONNECTION_BONUS);
     if is_hq {
@@ -142,11 +142,7 @@ pub fn calc_defense_index(
     let volley = volley_level.min(3) as u32;
 
     let aura_bonus = if aura > 0 { AURA_NONZERO_BONUS } else { 0 };
-    let volley_bonus = if volley > 0 {
-        VOLLEY_NONZERO_BONUS
-    } else {
-        0
-    };
+    let volley_bonus = if volley > 0 { VOLLEY_NONZERO_BONUS } else { 0 };
 
     let base_index = damage + attack + health + defense + aura + volley + aura_bonus + volley_bonus;
 
@@ -237,8 +233,7 @@ pub fn find_externals(
     visited
 }
 
-/// Count guild-owned connections and compute externals via BFS (max 3 hops
-/// through same-guild chains, including direct connections).
+/// Count direct guild-owned connections and externals for a territory.
 ///
 /// `territory_name` — the selected territory.
 /// `territory_connections` — its direct connection list.
@@ -260,7 +255,8 @@ pub fn count_guild_connections<'a>(
         .filter(|conn| lookup(conn).is_some_and(|(uuid, _)| uuid == guild_uuid))
         .count() as u32;
 
-    // BFS through same-guild territories (max 3 hops) to find externals
+    // BFS up to 3 hops, traversing all known territories regardless of ownership.
+    // Externals are same-guild territories in that reachable set.
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
     visited.insert(territory_name.to_string());
@@ -278,19 +274,17 @@ pub fn count_guild_connections<'a>(
             continue;
         };
         for neighbor in conns {
-            if !visited.contains(neighbor.as_str())
-                && let Some((uuid, _)) = lookup(neighbor)
-                && uuid == guild_uuid
-            {
-                visited.insert(neighbor.clone());
+            if visited.insert(neighbor.clone()) {
                 queue.push_back((neighbor.clone(), depth + 1));
             }
         }
     }
 
-    // Externals include depth-1 direct neighbors and same-guild nodes out to 3 hops.
     visited.remove(territory_name);
-    let ext = visited.len() as u32;
+    let ext = visited
+        .iter()
+        .filter(|name| lookup(name.as_str()).is_some_and(|(uuid, _)| uuid == guild_uuid))
+        .count() as u32;
 
     (guild_conn, total_conn, ext)
 }
@@ -323,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn count_guild_connections_includes_direct_neighbors_in_externals() {
+    fn count_guild_connections_counts_same_guild_within_three_hops_as_externals() {
         let map = HashMap::from([
             (
                 "A".to_string(),
@@ -415,6 +409,59 @@ mod tests {
 
         assert_eq!(guild_conn, 1);
         assert_eq!(total_conn, 1);
+        assert_eq!(externals, 3);
+    }
+
+    #[test]
+    fn count_guild_connections_allows_interrupted_paths_for_external_count() {
+        let map = HashMap::from([
+            (
+                "A".to_string(),
+                (
+                    "guild-a".to_string(),
+                    vec!["B".to_string(), "X".to_string()],
+                ),
+            ),
+            (
+                "B".to_string(),
+                ("guild-a".to_string(), vec!["A".to_string()]),
+            ),
+            (
+                "X".to_string(),
+                (
+                    "guild-b".to_string(),
+                    vec!["A".to_string(), "E".to_string()],
+                ),
+            ),
+            (
+                "E".to_string(),
+                (
+                    "guild-a".to_string(),
+                    vec!["X".to_string(), "H".to_string()],
+                ),
+            ),
+            (
+                "H".to_string(),
+                (
+                    "guild-a".to_string(),
+                    vec!["E".to_string(), "I".to_string()],
+                ),
+            ),
+            (
+                "I".to_string(),
+                ("guild-a".to_string(), vec!["H".to_string()]),
+            ),
+        ]);
+
+        let connections = map.get("A").expect("A exists").1.as_slice();
+        let (guild_conn, total_conn, externals) =
+            count_guild_connections("A", connections, "guild-a", |name| {
+                map.get(name)
+                    .map(|(guild, conns)| (guild.as_str(), conns.as_slice()))
+            });
+
+        assert_eq!(guild_conn, 1);
+        assert_eq!(total_conn, 2);
         assert_eq!(externals, 3);
     }
 

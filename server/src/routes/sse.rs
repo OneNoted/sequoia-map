@@ -44,7 +44,10 @@ pub async fn territory_events(
                 Ok(event) => {
                     let (event_type, seq, data) = match event {
                         PreSerializedEvent::Snapshot { seq, json } => ("snapshot", seq, json),
-                        PreSerializedEvent::Update { seq, json, .. } => ("update", seq, json),
+                        PreSerializedEvent::Update { seq, json } => ("update", seq, json),
+                        PreSerializedEvent::RuntimeUpdate { seq, json } => {
+                            ("runtime_update", seq, json)
+                        }
                     };
                     let Some(payload) = event_payload(data.as_ref()) else {
                         warn!(

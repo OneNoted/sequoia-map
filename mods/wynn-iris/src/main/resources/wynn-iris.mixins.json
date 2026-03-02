@@ -1,0 +1,11 @@
+{
+  "required": true,
+  "package": "io.iris.reporter.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "ClientPlayNetworkHandlerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

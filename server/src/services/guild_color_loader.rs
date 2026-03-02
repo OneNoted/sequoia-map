@@ -23,6 +23,7 @@ struct AthenaTerritory {
 }
 
 pub async fn run(state: AppState) {
+    restore_cached_guild_colors_if_empty(&state, "startup").await;
     let mut interval = tokio::time::interval(Duration::from_secs(ATHENA_REFRESH_SECS));
 
     loop {
@@ -30,18 +31,34 @@ pub async fn run(state: AppState) {
 
         match fetch_guild_colors(&state.http_client).await {
             Ok(colors) => {
-                let count = colors.len();
+                if colors.is_empty() {
+                    warn!(
+                        "received empty guild color payload from Athena; keeping last known color cache"
+                    );
+                    restore_cached_guild_colors_if_empty(&state, "athena_empty_payload").await;
+                    continue;
+                }
+
+                let loaded_count = colors.len();
                 if let Some(pool) = state.db.as_ref()
                     && let Err(e) = persist_guild_colors(pool, &colors).await
                 {
                     warn!("failed to persist guild colors cache: {e}");
                 }
-                *state.guild_colors.write().await = colors;
+                let total_count = {
+                    let mut current = state.guild_colors.write().await;
+                    merge_guild_color_cache(&mut current, colors);
+                    current.len()
+                };
                 state.guild_colors_dirty.store(true, Ordering::Release);
-                info!("loaded guild colors for {count} guilds from Athena");
+                info!(
+                    loaded_count,
+                    total_count, "loaded guild colors from Athena and merged into cache"
+                );
             }
             Err(e) => {
                 warn!("failed to fetch guild colors from Athena: {e}");
+                restore_cached_guild_colors_if_empty(&state, "athena_fetch_failure").await;
             }
         }
     }
@@ -100,6 +117,76 @@ fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
+async fn restore_cached_guild_colors_if_empty(state: &AppState, reason: &str) {
+    {
+        let current = state.guild_colors.read().await;
+        if !current.is_empty() {
+            return;
+        }
+    }
+
+    let Some(pool) = state.db.as_ref() else {
+        return;
+    };
+
+    match load_cached_guild_colors(pool).await {
+        Ok(colors) if colors.is_empty() => {
+            warn!("guild color cache is empty; no fallback colors available ({reason})");
+        }
+        Ok(colors) => {
+            let count = colors.len();
+            let mut current = state.guild_colors.write().await;
+            if current.is_empty() {
+                *current = colors;
+                state.guild_colors_dirty.store(true, Ordering::Release);
+                info!("restored guild colors for {count} guilds from persisted cache ({reason})");
+            }
+        }
+        Err(e) => {
+            warn!("failed to load persisted guild color cache ({reason}): {e}");
+        }
+    }
+}
+
+async fn load_cached_guild_colors(
+    pool: &sqlx::PgPool,
+) -> Result<HashMap<String, (u8, u8, u8)>, String> {
+    let rows: Vec<(String, i16, i16, i16)> =
+        sqlx::query_as("SELECT guild_name, color_r, color_g, color_b FROM guild_color_cache")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("query guild_color_cache: {e}"))?;
+
+    Ok(rows_to_guild_colors(rows))
+}
+
+fn rows_to_guild_colors(rows: Vec<(String, i16, i16, i16)>) -> HashMap<String, (u8, u8, u8)> {
+    let mut colors = HashMap::new();
+    for (guild_name, color_r, color_g, color_b) in rows {
+        let Some(rgb) = parse_rgb_triplet(color_r, color_g, color_b) else {
+            continue;
+        };
+        colors.insert(guild_name, rgb);
+    }
+    colors
+}
+
+fn parse_rgb_triplet(color_r: i16, color_g: i16, color_b: i16) -> Option<(u8, u8, u8)> {
+    let color_r = u8::try_from(color_r).ok()?;
+    let color_g = u8::try_from(color_g).ok()?;
+    let color_b = u8::try_from(color_b).ok()?;
+    Some((color_r, color_g, color_b))
+}
+
+fn merge_guild_color_cache(
+    current: &mut HashMap<String, (u8, u8, u8)>,
+    incoming: HashMap<String, (u8, u8, u8)>,
+) {
+    for (guild_name, color) in incoming {
+        current.insert(guild_name, color);
+    }
+}
+
 async fn persist_guild_colors(
     pool: &sqlx::PgPool,
     colors: &HashMap<String, (u8, u8, u8)>,
@@ -136,7 +223,11 @@ async fn persist_guild_colors(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_athena_guild_colors_payload, parse_hex_color};
+    use super::{
+        merge_guild_color_cache, parse_athena_guild_colors_payload, parse_hex_color,
+        parse_rgb_triplet, rows_to_guild_colors,
+    };
+    use std::collections::HashMap;
 
     #[test]
     fn parse_hex_color_accepts_valid_hex_triplets() {
@@ -171,5 +262,47 @@ mod tests {
             .expect("payload should decode despite null guild rows");
         assert_eq!(colors.len(), 1);
         assert_eq!(colors.get("Aequitas"), Some(&(255, 215, 0)));
+    }
+
+    #[test]
+    fn parse_rgb_triplet_accepts_valid_ranges() {
+        assert_eq!(parse_rgb_triplet(0, 127, 255), Some((0, 127, 255)));
+    }
+
+    #[test]
+    fn parse_rgb_triplet_rejects_invalid_ranges() {
+        assert_eq!(parse_rgb_triplet(-1, 0, 0), None);
+        assert_eq!(parse_rgb_triplet(0, 256, 0), None);
+    }
+
+    #[test]
+    fn rows_to_guild_colors_skips_invalid_rows() {
+        let rows = vec![
+            ("Aequitas".to_string(), 255, 215, 0),
+            ("Broken".to_string(), -1, 10, 20),
+            ("Paladins United".to_string(), 199, 179, 240),
+        ];
+        let colors = rows_to_guild_colors(rows);
+        assert_eq!(colors.len(), 2);
+        assert_eq!(colors.get("Aequitas"), Some(&(255, 215, 0)));
+        assert_eq!(colors.get("Paladins United"), Some(&(199, 179, 240)));
+        assert!(!colors.contains_key("Broken"));
+    }
+
+    #[test]
+    fn merge_guild_color_cache_preserves_existing_entries() {
+        let mut current = HashMap::new();
+        current.insert("Avicia".to_string(), (16, 16, 254));
+        current.insert("Aequitas".to_string(), (255, 215, 0));
+
+        let mut incoming = HashMap::new();
+        incoming.insert("Avicia".to_string(), (17, 17, 255));
+        incoming.insert("Nerfuria".to_string(), (200, 80, 80));
+
+        merge_guild_color_cache(&mut current, incoming);
+
+        assert_eq!(current.get("Avicia"), Some(&(17, 17, 255)));
+        assert_eq!(current.get("Aequitas"), Some(&(255, 215, 0)));
+        assert_eq!(current.get("Nerfuria"), Some(&(200, 80, 80)));
     }
 }

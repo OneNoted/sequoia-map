@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::ingest::TerritoryRuntimeData;
+
 pub type TerritoryMap = HashMap<String, Territory>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -14,6 +16,9 @@ pub struct Territory {
     pub resources: Resources,
     #[serde(default)]
     pub connections: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<TerritoryRuntimeData>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
