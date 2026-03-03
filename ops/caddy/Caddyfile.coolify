@@ -1,27 +1,29 @@
 :80, :8080 {
     encode zstd gzip
 
-    @internalIngest path /api/internal/ingest/*
-    @internalIngestViaIris path /iris/api/internal/ingest/*
-    respond @internalIngest 403
-    respond @internalIngestViaIris 403
+    route {
+        @internalIngest path /api/internal/ingest/*
+        @internalIngestViaIris path /iris/api/internal/ingest/*
+        respond @internalIngest 403
+        respond @internalIngestViaIris 403
 
-    # Optional subdirectory mode for the reporter base URL:
-    # https://map.example.com/iris -> /v1/* on ingest
-    @ingestSubdir path /iris/*
-    handle @ingestSubdir {
-        uri strip_prefix /iris
-        reverse_proxy ingest:3010
-    }
+        # Optional subdirectory mode for the reporter base URL:
+        # https://map.example.com/iris -> /v1/* on ingest
+        @ingestSubdir path /iris/*
+        handle @ingestSubdir {
+            uri strip_prefix /iris
+            reverse_proxy ingest:3010
+        }
 
-    # Direct ingest mode:
-    # https://map.example.com/v1/*
-    @ingestV1 path /v1/*
-    handle @ingestV1 {
-        reverse_proxy ingest:3010
-    }
+        # Direct ingest mode:
+        # https://map.example.com/v1/*
+        @ingestV1 path /v1/*
+        handle @ingestV1 {
+            reverse_proxy ingest:3010
+        }
 
-    handle {
-        reverse_proxy server:3000
+        handle {
+            reverse_proxy server:3000
+        }
     }
 }

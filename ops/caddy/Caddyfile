@@ -5,29 +5,37 @@
 {$MAP_DOMAIN:map.example.com} {
     encode zstd gzip
 
-    @internalIngest path /api/internal/ingest/*
-    @internalIngestViaIris path /iris/api/internal/ingest/*
-    respond @internalIngest 403
-    respond @internalIngestViaIris 403
+    route {
+        @internalIngest path /api/internal/ingest/*
+        @internalIngestViaIris path /iris/api/internal/ingest/*
+        respond @internalIngest 403
+        respond @internalIngestViaIris 403
 
-    # Allow reporter traffic on the map domain.
-    # - https://map.example.com/v1/*
-    # - https://map.example.com/iris/v1/* (subdirectory mode)
-    @ingestSubdir path /iris/*
-    handle @ingestSubdir {
-        uri strip_prefix /iris
-        reverse_proxy ingest:3010
+        # Allow reporter traffic on the map domain.
+        # - https://map.example.com/v1/*
+        # - https://map.example.com/iris/v1/* (subdirectory mode)
+        @ingestSubdir path /iris/*
+        handle @ingestSubdir {
+            uri strip_prefix /iris
+            reverse_proxy ingest:3010
+        }
+
+        @ingestV1 path /v1/*
+        handle @ingestV1 {
+            reverse_proxy ingest:3010
+        }
+
+        handle {
+            reverse_proxy server:3000
+        }
     }
-
-    @ingestV1 path /v1/*
-    handle @ingestV1 {
-        reverse_proxy ingest:3010
-    }
-
-    reverse_proxy server:3000
 }
 
 {$IRIS_DOMAIN:iris.example.com} {
     encode zstd gzip
-    reverse_proxy ingest:3010
+    route {
+        @internalIngest path /api/internal/ingest/*
+        respond @internalIngest 403
+        reverse_proxy ingest:3010
+    }
 }
