@@ -3,6 +3,8 @@ package io.iris.reporter;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ReporterConfigDefaultsTest {
     @Test
@@ -22,5 +24,14 @@ public class ReporterConfigDefaultsTest {
         assertEquals(
                 "https://map.seqwawa.com/api",
                 ReporterRuntime.normalizeIngestBaseUrlInput("https://map.seqwawa.com/api/***///"));
+    }
+
+    @Test
+    void defaultAutoUpdateSettingsAreEnabledAndPinnedToPublicRepo() {
+        ReporterConfig config = new ReporterConfig();
+        assertTrue(config.autoUpdateEnabled);
+        assertEquals("OneNoted/sequoia-map", config.autoUpdateRepo);
+        assertFalse(config.autoUpdateIncludePrerelease);
+        assertEquals("never", config.autoUpdateLastResult);
     }
 }

@@ -10,6 +10,14 @@ public final class ReporterConfig {
     // Backward-compatible no-op field accepted by ingest for one phase.
     public boolean guildOptIn = false;
 
+    public boolean autoUpdateEnabled = true;
+    public String autoUpdateRepo = IrisAutoUpdater.DEFAULT_REPO;
+    public boolean autoUpdateIncludePrerelease = false;
+    public String autoUpdateLastCheckAt;
+    public String autoUpdateLastResult = "never";
+    public String autoUpdatePendingVersion;
+    public String autoUpdatePendingAssetUrl;
+
     public boolean shareOwner = true;
     public boolean shareHeadquarters = true;
     public boolean shareHeldResources = true;

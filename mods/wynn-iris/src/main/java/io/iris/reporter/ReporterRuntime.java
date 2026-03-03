@@ -35,6 +35,36 @@ public final class ReporterRuntime {
         UNKNOWN_FIELD
     }
 
+    public enum UpdateCheckStartResult {
+        STARTED,
+        ALREADY_RUNNING,
+        INVALID_REPO
+    }
+
+    public enum UpdateApplyStartResult {
+        STARTED,
+        ALREADY_RUNNING,
+        NO_PENDING_UPDATE,
+        INVALID_ASSET_URL
+    }
+
+    public enum UpdateNotificationKind {
+        UPDATE_AVAILABLE,
+        UPDATE_UP_TO_DATE,
+        UPDATE_NO_COMPATIBLE_RELEASE,
+        UPDATE_CHECK_FAILED,
+        UPDATE_APPLY_SUCCESS,
+        UPDATE_APPLY_FAILED
+    }
+
+    public record UpdateNotification(
+        UpdateNotificationKind kind,
+        String currentVersion,
+        String latestVersion,
+        String releaseUrl,
+        String reason
+    ) {}
+
     public static final class ToggleResult {
         private final ToggleResultKind kind;
         private final String field;
@@ -75,10 +105,12 @@ public final class ReporterRuntime {
 
     private final ReporterConfig config;
     private final GatewayClient gatewayClient;
+    private final IrisAutoUpdater autoUpdater;
     private final AdvancementTerritoryCollector collector;
     private final GuildSeasonMenuProbe guildSeasonMenuProbe;
     private final DataValidityGate validityGate;
     private final ArrayDeque<PendingSubmission> queue = new ArrayDeque<>();
+    private final ArrayDeque<UpdateNotification> updateNotifications = new ArrayDeque<>();
     private final Map<String, String> fingerprintByTerritory = new HashMap<>();
     private final Map<String, Long> lastSentAtByTerritory = new HashMap<>();
     private final Map<String, LegacyMessageScraper.CaptureSignal> legacyCaptureSignalsByTerritory = new HashMap<>();
@@ -95,16 +127,24 @@ public final class ReporterRuntime {
     private CompletableFuture<GatewayClient.EnrollResult> enrollInFlight;
     private CompletableFuture<GatewayClient.HeartbeatResult> heartbeatInFlight;
     private CompletableFuture<GatewayClient.SubmitResult> uploadInFlight;
+    private CompletableFuture<IrisAutoUpdater.CheckResult> updateCheckInFlight;
+    private CompletableFuture<IrisAutoUpdater.ApplyResult> updateApplyInFlight;
+    private UpdateCheckContext updateCheckContext;
     private PendingSubmission uploadHeadInFlight;
     private DataValidityGate.State lastValidityState;
+    private boolean startupUpdateCheckTriggered;
+    private String pendingUpdateReleaseUrl;
+    private String updateApplyTargetVersion;
 
     public ReporterRuntime(ReporterConfig config) {
         this.config = config;
         this.gatewayClient = new GatewayClient();
+        this.autoUpdater = new IrisAutoUpdater();
         this.collector = new AdvancementTerritoryCollector();
         this.guildSeasonMenuProbe = new GuildSeasonMenuProbe();
         this.validityGate = new DataValidityGate(config.resumeStabilizationMs, config.minMovementBlocks);
         this.lastValidityState = validityGate.state();
+        this.config.autoUpdateRepo = IrisAutoUpdater.normalizeRepo(this.config.autoUpdateRepo);
     }
 
     public String statusLine() {
@@ -130,6 +170,78 @@ public final class ReporterRuntime {
 
     public String ingestBaseUrl() {
         return config.ingestBaseUrl;
+    }
+
+    public boolean autoUpdateEnabled() {
+        return config.autoUpdateEnabled;
+    }
+
+    public boolean autoUpdateIncludePrerelease() {
+        return config.autoUpdateIncludePrerelease;
+    }
+
+    public String autoUpdateRepo() {
+        return IrisAutoUpdater.normalizeRepo(config.autoUpdateRepo);
+    }
+
+    public String autoUpdateLastResult() {
+        if (config.autoUpdateLastResult == null || config.autoUpdateLastResult.isBlank()) {
+            return "never";
+        }
+        return config.autoUpdateLastResult;
+    }
+
+    public String autoUpdateLastCheckAt() {
+        if (config.autoUpdateLastCheckAt == null || config.autoUpdateLastCheckAt.isBlank()) {
+            return "never";
+        }
+        try {
+            Instant parsed = Instant.parse(config.autoUpdateLastCheckAt);
+            String local = STATUS_LOCAL_TIME_FORMATTER.format(parsed.atZone(ZoneId.systemDefault()));
+            long ageMs = Math.max(0L, System.currentTimeMillis() - parsed.toEpochMilli());
+            return local + " (" + formatDuration(ageMs) + " ago)";
+        } catch (Exception ignored) {
+            return config.autoUpdateLastCheckAt;
+        }
+    }
+
+    public String autoUpdatePendingVersion() {
+        if (config.autoUpdatePendingVersion == null || config.autoUpdatePendingVersion.isBlank()) {
+            return "none";
+        }
+        return config.autoUpdatePendingVersion;
+    }
+
+    public String autoUpdatePendingReleaseUrl() {
+        if (pendingUpdateReleaseUrl == null || pendingUpdateReleaseUrl.isBlank()) {
+            return "n/a";
+        }
+        return pendingUpdateReleaseUrl;
+    }
+
+    public boolean updateCheckInProgress() {
+        return updateCheckInFlight != null;
+    }
+
+    public boolean updateApplyInProgress() {
+        return updateApplyInFlight != null;
+    }
+
+    public String runtimeModVersion() {
+        return RuntimeVersionResolver.currentModVersion();
+    }
+
+    public String runtimeMinecraftVersion() {
+        return RuntimeVersionResolver.currentMinecraftVersion();
+    }
+
+    public boolean setAutoUpdateEnabled(boolean enabled) {
+        if (config.autoUpdateEnabled == enabled) {
+            return false;
+        }
+        config.autoUpdateEnabled = enabled;
+        markConfigDirty(System.currentTimeMillis());
+        return true;
     }
 
     public String setIngestBaseUrl(String ingestBaseUrl) {
@@ -378,6 +490,9 @@ public final class ReporterRuntime {
         updateValidityFromClientState(now);
         handleValidityTransitions(now);
         guildSeasonMenuProbe.tick(now);
+        maybeStartStartupUpdateCheck();
+        pollUpdateCheck(now);
+        pollUpdateApply(now);
 
         pollEnroll(now);
         if (tokenMissingOrExpired() && enrollInFlight == null && now - lastEnrollAttemptMs >= ENROLL_RETRY_MS) {
@@ -419,6 +534,202 @@ public final class ReporterRuntime {
         }
 
         flushConfigIfDue(now);
+    }
+
+    public UpdateCheckStartResult requestUpdateCheck() {
+        return startUpdateCheck(new UpdateCheckContext(true));
+    }
+
+    public UpdateApplyStartResult requestUpdateApply() {
+        if (updateApplyInFlight != null) {
+            return UpdateApplyStartResult.ALREADY_RUNNING;
+        }
+        if (config.autoUpdatePendingAssetUrl == null || config.autoUpdatePendingAssetUrl.isBlank()) {
+            return UpdateApplyStartResult.NO_PENDING_UPDATE;
+        }
+        String urlError = IrisAutoUpdater.downloadUrlValidationError(config.autoUpdatePendingAssetUrl);
+        if (urlError != null) {
+            config.autoUpdateLastResult = urlError;
+            markConfigDirty(System.currentTimeMillis());
+            return UpdateApplyStartResult.INVALID_ASSET_URL;
+        }
+
+        updateApplyTargetVersion = config.autoUpdatePendingVersion;
+        updateApplyInFlight = autoUpdater.applyUpdateAsync(config.autoUpdatePendingAssetUrl);
+        config.autoUpdateLastResult = "applying";
+        markConfigDirty(System.currentTimeMillis());
+        return UpdateApplyStartResult.STARTED;
+    }
+
+    public UpdateNotification pollUpdateNotification() {
+        return updateNotifications.pollFirst();
+    }
+
+    private void maybeStartStartupUpdateCheck() {
+        if (startupUpdateCheckTriggered) {
+            return;
+        }
+        startupUpdateCheckTriggered = true;
+        if (!config.autoUpdateEnabled) {
+            return;
+        }
+        startUpdateCheck(new UpdateCheckContext(false));
+    }
+
+    private UpdateCheckStartResult startUpdateCheck(UpdateCheckContext context) {
+        if (updateCheckInFlight != null) {
+            return UpdateCheckStartResult.ALREADY_RUNNING;
+        }
+
+        String normalizedRepo = IrisAutoUpdater.normalizeRepo(config.autoUpdateRepo);
+        String repoError = IrisAutoUpdater.repoValidationError(normalizedRepo);
+        if (repoError != null) {
+            config.autoUpdateLastResult = repoError;
+            markConfigDirty(System.currentTimeMillis());
+            if (context.manual()) {
+                updateNotifications.addLast(new UpdateNotification(
+                    UpdateNotificationKind.UPDATE_CHECK_FAILED,
+                    RuntimeVersionResolver.currentModVersion(),
+                    null,
+                    null,
+                    repoError
+                ));
+            }
+            return UpdateCheckStartResult.INVALID_REPO;
+        }
+
+        config.autoUpdateRepo = normalizedRepo;
+        updateCheckContext = context;
+        updateCheckInFlight = autoUpdater.checkForUpdateAsync(
+            normalizedRepo,
+            config.autoUpdateIncludePrerelease,
+            RuntimeVersionResolver.currentModVersion(),
+            RuntimeVersionResolver.currentMinecraftVersion()
+        );
+        config.autoUpdateLastResult = "checking";
+        markConfigDirty(System.currentTimeMillis());
+        return UpdateCheckStartResult.STARTED;
+    }
+
+    private void pollUpdateCheck(long now) {
+        if (updateCheckInFlight == null || !updateCheckInFlight.isDone()) {
+            return;
+        }
+
+        IrisAutoUpdater.CheckResult result;
+        try {
+            result = updateCheckInFlight.getNow(IrisAutoUpdater.CheckResult.failed("update_check_failed"));
+        } catch (RuntimeException e) {
+            IrisReporterClient.LOGGER.warn("Updater check task completed exceptionally", e);
+            result = IrisAutoUpdater.CheckResult.failed("update_check_failed");
+        }
+        UpdateCheckContext context = updateCheckContext;
+        updateCheckContext = null;
+        updateCheckInFlight = null;
+        config.autoUpdateLastCheckAt = Instant.now().toString();
+
+        switch (result.status()) {
+            case UPDATE_AVAILABLE -> {
+                config.autoUpdatePendingVersion = result.latestVersion();
+                config.autoUpdatePendingAssetUrl = result.assetUrl();
+                pendingUpdateReleaseUrl = result.releaseUrl();
+                config.autoUpdateLastResult = "update_available";
+                updateNotifications.addLast(new UpdateNotification(
+                    UpdateNotificationKind.UPDATE_AVAILABLE,
+                    result.currentVersion(),
+                    result.latestVersion(),
+                    result.releaseUrl(),
+                    result.reason()
+                ));
+            }
+            case UP_TO_DATE -> {
+                clearPendingUpdate();
+                config.autoUpdateLastResult = "up_to_date";
+                if (context != null && context.manual()) {
+                    updateNotifications.addLast(new UpdateNotification(
+                        UpdateNotificationKind.UPDATE_UP_TO_DATE,
+                        result.currentVersion(),
+                        result.latestVersion(),
+                        null,
+                        result.reason()
+                    ));
+                }
+            }
+            case NO_COMPATIBLE_RELEASE -> {
+                clearPendingUpdate();
+                config.autoUpdateLastResult = result.reason();
+                if (context != null && context.manual()) {
+                    updateNotifications.addLast(new UpdateNotification(
+                        UpdateNotificationKind.UPDATE_NO_COMPATIBLE_RELEASE,
+                        result.currentVersion(),
+                        result.latestVersion(),
+                        null,
+                        result.reason()
+                    ));
+                }
+            }
+            case FAILED -> {
+                config.autoUpdateLastResult = result.reason();
+                if (context != null && context.manual()) {
+                    updateNotifications.addLast(new UpdateNotification(
+                        UpdateNotificationKind.UPDATE_CHECK_FAILED,
+                        RuntimeVersionResolver.currentModVersion(),
+                        null,
+                        null,
+                        result.reason()
+                    ));
+                }
+            }
+        }
+
+        markConfigDirty(now);
+    }
+
+    private void pollUpdateApply(long now) {
+        if (updateApplyInFlight == null || !updateApplyInFlight.isDone()) {
+            return;
+        }
+
+        IrisAutoUpdater.ApplyResult result;
+        try {
+            result = updateApplyInFlight.getNow(IrisAutoUpdater.ApplyResult.failed("update_apply_failed"));
+        } catch (RuntimeException e) {
+            IrisReporterClient.LOGGER.warn("Updater apply task completed exceptionally", e);
+            result = IrisAutoUpdater.ApplyResult.failed("update_apply_failed");
+        }
+        updateApplyInFlight = null;
+
+        if (result.status() == IrisAutoUpdater.ApplyStatus.APPLIED) {
+            String appliedVersion = updateApplyTargetVersion == null || updateApplyTargetVersion.isBlank()
+                ? "unknown"
+                : updateApplyTargetVersion;
+            clearPendingUpdate();
+            config.autoUpdateLastResult = "apply_success";
+            updateNotifications.addLast(new UpdateNotification(
+                UpdateNotificationKind.UPDATE_APPLY_SUCCESS,
+                RuntimeVersionResolver.currentModVersion(),
+                appliedVersion,
+                null,
+                result.reason()
+            ));
+        } else {
+            config.autoUpdateLastResult = result.reason();
+            updateNotifications.addLast(new UpdateNotification(
+                UpdateNotificationKind.UPDATE_APPLY_FAILED,
+                RuntimeVersionResolver.currentModVersion(),
+                updateApplyTargetVersion,
+                null,
+                result.reason()
+            ));
+        }
+        updateApplyTargetVersion = null;
+        markConfigDirty(now);
+    }
+
+    private void clearPendingUpdate() {
+        config.autoUpdatePendingVersion = null;
+        config.autoUpdatePendingAssetUrl = null;
+        pendingUpdateReleaseUrl = null;
     }
 
     private void updateValidityFromClientState(long now) {
@@ -958,6 +1269,8 @@ public final class ReporterRuntime {
             );
         }
     }
+
+    private record UpdateCheckContext(boolean manual) {}
 
     private static final class PendingSubmission {
         private final GatewayModels.TerritoryBatch territoryBatch;

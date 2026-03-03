@@ -10,12 +10,15 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.text.ClickEvent;
+import net.minecraft.text.HoverEvent;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URI;
 import java.util.Locale;
 
 public final class IrisReporterClient implements ClientModInitializer {
@@ -30,7 +33,10 @@ public final class IrisReporterClient implements ClientModInitializer {
         ReporterConfig config = ConfigStore.load();
         runtime = new ReporterRuntime(config);
 
-        ClientTickEvents.END_CLIENT_TICK.register(client -> runtime.tick());
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            runtime.tick();
+            flushUpdateNotifications();
+        });
         ClientReceiveMessageEvents.GAME.register((message, overlay) ->
             runtime.onServerGameMessageSignal(message == null ? null : message.getString(), overlay)
         );
@@ -69,6 +75,19 @@ public final class IrisReporterClient implements ClientModInitializer {
                         String url = StringArgumentType.getString(context, "url");
                         return setBaseUrl(url);
                     })))
+            .then(ClientCommandManager.literal("update")
+                .then(ClientCommandManager.literal("status")
+                    .executes(context -> showUpdateStatus()))
+                .then(ClientCommandManager.literal("check")
+                    .executes(context -> runUpdateCheck()))
+                .then(ClientCommandManager.literal("apply")
+                    .executes(context -> runUpdateApply()))
+                .then(ClientCommandManager.literal("auto")
+                    .then(ClientCommandManager.argument("enabled", BoolArgumentType.bool())
+                        .executes(context -> {
+                            boolean enabled = BoolArgumentType.getBool(context, "enabled");
+                            return setAutoUpdate(enabled);
+                        }))))
             .then(ClientCommandManager.literal("toggle")
                 .then(ClientCommandManager.argument("field", StringArgumentType.word())
                     .then(ClientCommandManager.argument("enabled", BoolArgumentType.bool())
@@ -87,6 +106,10 @@ public final class IrisReporterClient implements ClientModInitializer {
         sendKeyValue("toggles", commandText("/" + ROOT_COMMAND + " toggles"));
         sendKeyValue("toggle", commandText("/" + ROOT_COMMAND + " toggle <field> <true|false>"));
         sendKeyValue("set_base_url", commandText("/" + ROOT_COMMAND + " set-base-url <url>"));
+        sendKeyValue("update_status", commandText("/" + ROOT_COMMAND + " update status"));
+        sendKeyValue("update_check", commandText("/" + ROOT_COMMAND + " update check"));
+        sendKeyValue("update_apply", commandText("/" + ROOT_COMMAND + " update apply"));
+        sendKeyValue("update_auto", commandText("/" + ROOT_COMMAND + " update auto <true|false>"));
         sendKeyValue("privacy", commandText("/" + ROOT_COMMAND + " privacy"));
         sendKeyValue("alias", commandText("/ir <subcommand>"));
         sendKeyValue("compat", commandText("/irisreporter <subcommand>"));
@@ -231,6 +254,91 @@ public final class IrisReporterClient implements ClientModInitializer {
         sendKeyValue("not_shared_default", Text.literal("legacy chat-derived signals and route metadata remain off unless enabled").formatted(Formatting.YELLOW));
         sendKeyValue("extras", Text.literal("optional legacy scrapes are sent as runtime metadata only and are ignored by map logic")
             .formatted(Formatting.YELLOW));
+        return 1;
+    }
+
+    private static int showUpdateStatus() {
+        sendSection("Updater");
+        sendKeyValue("auto_update", onOffText(runtime.autoUpdateEnabled()));
+        sendKeyValue("repo", Text.literal(runtime.autoUpdateRepo()).formatted(Formatting.GRAY));
+        sendKeyValue("channel", Text.literal(runtime.autoUpdateIncludePrerelease() ? "stable+prerelease" : "stable").formatted(Formatting.GRAY));
+        sendKeyValue("current_mod_version", Text.literal(runtime.runtimeModVersion()).formatted(Formatting.GRAY));
+        sendKeyValue("minecraft_version", Text.literal(runtime.runtimeMinecraftVersion()).formatted(Formatting.GRAY));
+        sendKeyValue("last_check", Text.literal(runtime.autoUpdateLastCheckAt()).formatted(Formatting.GRAY));
+        sendKeyValue("last_result", Text.literal(runtime.autoUpdateLastResult()).formatted(Formatting.GRAY));
+        sendKeyValue("pending_version", Text.literal(runtime.autoUpdatePendingVersion()).formatted(Formatting.GRAY));
+        sendKeyValue("check_in_progress", yesNoText(runtime.updateCheckInProgress()));
+        sendKeyValue("apply_in_progress", yesNoText(runtime.updateApplyInProgress()));
+
+        String releaseUrl = runtime.autoUpdatePendingReleaseUrl();
+        if (!"n/a".equals(releaseUrl)) {
+            sendClientMessage(Text.literal("pending release: ").formatted(Formatting.GRAY)
+                .append(linkText("[View Release]", releaseUrl, "Open pending release page")));
+        }
+        return 1;
+    }
+
+    private static int runUpdateCheck() {
+        ReporterRuntime.UpdateCheckStartResult result = runtime.requestUpdateCheck();
+        return switch (result) {
+            case STARTED -> {
+                sendClientMessage(Text.literal("checking for Iris updates...").formatted(Formatting.GRAY));
+                yield 1;
+            }
+            case ALREADY_RUNNING -> {
+                sendClientMessage(Text.literal("update check already in progress.").formatted(Formatting.YELLOW));
+                yield 0;
+            }
+            case INVALID_REPO -> {
+                sendClientMessage(Text.literal("update repo is invalid: ").formatted(Formatting.RED)
+                    .append(Text.literal(runtime.autoUpdateRepo()).formatted(Formatting.GOLD)));
+                yield 0;
+            }
+        };
+    }
+
+    private static int runUpdateApply() {
+        ReporterRuntime.UpdateApplyStartResult result = runtime.requestUpdateApply();
+        return switch (result) {
+            case STARTED -> {
+                sendClientMessage(Text.literal("downloading and applying Iris update...").formatted(Formatting.GRAY));
+                yield 1;
+            }
+            case ALREADY_RUNNING -> {
+                sendClientMessage(Text.literal("update apply already in progress.").formatted(Formatting.YELLOW));
+                yield 0;
+            }
+            case NO_PENDING_UPDATE -> {
+                sendClientMessage(Text.literal("no pending update. run ").formatted(Formatting.YELLOW)
+                    .append(commandText("/" + ROOT_COMMAND + " update check"))
+                    .append(Text.literal(" first.").formatted(Formatting.YELLOW)));
+                yield 0;
+            }
+            case INVALID_ASSET_URL -> {
+                sendClientMessage(Text.literal("pending update URL is invalid; run ").formatted(Formatting.RED)
+                    .append(commandText("/" + ROOT_COMMAND + " update check"))
+                    .append(Text.literal(" again.").formatted(Formatting.RED)));
+                yield 0;
+            }
+        };
+    }
+
+    private static int setAutoUpdate(boolean enabled) {
+        boolean changed = runtime.setAutoUpdateEnabled(enabled);
+        if (!changed) {
+            sendClientMessage(Text.literal("auto update unchanged: ").formatted(Formatting.GRAY)
+                .append(onOffText(enabled)));
+            return 1;
+        }
+
+        sendClientMessage(Text.literal("auto update ").formatted(Formatting.GRAY)
+            .append(Text.literal(enabled ? "enabled" : "disabled")
+                .formatted(enabled ? Formatting.GREEN : Formatting.RED)));
+        if (enabled) {
+            sendClientMessage(Text.literal("use ").formatted(Formatting.GRAY)
+                .append(commandText("/" + ROOT_COMMAND + " update check"))
+                .append(Text.literal(" to run a manual check now.").formatted(Formatting.GRAY)));
+        }
         return 1;
     }
 
@@ -393,6 +501,80 @@ public final class IrisReporterClient implements ClientModInitializer {
             out.append(String.format(Locale.ROOT, "U+%04X", cp));
         });
         return out.toString();
+    }
+
+    private static void flushUpdateNotifications() {
+        if (runtime == null) {
+            return;
+        }
+        ReporterRuntime.UpdateNotification notification;
+        while ((notification = runtime.pollUpdateNotification()) != null) {
+            handleUpdateNotification(notification);
+        }
+    }
+
+    private static void handleUpdateNotification(ReporterRuntime.UpdateNotification notification) {
+        if (notification == null) {
+            return;
+        }
+        switch (notification.kind()) {
+            case UPDATE_AVAILABLE -> {
+                sendClientMessage(Text.literal("new Iris update available: ").formatted(Formatting.YELLOW)
+                    .append(Text.literal(notification.latestVersion()).formatted(Formatting.GOLD))
+                    .append(Text.literal(" (current ").formatted(Formatting.GRAY))
+                    .append(Text.literal(notification.currentVersion()).formatted(Formatting.DARK_GRAY))
+                    .append(Text.literal(")").formatted(Formatting.GRAY)));
+
+                MutableText actions = Text.literal("• ").formatted(Formatting.DARK_GRAY)
+                    .append(commandButtonText("[Update Now]", "/" + ROOT_COMMAND + " update apply", "Download and replace the Iris jar"));
+                if (notification.releaseUrl() != null && !notification.releaseUrl().isBlank()) {
+                    actions.append(Text.literal(" ").formatted(Formatting.DARK_GRAY))
+                        .append(linkText("[View Release]", notification.releaseUrl(), "Open release page"));
+                }
+                sendClientMessage(actions);
+            }
+            case UPDATE_UP_TO_DATE -> sendClientMessage(Text.literal("Iris is up to date (").formatted(Formatting.GRAY)
+                .append(Text.literal(notification.currentVersion()).formatted(Formatting.GREEN))
+                .append(Text.literal(").").formatted(Formatting.GRAY)));
+            case UPDATE_NO_COMPATIBLE_RELEASE -> sendClientMessage(Text.literal("no newer compatible Iris jar found for Minecraft ")
+                .formatted(Formatting.YELLOW)
+                .append(Text.literal(runtime.runtimeMinecraftVersion()).formatted(Formatting.GOLD))
+                .append(Text.literal(".").formatted(Formatting.YELLOW)));
+            case UPDATE_CHECK_FAILED -> sendClientMessage(Text.literal("update check failed: ").formatted(Formatting.RED)
+                .append(Text.literal(notification.reason() == null ? "unknown" : notification.reason())
+                    .formatted(Formatting.GOLD)));
+            case UPDATE_APPLY_SUCCESS -> sendClientMessage(Text.literal("Iris update applied (").formatted(Formatting.GREEN)
+                .append(Text.literal(notification.latestVersion() == null ? "unknown" : notification.latestVersion())
+                    .formatted(Formatting.AQUA))
+                .append(Text.literal("). Restart Minecraft to load it.").formatted(Formatting.GREEN)));
+            case UPDATE_APPLY_FAILED -> sendClientMessage(Text.literal("Iris update failed: ").formatted(Formatting.RED)
+                .append(Text.literal(notification.reason() == null ? "unknown" : notification.reason())
+                    .formatted(Formatting.GOLD)));
+        }
+    }
+
+    private static Text commandButtonText(String label, String command, String hover) {
+        return Text.literal(label)
+            .styled(style -> style
+                .withColor(Formatting.GREEN)
+                .withUnderline(true)
+                .withClickEvent(new ClickEvent.RunCommand(command))
+                .withHoverEvent(new HoverEvent.ShowText(Text.literal(hover))));
+    }
+
+    private static Text linkText(String label, String url, String hover) {
+        URI uri;
+        try {
+            uri = URI.create(url);
+        } catch (IllegalArgumentException e) {
+            return Text.literal(label).formatted(Formatting.AQUA);
+        }
+        return Text.literal(label)
+            .styled(style -> style
+                .withColor(Formatting.AQUA)
+                .withUnderline(true)
+                .withClickEvent(new ClickEvent.OpenUrl(uri))
+                .withHoverEvent(new HoverEvent.ShowText(Text.literal(hover))));
     }
 
     private static void sendClientMessage(String text) {
