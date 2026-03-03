@@ -17,6 +17,14 @@ public final class ReporterConfig {
     public String autoUpdateLastResult = "never";
     public String autoUpdatePendingVersion;
     public String autoUpdatePendingAssetUrl;
+    public String autoUpdatePendingAssetSha256;
+    public String autoUpdateApplyState = "idle";
+    public String autoUpdateJobId;
+    public String autoUpdateStagedPath;
+    public String autoUpdateStagedSha256;
+    public String autoUpdateLastApplyReason = "never";
+    public String autoUpdateLastApplyAt;
+    public long autoUpdateHelperDeadlineMs = 1_200_000L;
 
     public boolean shareOwner = true;
     public boolean shareHeadquarters = true;

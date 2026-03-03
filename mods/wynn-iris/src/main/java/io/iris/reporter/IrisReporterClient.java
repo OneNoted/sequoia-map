@@ -268,6 +268,9 @@ public final class IrisReporterClient implements ClientModInitializer {
         sendKeyValue("last_check", Text.literal(runtime.autoUpdateLastCheckAt()).formatted(Formatting.GRAY));
         sendKeyValue("last_result", Text.literal(runtime.autoUpdateLastResult()).formatted(Formatting.GRAY));
         sendKeyValue("pending_version", Text.literal(runtime.autoUpdatePendingVersion()).formatted(Formatting.GRAY));
+        sendKeyValue("apply_state", Text.literal(runtime.autoUpdateApplyState()).formatted(Formatting.GRAY));
+        sendKeyValue("last_apply_reason", Text.literal(runtime.autoUpdateLastApplyReason()).formatted(Formatting.GRAY));
+        sendKeyValue("last_apply_at", Text.literal(runtime.autoUpdateLastApplyAt()).formatted(Formatting.GRAY));
         sendKeyValue("check_in_progress", yesNoText(runtime.updateCheckInProgress()));
         sendKeyValue("apply_in_progress", yesNoText(runtime.updateApplyInProgress()));
 
@@ -302,7 +305,7 @@ public final class IrisReporterClient implements ClientModInitializer {
         ReporterRuntime.UpdateApplyStartResult result = runtime.requestUpdateApply();
         return switch (result) {
             case STARTED -> {
-                sendClientMessage(Text.literal("downloading and applying Iris update...").formatted(Formatting.GRAY));
+                sendClientMessage(Text.literal("staging Iris update for next launch...").formatted(Formatting.GRAY));
                 yield 1;
             }
             case ALREADY_RUNNING -> {
@@ -317,6 +320,12 @@ public final class IrisReporterClient implements ClientModInitializer {
             }
             case INVALID_ASSET_URL -> {
                 sendClientMessage(Text.literal("pending update URL is invalid; run ").formatted(Formatting.RED)
+                    .append(commandText("/" + ROOT_COMMAND + " update check"))
+                    .append(Text.literal(" again.").formatted(Formatting.RED)));
+                yield 0;
+            }
+            case INVALID_PENDING_HASH -> {
+                sendClientMessage(Text.literal("pending update hash missing or invalid; run ").formatted(Formatting.RED)
                     .append(commandText("/" + ROOT_COMMAND + " update check"))
                     .append(Text.literal(" again.").formatted(Formatting.RED)));
                 yield 0;
@@ -527,7 +536,7 @@ public final class IrisReporterClient implements ClientModInitializer {
                     .append(Text.literal(")").formatted(Formatting.GRAY)));
 
                 MutableText actions = Text.literal("• ").formatted(Formatting.DARK_GRAY)
-                    .append(commandButtonText("[Update Now]", "/" + ROOT_COMMAND + " update apply", "Download and replace the Iris jar"));
+                    .append(commandButtonText("[Update Now]", "/" + ROOT_COMMAND + " update apply", "Stage update and install after game exit"));
                 if (notification.releaseUrl() != null && !notification.releaseUrl().isBlank()) {
                     actions.append(Text.literal(" ").formatted(Formatting.DARK_GRAY))
                         .append(linkText("[View Release]", notification.releaseUrl(), "Open release page"));
@@ -544,6 +553,8 @@ public final class IrisReporterClient implements ClientModInitializer {
             case UPDATE_CHECK_FAILED -> sendClientMessage(Text.literal("update check failed: ").formatted(Formatting.RED)
                 .append(Text.literal(notification.reason() == null ? "unknown" : notification.reason())
                     .formatted(Formatting.GOLD)));
+            case UPDATE_APPLY_STAGED -> sendClientMessage(Text.literal("Iris update staged. ").formatted(Formatting.YELLOW)
+                .append(Text.literal("Close Minecraft to finish install, then launch again.").formatted(Formatting.GRAY)));
             case UPDATE_APPLY_SUCCESS -> sendClientMessage(Text.literal("Iris update applied (").formatted(Formatting.GREEN)
                 .append(Text.literal(notification.latestVersion() == null ? "unknown" : notification.latestVersion())
                     .formatted(Formatting.AQUA))

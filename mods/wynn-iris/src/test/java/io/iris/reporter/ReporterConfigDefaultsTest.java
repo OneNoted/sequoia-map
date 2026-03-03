@@ -33,5 +33,8 @@ public class ReporterConfigDefaultsTest {
         assertEquals("OneNoted/sequoia-map", config.autoUpdateRepo);
         assertFalse(config.autoUpdateIncludePrerelease);
         assertEquals("never", config.autoUpdateLastResult);
+        assertEquals("idle", config.autoUpdateApplyState);
+        assertEquals("never", config.autoUpdateLastApplyReason);
+        assertEquals(1_200_000L, config.autoUpdateHelperDeadlineMs);
     }
 }

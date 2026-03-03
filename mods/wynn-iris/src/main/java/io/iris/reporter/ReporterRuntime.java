@@ -45,7 +45,8 @@ public final class ReporterRuntime {
         STARTED,
         ALREADY_RUNNING,
         NO_PENDING_UPDATE,
-        INVALID_ASSET_URL
+        INVALID_ASSET_URL,
+        INVALID_PENDING_HASH
     }
 
     public enum UpdateNotificationKind {
@@ -53,6 +54,7 @@ public final class ReporterRuntime {
         UPDATE_UP_TO_DATE,
         UPDATE_NO_COMPATIBLE_RELEASE,
         UPDATE_CHECK_FAILED,
+        UPDATE_APPLY_STAGED,
         UPDATE_APPLY_SUCCESS,
         UPDATE_APPLY_FAILED
     }
@@ -145,6 +147,7 @@ public final class ReporterRuntime {
         this.validityGate = new DataValidityGate(config.resumeStabilizationMs, config.minMovementBlocks);
         this.lastValidityState = validityGate.state();
         this.config.autoUpdateRepo = IrisAutoUpdater.normalizeRepo(this.config.autoUpdateRepo);
+        reconcilePendingUpdateJobOnStartup();
     }
 
     public String statusLine() {
@@ -210,6 +213,34 @@ public final class ReporterRuntime {
             return "none";
         }
         return config.autoUpdatePendingVersion;
+    }
+
+    public String autoUpdateApplyState() {
+        if (config.autoUpdateApplyState == null || config.autoUpdateApplyState.isBlank()) {
+            return "idle";
+        }
+        return config.autoUpdateApplyState;
+    }
+
+    public String autoUpdateLastApplyReason() {
+        if (config.autoUpdateLastApplyReason == null || config.autoUpdateLastApplyReason.isBlank()) {
+            return "never";
+        }
+        return config.autoUpdateLastApplyReason;
+    }
+
+    public String autoUpdateLastApplyAt() {
+        if (config.autoUpdateLastApplyAt == null || config.autoUpdateLastApplyAt.isBlank()) {
+            return "never";
+        }
+        try {
+            Instant parsed = Instant.parse(config.autoUpdateLastApplyAt);
+            String local = STATUS_LOCAL_TIME_FORMATTER.format(parsed.atZone(ZoneId.systemDefault()));
+            long ageMs = Math.max(0L, System.currentTimeMillis() - parsed.toEpochMilli());
+            return local + " (" + formatDuration(ageMs) + " ago)";
+        } catch (Exception ignored) {
+            return config.autoUpdateLastApplyAt;
+        }
     }
 
     public String autoUpdatePendingReleaseUrl() {
@@ -547,6 +578,11 @@ public final class ReporterRuntime {
         if (config.autoUpdatePendingAssetUrl == null || config.autoUpdatePendingAssetUrl.isBlank()) {
             return UpdateApplyStartResult.NO_PENDING_UPDATE;
         }
+        if (config.autoUpdatePendingAssetSha256 == null || config.autoUpdatePendingAssetSha256.isBlank()) {
+            config.autoUpdateLastResult = "update_manifest_asset_hash_missing";
+            markConfigDirty(System.currentTimeMillis());
+            return UpdateApplyStartResult.INVALID_PENDING_HASH;
+        }
         String urlError = IrisAutoUpdater.downloadUrlValidationError(config.autoUpdatePendingAssetUrl);
         if (urlError != null) {
             config.autoUpdateLastResult = urlError;
@@ -555,8 +591,14 @@ public final class ReporterRuntime {
         }
 
         updateApplyTargetVersion = config.autoUpdatePendingVersion;
-        updateApplyInFlight = autoUpdater.applyUpdateAsync(config.autoUpdatePendingAssetUrl);
+        updateApplyInFlight = autoUpdater.applyUpdateAsync(
+            config.autoUpdatePendingAssetUrl,
+            config.autoUpdatePendingAssetSha256,
+            config.autoUpdatePendingVersion,
+            config.autoUpdateHelperDeadlineMs
+        );
         config.autoUpdateLastResult = "applying";
+        config.autoUpdateApplyState = "applying";
         markConfigDirty(System.currentTimeMillis());
         return UpdateApplyStartResult.STARTED;
     }
@@ -632,6 +674,7 @@ public final class ReporterRuntime {
             case UPDATE_AVAILABLE -> {
                 config.autoUpdatePendingVersion = result.latestVersion();
                 config.autoUpdatePendingAssetUrl = result.assetUrl();
+                config.autoUpdatePendingAssetSha256 = result.assetSha256();
                 pendingUpdateReleaseUrl = result.releaseUrl();
                 config.autoUpdateLastResult = "update_available";
                 updateNotifications.addLast(new UpdateNotification(
@@ -699,37 +742,120 @@ public final class ReporterRuntime {
         }
         updateApplyInFlight = null;
 
-        if (result.status() == IrisAutoUpdater.ApplyStatus.APPLIED) {
-            String appliedVersion = updateApplyTargetVersion == null || updateApplyTargetVersion.isBlank()
-                ? "unknown"
-                : updateApplyTargetVersion;
-            clearPendingUpdate();
-            config.autoUpdateLastResult = "apply_success";
-            updateNotifications.addLast(new UpdateNotification(
-                UpdateNotificationKind.UPDATE_APPLY_SUCCESS,
-                RuntimeVersionResolver.currentModVersion(),
-                appliedVersion,
-                null,
-                result.reason()
-            ));
-        } else {
-            config.autoUpdateLastResult = result.reason();
-            updateNotifications.addLast(new UpdateNotification(
-                UpdateNotificationKind.UPDATE_APPLY_FAILED,
-                RuntimeVersionResolver.currentModVersion(),
-                updateApplyTargetVersion,
-                null,
-                result.reason()
-            ));
+        switch (result.status()) {
+            case STAGED -> {
+                config.autoUpdateApplyState = "staged_waiting_for_exit";
+                config.autoUpdateJobId = result.jobId();
+                config.autoUpdateStagedPath = result.stagedPath();
+                config.autoUpdateStagedSha256 = config.autoUpdatePendingAssetSha256;
+                config.autoUpdateLastResult = "update_staged";
+                config.autoUpdateLastApplyReason = result.reason();
+                config.autoUpdateLastApplyAt = Instant.now().toString();
+                updateNotifications.addLast(new UpdateNotification(
+                    UpdateNotificationKind.UPDATE_APPLY_STAGED,
+                    RuntimeVersionResolver.currentModVersion(),
+                    updateApplyTargetVersion,
+                    null,
+                    result.reason()
+                ));
+            }
+            case APPLIED -> {
+                String appliedVersion = updateApplyTargetVersion == null || updateApplyTargetVersion.isBlank()
+                    ? "unknown"
+                    : updateApplyTargetVersion;
+                clearPendingUpdate();
+                clearApplyJobState();
+                config.autoUpdateApplyState = "idle";
+                config.autoUpdateLastResult = "apply_success";
+                config.autoUpdateLastApplyReason = result.reason();
+                config.autoUpdateLastApplyAt = Instant.now().toString();
+                updateNotifications.addLast(new UpdateNotification(
+                    UpdateNotificationKind.UPDATE_APPLY_SUCCESS,
+                    RuntimeVersionResolver.currentModVersion(),
+                    appliedVersion,
+                    null,
+                    result.reason()
+                ));
+            }
+            case FAILED -> {
+                config.autoUpdateApplyState = "failed";
+                config.autoUpdateLastResult = result.reason();
+                config.autoUpdateLastApplyReason = result.reason();
+                config.autoUpdateLastApplyAt = Instant.now().toString();
+                updateNotifications.addLast(new UpdateNotification(
+                    UpdateNotificationKind.UPDATE_APPLY_FAILED,
+                    RuntimeVersionResolver.currentModVersion(),
+                    updateApplyTargetVersion,
+                    null,
+                    result.reason()
+                ));
+            }
         }
         updateApplyTargetVersion = null;
         markConfigDirty(now);
     }
 
+    private void reconcilePendingUpdateJobOnStartup() {
+        if (config.autoUpdateJobId == null || config.autoUpdateJobId.isBlank()) {
+            return;
+        }
+
+        IrisAutoUpdater.ReconcileResult result = autoUpdater.reconcileWindowsJob(config.autoUpdateJobId);
+        switch (result.status()) {
+            case NONE -> {
+                // no-op
+            }
+            case PENDING -> {
+                config.autoUpdateApplyState = "helper_running";
+            }
+            case SUCCEEDED -> {
+                String appliedVersion = config.autoUpdatePendingVersion == null || config.autoUpdatePendingVersion.isBlank()
+                    ? "unknown"
+                    : config.autoUpdatePendingVersion;
+                clearPendingUpdate();
+                clearApplyJobState();
+                config.autoUpdateApplyState = "idle";
+                config.autoUpdateLastResult = "apply_success";
+                config.autoUpdateLastApplyReason = result.reason();
+                config.autoUpdateLastApplyAt = Instant.now().toString();
+                updateNotifications.addLast(new UpdateNotification(
+                    UpdateNotificationKind.UPDATE_APPLY_SUCCESS,
+                    RuntimeVersionResolver.currentModVersion(),
+                    appliedVersion,
+                    null,
+                    result.reason()
+                ));
+                markConfigDirty(System.currentTimeMillis());
+            }
+            case FAILED -> {
+                clearApplyJobState();
+                config.autoUpdateApplyState = "failed";
+                config.autoUpdateLastResult = result.reason();
+                config.autoUpdateLastApplyReason = result.reason();
+                config.autoUpdateLastApplyAt = Instant.now().toString();
+                updateNotifications.addLast(new UpdateNotification(
+                    UpdateNotificationKind.UPDATE_APPLY_FAILED,
+                    RuntimeVersionResolver.currentModVersion(),
+                    config.autoUpdatePendingVersion,
+                    null,
+                    result.reason()
+                ));
+                markConfigDirty(System.currentTimeMillis());
+            }
+        }
+    }
+
     private void clearPendingUpdate() {
         config.autoUpdatePendingVersion = null;
         config.autoUpdatePendingAssetUrl = null;
+        config.autoUpdatePendingAssetSha256 = null;
         pendingUpdateReleaseUrl = null;
+    }
+
+    private void clearApplyJobState() {
+        config.autoUpdateJobId = null;
+        config.autoUpdateStagedPath = null;
+        config.autoUpdateStagedSha256 = null;
     }
 
     private void updateValidityFromClientState(long now) {
