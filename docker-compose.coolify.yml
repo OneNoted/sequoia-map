@@ -11,8 +11,8 @@ services:
     init: true
     stop_grace_period: 60s
     environment:
-      POSTGRES_DB: sequoia
-      POSTGRES_USER: sequoia
+      POSTGRES_DB: ${POSTGRES_DB:-sequoia}
+      POSTGRES_USER: ${POSTGRES_USER:-sequoia}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     mem_limit: 768m
     mem_reservation: 256m
@@ -32,8 +32,8 @@ services:
     init: true
     stop_grace_period: 30s
     environment:
-      DATABASE_URL: postgres://sequoia:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/sequoia
-      RUST_LOG: info
+      DATABASE_URL: postgres://${POSTGRES_USER:-sequoia}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-sequoia}
+      RUST_LOG: ${RUST_LOG:-info}
       DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
       SSE_BROADCAST_BUFFER: ${SSE_BROADCAST_BUFFER:-256}
       INTERNAL_INGEST_TOKEN: ${INTERNAL_INGEST_TOKEN:?INTERNAL_INGEST_TOKEN is required}
@@ -62,15 +62,15 @@ services:
     init: true
     stop_grace_period: 30s
     environment:
-      SEQUOIA_INGEST_BIND: 0.0.0.0:3010
-      SEQUOIA_INGEST_DB_URL: sqlite:///data/sequoia-ingest.db?mode=rwc
-      SEQUOIA_SERVER_URL: http://server:3000
+      SEQUOIA_INGEST_BIND: ${SEQUOIA_INGEST_BIND:-0.0.0.0:3010}
+      SEQUOIA_INGEST_DB_URL: ${SEQUOIA_INGEST_DB_URL:-sqlite:///data/sequoia-ingest.db?mode=rwc}
+      SEQUOIA_SERVER_URL: ${SEQUOIA_SERVER_URL:-http://server:3000}
       SEQUOIA_INTERNAL_INGEST_TOKEN: ${INTERNAL_INGEST_TOKEN:?INTERNAL_INGEST_TOKEN is required}
       INGEST_DEGRADED_SINGLE_REPORTER_ENABLED: ${INGEST_DEGRADED_SINGLE_REPORTER_ENABLED:-true}
       INGEST_API_BODY_LIMIT_BYTES: ${INGEST_API_BODY_LIMIT_BYTES:-2097152}
       INGEST_MAX_REPORTS_PER_BATCH: ${INGEST_MAX_REPORTS_PER_BATCH:-1024}
       INGEST_TRUSTED_PROXY_CIDRS: ${INGEST_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
-      RUST_LOG: info
+      RUST_LOG: ${RUST_LOG:-info}
     mem_limit: 768m
     mem_reservation: 256m
     expose:
@@ -117,10 +117,10 @@ services:
     stop_grace_period: 30s
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: sequoia
-      POSTGRES_USER: sequoia
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-sequoia}
+      POSTGRES_USER: ${POSTGRES_USER:-sequoia}
       BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-6}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
     mem_limit: 512m

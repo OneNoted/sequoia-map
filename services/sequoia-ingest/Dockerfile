@@ -1,6 +1,7 @@
 FROM rust:1.88-bookworm AS build
 
 WORKDIR /app
+COPY Cargo.toml ./
 COPY services/sequoia-ingest/Cargo.toml services/sequoia-ingest/Cargo.lock services/sequoia-ingest/
 COPY shared/ shared/
 COPY services/sequoia-ingest/src/ services/sequoia-ingest/src/
