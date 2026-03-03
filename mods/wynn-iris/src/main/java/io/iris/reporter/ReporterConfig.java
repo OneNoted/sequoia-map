@@ -6,6 +6,9 @@ public final class ReporterConfig {
     public String reporterId;
     public String token;
     public String tokenExpiresAt;
+    public String devicePrivateKeyB64;
+    public String devicePublicKeyB64;
+    public String deviceKeyId;
 
     // Backward-compatible no-op field accepted by ingest for one phase.
     public boolean guildOptIn = false;

@@ -24,6 +24,14 @@ public final class GatewayModels {
         public String minecraft_version;
         public String mod_version;
         public FieldToggles field_toggles;
+        public String challenge_id;
+        public String device_pubkey;
+        public String device_sig;
+        public String mojang_uuid;
+        public String mojang_username;
+        public String server_id;
+        public WorldAttestation world_attestation;
+        public String session_token;
     }
 
     public static final class EnrollResponse {
@@ -38,6 +46,29 @@ public final class GatewayModels {
     public static final class HeartbeatRequest {
         public Boolean guild_opt_in;
         public FieldToggles field_toggles;
+        public WorldAttestation world_attestation;
+        public String session_refresh_token;
+    }
+
+    public static final class AttestChallengeRequest {
+        public String device_pubkey;
+        public String minecraft_version;
+        public String mod_version;
+    }
+
+    public static final class AttestChallengeResponse {
+        public boolean ok;
+        public String challenge_id;
+        public String nonce;
+        public String server_id;
+        public String expires_at;
+    }
+
+    public static final class WorldAttestation {
+        public String server_host;
+        public String validity_state;
+        public String observed_at;
+        public String packet_hint;
     }
 
     public static final class HeartbeatResponse {
@@ -51,6 +82,8 @@ public final class GatewayModels {
 
     public static final class TerritoryBatch {
         public String generated_at;
+        public WorldAttestation world_attestation;
+        public String session_refresh_token;
         public List<TerritoryUpdate> updates = new ArrayList<>();
     }
 

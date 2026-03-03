@@ -21,6 +21,9 @@ public final class ConfigStore {
 
     public static ReporterConfig load() {
         Path path = configPath();
+        if (path == null) {
+            return new ReporterConfig();
+        }
         if (!Files.exists(path)) {
             ReporterConfig defaults = new ReporterConfig();
             save(defaults);
@@ -51,6 +54,9 @@ public final class ConfigStore {
 
     public static void save(ReporterConfig config) {
         Path path = configPath();
+        if (path == null) {
+            return;
+        }
         Path tempPath = path.resolveSibling(path.getFileName().toString() + ".tmp");
         try {
             Files.createDirectories(path.getParent());
@@ -78,6 +84,15 @@ public final class ConfigStore {
     }
 
     private static Path configPath() {
-        return FabricLoader.getInstance().getConfigDir().resolve(CONFIG_FILE_NAME);
+        try {
+            Path configDir = FabricLoader.getInstance().getConfigDir();
+            if (configDir == null) {
+                return null;
+            }
+            return configDir.resolve(CONFIG_FILE_NAME);
+        } catch (RuntimeException e) {
+            IrisReporterClient.LOGGER.debug("Config path unavailable in current runtime", e);
+            return null;
+        }
     }
 }

@@ -140,6 +140,13 @@ public final class ReporterRuntime {
 
     public ReporterRuntime(ReporterConfig config) {
         this.config = config;
+        if (ReporterSecurity.ensureDeviceIdentity(this.config)) {
+            try {
+                ConfigStore.save(this.config);
+            } catch (RuntimeException e) {
+                IrisReporterClient.LOGGER.debug("Reporter config persistence unavailable; continuing with in-memory identity", e);
+            }
+        }
         this.gatewayClient = new GatewayClient();
         this.autoUpdater = new IrisAutoUpdater();
         this.collector = new AdvancementTerritoryCollector();
@@ -528,7 +535,7 @@ public final class ReporterRuntime {
         pollEnroll(now);
         if (tokenMissingOrExpired() && enrollInFlight == null && now - lastEnrollAttemptMs >= ENROLL_RETRY_MS) {
             lastEnrollAttemptMs = now;
-            enrollInFlight = gatewayClient.enrollAsync(config);
+            enrollInFlight = gatewayClient.enrollAsync(config, validityGate.stateId());
             setStatus("enrolling");
         }
 
@@ -550,7 +557,7 @@ public final class ReporterRuntime {
         pollHeartbeat();
         if (heartbeatInFlight == null && now - lastHeartbeatMs >= HEARTBEAT_MS) {
             lastHeartbeatMs = now;
-            heartbeatInFlight = gatewayClient.heartbeatAsync(config);
+            heartbeatInFlight = gatewayClient.heartbeatAsync(config, validityGate.stateId());
         }
         if (config.token == null || config.token.isBlank()) {
             flushConfigIfDue(now);
@@ -1070,7 +1077,11 @@ public final class ReporterRuntime {
         }
         lastUploadDispatchMs = now;
         uploadHeadInFlight = next;
-        uploadInFlight = gatewayClient.submitTerritoryBatchAsync(config, next.territoryBatch);
+        uploadInFlight = gatewayClient.submitTerritoryBatchAsync(
+            config,
+            next.territoryBatch,
+            validityGate.stateId()
+        );
     }
 
     private PendingSubmission nextDispatchableSubmission(long now) {

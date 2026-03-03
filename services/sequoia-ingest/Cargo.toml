@@ -8,7 +8,14 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
+getrandom = "0.2"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["full"] }
+hyper-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sequoia-shared = { path = "../../shared" }
 serde = { version = "1", features = ["derive"] }
