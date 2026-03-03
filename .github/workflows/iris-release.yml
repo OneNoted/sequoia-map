@@ -19,6 +19,9 @@ on:
 permissions:
   contents: read
 
+env:
+  IRIS_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
 jobs:
   build:
     name: Build Iris Jars (${{ matrix.profile }})
@@ -80,10 +83,39 @@ jobs:
             exit 1
           fi
 
+      - name: Install Manifest Tooling
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq openssl
+
+      - name: Generate Signed Update Manifest
+        env:
+          IRIS_MANIFEST_SIGNING_KEY_PEM_B64: ${{ secrets.IRIS_MANIFEST_SIGNING_KEY_PEM_B64 }}
+        run: |
+          if [ -z "${IRIS_MANIFEST_SIGNING_KEY_PEM_B64:-}" ]; then
+            echo "Missing required secret: IRIS_MANIFEST_SIGNING_KEY_PEM_B64"
+            exit 1
+          fi
+
+          ./mods/wynn-iris/scripts/generate_update_manifest.sh dist "${IRIS_RELEASE_TAG}" "${{ github.repository }}"
+
+          key_file="$(mktemp)"
+          echo "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" | base64 -d > "$key_file"
+
+          openssl pkeyutl -sign -rawin -inkey "$key_file" -in dist/iris-update-manifest.json -out dist/iris-update-manifest.sig
+
+          rm -f "$key_file"
+
+      - name: Verify Manifest Artifacts
+        run: |
+          test -s dist/iris-update-manifest.json
+          test -s dist/iris-update-manifest.sig
+
       - name: Create Or Update Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease || false }}
           generate_release_notes: true
-          files: dist/*.jar
+          files: |
+            dist/*.jar
+            dist/iris-update-manifest.json
+            dist/iris-update-manifest.sig

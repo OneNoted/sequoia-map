@@ -162,6 +162,7 @@ Profile definitions are in `profiles/`.
 - releases must include signed updater metadata assets:
   - `iris-update-manifest.json`
   - `iris-update-manifest.sig`
+- GitHub release workflow expects repository secret `IRIS_MANIFEST_SIGNING_KEY_PEM_B64` (base64-encoded Ed25519 private key in PEM format)
 - `-sources.jar` assets are ignored by updater checks
 
 ## Notes
