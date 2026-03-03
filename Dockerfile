@@ -74,7 +74,7 @@ RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registr
 ### Stage 3: Runtime
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
