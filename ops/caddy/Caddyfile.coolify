@@ -1,4 +1,4 @@
-:8080 {
+:80, :8080 {
     encode zstd gzip
 
     @internalIngest path /api/internal/ingest/*
