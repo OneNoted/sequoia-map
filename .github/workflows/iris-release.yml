@@ -103,11 +103,46 @@ jobs:
           ./mods/wynn-iris/scripts/generate_update_manifest.sh dist "${IRIS_RELEASE_TAG}" "${{ github.repository }}"
 
           key_file="$(mktemp)"
-          echo "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" | base64 -d > "$key_file"
+          trap 'rm -f "$key_file"' EXIT
+
+          if printf '%s' "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" | grep -q -- "-----BEGIN .*PRIVATE KEY-----"; then
+            printf '%s\n' "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" > "$key_file"
+          elif ! printf '%s' "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" | base64 --decode > "$key_file" 2>/dev/null; then
+            echo "Invalid IRIS_MANIFEST_SIGNING_KEY_PEM_B64 secret: expected raw PEM or base64-encoded PEM"
+            exit 1
+          fi
+
+          if ! grep -q -- "-----BEGIN .*PRIVATE KEY-----" "$key_file"; then
+            echo "Invalid IRIS_MANIFEST_SIGNING_KEY_PEM_B64 secret: decoded value is not a PEM private key"
+            exit 1
+          fi
+
+          expected_pub_b64="$(
+            awk '
+              /SIGNING_PUBLIC_KEY_BASE64_DER/ { capture=1; next }
+              capture && /"/ {
+                gsub(/^[^"]*"/, "", $0)
+                gsub(/".*$/, "", $0)
+                print $0
+                exit
+              }
+            ' mods/wynn-iris/src/main/java/io/iris/reporter/IrisAutoUpdater.java
+          )"
+          if [ -z "$expected_pub_b64" ]; then
+            echo "Unable to read SIGNING_PUBLIC_KEY_BASE64_DER from IrisAutoUpdater.java"
+            exit 1
+          fi
+
+          derived_pub_b64="$(openssl pkey -in "$key_file" -pubout -outform DER 2>/dev/null | base64 --wrap=0)"
+          if [ "$derived_pub_b64" != "$expected_pub_b64" ]; then
+            echo "Signing key mismatch: secret key does not match updater public key in IrisAutoUpdater.java"
+            exit 1
+          fi
 
           openssl pkeyutl -sign -rawin -inkey "$key_file" -in dist/iris-update-manifest.json -out dist/iris-update-manifest.sig
 
           rm -f "$key_file"
+          trap - EXIT
 
       - name: Verify Manifest Artifacts
         run: |
