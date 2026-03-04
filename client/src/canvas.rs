@@ -43,6 +43,10 @@ const TRACKPAD_LINE_HEIGHT_PX: f64 = 18.0;
 const TRACKPAD_PAGE_HEIGHT_FACTOR: f64 = 0.9;
 const TRACKPAD_ZOOM_GAIN: f64 = 2.35;
 const TRACKPAD_ZOOM_CLAMP: f64 = 280.0;
+const PINCH_LINE_HEIGHT_PX: f64 = 24.0;
+const PINCH_PAGE_HEIGHT_FACTOR: f64 = 1.0;
+const PINCH_ZOOM_GAIN: f64 = 4.2;
+const PINCH_ZOOM_CLAMP: f64 = 420.0;
 
 #[derive(Clone, Copy, Debug)]
 struct WheelSample {
@@ -127,6 +131,33 @@ fn normalize_trackpad_zoom_delta(sample: WheelSample, viewport_height: f64) -> f
         _ => sample.delta_y,
     };
     (raw_pixels * TRACKPAD_ZOOM_GAIN).clamp(-TRACKPAD_ZOOM_CLAMP, TRACKPAD_ZOOM_CLAMP)
+}
+
+fn normalize_pinch_zoom_delta(sample: WheelSample, viewport_height: f64) -> f64 {
+    let raw_pixels = match sample.delta_mode {
+        WHEEL_DELTA_MODE_PIXEL => sample.delta_y,
+        WHEEL_DELTA_MODE_LINE => sample.delta_y * PINCH_LINE_HEIGHT_PX,
+        WHEEL_DELTA_MODE_PAGE => {
+            sample.delta_y * viewport_height.max(1.0) * PINCH_PAGE_HEIGHT_FACTOR
+        }
+        _ => sample.delta_y,
+    };
+    (raw_pixels * PINCH_ZOOM_GAIN).clamp(-PINCH_ZOOM_CLAMP, PINCH_ZOOM_CLAMP)
+}
+
+fn normalize_wheel_zoom_delta(
+    sample: WheelSample,
+    viewport_height: f64,
+    ctrl_pinch: bool,
+    classifier: &mut TrackpadWheelClassifier,
+) -> f64 {
+    if ctrl_pinch {
+        normalize_pinch_zoom_delta(sample, viewport_height)
+    } else if classifier.is_trackpad(sample) {
+        normalize_trackpad_zoom_delta(sample, viewport_height)
+    } else {
+        sample.delta_y
+    }
 }
 
 fn tile_upload_signature(tiles: &[LoadedTile]) -> u64 {
@@ -909,11 +940,13 @@ pub fn MapCanvas() -> impl IntoView {
                 delta_mode: event.delta_mode(),
                 timestamp_ms: now,
             };
-            let zoom_delta = if wheel_classifier.borrow_mut().is_trackpad(sample) {
-                normalize_trackpad_zoom_delta(sample, canvas_h)
-            } else {
-                sample.delta_y
-            };
+            let ctrl_pinch = event.ctrl_key();
+            let zoom_delta = normalize_wheel_zoom_delta(
+                sample,
+                canvas_h,
+                ctrl_pinch,
+                &mut wheel_classifier.borrow_mut(),
+            );
             viewport.update(|vp| vp.zoom_at(zoom_delta, sx, sy));
             if let Some(renderer) = gpu.borrow_mut().as_mut() {
                 renderer.mark_dirty(InvalidationReason::Viewport);
@@ -1051,9 +1084,11 @@ pub fn MapCanvas() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        TRACKPAD_LINE_HEIGHT_PX, TRACKPAD_PAGE_HEIGHT_FACTOR, TRACKPAD_ZOOM_CLAMP,
-        TRACKPAD_ZOOM_GAIN, TrackpadWheelClassifier, WHEEL_DELTA_MODE_LINE, WHEEL_DELTA_MODE_PAGE,
-        WHEEL_DELTA_MODE_PIXEL, WheelSample, normalize_trackpad_zoom_delta,
+        PINCH_LINE_HEIGHT_PX, PINCH_ZOOM_GAIN, TRACKPAD_LINE_HEIGHT_PX,
+        TRACKPAD_PAGE_HEIGHT_FACTOR, TRACKPAD_ZOOM_CLAMP, TRACKPAD_ZOOM_GAIN,
+        TrackpadWheelClassifier, WHEEL_DELTA_MODE_LINE, WHEEL_DELTA_MODE_PAGE,
+        WHEEL_DELTA_MODE_PIXEL, WheelSample, normalize_pinch_zoom_delta,
+        normalize_trackpad_zoom_delta, normalize_wheel_zoom_delta,
     };
 
     fn sample(delta_y: f64, delta_mode: u32, timestamp_ms: f64) -> WheelSample {
@@ -1131,5 +1166,30 @@ mod tests {
         let unclamped = 1000.0 * TRACKPAD_PAGE_HEIGHT_FACTOR * TRACKPAD_ZOOM_GAIN;
         assert!(unclamped > TRACKPAD_ZOOM_CLAMP);
         assert_close(normalized, TRACKPAD_ZOOM_CLAMP);
+    }
+
+    #[test]
+    fn ctrl_wheel_uses_pinch_normalization() {
+        let mut classifier = TrackpadWheelClassifier::default();
+        let s = sample(0.5, WHEEL_DELTA_MODE_LINE, 0.0);
+        let normalized = normalize_wheel_zoom_delta(s, 800.0, true, &mut classifier);
+        let expected = 0.5 * PINCH_LINE_HEIGHT_PX * PINCH_ZOOM_GAIN;
+        assert_close(normalized, expected);
+    }
+
+    #[test]
+    fn discrete_mouse_wheel_keeps_legacy_delta_without_ctrl() {
+        let mut classifier = TrackpadWheelClassifier::default();
+        let s = sample(120.0, WHEEL_DELTA_MODE_LINE, 0.0);
+        let normalized = normalize_wheel_zoom_delta(s, 800.0, false, &mut classifier);
+        assert_close(normalized, 120.0);
+    }
+
+    #[test]
+    fn pinch_normalization_scales_line_mode_aggressively() {
+        let s = sample(-0.75, WHEEL_DELTA_MODE_LINE, 0.0);
+        let normalized = normalize_pinch_zoom_delta(s, 1000.0);
+        let expected = -0.75 * PINCH_LINE_HEIGHT_PX * PINCH_ZOOM_GAIN;
+        assert_close(normalized, expected);
     }
 }
