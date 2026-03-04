@@ -103,13 +103,12 @@ public final class ReporterSecurity {
             return new SessionProof(null, null, null);
         }
         String username = asString(invoke(session, "getUsername"));
+        String sessionId = asString(invoke(session, "getSessionId"));
         String token = asString(invoke(session, "getAccessToken"));
         if (token == null || token.isBlank()) {
             token = asString(readField(session, "accessToken"));
         }
-        if (token == null || token.isBlank()) {
-            token = parseAccessTokenFromSessionId(asString(invoke(session, "getSessionId")));
-        }
+        token = normalizeSessionAccessToken(token, sessionId);
 
         String uuid = asString(invoke(session, "getUuidOrNull"));
         if (uuid == null || uuid.isBlank()) {
@@ -200,6 +199,19 @@ public final class ReporterSecurity {
             return null;
         }
         return token;
+    }
+
+    static String normalizeSessionAccessToken(String token, String sessionId) {
+        String normalized = token == null ? null : token.trim();
+        String parsedFromSessionId = parseAccessTokenFromSessionId(sessionId);
+        if (normalized == null || normalized.isBlank() || "0".equals(normalized) || "null".equalsIgnoreCase(normalized)) {
+            return parsedFromSessionId;
+        }
+        String parsedFromToken = parseAccessTokenFromSessionId(normalized);
+        if (parsedFromToken != null && !parsedFromToken.isBlank()) {
+            return parsedFromToken;
+        }
+        return normalized;
     }
 
     private static String asString(Object value) {
