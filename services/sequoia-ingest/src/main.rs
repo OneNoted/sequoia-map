@@ -1677,7 +1677,11 @@ async fn maybe_refresh_session_attestation(
             update_reporter_last_attested(state, &authed.reporter_id, now).await;
             Ok(())
         }
-        SessionVerifyResult::Invalid => Err(StatusCode::UNAUTHORIZED),
+        SessionVerifyResult::Invalid => {
+            let mut fail_open = state.session_verifier_fail_open_until.write().await;
+            *fail_open = None;
+            Err(StatusCode::UNAUTHORIZED)
+        }
         SessionVerifyResult::Unavailable => {
             let mut fail_open = state.session_verifier_fail_open_until.write().await;
             if session_verifier_within_fail_open_grace(
