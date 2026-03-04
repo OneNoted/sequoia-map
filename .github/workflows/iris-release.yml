@@ -151,6 +151,19 @@ jobs:
           fi
 
           if [ "$parsed_key" -eq 0 ]; then
+            contains_begin="no"
+            if printf '%s' "$secret_value" | grep -q -- "-----BEGIN .*PRIVATE KEY-----"; then
+              contains_begin="yes"
+            fi
+            contains_begin_unescaped="no"
+            if printf '%b' "$secret_value" | grep -q -- "-----BEGIN .*PRIVATE KEY-----"; then
+              contains_begin_unescaped="yes"
+            fi
+            literal_mask="no"
+            if [ "$secret_value" = "***" ]; then
+              literal_mask="yes"
+            fi
+            echo "Secret parse diagnostics: len=${#secret_value} normalized_len=${#normalized_b64} contains_begin=${contains_begin} contains_begin_unescaped=${contains_begin_unescaped} literal_mask=${literal_mask}"
             echo "Invalid IRIS_MANIFEST_SIGNING_KEY_PEM_B64 secret: expected raw PEM or base64-encoded PEM"
             exit 1
           fi
