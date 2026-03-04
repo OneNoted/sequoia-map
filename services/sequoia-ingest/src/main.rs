@@ -205,7 +205,7 @@ impl Config {
                 &std::env::var("INGEST_TRUSTED_PROXY_CIDRS").unwrap_or_default(),
             ),
             auth_required: read_bool_env("INGEST_AUTH_REQUIRED", true),
-            single_reporter_mode: read_bool_env("INGEST_SINGLE_REPORTER_MODE", true),
+            single_reporter_mode: read_bool_env("INGEST_SINGLE_REPORTER_MODE", false),
             require_session_proof: read_bool_env("INGEST_REQUIRE_SESSION_PROOF", true),
             session_refresh_interval_secs: std::env::var("INGEST_SESSION_REFRESH_INTERVAL_SECS")
                 .ok()
