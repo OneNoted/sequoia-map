@@ -1671,6 +1671,9 @@ async fn maybe_refresh_session_attestation(
         .await
     {
         SessionVerifyResult::Verified => {
+            let mut fail_open = state.session_verifier_fail_open_until.write().await;
+            *fail_open = None;
+            drop(fail_open);
             update_reporter_last_attested(state, &authed.reporter_id, now).await;
             Ok(())
         }
