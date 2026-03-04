@@ -1735,9 +1735,33 @@ fn GuildPanel() -> impl IntoView {
                             view! { <div style=swatch /> }
                         })
                     }}
-                    <span style="font-family: 'Silkscreen', monospace; font-size: 1.188rem; color: #e2e0d8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                        {move || selected_guild.get().unwrap_or_default()}
-                    </span>
+                    {move || {
+                        let guild_name = selected_guild.get().unwrap_or_default();
+                        let encoded = js_sys::encode_uri_component(&guild_name)
+                            .as_string()
+                            .unwrap_or_else(|| guild_name.clone());
+                        let stats_url = format!("https://wynncraft.com/stats/guild/{}", encoded);
+                        view! {
+                            <a href=stats_url
+                               target="_blank"
+                               rel="noopener noreferrer"
+                               title="Open Wynncraft guild stats"
+                               style="font-family: 'Silkscreen', monospace; font-size: 1.188rem; color: #e2e0d8; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s;"
+                               on:mouseenter=|e| {
+                                   if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                                       el.style().set_property("color", "#50c878").ok();
+                                   }
+                               }
+                               on:mouseleave=|e| {
+                                   if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                                       el.style().set_property("color", "#e2e0d8").ok();
+                                   }
+                               }
+                            >
+                                {guild_name}
+                            </a>
+                        }
+                    }}
                 </div>
 
                 // Prefix · Level
