@@ -105,15 +105,53 @@ jobs:
           key_file="$(mktemp)"
           trap 'rm -f "$key_file"' EXIT
 
-          if printf '%s' "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" | grep -q -- "-----BEGIN .*PRIVATE KEY-----"; then
-            printf '%s\n' "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" > "$key_file"
-          elif ! printf '%s' "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" | base64 --decode > "$key_file" 2>/dev/null; then
-            echo "Invalid IRIS_MANIFEST_SIGNING_KEY_PEM_B64 secret: expected raw PEM or base64-encoded PEM"
-            exit 1
+          secret_value="$(printf '%s' "$IRIS_MANIFEST_SIGNING_KEY_PEM_B64" | tr -d '\r')"
+          secret_value="${secret_value#\"}"
+          secret_value="${secret_value%\"}"
+          parsed_key=0
+
+          try_pem_candidate() {
+            local candidate="$1"
+            if ! printf '%s' "$candidate" | grep -q -- "-----BEGIN .*PRIVATE KEY-----"; then
+              return 1
+            fi
+            printf '%s\n' "$candidate" > "$key_file"
+            if openssl pkey -in "$key_file" -noout >/dev/null 2>&1; then
+              return 0
+            fi
+            return 1
+          }
+
+          if try_pem_candidate "$secret_value"; then
+            parsed_key=1
           fi
 
-          if ! grep -q -- "-----BEGIN .*PRIVATE KEY-----" "$key_file"; then
-            echo "Invalid IRIS_MANIFEST_SIGNING_KEY_PEM_B64 secret: decoded value is not a PEM private key"
+          if [ "$parsed_key" -eq 0 ] && try_pem_candidate "$(printf '%b' "$secret_value")"; then
+            parsed_key=1
+          fi
+
+          if [ "$parsed_key" -eq 0 ]; then
+            normalized_b64="$(printf '%s' "$secret_value" | tr -d ' \t\n\r')"
+            if printf '%s' "$normalized_b64" | base64 --decode > "$key_file" 2>/dev/null && openssl pkey -in "$key_file" -noout >/dev/null 2>&1; then
+              parsed_key=1
+            else
+              normalized_b64_url="$(printf '%s' "$normalized_b64" | tr '_-' '/+')"
+              remainder=$(( ${#normalized_b64_url} % 4 ))
+              if [ "$remainder" -eq 2 ]; then
+                normalized_b64_url="${normalized_b64_url}=="
+              elif [ "$remainder" -eq 3 ]; then
+                normalized_b64_url="${normalized_b64_url}="
+              elif [ "$remainder" -eq 1 ]; then
+                normalized_b64_url=""
+              fi
+              if [ -n "$normalized_b64_url" ] && printf '%s' "$normalized_b64_url" | base64 --decode > "$key_file" 2>/dev/null && openssl pkey -in "$key_file" -noout >/dev/null 2>&1; then
+                parsed_key=1
+              fi
+            fi
+          fi
+
+          if [ "$parsed_key" -eq 0 ]; then
+            echo "Invalid IRIS_MANIFEST_SIGNING_KEY_PEM_B64 secret: expected raw PEM or base64-encoded PEM"
             exit 1
           fi
 
