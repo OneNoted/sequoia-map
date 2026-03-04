@@ -1,8 +1,9 @@
 package io.iris.reporter;
 
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ServerInfo;
+import net.minecraft.client.session.Session;
 
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -98,23 +99,19 @@ public final class ReporterSecurity {
         if (client == null) {
             return new SessionProof(null, null, null);
         }
-        Object session = invoke(client, "getSession");
+        Session session = client.getSession();
         if (session == null) {
             return new SessionProof(null, null, null);
         }
-        String username = asString(invoke(session, "getUsername"));
-        String sessionId = asString(invoke(session, "getSessionId"));
-        String token = asString(invoke(session, "getAccessToken"));
-        if (token == null || token.isBlank()) {
-            token = asString(readField(session, "accessToken"));
-        }
+        String username = asString(session.getUsername());
+        String sessionId = asString(session.getSessionId());
+        String token = asString(session.getAccessToken());
         token = normalizeSessionAccessToken(token, sessionId);
 
-        String uuid = asString(invoke(session, "getUuidOrNull"));
-        if (uuid == null || uuid.isBlank()) {
-            uuid = asString(invoke(session, "getUuid"));
+        String uuid = null;
+        if (session.getUuidOrNull() != null) {
+            uuid = normalizeUuid(session.getUuidOrNull().toString());
         }
-        uuid = normalizeUuid(uuid);
 
         return new SessionProof(uuid, username, token);
     }
@@ -159,11 +156,11 @@ public final class ReporterSecurity {
         if (client == null) {
             return "";
         }
-        Object serverEntry = invoke(client, "getCurrentServerEntry");
+        ServerInfo serverEntry = client.getCurrentServerEntry();
         if (serverEntry == null) {
             return "";
         }
-        String address = asString(readField(serverEntry, "address"));
+        String address = asString(serverEntry.address);
         if (address == null || address.isBlank()) {
             return "";
         }
@@ -222,29 +219,4 @@ public final class ReporterSecurity {
         return out == null || out.isBlank() ? null : out;
     }
 
-    private static Object invoke(Object target, String methodName) {
-        if (target == null || methodName == null) {
-            return null;
-        }
-        try {
-            Method method = target.getClass().getMethod(methodName);
-            method.setAccessible(true);
-            return method.invoke(target);
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
-    private static Object readField(Object target, String fieldName) {
-        if (target == null || fieldName == null) {
-            return null;
-        }
-        try {
-            var field = target.getClass().getField(fieldName);
-            field.setAccessible(true);
-            return field.get(target);
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
 }
