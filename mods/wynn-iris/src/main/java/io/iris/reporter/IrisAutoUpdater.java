@@ -47,6 +47,7 @@ public final class IrisAutoUpdater {
     private static final Gson GSON = new GsonBuilder().create();
     private static final Set<String> ALLOWED_DOWNLOAD_HOSTS = Set.of(
         "github.com",
+        "release-assets.githubusercontent.com",
         "objects.githubusercontent.com",
         "github-releases.githubusercontent.com"
     );

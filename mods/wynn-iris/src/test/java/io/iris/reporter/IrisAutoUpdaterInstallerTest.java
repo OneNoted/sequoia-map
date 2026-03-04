@@ -62,6 +62,14 @@ public class IrisAutoUpdaterInstallerTest {
     }
 
     @Test
+    void allowsTrustedGitHubDownloadHosts() {
+        assertNull(IrisAutoUpdater.downloadUrlValidationError("https://github.com/OneNoted/sequoia-map/releases/download/iris-v0.1.1/wynn-iris.jar"));
+        assertNull(IrisAutoUpdater.downloadUrlValidationError("https://release-assets.githubusercontent.com/wynn-iris.jar"));
+        assertNull(IrisAutoUpdater.downloadUrlValidationError("https://objects.githubusercontent.com/wynn-iris.jar"));
+        assertNull(IrisAutoUpdater.downloadUrlValidationError("https://github-releases.githubusercontent.com/wynn-iris.jar"));
+    }
+
+    @Test
     void resolveCurrentJarPathRejectsDevDirectoryLocation() {
         Path classesDir = tempDir.resolve("classes");
         try {
