@@ -155,7 +155,7 @@ Profile definitions are in `profiles/`.
 ## Release Tags
 
 - updater checks GitHub releases in `OneNoted/sequoia-map` by default
-- stable tags must follow `iris-vX.Y.Z` (for example `iris-v0.1.2`)
+- stable tags must follow `iris-vX.Y.Z` (for example `iris-v0.1.3`)
 - release assets must include versioned profile jars like:
   - `wynn-iris-mc1.21.11-<version>.jar`
   - `wynn-iris-mc1.21.4-<version>.jar`
