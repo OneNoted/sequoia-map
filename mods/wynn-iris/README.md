@@ -165,6 +165,7 @@ Profile definitions are in `profiles/`.
 - GitHub release workflow expects repository secret `IRIS_MANIFEST_SIGNING_KEY_PEM_B64` (raw PEM or base64-encoded Ed25519 private key in PEM format)
 - workflow tolerates common secret formats (trimmed/quoted values, escaped newlines, url-safe base64)
 - release job validates that the secret key matches `SIGNING_PUBLIC_KEY_BASE64_DER` in `IrisAutoUpdater.java`
+- for first-time secure release setup, derive and set `SIGNING_PUBLIC_KEY_BASE64_DER` from your private key before tagging
 - `-sources.jar` assets are ignored by updater checks
 
 ## Notes

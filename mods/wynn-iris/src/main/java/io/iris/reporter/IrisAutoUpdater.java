@@ -57,7 +57,7 @@ public final class IrisAutoUpdater {
     private static final String MANIFEST_ASSET_NAME = "iris-update-manifest.json";
     private static final String MANIFEST_SIGNATURE_ASSET_NAME = "iris-update-manifest.sig";
     private static final String SIGNING_PUBLIC_KEY_BASE64_DER =
-        "MCowBQYDK2VwAyEABt4dChsYMBiQD8fvSDHqQSL1hJAbB6KWpE6JiSaFCaw=";
+        "MCowBQYDK2VwAyEAdkcGNPvN4S2ixBsYjTGJ+4Ue3suPn0Dvo6zuMCTfCCc=";
     private static final long DEFAULT_HELPER_DEADLINE_MS = 20L * 60L * 1000L;
 
     private final HttpClient httpClient;
