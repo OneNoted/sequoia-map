@@ -3,6 +3,7 @@ package io.iris.reporter;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -29,6 +30,20 @@ public class IrisAutoUpdaterVersionTest {
         assertNotNull(left);
         assertNotNull(right);
         assertEquals(0, left.compareTo(right));
+    }
+
+    @Test
+    void manifestVersionAcceptsBuildMetadataWhenReleaseSemverMatches() {
+        IrisAutoUpdater.SemanticVersion releaseVersion = IrisAutoUpdater.parseSemanticVersion("0.1.2");
+        assertNotNull(releaseVersion);
+        assertTrue(IrisAutoUpdater.isManifestVersionCompatible(releaseVersion, "0.1.2+1_21_11"));
+    }
+
+    @Test
+    void manifestVersionRejectsDifferentSemverCore() {
+        IrisAutoUpdater.SemanticVersion releaseVersion = IrisAutoUpdater.parseSemanticVersion("0.1.2");
+        assertNotNull(releaseVersion);
+        assertFalse(IrisAutoUpdater.isManifestVersionCompatible(releaseVersion, "0.1.3+1_21_11"));
     }
 
     @Test

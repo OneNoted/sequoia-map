@@ -317,7 +317,8 @@ public final class IrisAutoUpdater {
             throw new UpdaterException(ApplyResultCode.UPDATE_MANIFEST_ASSET_HASH_INVALID.code());
         }
 
-        if (manifestJar.version() != null && !manifestJar.version().isBlank() && !releaseVersion.toString().equals(manifestJar.version())) {
+        if (manifestJar.version() != null && !manifestJar.version().isBlank()
+            && !isManifestVersionCompatible(releaseVersion, manifestJar.version())) {
             throw new UpdaterException(ApplyResultCode.UPDATE_MANIFEST_ASSET_VERSION_MISMATCH.code());
         }
 
@@ -747,6 +748,14 @@ public final class IrisAutoUpdater {
         List<String> prereleaseIdentifiers = parsePrereleaseIdentifiers(prerelease);
 
         return new SemanticVersion(major, minor, patch, prereleaseIdentifiers, buildMetadata);
+    }
+
+    static boolean isManifestVersionCompatible(SemanticVersion releaseVersion, String manifestVersion) {
+        if (releaseVersion == null || manifestVersion == null || manifestVersion.isBlank()) {
+            return false;
+        }
+        SemanticVersion parsedManifestVersion = parseSemanticVersion(manifestVersion);
+        return parsedManifestVersion != null && parsedManifestVersion.compareTo(releaseVersion) == 0;
     }
 
     private static List<String> parsePrereleaseIdentifiers(String prerelease) {
