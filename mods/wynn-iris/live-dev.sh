@@ -265,7 +265,7 @@ if [[ -n "$TARGET_MC_VERSION" && -f "profiles/${TARGET_MC_VERSION}.properties" ]
     "-Ploader_version=${loader_version}"
     "-Pfabric_version=${fabric_version}"
     "-Parchives_base_name=wynn-iris-mc${minecraft_version}"
-    "-Pmod_version=0.1.3+${TARGET_MC_VERSION//./_}"
+    "-Pmod_version=0.1.4+${TARGET_MC_VERSION//./_}"
   )
 fi
 

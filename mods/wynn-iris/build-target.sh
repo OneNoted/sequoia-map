@@ -34,4 +34,4 @@ MOD_VERSION_SUFFIX="${TARGET//./_}"
   -Ploader_version="${loader_version}" \
   -Pfabric_version="${fabric_version}" \
   -Parchives_base_name="${BASE_NAME}" \
-  -Pmod_version="0.1.3+${MOD_VERSION_SUFFIX}"
+  -Pmod_version="0.1.4+${MOD_VERSION_SUFFIX}"

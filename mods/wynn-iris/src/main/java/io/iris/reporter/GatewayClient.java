@@ -218,7 +218,12 @@ public final class GatewayClient {
 
         ReporterSecurity.SessionProof sessionProof = ReporterSecurity.captureSessionProof();
         if (!sessionProof.valid()) {
-            return EnrollResult.failed("session_proof_unavailable");
+            IrisReporterClient.LOGGER.warn(
+                "Session proof incomplete during enroll (uuid_present={}, username_present={}, token_present={})",
+                sessionProof.mojangUuid != null && !sessionProof.mojangUuid.isBlank(),
+                sessionProof.mojangUsername != null && !sessionProof.mojangUsername.isBlank(),
+                sessionProof.sessionToken != null && !sessionProof.sessionToken.isBlank()
+            );
         }
         GatewayModels.WorldAttestation worldAttestation = ReporterSecurity.buildWorldAttestation(validityState);
 

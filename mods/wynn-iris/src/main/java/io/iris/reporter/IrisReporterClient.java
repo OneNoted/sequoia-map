@@ -23,7 +23,7 @@ import java.lang.reflect.Constructor;
 import java.util.Locale;
 
 public final class IrisReporterClient implements ClientModInitializer {
-    public static final String MOD_VERSION = "0.1.3";
+    public static final String MOD_VERSION = "0.1.4";
     public static final Logger LOGGER = LoggerFactory.getLogger("wynn-iris");
     private static final String ROOT_COMMAND = "iris";
 
