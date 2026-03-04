@@ -2796,8 +2796,15 @@ async fn initialize_db(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await
         .ok();
+    // SQLite ALTER TABLE cannot reliably add columns with expression defaults
+    // across older database files/runtimes; add plain TEXT and backfill.
+    sqlx::query("ALTER TABLE reporters ADD COLUMN last_attested_at TEXT")
+        .execute(pool)
+        .await
+        .ok();
     sqlx::query(
-        "ALTER TABLE reporters ADD COLUMN last_attested_at TEXT NOT NULL DEFAULT (datetime('now'))",
+        "UPDATE reporters SET last_attested_at = last_seen \
+         WHERE last_attested_at IS NULL OR last_attested_at = ''",
     )
     .execute(pool)
     .await
@@ -3353,7 +3360,7 @@ async fn persist_raw_report(
 mod tests {
     use super::{
         AppState, Config, Metrics, ReporterFieldToggles, ReporterRecord, apply_toggle_policy,
-        check_rate_limit, evaluate_territory_claim, normalize_idempotency_key,
+        check_rate_limit, evaluate_territory_claim, initialize_db, normalize_idempotency_key,
         normalize_persisted_token, normalize_territory_name, parse_trusted_proxy_cidrs,
         quorum_satisfied, resolve_client_ip, session_verifier_within_fail_open_grace,
         territory_claim_hash, territory_idempotency_hash,
@@ -3719,6 +3726,83 @@ mod tests {
     fn parse_trusted_proxy_cidrs_skips_invalid_entries() {
         let parsed = parse_trusted_proxy_cidrs("10.0.0.0/8, not-a-cidr, 192.168.0.0/16");
         assert_eq!(parsed.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn initialize_db_migrates_legacy_reporters_last_attested_at() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("create in-memory sqlite pool");
+
+        sqlx::query(
+            "CREATE TABLE reporters (\
+             reporter_id TEXT PRIMARY KEY,\
+             token TEXT NOT NULL,\
+             token_expires_at TEXT NOT NULL,\
+             guild_opt_in INTEGER NOT NULL DEFAULT 0,\
+             share_owner INTEGER NOT NULL DEFAULT 1,\
+             share_headquarters INTEGER NOT NULL DEFAULT 1,\
+             share_held_resources INTEGER NOT NULL DEFAULT 1,\
+             share_production_rates INTEGER NOT NULL DEFAULT 1,\
+             share_storage_capacity INTEGER NOT NULL DEFAULT 1,\
+             share_defense_tier INTEGER NOT NULL DEFAULT 1,\
+             share_trading_routes INTEGER NOT NULL DEFAULT 1,\
+             device_pubkey_b64 TEXT NOT NULL DEFAULT '',\
+             device_key_id TEXT NOT NULL DEFAULT '',\
+             mojang_uuid TEXT NOT NULL DEFAULT '',\
+             mojang_username TEXT NOT NULL DEFAULT '',\
+             revoked INTEGER NOT NULL DEFAULT 0,\
+             last_seen TEXT NOT NULL,\
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))\
+             )",
+        )
+        .execute(&db)
+        .await
+        .expect("create legacy reporters table");
+
+        let reporter_id = "legacy-reporter-1";
+        let last_seen = "2026-03-04T00:33:10.589551444+00:00";
+        sqlx::query(
+            "INSERT INTO reporters (\
+             reporter_id, token, token_expires_at, guild_opt_in, \
+             share_owner, share_headquarters, share_held_resources, \
+             share_production_rates, share_storage_capacity, share_defense_tier, share_trading_routes, \
+             device_pubkey_b64, device_key_id, mojang_uuid, mojang_username, revoked, last_seen\
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(reporter_id)
+        .bind("legacy-token")
+        .bind("2026-03-05T00:33:10.589551444+00:00")
+        .bind(0_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind(1_i64)
+        .bind("device-key")
+        .bind("device-key-id")
+        .bind("uuid")
+        .bind("username")
+        .bind(0_i64)
+        .bind(last_seen)
+        .execute(&db)
+        .await
+        .expect("insert legacy reporter row");
+
+        initialize_db(&db).await.expect("migrate schema");
+
+        let (_last_seen, last_attested_at): (String, String) = sqlx::query_as(
+            "SELECT last_seen, last_attested_at FROM reporters WHERE reporter_id = ?",
+        )
+        .bind(reporter_id)
+        .fetch_one(&db)
+        .await
+        .expect("load migrated reporter");
+        assert_eq!(last_attested_at, last_seen);
     }
 
     #[test]
