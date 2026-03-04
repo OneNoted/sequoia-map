@@ -39,6 +39,8 @@ for jar in "${jars[@]}"; do
   if [[ "$name" =~ wynn-iris-mc([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+\.[0-9]+\.[0-9]+.*)\.jar$ ]]; then
     mc="${BASH_REMATCH[1]}"
     version="${BASH_REMATCH[2]}"
+    # Keep manifest version compatible with strict semver checks in older clients.
+    version="${version%%+*}"
   fi
 
   asset_type="mod"
