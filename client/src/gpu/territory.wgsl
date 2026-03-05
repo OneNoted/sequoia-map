@@ -206,94 +206,379 @@ fn stroke_alpha(dist_px: f32, stroke_px: f32, aa_px: f32) -> f32 {
     return 1.0 - smoothstep(stroke_px - aa_px, stroke_px + aa_px, dist_px);
 }
 
-fn corner_branch_local(
-    local_px: vec2<f32>,
-    arm_px: f32,
-    pad_px: f32,
+fn line_alpha(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, stroke_px: f32, aa_px: f32) -> f32 {
+    let dist = segment_distance_px(p, a, b);
+    return stroke_alpha(dist, stroke_px, aa_px);
+}
+
+fn circle_fill_alpha(p: vec2<f32>, center: vec2<f32>, radius: f32, aa_px: f32) -> f32 {
+    let dist = length(p - center);
+    return 1.0 - smoothstep(radius - aa_px, radius + aa_px, dist);
+}
+
+fn circle_stroke_alpha(
+    p: vec2<f32>,
+    center: vec2<f32>,
+    radius: f32,
     stroke_px: f32,
     aa_px: f32,
 ) -> f32 {
-    let zone = pad_px + arm_px + stroke_px * 2.0;
+    let dist = abs(length(p - center) - radius);
+    return stroke_alpha(dist, stroke_px, aa_px);
+}
+
+fn corner_flourish_local(
+    local_px: vec2<f32>,
+    span_px: f32,
+    inset_px: f32,
+    stroke_px: f32,
+    aa_px: f32,
+) -> f32 {
+    let zone = inset_px + span_px * 1.20 + stroke_px * 3.0;
     if local_px.x > zone || local_px.y > zone {
         return 0.0;
     }
 
-    // Stylized organic corner motif inspired by IMG_1643.png:
-    // two trunk arms with small branching twigs.
-    let left0 = vec2<f32>(pad_px + arm_px * 0.10, pad_px + arm_px * 0.96);
-    let left1 = vec2<f32>(pad_px + arm_px * 0.23, pad_px + arm_px * 0.74);
-    let left2 = vec2<f32>(pad_px + arm_px * 0.48, pad_px + arm_px * 0.53);
-    let join = vec2<f32>(pad_px + arm_px * 0.80, pad_px + arm_px * 0.28);
+    // Corner frame "L"
+    var a = line_alpha(
+        local_px,
+        vec2<f32>(inset_px, inset_px),
+        vec2<f32>(inset_px + span_px * 1.02, inset_px),
+        stroke_px,
+        aa_px,
+    );
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(inset_px, inset_px),
+            vec2<f32>(inset_px, inset_px + span_px * 1.02),
+            stroke_px,
+            aa_px,
+        ),
+    );
 
-    let top0 = vec2<f32>(pad_px + arm_px * 0.96, pad_px + arm_px * 0.10);
-    let top1 = vec2<f32>(pad_px + arm_px * 0.74, pad_px + arm_px * 0.23);
-    let top2 = vec2<f32>(pad_px + arm_px * 0.53, pad_px + arm_px * 0.48);
+    // Main flourish swoops
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.10, inset_px + span_px * 0.95),
+            vec2<f32>(inset_px + span_px * 0.36, inset_px + span_px * 0.64),
+            stroke_px * 0.90,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.36, inset_px + span_px * 0.64),
+            vec2<f32>(inset_px + span_px * 0.74, inset_px + span_px * 0.40),
+            stroke_px * 0.84,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.74, inset_px + span_px * 0.40),
+            vec2<f32>(inset_px + span_px * 1.06, inset_px + span_px * 0.14),
+            stroke_px * 0.74,
+            aa_px,
+        ),
+    );
 
-    var d_main = segment_distance_px(local_px, left0, left1);
-    d_main = min(d_main, segment_distance_px(local_px, left1, left2));
-    d_main = min(d_main, segment_distance_px(local_px, left2, join));
-    d_main = min(d_main, segment_distance_px(local_px, top0, top1));
-    d_main = min(d_main, segment_distance_px(local_px, top1, top2));
-    d_main = min(d_main, segment_distance_px(local_px, top2, join));
+    // Side twigs
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.26, inset_px + span_px * 0.70),
+            vec2<f32>(inset_px + span_px * 0.12, inset_px + span_px * 0.52),
+            stroke_px * 0.58,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.52, inset_px + span_px * 0.53),
+            vec2<f32>(inset_px + span_px * 0.38, inset_px + span_px * 0.34),
+            stroke_px * 0.54,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.84, inset_px + span_px * 0.30),
+            vec2<f32>(inset_px + span_px * 0.69, inset_px + span_px * 0.12),
+            stroke_px * 0.50,
+            aa_px,
+        ),
+    );
 
-    let twig_l1_a = left1;
-    let twig_l1_b = vec2<f32>(pad_px + arm_px * 0.06, pad_px + arm_px * 0.66);
-    let twig_l2_a = left2;
-    let twig_l2_b = vec2<f32>(pad_px + arm_px * 0.30, pad_px + arm_px * 0.34);
-    let twig_t1_a = top1;
-    let twig_t1_b = vec2<f32>(pad_px + arm_px * 0.66, pad_px + arm_px * 0.06);
-    let twig_t2_a = top2;
-    let twig_t2_b = vec2<f32>(pad_px + arm_px * 0.34, pad_px + arm_px * 0.30);
-
-    var d_twig = segment_distance_px(local_px, twig_l1_a, twig_l1_b);
-    d_twig = min(d_twig, segment_distance_px(local_px, twig_l2_a, twig_l2_b));
-    d_twig = min(d_twig, segment_distance_px(local_px, twig_t1_a, twig_t1_b));
-    d_twig = min(d_twig, segment_distance_px(local_px, twig_t2_a, twig_t2_b));
-
-    let main_alpha = stroke_alpha(d_main, stroke_px, aa_px);
-    let twig_alpha = stroke_alpha(d_twig, stroke_px * 0.62, aa_px) * 0.90;
-    return max(main_alpha, twig_alpha);
+    // Curl + dot accents
+    a = max(
+        a,
+        circle_stroke_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.85, inset_px + span_px * 0.84),
+            span_px * 0.13,
+            stroke_px * 0.46,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        circle_stroke_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.58, inset_px + span_px * 0.88),
+            span_px * 0.08,
+            stroke_px * 0.40,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        circle_fill_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.47, inset_px + span_px * 0.82),
+            stroke_px * 0.56,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        circle_fill_alpha(
+            local_px,
+            vec2<f32>(inset_px + span_px * 0.60, inset_px + span_px * 0.78),
+            stroke_px * 0.45,
+            aa_px,
+        ),
+    );
+    return a;
 }
 
-fn corner_branch_mask(
+fn edge_flourish_local(
+    local_px: vec2<f32>,
+    span_px: f32,
+    inset_px: f32,
+    stroke_px: f32,
+    aa_px: f32,
+) -> f32 {
+    let zone_x = span_px * 1.32 + stroke_px * 2.0;
+    let zone_y = inset_px + span_px * 0.88 + stroke_px * 2.0;
+    if local_px.x > zone_x || local_px.y > zone_y {
+        return 0.0;
+    }
+
+    var a = line_alpha(
+        local_px,
+        vec2<f32>(0.0, inset_px),
+        vec2<f32>(span_px * 0.44, inset_px),
+        stroke_px * 0.86,
+        aa_px,
+    );
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(span_px * 0.24, inset_px),
+            vec2<f32>(span_px * 0.68, inset_px + span_px * 0.23),
+            stroke_px * 0.76,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(span_px * 0.68, inset_px + span_px * 0.23),
+            vec2<f32>(span_px * 1.02, inset_px + span_px * 0.06),
+            stroke_px * 0.64,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        line_alpha(
+            local_px,
+            vec2<f32>(span_px * 0.50, inset_px + span_px * 0.18),
+            vec2<f32>(span_px * 0.34, inset_px + span_px * 0.36),
+            stroke_px * 0.48,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        circle_stroke_alpha(
+            local_px,
+            vec2<f32>(span_px * 1.12, inset_px + span_px * 0.17),
+            span_px * 0.12,
+            stroke_px * 0.42,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        circle_fill_alpha(
+            local_px,
+            vec2<f32>(span_px * 0.58, inset_px + span_px * 0.33),
+            stroke_px * 0.48,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        circle_fill_alpha(
+            local_px,
+            vec2<f32>(span_px * 0.72, inset_px + span_px * 0.34),
+            stroke_px * 0.40,
+            aa_px,
+        ),
+    );
+    return a;
+}
+
+fn ornate_frame_mask(
     uv: vec2<f32>,
     size_px: vec2<f32>,
-    arm_px: f32,
-    pad_px: f32,
+    inset_px: f32,
+    corner_span_px: f32,
+    edge_span_px: f32,
     stroke_px: f32,
     aa_px: f32,
 ) -> f32 {
     let px = uv * size_px;
-    let zone = pad_px + arm_px + stroke_px * 2.0;
-    let near_x = px.x < zone || (size_px.x - px.x) < zone;
-    let near_y = px.y < zone || (size_px.y - px.y) < zone;
-    if !(near_x && near_y) {
+    let zone = inset_px + corner_span_px * 1.24 + stroke_px * 3.0;
+    let near_edge = px.x < zone
+        || (size_px.x - px.x) < zone
+        || px.y < zone
+        || (size_px.y - px.y) < zone;
+    if !near_edge {
         return 0.0;
     }
 
-    let tl = corner_branch_local(px, arm_px, pad_px, stroke_px, aa_px);
-    let tr = corner_branch_local(
-        vec2<f32>(size_px.x - px.x, px.y),
-        arm_px,
-        pad_px,
-        stroke_px,
+    // Thin inset frame
+    var a = line_alpha(
+        px,
+        vec2<f32>(inset_px, inset_px),
+        vec2<f32>(size_px.x - inset_px, inset_px),
+        stroke_px * 0.88,
         aa_px,
     );
-    let bl = corner_branch_local(
-        vec2<f32>(px.x, size_px.y - px.y),
-        arm_px,
-        pad_px,
-        stroke_px,
-        aa_px,
+    a = max(
+        a,
+        line_alpha(
+            px,
+            vec2<f32>(size_px.x - inset_px, inset_px),
+            vec2<f32>(size_px.x - inset_px, size_px.y - inset_px),
+            stroke_px * 0.88,
+            aa_px,
+        ),
     );
-    let br = corner_branch_local(
-        vec2<f32>(size_px.x - px.x, size_px.y - px.y),
-        arm_px,
-        pad_px,
-        stroke_px,
-        aa_px,
+    a = max(
+        a,
+        line_alpha(
+            px,
+            vec2<f32>(size_px.x - inset_px, size_px.y - inset_px),
+            vec2<f32>(inset_px, size_px.y - inset_px),
+            stroke_px * 0.88,
+            aa_px,
+        ),
     );
-    return max(max(tl, tr), max(bl, br));
+    a = max(
+        a,
+        line_alpha(
+            px,
+            vec2<f32>(inset_px, size_px.y - inset_px),
+            vec2<f32>(inset_px, inset_px),
+            stroke_px * 0.88,
+            aa_px,
+        ),
+    );
+
+    // Corners (mirror from top-left local space)
+    a = max(a, corner_flourish_local(px, corner_span_px, inset_px, stroke_px, aa_px));
+    a = max(
+        a,
+        corner_flourish_local(
+            vec2<f32>(size_px.x - px.x, px.y),
+            corner_span_px,
+            inset_px,
+            stroke_px,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        corner_flourish_local(
+            vec2<f32>(px.x, size_px.y - px.y),
+            corner_span_px,
+            inset_px,
+            stroke_px,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        corner_flourish_local(
+            vec2<f32>(size_px.x - px.x, size_px.y - px.y),
+            corner_span_px,
+            inset_px,
+            stroke_px,
+            aa_px,
+        ),
+    );
+
+    // Edge center flourishes (top/bottom + left/right)
+    a = max(
+        a,
+        edge_flourish_local(
+            vec2<f32>(abs(px.x - size_px.x * 0.5), px.y),
+            edge_span_px,
+            inset_px,
+            stroke_px,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        edge_flourish_local(
+            vec2<f32>(abs(px.x - size_px.x * 0.5), size_px.y - px.y),
+            edge_span_px,
+            inset_px,
+            stroke_px,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        edge_flourish_local(
+            vec2<f32>(abs(px.y - size_px.y * 0.5), px.x),
+            edge_span_px,
+            inset_px,
+            stroke_px,
+            aa_px,
+        ),
+    );
+    a = max(
+        a,
+        edge_flourish_local(
+            vec2<f32>(abs(px.y - size_px.y * 0.5), size_px.x - px.x),
+            edge_span_px,
+            inset_px,
+            stroke_px,
+            aa_px,
+        ),
+    );
+
+    return a;
 }
 
 @fragment
@@ -466,41 +751,45 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         alpha = max(alpha, 0.9);
     }
 
-    // Corner ornament accents for territory definition.
+    // Ornate frame treatment (corners + edge flourishes), tinted by territory guild color.
     let min_side = min(in.size_px.x, in.size_px.y);
-    let corner_visibility = smoothstep(18.0, 44.0, min_side);
-    if corner_visibility > 0.0 {
-        let corner_pad = clamp(border_width + 0.8, 0.9, 5.4);
-        let corner_arm = clamp(min_side * 0.27, 8.0, 30.0);
-        let corner_stroke = clamp(1.25 * vp.scale, 1.0, 2.3);
-        let corner_aa = max(feather * 0.9, 0.22);
-        let corner_core = corner_branch_mask(
+    let ornament_visibility = smoothstep(20.0, 42.0, min_side);
+    if ornament_visibility > 0.0 {
+        let ornament_inset = clamp(border_width + 0.95, 1.0, 5.6);
+        let corner_span = clamp(min_side * 0.28, 12.0, 34.0);
+        let edge_span = clamp(min_side * 0.24, 10.0, 28.0);
+        let ornament_stroke = clamp(1.30 * vp.scale, 1.0, 2.5);
+        let ornament_aa = max(feather, 0.24);
+
+        let ornament_mask = ornate_frame_mask(
             in.uv,
             in.size_px,
-            corner_arm,
-            corner_pad,
-            corner_stroke,
-            corner_aa,
+            ornament_inset,
+            corner_span,
+            edge_span,
+            ornament_stroke,
+            ornament_aa,
         );
-        if corner_core > 0.0 {
-            let corner_glow = corner_branch_mask(
+        if ornament_mask > 0.0 {
+            let ornament_glow = ornate_frame_mask(
                 in.uv,
                 in.size_px,
-                corner_arm,
-                corner_pad,
-                corner_stroke * 2.05,
-                corner_aa * 1.3,
+                ornament_inset,
+                corner_span,
+                edge_span,
+                ornament_stroke * 2.0,
+                ornament_aa * 1.4,
             );
-            var accent_color = mix(base_color, vec3<f32>(1.0), 0.42);
+            var accent_color = mix(base_color, vec3<f32>(1.0), 0.66);
             if is_headquarters {
-                accent_color = mix(accent_color, vec3<f32>(0.973, 0.831, 0.275), 0.55);
+                accent_color = mix(accent_color, vec3<f32>(0.973, 0.831, 0.275), 0.60);
             }
-            let intensity = corner_visibility * (0.65 + b_alpha * 0.35);
-            let shadow_strength = corner_glow * intensity * 0.42;
-            let accent_strength = corner_core * intensity * 0.92;
-            color = mix(color, base_color * 0.14, shadow_strength);
+            let intensity = ornament_visibility * (0.80 + b_alpha * 0.32);
+            let shadow_strength = ornament_glow * intensity * 0.38;
+            let accent_strength = ornament_mask * intensity * 0.95;
+            color = mix(color, base_color * 0.18, shadow_strength);
             color = mix(color, accent_color, accent_strength);
-            alpha = max(alpha, min(1.0, alpha + corner_core * intensity * 0.44));
+            alpha = max(alpha, min(1.0, alpha + ornament_mask * intensity * 0.48));
         }
     }
 
