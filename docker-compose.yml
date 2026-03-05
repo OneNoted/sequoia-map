@@ -6,7 +6,7 @@ x-default-logging: &default-logging
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18.3-alpine
     restart: unless-stopped
     init: true
     stop_grace_period: 60s
@@ -14,10 +14,11 @@ services:
       POSTGRES_DB: sequoia
       POSTGRES_USER: sequoia
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/18/docker
     mem_limit: 768m
     mem_reservation: 256m
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
@@ -109,7 +110,7 @@ services:
     logging: *default-logging
 
   postgres-backup:
-    image: postgres:17-alpine
+    image: postgres:18.3-alpine
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
