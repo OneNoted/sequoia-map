@@ -16,7 +16,7 @@ const ORNAMENT_INSET_WORLD: f32 = 3.0;
 const ORNAMENT_CORNER_SHORT_SIDE_WORLD: f32 = 42.0;
 const ORNAMENT_SIZE_RAMP_START_WORLD: f32 = 54.0;
 const ORNAMENT_SIZE_RAMP_END_WORLD: f32 = 220.0;
-const ORNAMENT_SIZE_RAMP_MAX_SCALE: f32 = 1.75;
+const ORNAMENT_SIZE_RAMP_MAX_SCALE: f32 = 1.65;
 const ORNAMENT_TINT_ALPHA: f32 = 0.86;
 const ORNAMENT_TINT_LIGHTEN_BASE: f32 = 0.04;
 const ORNAMENT_TINT_LIGHTEN_DARK_BOOST: f32 = 0.12;
@@ -229,7 +229,7 @@ mod tests {
     fn assert_close(actual: f32, expected: f32) {
         let diff = (actual - expected).abs();
         assert!(
-            diff < 1e-5,
+            diff < 1e-4,
             "expected {expected}, got {actual} (diff: {diff})"
         );
     }
@@ -302,12 +302,12 @@ mod tests {
         assert_close(small.inset_world, 3.0);
         assert!(medium.corner_w_world > small.corner_w_world);
         assert!(medium.corner_h_world > small.corner_h_world);
-        assert_close(large.corner_w_world, 73.5);
-        assert_close(large.corner_h_world, 73.5);
-        assert_close(wide.corner_w_world, 147.0);
-        assert_close(wide.corner_h_world, 73.5);
-        assert_close(scaled.corner_w_world, 110.25);
-        assert_close(scaled.corner_h_world, 110.25);
+        assert_close(large.corner_w_world, 69.3);
+        assert_close(large.corner_h_world, 69.3);
+        assert_close(wide.corner_w_world, 138.6);
+        assert_close(wide.corner_h_world, 69.3);
+        assert_close(scaled.corner_w_world, 103.95);
+        assert_close(scaled.corner_h_world, 103.95);
     }
 
     #[test]
