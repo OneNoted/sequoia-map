@@ -3189,6 +3189,9 @@ impl GpuRenderer {
                     let top = loc.top() as f32 + inset_world;
                     let right = loc.left() as f32 + ww - inset_world - corner_w_world;
                     let bottom = loc.top() as f32 + hh - inset_world - corner_h_world;
+                    if right < left + corner_w_world || bottom < top + corner_h_world {
+                        continue;
+                    }
                     let tint = compute_territory_ornament_tint(ct.guild_color);
                     renderer.instances_buf.push(IconInstance {
                         rect: [left, top, corner_w_world, corner_h_world],

@@ -14,6 +14,9 @@ const DYNAMIC_TIME_STALE_SCALE: f32 = 0.96;
 const RESOURCE_ICON_SIZE_WORLD: f32 = 29.0;
 const ORNAMENT_INSET_WORLD: f32 = 3.0;
 const ORNAMENT_CORNER_SHORT_SIDE_WORLD: f32 = 42.0;
+const ORNAMENT_TINY_FIT_START_WORLD: f32 = 54.0;
+const ORNAMENT_TINY_FIT_END_WORLD: f32 = 104.0;
+const ORNAMENT_TINY_FIT_BOX_FRACTION: f32 = 0.48;
 const ORNAMENT_SIZE_RAMP_START_WORLD: f32 = 54.0;
 const ORNAMENT_SIZE_RAMP_END_WORLD: f32 = 220.0;
 const ORNAMENT_SIZE_RAMP_MAX_SCALE: f32 = 1.65;
@@ -195,10 +198,23 @@ pub(crate) fn compute_territory_ornament_sizing(
     } else {
         (short_side_world, short_side_world / aspect)
     };
+    let available_w = (ww - ORNAMENT_INSET_WORLD * 2.0).max(2.0);
+    let available_h = (hh - ORNAMENT_INSET_WORLD * 2.0).max(2.0);
+    let fit_w = ((available_w * ORNAMENT_TINY_FIT_BOX_FRACTION) / corner_w_world.max(0.001))
+        .clamp(0.0, 1.0);
+    let fit_h = ((available_h * ORNAMENT_TINY_FIT_BOX_FRACTION) / corner_h_world.max(0.001))
+        .clamp(0.0, 1.0);
+    let tiny_fit = 1.0
+        - smoothstep_f32(
+            ORNAMENT_TINY_FIT_START_WORLD,
+            ORNAMENT_TINY_FIT_END_WORLD,
+            territory_short_side,
+        );
+    let fit_scale = lerp_f32(1.0, fit_w.min(fit_h), tiny_fit);
     TerritoryOrnamentSizing {
         inset_world: ORNAMENT_INSET_WORLD,
-        corner_w_world,
-        corner_h_world,
+        corner_w_world: corner_w_world * fit_scale,
+        corner_h_world: corner_h_world * fit_scale,
     }
 }
 
@@ -302,6 +318,8 @@ mod tests {
         assert_close(small.inset_world, 3.0);
         assert!(medium.corner_w_world > small.corner_w_world);
         assert!(medium.corner_h_world > small.corner_h_world);
+        assert!(small.corner_w_world <= (48.0 - small.inset_world * 2.0) * 0.5);
+        assert!(small.corner_h_world <= (48.0 - small.inset_world * 2.0) * 0.5);
         assert_close(large.corner_w_world, 69.3);
         assert_close(large.corner_h_world, 69.3);
         assert_close(wide.corner_w_world, 138.6);
