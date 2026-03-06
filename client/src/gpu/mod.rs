@@ -363,6 +363,38 @@ fn gpu_console_diag_enabled() -> bool {
     .unwrap_or(false)
 }
 
+fn set_claim_label_debug(scale: f64, active: bool, cluster_count: usize, rendered_count: usize) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        payload.as_ref(),
+        &wasm_bindgen::JsValue::from_str("scale"),
+        &wasm_bindgen::JsValue::from_f64(scale),
+    );
+    let _ = js_sys::Reflect::set(
+        payload.as_ref(),
+        &wasm_bindgen::JsValue::from_str("active"),
+        &wasm_bindgen::JsValue::from_bool(active),
+    );
+    let _ = js_sys::Reflect::set(
+        payload.as_ref(),
+        &wasm_bindgen::JsValue::from_str("clusterCount"),
+        &wasm_bindgen::JsValue::from_f64(cluster_count as f64),
+    );
+    let _ = js_sys::Reflect::set(
+        payload.as_ref(),
+        &wasm_bindgen::JsValue::from_str("renderedCount"),
+        &wasm_bindgen::JsValue::from_f64(rendered_count as f64),
+    );
+    let _ = js_sys::Reflect::set(
+        window.as_ref(),
+        &wasm_bindgen::JsValue::from_str("__SEQUOIA_CLAIM_LABEL_DEBUG__"),
+        payload.as_ref(),
+    );
+}
+
 fn gpu_is_firefox() -> bool {
     web_sys::window()
         .and_then(|w| w.navigator().user_agent().ok())
@@ -2748,6 +2780,7 @@ impl GpuRenderer {
         halo_instances.clear();
 
         if !self.use_static_gpu_labels || vp.scale < LABEL_VISIBILITY_MIN_SCALE {
+            set_claim_label_debug(vp.scale, false, 0, 0);
             text_renderer.static_fill_instances = fill_instances;
             text_renderer.static_halo_instances = halo_instances;
             text_renderer.static_fill_count = 0;
@@ -2770,6 +2803,7 @@ impl GpuRenderer {
                     select_claim_label_candidates(&claim_clusters, vp, line_height, |text| {
                         line_units_with_tracking(text, glyphs, kerning, claim_tracking_units)
                     });
+                let rendered_claim_label_count = claim_labels.len();
                 for claim in claim_labels {
                     let (r, g, b) = brighten(
                         claim.guild_color.0,
@@ -2793,7 +2827,14 @@ impl GpuRenderer {
                         [0.0, 0.0, 0.0, 0.84],
                     );
                 }
+                set_claim_label_debug(
+                    vp.scale,
+                    true,
+                    claim_clusters.len(),
+                    rendered_claim_label_count,
+                );
             } else {
+                set_claim_label_debug(vp.scale, false, 0, 0);
                 for (name, ct) in territories {
                     let loc = &ct.territory.location;
                     let ww = loc.width() as f32;

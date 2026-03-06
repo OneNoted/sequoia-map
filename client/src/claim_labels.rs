@@ -3,15 +3,15 @@ use std::collections::BTreeMap;
 use crate::territory::ClientTerritoryMap;
 use crate::viewport::Viewport;
 
-pub(crate) const CLAIM_LABEL_MIN_SCALE: f64 = 0.10;
-pub(crate) const CLAIM_LABEL_MAX_SCALE: f64 = 0.20;
+pub(crate) const CLAIM_LABEL_MIN_SCALE: f64 = 0.12;
+pub(crate) const CLAIM_LABEL_MAX_SCALE: f64 = 0.24;
 pub(crate) const CLAIM_LABEL_FULL_NAME_MIN_SCALE: f64 = 0.15;
-pub(crate) const CLAIM_LABEL_MIN_TERRITORIES: usize = 10;
-pub(crate) const CLAIM_LABEL_MIN_SCREEN_WIDTH: f32 = 180.0;
-pub(crate) const CLAIM_LABEL_MIN_SCREEN_HEIGHT: f32 = 60.0;
+pub(crate) const CLAIM_LABEL_MIN_TERRITORIES: usize = 8;
+pub(crate) const CLAIM_LABEL_MIN_SCREEN_WIDTH: f32 = 80.0;
+pub(crate) const CLAIM_LABEL_MIN_SCREEN_HEIGHT: f32 = 40.0;
 pub(crate) const CLAIM_LABEL_MAX_WIDTH_FRACTION: f32 = 0.82;
-pub(crate) const CLAIM_LABEL_FONT_MIN_WORLD: f32 = 36.0;
-pub(crate) const CLAIM_LABEL_FONT_MAX_WORLD: f32 = 110.0;
+pub(crate) const CLAIM_LABEL_FONT_MIN_WORLD: f32 = 48.0;
+pub(crate) const CLAIM_LABEL_FONT_MAX_WORLD: f32 = 180.0;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) const CLAIM_LABEL_LETTER_SPACING_EM: f32 = 0.065;
 
@@ -378,8 +378,8 @@ fn build_cluster(nodes: &[TerritoryNode], component: &[usize]) -> ClaimCluster {
 }
 
 fn claim_font_height_world(bounds_world: Rect) -> f32 {
-    (bounds_world.height() * 0.58)
-        .min(bounds_world.width() * 0.16)
+    (bounds_world.height() * 0.60)
+        .min(bounds_world.width() * 0.24)
         .clamp(CLAIM_LABEL_FONT_MIN_WORLD, CLAIM_LABEL_FONT_MAX_WORLD)
 }
 
@@ -560,7 +560,7 @@ mod tests {
         let clusters = vec![cluster(
             "Aurora Dominion",
             "AUR",
-            9,
+            7,
             [0.0, 0.0, 1400.0, 500.0],
         )];
 
