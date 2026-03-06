@@ -9,6 +9,10 @@ use sequoia_shared::TreasuryLevel;
 use sequoia_shared::colors::hsl_to_rgb;
 
 use crate::app::NameColor;
+use crate::claim_labels::{
+    CLAIM_LABEL_LETTER_SPACING_EM, build_claim_clusters, claim_label_zoom_active,
+    select_claim_label_candidates,
+};
 use crate::colors::brighten;
 use crate::heat::heat_color_for_count;
 use crate::icons::{ICON_COUNT, ResourceAtlas};
@@ -2759,103 +2763,136 @@ impl GpuRenderer {
             let line_height = text_renderer.line_height;
             let tag_tracking_units = line_height * STATIC_TAG_LETTER_SPACING_EM;
             let name_tracking_units = line_height * STATIC_NAME_LETTER_SPACING_EM;
-            for (name, ct) in territories {
-                let loc = &ct.territory.location;
-                let ww = loc.width() as f32;
-                let hh = loc.height() as f32;
-                let Some(sizing) = compute_static_label_sizing(ww, hh, scale) else {
-                    continue;
-                };
-                let cx = loc.midpoint_x() as f32;
-                let cy = loc.midpoint_y() as f32;
-                let detail_layout_alpha = sizing.detail_layout_alpha;
-                let tag_size = sizing.tag_size * static_tag_scale;
-                let detail_size = sizing.detail_size * static_name_scale;
-                let px_per_world = scale.max(0.0001);
-                // Keep static label sizing stable in world space; only user scale settings widen
-                // the fit budget a bit to accommodate larger configured text.
-                let max_static_scale = static_tag_scale.max(static_name_scale);
-                let overflow_scale =
-                    (1.0 + (max_static_scale - 1.0).max(0.0) * 0.22).clamp(1.0, 1.35);
-                let overflow = overflow_scale;
-                let tag_padding = lerp_f32(3.0, 8.0, detail_layout_alpha);
-                let tag_max_w = (ww * overflow - tag_padding).max(STATIC_TAG_MIN_WIDTH_WORLD);
-                let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha);
-                let tag = ct.territory.guild.prefix.as_str();
-                let tag_color = {
-                    let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
-                    c[3] = 1.0;
-                    c
-                };
-                let tag_px = tag_size * px_per_world;
-                let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
-                let tag_halo_alpha = (0.70 - tag_halo_boost * 0.10).clamp(0.54, 0.76);
-
-                push_text_line_dual_with_tracking(
-                    &mut fill_instances,
-                    &mut halo_instances,
-                    glyphs,
-                    kerning,
-                    line_height,
-                    tag,
-                    cx,
-                    tag_y,
-                    tag_size,
-                    tag_max_w,
-                    tag_tracking_units,
-                    tag_color,
-                    [0.0, 0.0, 0.0, tag_halo_alpha],
-                );
-
-                if self.static_show_names && detail_layout_alpha > 0.02 {
-                    let fallback_abbrev;
-                    let base_name = if let Some((abbreviated, full)) =
-                        self.territory_name_cache.get(name.as_str())
-                    {
-                        if self.static_abbreviate_names {
-                            abbreviated.as_str()
-                        } else {
-                            full.as_str()
-                        }
-                    } else if self.static_abbreviate_names {
-                        fallback_abbrev = abbreviate_name(name);
-                        fallback_abbrev.as_str()
-                    } else {
-                        name.as_str()
-                    };
-                    let name_max_w = (ww * overflow - 10.0).max(STATIC_NAME_MIN_WIDTH_WORLD);
-                    let units_per_world = line_height / detail_size.max(0.001);
-                    let fitted = fit_text_to_units_with_tracking(
-                        base_name,
-                        name_max_w * units_per_world,
-                        glyphs,
-                        kerning,
-                        name_tracking_units,
+            if claim_label_zoom_active(vp.scale) {
+                let claim_tracking_units = line_height * CLAIM_LABEL_LETTER_SPACING_EM;
+                let claim_clusters = build_claim_clusters(territories);
+                let claim_labels =
+                    select_claim_label_candidates(&claim_clusters, vp, line_height, |text| {
+                        line_units_with_tracking(text, glyphs, kerning, claim_tracking_units)
+                    });
+                for claim in claim_labels {
+                    let (r, g, b) = brighten(
+                        claim.guild_color.0,
+                        claim.guild_color.1,
+                        claim.guild_color.2,
+                        1.8,
                     );
-                    let name_y =
-                        tag_y + tag_size * 0.5 + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
-                    let mut name_rgba = name_color_rgba(self.static_name_color, ct.guild_color);
-                    name_rgba[3] *= detail_layout_alpha.clamp(0.0, 1.0);
-                    let name_px = detail_size * px_per_world;
-                    let name_halo_boost = 1.0 - smoothstep_f32(8.4, 12.2, name_px);
-                    let name_halo_alpha = ((0.68 - name_halo_boost * 0.12)
-                        * detail_layout_alpha.clamp(0.0, 1.0))
-                    .clamp(0.0, 0.74);
                     push_text_line_dual_with_tracking(
                         &mut fill_instances,
                         &mut halo_instances,
                         glyphs,
                         kerning,
                         line_height,
-                        &fitted,
-                        cx,
-                        name_y,
-                        detail_size,
-                        name_max_w,
-                        name_tracking_units,
-                        name_rgba,
-                        [0.0, 0.0, 0.0, name_halo_alpha],
+                        &claim.text,
+                        claim.center_world[0],
+                        claim.center_world[1],
+                        claim.font_height_world,
+                        claim.max_width_world,
+                        claim_tracking_units,
+                        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.97],
+                        [0.0, 0.0, 0.0, 0.84],
                     );
+                }
+            } else {
+                for (name, ct) in territories {
+                    let loc = &ct.territory.location;
+                    let ww = loc.width() as f32;
+                    let hh = loc.height() as f32;
+                    let Some(sizing) = compute_static_label_sizing(ww, hh, scale) else {
+                        continue;
+                    };
+                    let cx = loc.midpoint_x() as f32;
+                    let cy = loc.midpoint_y() as f32;
+                    let detail_layout_alpha = sizing.detail_layout_alpha;
+                    let tag_size = sizing.tag_size * static_tag_scale;
+                    let detail_size = sizing.detail_size * static_name_scale;
+                    let px_per_world = scale.max(0.0001);
+                    // Keep static label sizing stable in world space; only user scale settings widen
+                    // the fit budget a bit to accommodate larger configured text.
+                    let max_static_scale = static_tag_scale.max(static_name_scale);
+                    let overflow_scale =
+                        (1.0 + (max_static_scale - 1.0).max(0.0) * 0.22).clamp(1.0, 1.35);
+                    let overflow = overflow_scale;
+                    let tag_padding = lerp_f32(3.0, 8.0, detail_layout_alpha);
+                    let tag_max_w = (ww * overflow - tag_padding).max(STATIC_TAG_MIN_WIDTH_WORLD);
+                    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha);
+                    let tag = ct.territory.guild.prefix.as_str();
+                    let tag_color = {
+                        let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
+                        c[3] = 1.0;
+                        c
+                    };
+                    let tag_px = tag_size * px_per_world;
+                    let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
+                    let tag_halo_alpha = (0.70 - tag_halo_boost * 0.10).clamp(0.54, 0.76);
+
+                    push_text_line_dual_with_tracking(
+                        &mut fill_instances,
+                        &mut halo_instances,
+                        glyphs,
+                        kerning,
+                        line_height,
+                        tag,
+                        cx,
+                        tag_y,
+                        tag_size,
+                        tag_max_w,
+                        tag_tracking_units,
+                        tag_color,
+                        [0.0, 0.0, 0.0, tag_halo_alpha],
+                    );
+
+                    if self.static_show_names && detail_layout_alpha > 0.02 {
+                        let fallback_abbrev;
+                        let base_name = if let Some((abbreviated, full)) =
+                            self.territory_name_cache.get(name.as_str())
+                        {
+                            if self.static_abbreviate_names {
+                                abbreviated.as_str()
+                            } else {
+                                full.as_str()
+                            }
+                        } else if self.static_abbreviate_names {
+                            fallback_abbrev = abbreviate_name(name);
+                            fallback_abbrev.as_str()
+                        } else {
+                            name.as_str()
+                        };
+                        let name_max_w = (ww * overflow - 10.0).max(STATIC_NAME_MIN_WIDTH_WORLD);
+                        let units_per_world = line_height / detail_size.max(0.001);
+                        let fitted = fit_text_to_units_with_tracking(
+                            base_name,
+                            name_max_w * units_per_world,
+                            glyphs,
+                            kerning,
+                            name_tracking_units,
+                        );
+                        let name_y = tag_y
+                            + tag_size * 0.5
+                            + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
+                        let mut name_rgba = name_color_rgba(self.static_name_color, ct.guild_color);
+                        name_rgba[3] *= detail_layout_alpha.clamp(0.0, 1.0);
+                        let name_px = detail_size * px_per_world;
+                        let name_halo_boost = 1.0 - smoothstep_f32(8.4, 12.2, name_px);
+                        let name_halo_alpha = ((0.68 - name_halo_boost * 0.12)
+                            * detail_layout_alpha.clamp(0.0, 1.0))
+                        .clamp(0.0, 0.74);
+                        push_text_line_dual_with_tracking(
+                            &mut fill_instances,
+                            &mut halo_instances,
+                            glyphs,
+                            kerning,
+                            line_height,
+                            &fitted,
+                            cx,
+                            name_y,
+                            detail_size,
+                            name_max_w,
+                            name_tracking_units,
+                            name_rgba,
+                            [0.0, 0.0, 0.0, name_halo_alpha],
+                        );
+                    }
                 }
             }
         }
