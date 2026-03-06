@@ -8,6 +8,7 @@ mod heat;
 mod history;
 mod icons;
 mod label_layout;
+mod overlay_sizing;
 mod playback;
 mod render_loop;
 mod renderer;
