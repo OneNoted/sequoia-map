@@ -53,20 +53,28 @@ cd client && NO_COLOR=true trunk serve
 Run the full dev stack (Postgres + server hot reload + ingest hot reload + client hot reload):
 
 ```bash
-POSTGRES_PASSWORD=replace-with-strong-db-password \
-INTERNAL_INGEST_TOKEN=replace-with-long-random-token \
-docker compose -f docker-compose.dev.yml up --build
+./dev.sh
 ```
 
 - Client dev server: `http://localhost:8080`
 - Server API: `http://localhost:3000/api/...`
 - Ingest API: `http://localhost:3010` (`/health`, `/metrics`, `/v1/*`)
 - Postgres (optional host access): `localhost:55432` (override with `POSTGRES_PORT`)
+- `./dev.sh` creates `.env.dev.local` on first run with stable `POSTGRES_PASSWORD`, `INTERNAL_INGEST_TOKEN`, and a free `POSTGRES_PORT`, then reuses them on later runs.
+- `./dev.sh` also pins the Docker Compose project name to `sequoia-map-mod-ingest`, so this repo always reuses the same local containers and volumes instead of creating a second stack under a different checkout name.
+- Pass normal Compose args through the script when needed: `./dev.sh down`, `./dev.sh logs -f server`, `./dev.sh ps`
 - Server reload: `cargo watch` (watches `server/` and `shared/`)
 - Ingest reload: `cargo watch` (watches `services/sequoia-ingest/` and `shared/`)
 - Client reload: Trunk watch/rebuild in `client/`
-- `POSTGRES_PASSWORD` is required (use a strong random value).
-- Internal ingest token is required in dev via `INTERNAL_INGEST_TOKEN` (use a random value with at least 24 chars; common placeholders are rejected)
+- `.env.dev.local` is ignored by git and can be edited if you need to pin a different local port or rotate credentials.
+- Manual env exports still work if you prefer them:
+
+```bash
+POSTGRES_PASSWORD=replace-with-strong-db-password \
+INTERNAL_INGEST_TOKEN=replace-with-long-random-token \
+docker compose -f docker-compose.dev.yml up --build
+```
+
 - Compile speed defaults for dev containers:
   - shared native `CARGO_TARGET_DIR` between `server` + `ingest` to avoid duplicate dependency builds
   - `CARGO_PROFILE_DEV_DEBUG=0` and `RUSTFLAGS=-C debuginfo=0` for faster incremental compile/link
