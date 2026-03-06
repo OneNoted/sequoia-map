@@ -12,6 +12,8 @@ const DYNAMIC_TIME_MIN_WIDTH_WORLD: f32 = 68.0;
 const DYNAMIC_COOLDOWN_MIN_WIDTH_WORLD: f32 = 82.0;
 const DYNAMIC_TIME_STALE_SCALE: f32 = 0.96;
 const RESOURCE_ICON_SIZE_WORLD: f32 = 18.0;
+const ORNAMENT_INSET_WORLD: f32 = 2.0;
+const ORNAMENT_CORNER_SHORT_SIDE_WORLD: f32 = 26.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StaticLabelSizing {
@@ -30,6 +32,13 @@ pub(crate) struct DynamicLabelSizing {
     pub line_gap: f32,
     pub time_max_width: f32,
     pub cooldown_max_width: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerritoryOrnamentSizing {
+    pub inset_world: f32,
+    pub corner_w_world: f32,
+    pub corner_h_world: f32,
 }
 
 #[inline]
@@ -158,10 +167,29 @@ pub(crate) fn compute_resource_icon_size_world(icon_scale: f32) -> f32 {
     (RESOURCE_ICON_SIZE_WORLD * icon_scale.max(0.0)).max(1.0)
 }
 
+pub(crate) fn compute_territory_ornament_sizing(
+    ornament_aspect: f32,
+    icon_scale: f32,
+) -> TerritoryOrnamentSizing {
+    let short_side_world = (ORNAMENT_CORNER_SHORT_SIDE_WORLD * icon_scale.max(0.0)).max(1.0);
+    let aspect = ornament_aspect.max(0.01);
+    let (corner_w_world, corner_h_world) = if aspect >= 1.0 {
+        (short_side_world * aspect, short_side_world)
+    } else {
+        (short_side_world, short_side_world / aspect)
+    };
+    TerritoryOrnamentSizing {
+        inset_world: ORNAMENT_INSET_WORLD,
+        corner_w_world,
+        corner_h_world,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_dynamic_label_sizing, compute_resource_icon_size_world, compute_static_label_sizing,
+        compute_dynamic_label_sizing, compute_resource_icon_size_world,
+        compute_static_label_sizing, compute_territory_ornament_sizing,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -227,5 +255,20 @@ mod tests {
     fn resource_icon_size_is_fixed_in_world_space() {
         let size = compute_resource_icon_size_world(1.0);
         assert_close(size, 18.0);
+    }
+
+    #[test]
+    fn territory_ornament_size_is_fixed_in_world_space() {
+        let square = compute_territory_ornament_sizing(1.0, 1.0);
+        let wide = compute_territory_ornament_sizing(2.0, 1.0);
+        let scaled = compute_territory_ornament_sizing(1.0, 1.5);
+
+        assert_close(square.inset_world, 2.0);
+        assert_close(square.corner_w_world, 26.0);
+        assert_close(square.corner_h_world, 26.0);
+        assert_close(wide.corner_w_world, 52.0);
+        assert_close(wide.corner_h_world, 26.0);
+        assert_close(scaled.corner_w_world, 39.0);
+        assert_close(scaled.corner_h_world, 39.0);
     }
 }

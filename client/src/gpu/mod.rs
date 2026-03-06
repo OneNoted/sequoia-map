@@ -19,7 +19,8 @@ use crate::label_layout::{
 };
 use crate::overlay_sizing::{
     STATIC_NAME_BASELINE_GAP_MULTIPLIER, compute_dynamic_label_sizing,
-    compute_resource_icon_size_world, compute_static_label_sizing, static_name_bottom_bound,
+    compute_resource_icon_size_world, compute_static_label_sizing,
+    compute_territory_ornament_sizing, static_name_bottom_bound,
 };
 use crate::renderer::{FrameMetrics, InvalidationReason, RenderCapabilities, SceneSnapshot};
 use crate::territory::ClientTerritoryMap;
@@ -212,9 +213,6 @@ const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.02;
 const HQ_CROWN_MAX_BOX_FRACTION: f32 = 0.40;
 const ORNAMENT_MIN_BOX_PX: f32 = 34.0;
-const ORNAMENT_INSET_PX: f32 = 2.0;
-const ORNAMENT_CORNER_SHORT_SIDE_PX: f32 = 26.0;
-const ORNAMENT_CORNER_MAX_FRACTION: f32 = 0.36;
 const ORNAMENT_TINT_ALPHA: f32 = 0.86;
 
 #[inline]
@@ -3182,81 +3180,58 @@ impl GpuRenderer {
                 && sw >= ORNAMENT_MIN_BOX_PX
                 && sh >= ORNAMENT_MIN_BOX_PX
             {
-                let inset_px = ORNAMENT_INSET_PX;
-                let target_short_px = ORNAMENT_CORNER_SHORT_SIDE_PX * icon_scale;
-                let max_short_px =
-                    ((sw.min(sh) - inset_px * 2.0) * ORNAMENT_CORNER_MAX_FRACTION).max(0.0);
-                let corner_short_px = target_short_px.min(max_short_px);
-                if corner_short_px >= 8.0 {
-                    let (raw_corner_w_px, raw_corner_h_px) = if ornament_aspect >= 1.0 {
-                        (corner_short_px * ornament_aspect, corner_short_px)
-                    } else {
-                        (corner_short_px, corner_short_px / ornament_aspect.max(0.01))
-                    };
-                    let max_corner_w_px = ((sw - inset_px * 2.0) * 0.48).max(0.0);
-                    let max_corner_h_px = ((sh - inset_px * 2.0) * 0.48).max(0.0);
-                    let fit_scale = if raw_corner_w_px <= 0.0 || raw_corner_h_px <= 0.0 {
-                        0.0
-                    } else {
-                        (max_corner_w_px / raw_corner_w_px)
-                            .min(max_corner_h_px / raw_corner_h_px)
-                            .min(1.0)
-                    };
-                    let corner_w_px = raw_corner_w_px * fit_scale;
-                    let corner_h_px = raw_corner_h_px * fit_scale;
-                    if corner_w_px >= 6.0 && corner_h_px >= 6.0 {
-                        let corner_w_world = corner_w_px / px_per_world;
-                        let corner_h_world = corner_h_px / px_per_world;
-                        let inset_world = inset_px / px_per_world;
-                        let left = loc.left() as f32 + inset_world;
-                        let top = loc.top() as f32 + inset_world;
-                        let right = loc.left() as f32 + ww - inset_world - corner_w_world;
-                        let bottom = loc.top() as f32 + hh - inset_world - corner_h_world;
-                        if right >= left && bottom >= top {
-                            let (gr, gg, gb) = ct.guild_color;
-                            let tint = [
-                                (gr as f32 / 255.0) * 0.42 + 0.58,
-                                (gg as f32 / 255.0) * 0.42 + 0.58,
-                                (gb as f32 / 255.0) * 0.42 + 0.58,
-                                ORNAMENT_TINT_ALPHA,
-                            ];
-                            renderer.instances_buf.push(IconInstance {
-                                rect: [left, top, corner_w_world, corner_h_world],
-                                uv_rect: base_ornament_uv,
-                                tint,
-                            });
-                            renderer.instances_buf.push(IconInstance {
-                                rect: [right, top, corner_w_world, corner_h_world],
-                                uv_rect: [
-                                    base_ornament_uv[2],
-                                    base_ornament_uv[1],
-                                    base_ornament_uv[0],
-                                    base_ornament_uv[3],
-                                ],
-                                tint,
-                            });
-                            renderer.instances_buf.push(IconInstance {
-                                rect: [left, bottom, corner_w_world, corner_h_world],
-                                uv_rect: [
-                                    base_ornament_uv[0],
-                                    base_ornament_uv[3],
-                                    base_ornament_uv[2],
-                                    base_ornament_uv[1],
-                                ],
-                                tint,
-                            });
-                            renderer.instances_buf.push(IconInstance {
-                                rect: [right, bottom, corner_w_world, corner_h_world],
-                                uv_rect: [
-                                    base_ornament_uv[2],
-                                    base_ornament_uv[3],
-                                    base_ornament_uv[0],
-                                    base_ornament_uv[1],
-                                ],
-                                tint,
-                            });
-                        }
-                    }
+                let ornament_sizing =
+                    compute_territory_ornament_sizing(ornament_aspect, icon_scale);
+                let corner_w_world = ornament_sizing.corner_w_world;
+                let corner_h_world = ornament_sizing.corner_h_world;
+                if corner_w_world * px_per_world >= 6.0 && corner_h_world * px_per_world >= 6.0 {
+                    let inset_world = ornament_sizing.inset_world;
+                    let left = loc.left() as f32 + inset_world;
+                    let top = loc.top() as f32 + inset_world;
+                    let right = loc.left() as f32 + ww - inset_world - corner_w_world;
+                    let bottom = loc.top() as f32 + hh - inset_world - corner_h_world;
+                    let (gr, gg, gb) = ct.guild_color;
+                    let tint = [
+                        (gr as f32 / 255.0) * 0.42 + 0.58,
+                        (gg as f32 / 255.0) * 0.42 + 0.58,
+                        (gb as f32 / 255.0) * 0.42 + 0.58,
+                        ORNAMENT_TINT_ALPHA,
+                    ];
+                    renderer.instances_buf.push(IconInstance {
+                        rect: [left, top, corner_w_world, corner_h_world],
+                        uv_rect: base_ornament_uv,
+                        tint,
+                    });
+                    renderer.instances_buf.push(IconInstance {
+                        rect: [right, top, corner_w_world, corner_h_world],
+                        uv_rect: [
+                            base_ornament_uv[2],
+                            base_ornament_uv[1],
+                            base_ornament_uv[0],
+                            base_ornament_uv[3],
+                        ],
+                        tint,
+                    });
+                    renderer.instances_buf.push(IconInstance {
+                        rect: [left, bottom, corner_w_world, corner_h_world],
+                        uv_rect: [
+                            base_ornament_uv[0],
+                            base_ornament_uv[3],
+                            base_ornament_uv[2],
+                            base_ornament_uv[1],
+                        ],
+                        tint,
+                    });
+                    renderer.instances_buf.push(IconInstance {
+                        rect: [right, bottom, corner_w_world, corner_h_world],
+                        uv_rect: [
+                            base_ornament_uv[2],
+                            base_ornament_uv[3],
+                            base_ornament_uv[0],
+                            base_ornament_uv[1],
+                        ],
+                        tint,
+                    });
                 }
             }
             if is_hq
