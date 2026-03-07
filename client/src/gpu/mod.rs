@@ -3332,44 +3332,43 @@ impl GpuRenderer {
                     let top = loc.top() as f32 + inset_world;
                     let right = loc.left() as f32 + ww - inset_world - corner_w_world;
                     let bottom = loc.top() as f32 + hh - inset_world - corner_h_world;
-                    if right < left + corner_w_world || bottom < top + corner_h_world {
-                        continue;
+                    if right >= left + corner_w_world && bottom >= top + corner_h_world {
+                        renderer.instances_buf.push(IconInstance {
+                            rect: [left, top, corner_w_world, corner_h_world],
+                            uv_rect: base_ornament_uv,
+                            tint,
+                        });
+                        renderer.instances_buf.push(IconInstance {
+                            rect: [right, top, corner_w_world, corner_h_world],
+                            uv_rect: [
+                                base_ornament_uv[2],
+                                base_ornament_uv[1],
+                                base_ornament_uv[0],
+                                base_ornament_uv[3],
+                            ],
+                            tint,
+                        });
+                        renderer.instances_buf.push(IconInstance {
+                            rect: [left, bottom, corner_w_world, corner_h_world],
+                            uv_rect: [
+                                base_ornament_uv[0],
+                                base_ornament_uv[3],
+                                base_ornament_uv[2],
+                                base_ornament_uv[1],
+                            ],
+                            tint,
+                        });
+                        renderer.instances_buf.push(IconInstance {
+                            rect: [right, bottom, corner_w_world, corner_h_world],
+                            uv_rect: [
+                                base_ornament_uv[2],
+                                base_ornament_uv[3],
+                                base_ornament_uv[0],
+                                base_ornament_uv[1],
+                            ],
+                            tint,
+                        });
                     }
-                    renderer.instances_buf.push(IconInstance {
-                        rect: [left, top, corner_w_world, corner_h_world],
-                        uv_rect: base_ornament_uv,
-                        tint,
-                    });
-                    renderer.instances_buf.push(IconInstance {
-                        rect: [right, top, corner_w_world, corner_h_world],
-                        uv_rect: [
-                            base_ornament_uv[2],
-                            base_ornament_uv[1],
-                            base_ornament_uv[0],
-                            base_ornament_uv[3],
-                        ],
-                        tint,
-                    });
-                    renderer.instances_buf.push(IconInstance {
-                        rect: [left, bottom, corner_w_world, corner_h_world],
-                        uv_rect: [
-                            base_ornament_uv[0],
-                            base_ornament_uv[3],
-                            base_ornament_uv[2],
-                            base_ornament_uv[1],
-                        ],
-                        tint,
-                    });
-                    renderer.instances_buf.push(IconInstance {
-                        rect: [right, bottom, corner_w_world, corner_h_world],
-                        uv_rect: [
-                            base_ornament_uv[2],
-                            base_ornament_uv[3],
-                            base_ornament_uv[0],
-                            base_ornament_uv[1],
-                        ],
-                        tint,
-                    });
                 }
             }
             if is_hq
