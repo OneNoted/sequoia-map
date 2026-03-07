@@ -2840,10 +2840,18 @@ impl GpuRenderer {
             if claim_label_zoom_active(vp.scale) {
                 let claim_tracking_units = line_height * CLAIM_LABEL_LETTER_SPACING_EM;
                 let claim_clusters = build_claim_clusters(territories);
-                let claim_labels =
-                    select_claim_label_candidates(&claim_clusters, vp, line_height, |text| {
-                        line_units_with_tracking(text, glyphs, kerning, claim_tracking_units)
-                    });
+                let claim_labels = select_claim_label_candidates(
+                    &claim_clusters,
+                    vp,
+                    crate::claim_labels::Rect {
+                        left: 0.0,
+                        top: 0.0,
+                        right: self.surface_config.width as f32,
+                        bottom: self.surface_config.height as f32,
+                    },
+                    line_height,
+                    |text| line_units_with_tracking(text, glyphs, kerning, claim_tracking_units),
+                );
                 let rendered_claim_label_count = claim_labels.len();
                 for claim in claim_labels {
                     let (r, g, b) = brighten(

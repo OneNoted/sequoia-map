@@ -85,6 +85,13 @@ impl Rect {
         overlap_x > tolerance && overlap_y > tolerance
     }
 
+    fn intersects(self, other: Self) -> bool {
+        self.left < other.right
+            && self.right > other.left
+            && self.top < other.bottom
+            && self.bottom > other.top
+    }
+
     fn from_center_size(center: [f32; 2], width: f32, height: f32) -> Self {
         let half_w = width * 0.5;
         let half_h = height * 0.5;
@@ -231,6 +238,7 @@ where
 pub(crate) fn select_claim_label_candidates<F>(
     clusters: &[ClaimCluster],
     vp: &Viewport,
+    viewport_screen_bounds: Rect,
     line_height_units: f32,
     measure_units: F,
 ) -> Vec<ClaimLabelCandidate>
@@ -262,6 +270,7 @@ where
             if let Some(candidate) = claim_label_candidate_for_cluster(
                 &aggregate_cluster,
                 vp,
+                viewport_screen_bounds,
                 line_height_units,
                 &measure_units,
             ) {
@@ -275,6 +284,7 @@ where
                 if let Some(candidate) = claim_label_candidate_for_cluster(
                     cluster,
                     vp,
+                    viewport_screen_bounds,
                     line_height_units,
                     &measure_units,
                 ) {
@@ -291,6 +301,7 @@ where
                     compact_claim_label_candidate_for_cluster(
                         cluster,
                         vp,
+                        viewport_screen_bounds,
                         line_height_units,
                         &measure_units,
                     )
@@ -339,6 +350,7 @@ where
 fn claim_label_candidate_for_cluster<F>(
     cluster: &ClaimCluster,
     vp: &Viewport,
+    viewport_screen_bounds: Rect,
     line_height_units: f32,
     measure_units: &F,
 ) -> Option<ClaimLabelCandidate>
@@ -423,6 +435,9 @@ where
     if !safe_bounds_screen.contains_rect(text_bounds_screen) {
         return None;
     }
+    if !text_bounds_screen.intersects(viewport_screen_bounds) {
+        return None;
+    }
 
     Some(ClaimLabelCandidate {
         text: text.to_string(),
@@ -439,6 +454,7 @@ where
 fn compact_claim_label_candidate_for_cluster<F>(
     cluster: &ClaimCluster,
     vp: &Viewport,
+    viewport_screen_bounds: Rect,
     line_height_units: f32,
     measure_units: &F,
 ) -> Option<ClaimLabelCandidate>
@@ -509,6 +525,9 @@ where
     let text_bounds_screen = text_bounds_world.to_screen(vp);
     let safe_bounds_screen = cluster_screen_rect.inset(CLAIM_COMPACT_LABEL_BOUNDS_INSET_PX)?;
     if !safe_bounds_screen.contains_rect(text_bounds_screen) {
+        return None;
+    }
+    if !text_bounds_screen.intersects(viewport_screen_bounds) {
         return None;
     }
 
@@ -727,6 +746,24 @@ mod tests {
     use crate::territory::{ClientTerritory, ClientTerritoryMap};
     use crate::viewport::Viewport;
 
+    fn viewport_screen_bounds() -> super::Rect {
+        super::Rect {
+            left: -10_000.0,
+            top: -10_000.0,
+            right: 10_000.0,
+            bottom: 10_000.0,
+        }
+    }
+
+    fn visible_screen_bounds() -> super::Rect {
+        super::Rect {
+            left: 0.0,
+            top: 0.0,
+            right: 800.0,
+            bottom: 600.0,
+        }
+    }
+
     fn make_map(entries: &[(&str, &str, &str, [i32; 4])]) -> ClientTerritoryMap {
         let mut map = ClientTerritoryMap::new();
         for (territory_name, guild_name, guild_prefix, [left, top, right, bottom]) in entries {
@@ -872,7 +909,13 @@ mod tests {
             [0.0, 0.0, 1400.0, 500.0],
         )];
 
-        let labels = select_claim_label_candidates(&clusters, &vp, 10.0, measure_units);
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            viewport_screen_bounds(),
+            10.0,
+            measure_units,
+        );
 
         assert!(labels.is_empty());
     }
@@ -886,7 +929,13 @@ mod tests {
         };
         let clusters = vec![cluster("Aurora", "AUR", 12, [0.0, 0.0, 1400.0, 500.0])];
 
-        let labels = select_claim_label_candidates(&clusters, &vp, 10.0, measure_units);
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            viewport_screen_bounds(),
+            10.0,
+            measure_units,
+        );
 
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].text, "AUR");
@@ -902,7 +951,13 @@ mod tests {
         };
         let clusters = vec![cluster("Aurora", "AUR", 12, [0.0, 0.0, 1400.0, 500.0])];
 
-        let labels = select_claim_label_candidates(&clusters, &vp, 10.0, measure_units);
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            viewport_screen_bounds(),
+            10.0,
+            measure_units,
+        );
 
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].text, "Aurora");
@@ -922,7 +977,13 @@ mod tests {
             [0.0, 0.0, 1400.0, 500.0],
         )];
 
-        let labels = select_claim_label_candidates(&clusters, &vp, 10.0, measure_units);
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            viewport_screen_bounds(),
+            10.0,
+            measure_units,
+        );
 
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].text, "TLDC");
@@ -950,7 +1011,13 @@ mod tests {
             ),
         ];
 
-        let labels = select_claim_label_candidates(&clusters, &vp, 10.0, measure_units);
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            viewport_screen_bounds(),
+            10.0,
+            measure_units,
+        );
 
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].text, "PUN");
@@ -966,7 +1033,13 @@ mod tests {
         };
         let clusters = vec![cluster("Aequitas", "Aeq", 1, [0.0, 0.0, 173.0, 153.0])];
 
-        let labels = select_claim_label_candidates(&clusters, &vp, 10.0, measure_units);
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            viewport_screen_bounds(),
+            10.0,
+            measure_units,
+        );
 
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].text, "Aeq");
@@ -985,7 +1058,13 @@ mod tests {
             cluster("Paladins United", "PUN", 1, [260.0, 40.0, 433.0, 193.0]),
         ];
 
-        let labels = select_claim_label_candidates(&clusters, &vp, 10.0, measure_units);
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            viewport_screen_bounds(),
+            10.0,
+            measure_units,
+        );
 
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].text, "PUN");
@@ -1004,10 +1083,51 @@ mod tests {
             cluster("Citadel", "CITADEL", 10, [500.0, 0.0, 1900.0, 500.0]),
         ];
 
-        let labels = select_claim_label_candidates(&clusters, &vp, 10.0, measure_units);
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            viewport_screen_bounds(),
+            10.0,
+            measure_units,
+        );
 
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].text, "Magnus");
         assert_eq!(labels[0].territory_count, 12);
+    }
+
+    #[test]
+    fn claim_labels_fall_back_to_visible_cluster_when_aggregate_label_is_offscreen() {
+        let vp = Viewport {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale: 0.16,
+        };
+        let clusters = vec![
+            cluster(
+                "Paladins United",
+                "PUN",
+                4,
+                [-6000.0, 200.0, -5000.0, 1000.0],
+            ),
+            cluster("Paladins United", "PUN", 5, [1000.0, 200.0, 2000.0, 1000.0]),
+        ];
+
+        let labels = select_claim_label_candidates(
+            &clusters,
+            &vp,
+            visible_screen_bounds(),
+            10.0,
+            measure_units,
+        );
+
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].text, "PUN");
+        assert_eq!(labels[0].territory_count, 5);
+        assert!(
+            labels[0]
+                .text_bounds_screen
+                .intersects(visible_screen_bounds())
+        );
     }
 }
