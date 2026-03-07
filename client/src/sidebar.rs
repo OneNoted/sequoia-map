@@ -22,10 +22,11 @@ use crate::app::{
     LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
     LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
     LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapMode, NameColor,
-    NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont, ResourceHighlight, Selected,
-    SelectedGuild, ShowCompoundMapTime, ShowCountdown, ShowGranularMapTime, ShowLeaderboardOnline,
-    ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap,
-    ShowNames, ShowResourceIcons, SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient,
+    NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont, ResetSettingsTrigger,
+    ResourceHighlight, Selected, SelectedGuild, ShowCompoundMapTime, ShowCountdown,
+    ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
+    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
+    ShowTerritoryOrnaments, SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient,
     TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders, canvas_dimensions,
     clamp_connection_opacity_scale, clamp_connection_thickness_scale, clamp_label_scale_group,
     clamp_label_scale_master,
@@ -38,6 +39,7 @@ use crate::sse::ConnectionStatus;
 use crate::territory::ClientTerritoryMap;
 use crate::tower::TowerCalculator;
 use crate::viewport::Viewport;
+use crate::{IRIS_RELEASES_URL, SEQUOIA_WEBSITE_URL};
 
 /// Build list of (label, formatted_value, icon_name) for non-zero resources.
 fn build_resource_items(res: &Resources) -> Vec<(&'static str, String, &'static str)> {
@@ -155,9 +157,6 @@ fn iris_source_display_label(source: &str) -> Option<&'static str> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ShowSettings(RwSignal<bool>);
-
 /// Sidebar with search, leaderboard, detail panel, and stats.
 #[component]
 pub fn Sidebar() -> impl IntoView {
@@ -167,8 +166,7 @@ pub fn Sidebar() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
-    let show_settings = RwSignal::new(false);
-    provide_context(ShowSettings(show_settings));
+    let ShowSettings(show_settings) = expect_context();
 
     // Scroll focused item into view when index changes
     Effect::new(move || {
@@ -377,12 +375,22 @@ fn SidebarHeader() -> impl IntoView {
     view! {
         <div style=padding>
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
-                <div style="display: flex; align-items: baseline; gap: 10px; min-width: 0;">
+                <a
+                    href=SEQUOIA_WEBSITE_URL
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open seqwawa.com"
+                    style="display: flex; align-items: baseline; gap: 10px; min-width: 0; text-decoration: none;"
+                >
                     <div class="text-gold-gradient" style="font-family: 'Silkscreen', monospace; font-size: 1.35rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; text-shadow: 0 0 16px rgba(245,197,66,0.08);">"SEQUOIA"</div>
                     <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.673rem; color: #3a3f5c; background: #1a1d2a; padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(245,197,66,0.15); letter-spacing: 0.04em;">"v0.1"</div>
-                </div>
+                </a>
                 <div style="position: relative; flex-shrink: 0;">
-                    <div
+                    <a
+                        href=IRIS_RELEASES_URL
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Open Iris releases"
                         style=move || {
                             let status = iris_status.get();
                             let (border, bg, fg) = if status.is_working {
@@ -399,7 +407,7 @@ fn SidebarHeader() -> impl IntoView {
                                 )
                             };
                             format!(
-                                "display: inline-flex; align-items: center; gap: 6px; font-family: 'Silkscreen', monospace; font-size: 0.66rem; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 999px; border: 1px solid {border}; background: {bg}; color: {fg}; cursor: help;"
+                                "display: inline-flex; align-items: center; gap: 6px; font-family: 'Silkscreen', monospace; font-size: 0.66rem; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 999px; border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; text-decoration: none;"
                             )
                         }
                         aria-label=move || iris_status.get().tooltip
@@ -418,7 +426,7 @@ fn SidebarHeader() -> impl IntoView {
                             )
                         } />
                         <span>"Iris"</span>
-                    </div>
+                    </a>
                     <div
                         style=move || {
                             let status = iris_status.get();
@@ -540,6 +548,7 @@ fn SearchBar() -> impl IntoView {
 #[component]
 fn SettingsPanel() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
+    let ShowSettings(show_settings) = expect_context();
     let AbbreviateNames(abbreviate_names) = expect_context();
     let show_connections: RwSignal<bool> = expect_context();
     let ShowCountdown(show_countdown) = expect_context();
@@ -552,6 +561,7 @@ fn SettingsPanel() -> impl IntoView {
     let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
+    let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
     let ManualSrScalar(manual_sr_scalar) = expect_context();
     let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
     let ShowLeaderboardSrGain(show_leaderboard_sr_gain) = expect_context();
@@ -579,8 +589,31 @@ fn SettingsPanel() -> impl IntoView {
 
     view! {
         <div style="border-bottom: 1px solid #282c3e;">
-            <div style="padding: 14px 24px 8px; font-family: 'Silkscreen', monospace; font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860;">
-                <span style="color: #f5c542; margin-right: 6px; font-size: 0.812rem;">{"\u{2699}"}</span>"Settings"
+            <div style="padding: 12px 14px 8px; display: flex; align-items: center; gap: 10px;">
+                <button
+                    style="width: 30px; height: 30px; border-radius: 999px; border: 1px solid #282c3e; background: #1a1d2a; color: #9a9590; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color 0.15s, background 0.15s, color 0.15s; font-family: 'JetBrains Mono', monospace; font-size: 0.92rem; line-height: 1;"
+                    title="Back"
+                    on:click=move |_| show_settings.set(false)
+                    on:mouseenter=move |e| {
+                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                            el.style().set_property("color", "#f5c542").ok();
+                            el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
+                            el.style().set_property("background", "#13161f").ok();
+                        }
+                    }
+                    on:mouseleave=move |e| {
+                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                            el.style().set_property("color", "#9a9590").ok();
+                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("background", "#1a1d2a").ok();
+                        }
+                    }
+                >
+                    "\u{2039}"
+                </button>
+                <div style="font-family: 'Silkscreen', monospace; font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860;">
+                    <span style="color: #f5c542; margin-right: 6px; font-size: 0.812rem;">{"\u{2699}"}</span>"Settings"
+                </div>
             </div>
             <div style="padding: 0 12px 12px;">
                 <SettingsSectionHeader title="Labels" />
@@ -670,6 +703,7 @@ fn SettingsPanel() -> impl IntoView {
                 />
                 <SettingsToggleRow label="Resource Highlight" shortcut="P" active=resource_highlight />
                 <SettingsToggleRow label="Resource Icons" shortcut="" active=show_resource_icons />
+                <SettingsToggleRow label="Territory Ornaments" shortcut="" active=show_territory_ornaments />
                 <SettingsToggleRow label="Minimap" shortcut="M" active=show_minimap />
                 <SettingsToggleRow label="Heat Map" shortcut="" active=heat_mode_enabled />
                 <div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 10px;">
@@ -2509,6 +2543,7 @@ fn StatsBar() -> impl IntoView {
     let GuildColorStore(guild_color_store) = expect_context();
     let IsMobile(is_mobile) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let ResetSettingsTrigger(reset_settings_trigger) = expect_context();
 
     let guild_count = Memo::new(move |_| {
         let map = territories.get();
@@ -2644,6 +2679,33 @@ fn StatsBar() -> impl IntoView {
             >
                 <span style=move || status_dot_style.get()></span>
             </div>
+            <button
+                style:display=move || if show_settings.get() { "flex" } else { "none" }
+                style="background: linear-gradient(180deg, rgba(245,197,66,0.12) 0%, rgba(245,197,66,0.06) 100%); border: 1px solid rgba(245,197,66,0.24); border-radius: 999px; padding: 5px 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s, box-shadow 0.15s; font-family: 'Silkscreen', monospace; font-size: 0.648rem; letter-spacing: 0.08em; text-transform: uppercase; color: #f5c542; box-shadow: 0 0 12px rgba(245,197,66,0.08);"
+                style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }
+                title="Reset all settings to defaults"
+                on:click=move |_| {
+                    reset_settings_trigger.update(|value| *value = value.saturating_add(1));
+                }
+                on:mouseenter=move |e| {
+                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                        el.style().set_property("color", "#13161f").ok();
+                        el.style().set_property("background", "#f5c542").ok();
+                        el.style().set_property("border-color", "#f5c542").ok();
+                        el.style().set_property("box-shadow", "0 0 12px rgba(245,197,66,0.24)").ok();
+                    }
+                }
+                on:mouseleave=move |e| {
+                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                        el.style().set_property("color", "#f5c542").ok();
+                        el.style().set_property("background", "linear-gradient(180deg, rgba(245,197,66,0.12) 0%, rgba(245,197,66,0.06) 100%)").ok();
+                        el.style().set_property("border-color", "rgba(245,197,66,0.24)").ok();
+                        el.style().set_property("box-shadow", "0 0 12px rgba(245,197,66,0.08)").ok();
+                    }
+                }
+            >
+                "Defaults"
+            </button>
             <button
                 style="background: none; border: 1px solid #282c3e; border-radius: 999px; padding: 5px 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s;"
                 style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }

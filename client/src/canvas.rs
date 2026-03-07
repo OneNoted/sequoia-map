@@ -12,8 +12,8 @@ use crate::app::{
     HeatWindowLabel, HistoryTimestamp, Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons,
     LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, MapMode, NameColorSetting,
     PeekTerritory, ReadableFont, ResourceHighlight, Selected, ShowCompoundMapTime, ShowCountdown,
-    ShowGranularMapTime, ShowMinimap, ShowNames, ShowResourceIcons, SidebarOpen, SidebarTransient,
-    TagColorSetting, ThickCooldownBorders,
+    ShowGranularMapTime, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
+    ShowTerritoryOrnaments, SidebarOpen, SidebarTransient, TagColorSetting, ThickCooldownBorders,
 };
 use crate::gpu::{GpuRenderer, RenderFrameInput};
 use crate::icons::{self, ResourceAtlas};
@@ -304,6 +304,7 @@ pub fn MapCanvas() -> impl IntoView {
     let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
+    let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
     let ReadableFont(readable_font) = expect_context();
     let NameColorSetting(name_color) = expect_context();
     let TagColorSetting(tag_color) = expect_context();
@@ -319,6 +320,7 @@ pub fn MapCanvas() -> impl IntoView {
     let LabelScaleIcons(label_scale_icons) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarTransient(sidebar_transient) = expect_context();
+    let ShowSettings(show_settings) = expect_context();
 
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let icon_atlas_requested = Rc::new(Cell::new(false));
@@ -426,6 +428,7 @@ pub fn MapCanvas() -> impl IntoView {
             renderer.dynamic_show_granular_map_time = show_granular_map_time.get_untracked();
             renderer.dynamic_show_compound_map_time = show_compound_map_time.get_untracked();
             renderer.dynamic_show_resource_icons = show_resource_icons.get_untracked();
+            renderer.show_territory_ornaments = show_territory_ornaments.get_untracked();
             renderer.label_scale_master = label_scale_master.get_untracked() as f32;
             renderer.label_scale_static_tag = label_scale_static_tag.get_untracked() as f32;
             renderer.label_scale_static_name = label_scale_static_name.get_untracked() as f32;
@@ -607,6 +610,7 @@ pub fn MapCanvas() -> impl IntoView {
             tag_color.track();
             resource_highlight.track();
             show_resource_icons.track();
+            show_territory_ornaments.track();
             thick_cooldown_borders.track();
             heat_mode_enabled.track();
             heat_entries_by_territory.track();
@@ -671,6 +675,8 @@ pub fn MapCanvas() -> impl IntoView {
                             renderer.label_scale_dynamic =
                                 label_scale_dynamic.get_untracked() as f32;
                             renderer.label_scale_icons = label_scale_icons.get_untracked() as f32;
+                            renderer.show_territory_ornaments =
+                                show_territory_ornaments.get_untracked();
                             renderer.mark_dirty(InvalidationReason::Geometry);
                             renderer.mark_dirty(InvalidationReason::StaticLabel);
                             renderer.mark_dirty(InvalidationReason::DynamicLabel);
@@ -931,6 +937,7 @@ pub fn MapCanvas() -> impl IntoView {
             let (wx, wy) = vp.screen_to_world(sx, sy);
             let hit = spatial_grid.borrow().find_at(wx, wy);
             if hit.is_some() {
+                show_settings.set(false);
                 if !sidebar_open.get_untracked() {
                     sidebar_open.set(true);
                     sidebar_transient.set(true);

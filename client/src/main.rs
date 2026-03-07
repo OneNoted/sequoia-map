@@ -1,6 +1,7 @@
 mod animation;
 mod app;
 mod canvas;
+mod claim_labels;
 mod colors;
 #[cfg(target_arch = "wasm32")]
 mod gpu;
@@ -8,6 +9,7 @@ mod heat;
 mod history;
 mod icons;
 mod label_layout;
+mod overlay_sizing;
 mod playback;
 mod render_loop;
 mod renderer;
@@ -48,6 +50,7 @@ mod gpu {
         pub dynamic_show_granular_map_time: bool,
         pub dynamic_show_compound_map_time: bool,
         pub dynamic_show_resource_icons: bool,
+        pub show_territory_ornaments: bool,
         pub label_scale_master: f32,
         pub label_scale_static_tag: f32,
         pub label_scale_static_name: f32,
@@ -113,6 +116,9 @@ use wasm_bindgen::JsCast;
 thread_local! {
     static APP_MOUNT_HANDLE: RefCell<Option<Box<dyn Any>>> = RefCell::new(None);
 }
+
+pub(crate) const SEQUOIA_WEBSITE_URL: &str = "https://seqwawa.com";
+pub(crate) const IRIS_RELEASES_URL: &str = "https://github.com/OneNoted/sequoia-map/releases";
 
 fn main() {
     console_error_panic_hook::set_once();

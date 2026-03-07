@@ -842,8 +842,8 @@ mod tests {
         new.get_mut("Alpha")
             .expect("alpha should exist")
             .acquired = DateTime::parse_from_rfc3339("2026-01-01T00:00:10Z")
-            .expect("valid timestamp")
-            .with_timezone(&Utc);
+                .expect("valid timestamp")
+                .with_timezone(&Utc);
 
         let diff = compute_diff(&old, &new);
         assert_eq!(diff.len(), 1);

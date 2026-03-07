@@ -123,6 +123,8 @@ pub(crate) struct ResourceHighlight(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowResourceIcons(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct ManualSrScalar(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct AutoSrScalarEnabled(pub RwSignal<bool>);
@@ -158,6 +160,10 @@ pub(crate) struct SidebarTransient(pub RwSignal<bool>);
 pub(crate) struct SidebarIndex(pub RwSignal<usize>);
 #[derive(Clone, Copy)]
 pub(crate) struct SidebarItems(pub RwSignal<Vec<String>>);
+#[derive(Clone, Copy)]
+pub(crate) struct ResetSettingsTrigger(pub RwSignal<u64>);
+#[derive(Clone, Copy)]
+pub(crate) struct ShowSettings(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct IsMobile(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -338,6 +344,8 @@ struct SettingsV2 {
     sidebar_open: bool,
     resource_highlight: bool,
     show_resource_icons: bool,
+    #[serde(default = "default_true")]
+    show_territory_ornaments: bool,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
     auto_sr_scalar_enabled: bool,
@@ -481,6 +489,7 @@ impl Default for SettingsV2 {
             sidebar_open: false,
             resource_highlight: false,
             show_resource_icons: false,
+            show_territory_ornaments: true,
             manual_sr_scalar: default_manual_sr_scalar(),
             auto_sr_scalar_enabled: false,
             show_leaderboard_sr_gain: false,
@@ -581,6 +590,7 @@ impl From<LegacySettings> for SettingsV2 {
             sidebar_open: value.sidebar_open,
             resource_highlight: value.resource_highlight,
             show_resource_icons: value.show_resource_icons,
+            show_territory_ornaments: true,
             manual_sr_scalar: value.manual_sr_scalar,
             auto_sr_scalar_enabled: value.auto_sr_scalar_enabled,
             show_leaderboard_sr_gain: value.show_leaderboard_sr_gain,
@@ -735,6 +745,7 @@ pub fn App() -> impl IntoView {
     );
     let resource_highlight: RwSignal<bool> = RwSignal::new(saved.resource_highlight);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
+    let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
     let manual_sr_scalar: RwSignal<f64> =
         RwSignal::new(season_scalar::clamp_manual_scalar(saved.manual_sr_scalar));
     let auto_sr_scalar_enabled: RwSignal<bool> = RwSignal::new(saved.auto_sr_scalar_enabled);
@@ -766,6 +777,8 @@ pub fn App() -> impl IntoView {
     let sidebar_loaded: RwSignal<bool> = RwSignal::new(saved.sidebar_open);
     let sidebar_index: RwSignal<usize> = RwSignal::new(0);
     let sidebar_items: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
+    let reset_settings_trigger: RwSignal<u64> = RwSignal::new(0);
+    let show_settings: RwSignal<bool> = RwSignal::new(false);
     // Live-first boot: defer non-essential work (tiles/history checks/icons)
     // until we have initial territory data and a short settle window.
     let deferred_boot_ready: RwSignal<bool> = RwSignal::new(false);
@@ -845,6 +858,7 @@ pub fn App() -> impl IntoView {
     provide_context(ConnectionThicknessScale(connection_thickness_scale));
     provide_context(ResourceHighlight(resource_highlight));
     provide_context(ShowResourceIcons(show_resource_icons));
+    provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
     provide_context(ManualSrScalar(manual_sr_scalar));
     provide_context(AutoSrScalarEnabled(auto_sr_scalar_enabled));
     provide_context(ShowLeaderboardSrGain(show_leaderboard_sr_gain));
@@ -863,6 +877,8 @@ pub fn App() -> impl IntoView {
     provide_context(SidebarTransient(sidebar_transient));
     provide_context(SidebarIndex(sidebar_index));
     provide_context(SidebarItems(sidebar_items));
+    provide_context(ResetSettingsTrigger(reset_settings_trigger));
+    provide_context(ShowSettings(show_settings));
     provide_context(CurrentMode(map_mode));
     provide_context(HistoryTimestamp(history_timestamp));
     provide_context(PlaybackActive(playback_active));
@@ -903,6 +919,57 @@ pub fn App() -> impl IntoView {
     provide_context(HeatFallbackApplied(heat_fallback_applied));
     provide_context(HeatWindowLabel(heat_window_label));
     provide_context(HeatMetaState(heat_meta));
+
+    Effect::new(move || {
+        if reset_settings_trigger.get() == 0 {
+            return;
+        }
+
+        let defaults = SettingsV2::default();
+        show_connections.set(defaults.show_connections);
+        abbreviate_names.set(defaults.abbreviate_names);
+        show_countdown.set(defaults.show_countdown);
+        show_granular_map_time.set(defaults.granular_map_time);
+        show_compound_map_time.set(defaults.compound_map_time);
+        show_names.set(defaults.show_names);
+        thick_cooldown_borders.set(defaults.thick_cooldown_borders);
+        bold_connections.set(defaults.bold_connections);
+        connection_opacity_scale.set(clamp_connection_opacity_scale(
+            defaults.connection_opacity_scale,
+        ));
+        connection_thickness_scale.set(clamp_connection_thickness_scale(
+            defaults.connection_thickness_scale,
+        ));
+        resource_highlight.set(defaults.resource_highlight);
+        show_resource_icons.set(defaults.show_resource_icons);
+        show_territory_ornaments.set(defaults.show_territory_ornaments);
+        manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
+            defaults.manual_sr_scalar,
+        ));
+        auto_sr_scalar_enabled.set(defaults.auto_sr_scalar_enabled);
+        show_leaderboard_sr_gain.set(defaults.show_leaderboard_sr_gain);
+        show_leaderboard_sr_value.set(defaults.show_leaderboard_sr_value);
+        show_leaderboard_territory_count.set(defaults.show_leaderboard_territory_count);
+        show_leaderboard_online.set(defaults.show_leaderboard_online);
+        leaderboard_sort_by_sr.set(defaults.leaderboard_sort_by_sr);
+        heat_mode_enabled.set(defaults.heat_mode_enabled);
+        heat_live_source.set(defaults.heat_live_source);
+        heat_history_basis.set(defaults.heat_history_basis);
+        heat_selected_season_id.set(defaults.heat_selected_season_id);
+        readable_font.set(defaults.readable_font);
+        show_minimap.set(defaults.show_minimap);
+        name_color.set(defaults.name_color);
+        tag_color.set(defaults.tag_color);
+        label_scale_master.set(clamp_label_scale_master(defaults.label_scale_master));
+        label_scale_static.set(clamp_label_scale_group(defaults.label_scale_static));
+        label_scale_static_name.set(clamp_label_scale_group(
+            defaults
+                .label_scale_static_name
+                .unwrap_or(defaults.label_scale_static),
+        ));
+        label_scale_dynamic.set(clamp_label_scale_group(defaults.label_scale_dynamic));
+        label_scale_icons.set(clamp_label_scale_group(defaults.label_scale_icons));
+    });
 
     // Mutual exclusion: SelectedGuild and Selected clear each other
     Effect::new(move || {
@@ -1315,6 +1382,7 @@ pub fn App() -> impl IntoView {
             sidebar_open: sidebar_open.get(),
             resource_highlight: resource_highlight.get(),
             show_resource_icons: show_resource_icons.get(),
+            show_territory_ornaments: show_territory_ornaments.get(),
             manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
             auto_sr_scalar_enabled: auto_sr_scalar_enabled.get(),
             show_leaderboard_sr_gain: show_leaderboard_sr_gain.get(),
@@ -2471,9 +2539,17 @@ fn Tooltip() -> impl IntoView {
                             </div>
                             <span style="display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;">
                                 {is_iris.then(|| view! {
-                                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.60rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; background: rgba(168,85,247,0.14); border: 1px solid rgba(168,85,247,0.32); color: #a855f7;">
-                                        "IRIS"
-                                    </span>
+                                    <a
+                                        href=crate::IRIS_RELEASES_URL
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title="Open Iris releases"
+                                        style="display: inline-flex; pointer-events: auto; text-decoration: none;"
+                                    >
+                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.60rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; background: rgba(168,85,247,0.14); border: 1px solid rgba(168,85,247,0.32); color: #a855f7; cursor: pointer;">
+                                            "IRIS"
+                                        </span>
+                                    </a>
                                 })}
                                 <span style={format!(
                                     "font-family: 'JetBrains Mono', monospace; font-size: 0.60rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; {}",

@@ -78,6 +78,17 @@ impl ClientTerritory {
 
 pub type ClientTerritoryMap = HashMap<String, ClientTerritory>;
 
+const SEQUOIA_GUILD_NAME: &str = "Sequoia";
+const SEQUOIA_GUILD_PREFIX: &str = "SEQ";
+
+#[inline]
+pub fn is_sequoia_guild(guild_name: &str, guild_prefix: &str) -> bool {
+    guild_name.trim().eq_ignore_ascii_case(SEQUOIA_GUILD_NAME)
+        || guild_prefix
+            .trim()
+            .eq_ignore_ascii_case(SEQUOIA_GUILD_PREFIX)
+}
+
 /// Build client territory map from a full snapshot.
 pub fn from_snapshot(map: TerritoryMap) -> ClientTerritoryMap {
     map.into_iter()
@@ -152,5 +163,25 @@ pub fn apply_runtime_updates(
             continue;
         };
         territory.territory.runtime = update.runtime.clone();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_sequoia_guild;
+
+    #[test]
+    fn sequoia_guild_match_accepts_name_case_insensitively() {
+        assert!(is_sequoia_guild("  sequoia  ", ""));
+    }
+
+    #[test]
+    fn sequoia_guild_match_accepts_prefix_fallback() {
+        assert!(is_sequoia_guild("Unknown Name", " seq "));
+    }
+
+    #[test]
+    fn sequoia_guild_match_rejects_other_guilds() {
+        assert!(!is_sequoia_guild("Nia", "NIA"));
     }
 }

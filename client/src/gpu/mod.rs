@@ -9,6 +9,10 @@ use sequoia_shared::TreasuryLevel;
 use sequoia_shared::colors::hsl_to_rgb;
 
 use crate::app::NameColor;
+use crate::claim_labels::{
+    CLAIM_LABEL_LETTER_SPACING_EM, build_claim_clusters, claim_label_zoom_active,
+    select_claim_label_candidates,
+};
 use crate::colors::brighten;
 use crate::heat::heat_color_for_count;
 use crate::icons::{ICON_COUNT, ResourceAtlas};
@@ -17,8 +21,13 @@ use crate::label_layout::{
     dynamic_label_next_update_age, dynamic_text_state, resource_icon_sequence, write_age,
     write_age_compound,
 };
+use crate::overlay_sizing::{
+    STATIC_NAME_BASELINE_GAP_MULTIPLIER, compute_dynamic_label_sizing,
+    compute_resource_icon_size_world, compute_static_label_sizing,
+    compute_territory_ornament_sizing, compute_territory_ornament_tint, static_name_bottom_bound,
+};
 use crate::renderer::{FrameMetrics, InvalidationReason, RenderCapabilities, SceneSnapshot};
-use crate::territory::ClientTerritoryMap;
+use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
 use crate::tiles::{LoadedTile, TileQuality};
 use crate::time_format::write_hms;
 use crate::viewport::Viewport;
@@ -54,6 +63,8 @@ const QUAD_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribut
     shader_location: 0,
     format: wgpu::VertexFormat::Float32x2,
 }];
+const STATIC_NAME_FILL_ALPHA_MULTIPLIER: f32 = 0.84;
+const STATIC_NAME_HALO_ALPHA_MULTIPLIER: f32 = 0.88;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -163,6 +174,10 @@ struct GpuIconRenderer {
     instance_capacity: u32,
     instances_buf: Vec<IconInstance>,
     uv_by_kind: HashMap<IconKind, [f32; 4]>,
+    default_ornament_uv: [f32; 4],
+    default_ornament_aspect: f32,
+    sequoia_ornament_uv: [f32; 4],
+    sequoia_ornament_aspect: f32,
 }
 
 const GLYPH_ATLAS_FONT_PX: f64 = 96.0;
@@ -194,39 +209,19 @@ const MINIMAP_HISTORY_BOTTOM: f32 = 68.0;
 const MINIMAP_DEFAULT_WORLD_BOUNDS: (f64, f64, f64, f64) = (-2200.0, -6600.0, 1600.0, 400.0);
 const STATIC_TAG_LETTER_SPACING_EM: f32 = 0.07;
 const STATIC_NAME_LETTER_SPACING_EM: f32 = 0.057;
-const STATIC_NAME_BASELINE_GAP_MULTIPLIER: f32 = 1.0;
-const DYNAMIC_TIME_SIZE_MULTIPLIER: f32 = 0.18;
-const DYNAMIC_TIME_STALE_SCALE: f32 = 0.96;
-const DYNAMIC_COOLDOWN_SIZE_MULTIPLIER: f32 = 0.305;
-const DYNAMIC_COOLDOWN_BOOST_BLEND: f32 = 0.58;
-const DYNAMIC_COOLDOWN_LARGE_SOFTEN_START_WORLD: f32 = 86.0;
-const DYNAMIC_COOLDOWN_LARGE_SOFTEN_END_WORLD: f32 = 188.0;
-const DYNAMIC_COOLDOWN_LARGE_SOFTEN_MIN: f32 = 0.78;
+const STATIC_TAG_MIN_WIDTH_WORLD: f32 = 88.0;
+const STATIC_NAME_MIN_WIDTH_WORLD: f32 = 176.0;
 const DYNAMIC_TIME_LETTER_SPACING_EM: f32 = 0.035;
 const DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN: f32 = 0.0035;
 /// Minimum viewport scale required before per-territory timer text (held/cooldown) is shown.
 /// Keeps the default world view uncluttered; timers appear when users zoom in.
 const DYNAMIC_TIMER_VISIBILITY_MIN_SCALE: f64 = 0.31;
-/// Pixel-space thresholds for small-territory timer readability tuning.
-const DYNAMIC_TIMER_SMALL_TILE_IN_PX: f32 = 44.0;
-const DYNAMIC_TIMER_SMALL_TILE_OUT_PX: f32 = 96.0;
-/// Minimum on-screen timer font sizes for small territories.
-const DYNAMIC_TIME_MIN_PX: f32 = 13.0;
-const DYNAMIC_COOLDOWN_MIN_PX: f32 = 14.5;
-/// Extra horizontal timer width budget for tight territories (as a fraction of territory width).
-const DYNAMIC_TIME_MAX_WIDTH_BONUS: f32 = 0.76;
-const DYNAMIC_COOLDOWN_MAX_WIDTH_BONUS: f32 = 1.02;
-const RELATIVE_BOOST_EPS: f32 = 0.01;
 /// Minimum viewport scale at which any territory labels are drawn.
 /// Below this zoom level all text (static tags, dynamic time, icons) is hidden uniformly.
 const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
-const DYNAMIC_COOLDOWN_MIN_WORLD: f32 = 11.2;
-const DYNAMIC_COOLDOWN_MAX_WORLD: f32 = 66.0;
-const HQ_CROWN_ATLAS_SLOT_INDEX: u32 = ICON_COUNT;
-const ICON_ATLAS_SLOT_COUNT: u32 = ICON_COUNT + 1;
-const HQ_CROWN_MIN_PX: f32 = 12.0;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.02;
 const HQ_CROWN_MAX_BOX_FRACTION: f32 = 0.40;
+const ORNAMENT_MIN_BOX_PX: f32 = 34.0;
 
 #[inline]
 fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
@@ -342,169 +337,6 @@ fn write_texture_mip_chain(
     }
 }
 
-#[inline]
-fn small_territory_timer_factor(sw: f32, sh: f32) -> f32 {
-    let tight_axis = sw.min(sh);
-    1.0 - smoothstep_f32(
-        DYNAMIC_TIMER_SMALL_TILE_IN_PX,
-        DYNAMIC_TIMER_SMALL_TILE_OUT_PX,
-        tight_axis,
-    )
-}
-
-#[inline]
-fn static_label_zoom_boost(scale: f32) -> f32 {
-    let zoom_out_boost = (1.0 + (0.62 - scale).max(0.0) * 0.50).clamp(1.0, 1.28);
-    let mid_zoom_ramp_in = smoothstep_f32(0.08, 0.40, scale);
-    let mid_zoom_ramp_out = 1.0 - smoothstep_f32(0.66, 0.98, scale);
-    let mid_zoom_boost = 1.0 + 0.45 * (mid_zoom_ramp_in * mid_zoom_ramp_out);
-    (zoom_out_boost * mid_zoom_boost).clamp(1.0, 1.34)
-}
-
-#[inline]
-fn dynamic_timer_zoom_boost(scale: f32) -> f32 {
-    let zoom_out_boost = (1.0 + (0.64 - scale).max(0.0) * 0.48).clamp(1.0, 1.28);
-    let mid_zoom_ramp_in = smoothstep_f32(0.14, 0.44, scale);
-    let mid_zoom_ramp_out = 1.0 - smoothstep_f32(0.72, 1.02, scale);
-    let mid_zoom_boost = 1.0 + 0.14 * (mid_zoom_ramp_in * mid_zoom_ramp_out);
-    (zoom_out_boost * mid_zoom_boost).clamp(1.0, 1.34)
-}
-
-#[inline]
-fn dynamic_cooldown_zoom_boost(effective_zoom_boost: f32) -> f32 {
-    lerp_f32(1.0, effective_zoom_boost.max(1.0), DYNAMIC_COOLDOWN_BOOST_BLEND)
-}
-
-#[inline]
-fn dynamic_cooldown_size_soften(box_size: f32) -> f32 {
-    let t = smoothstep_f32(
-        DYNAMIC_COOLDOWN_LARGE_SOFTEN_START_WORLD,
-        DYNAMIC_COOLDOWN_LARGE_SOFTEN_END_WORLD,
-        box_size,
-    );
-    lerp_f32(1.0, DYNAMIC_COOLDOWN_LARGE_SOFTEN_MIN, t)
-}
-
-#[inline]
-fn apply_relative_boost(raw_boost: f32, territory_base: f32, frame_max_base: f32) -> f32 {
-    if raw_boost <= 1.0 {
-        return 1.0;
-    }
-    if territory_base < frame_max_base - RELATIVE_BOOST_EPS {
-        raw_boost
-    } else {
-        1.0
-    }
-}
-
-#[inline]
-fn static_preboost_tag_size(ww: f32, hh: f32, scale: f32) -> Option<f32> {
-    if ww < 8.0 || hh < 6.0 {
-        return None;
-    }
-    let px_per_world = scale.max(0.0001);
-    let min_tag_world = (15.0 / px_per_world).min(ww * 0.55);
-    let tag_floor = 7.2_f32.max(min_tag_world);
-    let tag_cap = 28.0_f32.max(tag_floor * 1.08);
-    Some((ww * 0.44).clamp(tag_floor, tag_cap))
-}
-
-#[inline]
-fn dynamic_preboost_tag_size(ww: f32, hh: f32, scale: f32, sw: f32, sh: f32) -> Option<f32> {
-    if sw < 10.0 || sh < 8.0 {
-        return None;
-    }
-    if sw < 28.0 || sh < 18.0 {
-        return None;
-    }
-
-    let box_size = ww.min(hh);
-    let px_per_world = scale.max(0.0001);
-    let min_tag_world = (9.6 / px_per_world).min(box_size * 0.40);
-    let tag_floor = 6.0_f32.max(min_tag_world);
-    let tag_cap = 76.0_f32.max(tag_floor * 1.08);
-    Some((box_size * 0.236).clamp(tag_floor, tag_cap))
-}
-
-#[inline]
-fn timer_max_width_world(ww: f32, small_factor: f32, width_bonus: f32) -> f32 {
-    let base = (ww - 8.0).max(3.0);
-    base + ww.max(1.0) * width_bonus * small_factor.clamp(0.0, 1.0)
-}
-
-#[derive(Clone, Copy)]
-struct StaticLabelSizing {
-    detail_layout_alpha: f32,
-    tag_size: f32,
-    detail_size: f32,
-}
-
-#[inline]
-fn compute_static_label_sizing(
-    ww: f32,
-    hh: f32,
-    scale: f32,
-    effective_zoom_boost: f32,
-) -> Option<StaticLabelSizing> {
-    let preboost_tag_size = static_preboost_tag_size(ww, hh, scale)?;
-    let detail_layout_x = smoothstep_f32(14.0, 36.0, ww);
-    let detail_layout_y = smoothstep_f32(9.0, 24.0, hh);
-    let detail_layout_alpha = (detail_layout_x * detail_layout_y).sqrt();
-
-    let px_per_world = scale.max(0.0001);
-    let min_tag_world = (15.0 / px_per_world).min(ww * 0.55);
-    let min_name_world = (13.5 / px_per_world).min(ww * 0.40);
-    let tag_floor = 7.2_f32.max(min_tag_world);
-    let tag_cap = 28.0_f32.max(tag_floor * 1.08);
-    let tag_size = (preboost_tag_size * effective_zoom_boost).clamp(tag_floor, tag_cap);
-
-    let detail_floor = 5.6_f32.max(min_name_world);
-    let detail_cap = 16.0_f32.max(detail_floor * 1.08);
-    let detail_size = (tag_size * 0.56).clamp(detail_floor, detail_cap);
-
-    Some(StaticLabelSizing {
-        detail_layout_alpha,
-        tag_size,
-        detail_size,
-    })
-}
-
-/// Bottom Y bound of the static territory-name line, when that line is visible.
-fn static_name_bottom_bound(
-    use_static_gpu_labels: bool,
-    static_show_names: bool,
-    ww: f32,
-    hh: f32,
-    cy: f32,
-    scale: f32,
-    tag_scale: f32,
-    name_scale: f32,
-    static_zoom_boost: f32,
-    static_frame_max_preboost_tag: f32,
-) -> Option<f32> {
-    if !use_static_gpu_labels || !static_show_names {
-        return None;
-    }
-
-    let preboost_tag_size = static_preboost_tag_size(ww, hh, scale)?;
-    let effective_zoom_boost = apply_relative_boost(
-        static_zoom_boost,
-        preboost_tag_size,
-        static_frame_max_preboost_tag,
-    );
-    let sizing = compute_static_label_sizing(ww, hh, scale, effective_zoom_boost)?;
-    let detail_layout_alpha = sizing.detail_layout_alpha;
-    if detail_layout_alpha <= 0.02 {
-        return None;
-    }
-    let tag_size = sizing.tag_size * tag_scale.clamp(0.5, 4.0);
-    let detail_size = sizing.detail_size * name_scale.clamp(0.5, 4.0);
-
-    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha);
-    let name_y = tag_y + tag_size * 0.5 + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
-    Some(name_y + detail_size * 0.5)
-}
-
 fn name_color_rgba(name_color: NameColor, guild_rgb: (u8, u8, u8)) -> [f32; 4] {
     match name_color {
         NameColor::White => [220.0 / 255.0, 218.0 / 255.0, 210.0 / 255.0, 0.95],
@@ -534,6 +366,38 @@ fn gpu_console_diag_enabled() -> bool {
     .ok()
     .and_then(|value| value.as_bool())
     .unwrap_or(false)
+}
+
+fn set_claim_label_debug(scale: f64, active: bool, cluster_count: usize, rendered_count: usize) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        payload.as_ref(),
+        &wasm_bindgen::JsValue::from_str("scale"),
+        &wasm_bindgen::JsValue::from_f64(scale),
+    );
+    let _ = js_sys::Reflect::set(
+        payload.as_ref(),
+        &wasm_bindgen::JsValue::from_str("active"),
+        &wasm_bindgen::JsValue::from_bool(active),
+    );
+    let _ = js_sys::Reflect::set(
+        payload.as_ref(),
+        &wasm_bindgen::JsValue::from_str("clusterCount"),
+        &wasm_bindgen::JsValue::from_f64(cluster_count as f64),
+    );
+    let _ = js_sys::Reflect::set(
+        payload.as_ref(),
+        &wasm_bindgen::JsValue::from_str("renderedCount"),
+        &wasm_bindgen::JsValue::from_f64(rendered_count as f64),
+    );
+    let _ = js_sys::Reflect::set(
+        window.as_ref(),
+        &wasm_bindgen::JsValue::from_str("__SEQUOIA_CLAIM_LABEL_DEBUG__"),
+        payload.as_ref(),
+    );
 }
 
 fn gpu_is_firefox() -> bool {
@@ -949,6 +813,7 @@ pub struct GpuRenderer {
     pub dynamic_show_granular_map_time: bool,
     pub dynamic_show_compound_map_time: bool,
     pub dynamic_show_resource_icons: bool,
+    pub show_territory_ornaments: bool,
     pub label_scale_master: f32,
     pub label_scale_static_tag: f32,
     pub label_scale_static_name: f32,
@@ -1657,6 +1522,7 @@ impl GpuRenderer {
             dynamic_show_granular_map_time: false,
             dynamic_show_compound_map_time: false,
             dynamic_show_resource_icons: true,
+            show_territory_ornaments: true,
             label_scale_master: 1.0,
             label_scale_static_tag: 1.0,
             label_scale_static_name: 1.0,
@@ -1852,51 +1718,158 @@ impl GpuRenderer {
         let ctx = get_2d_context(&canvas, true)?;
         let resource_atlas_w = icons.resource_image.natural_width().max(1);
         let resource_atlas_h = icons.resource_image.natural_height().max(1);
+        let crown_w = icons.hq_crown_image.natural_width().max(1);
         let crown_h = icons.hq_crown_image.natural_height().max(1);
+        let ornament_w = icons.territory_ornament_image.natural_width().max(1);
+        let ornament_h = icons.territory_ornament_image.natural_height().max(1);
+        let sequoia_ornament_w = icons
+            .sequoia_territory_ornament_image
+            .natural_width()
+            .max(1);
+        let sequoia_ornament_h = icons
+            .sequoia_territory_ornament_image
+            .natural_height()
+            .max(1);
         let icon_cell_w = (resource_atlas_w / ICON_COUNT).max(1);
         let icon_cell_h = resource_atlas_h.max(1);
-        let atlas_w = icon_cell_w * ICON_ATLAS_SLOT_COUNT;
-        let atlas_h = icon_cell_h.max(crown_h);
+        let crown_slot_w = icon_cell_w.max(crown_w);
+        let resource_x = 0u32;
+        let crown_x = resource_x + resource_atlas_w;
+        let ornament_x = crown_x + crown_slot_w;
+        let sequoia_ornament_x = ornament_x + ornament_w;
+        let atlas_w = sequoia_ornament_x + sequoia_ornament_w;
+        let atlas_h = icon_cell_h
+            .max(crown_h)
+            .max(ornament_h)
+            .max(sequoia_ornament_h);
         canvas.set_width(atlas_w);
         canvas.set_height(atlas_h);
         ctx.clear_rect(0.0, 0.0, atlas_w as f64, atlas_h as f64);
         ctx.set_image_smoothing_enabled(false);
         ctx.draw_image_with_html_image_element_and_dw_and_dh(
             &icons.resource_image,
+            resource_x as f64,
             0.0,
-            0.0,
-            (icon_cell_w * ICON_COUNT) as f64,
+            resource_atlas_w as f64,
             icon_cell_h as f64,
         )
         .ok()?;
         ctx.draw_image_with_html_image_element_and_dw_and_dh(
             &icons.hq_crown_image,
-            (icon_cell_w * HQ_CROWN_ATLAS_SLOT_INDEX) as f64,
+            crown_x as f64,
             0.0,
-            icon_cell_w as f64,
+            crown_slot_w as f64,
             icon_cell_h as f64,
+        )
+        .ok()?;
+        ctx.draw_image_with_html_image_element(
+            &icons.territory_ornament_image,
+            ornament_x as f64,
+            0.0,
+        )
+        .ok()?;
+        ctx.draw_image_with_html_image_element(
+            &icons.sequoia_territory_ornament_image,
+            sequoia_ornament_x as f64,
+            0.0,
         )
         .ok()?;
         ctx.set_image_smoothing_enabled(true);
 
-        let icon_uv = |slot: u32| {
-            let cell_w = 1.0 / ICON_ATLAS_SLOT_COUNT as f32;
-            let u0 = slot as f32 * cell_w;
-            [u0, 0.0, u0 + cell_w, 1.0]
-        };
-        let mut uv_by_kind = HashMap::with_capacity(ICON_ATLAS_SLOT_COUNT as usize);
-        uv_by_kind.insert(IconKind::Emerald, icon_uv(0));
-        uv_by_kind.insert(IconKind::Ore, icon_uv(1));
-        uv_by_kind.insert(IconKind::Crops, icon_uv(2));
-        uv_by_kind.insert(IconKind::Fish, icon_uv(3));
-        uv_by_kind.insert(IconKind::Wood, icon_uv(4));
-        uv_by_kind.insert(IconKind::Rainbow, icon_uv(5));
-        uv_by_kind.insert(IconKind::HqCrown, icon_uv(HQ_CROWN_ATLAS_SLOT_INDEX));
-
         let image_data = ctx
             .get_image_data(0.0, 0.0, atlas_w as f64, atlas_h as f64)
             .ok()?;
-        let pixels = image_data.data();
+        let mut pixels = image_data.data().0;
+
+        let atlas_wf = atlas_w as f32;
+        let atlas_hf = atlas_h as f32;
+        let mut extract_ornament = |slot_x: u32, slot_w: u32, slot_h: u32, preserve_color: bool| {
+            let mut orn_min_x = slot_w;
+            let mut orn_min_y = slot_h;
+            let mut orn_max_x = 0u32;
+            let mut orn_max_y = 0u32;
+            let mut orn_found = false;
+            for y in 0..slot_h {
+                for x in 0..slot_w {
+                    let atlas_px_x = slot_x + x;
+                    let idx = ((y * atlas_w + atlas_px_x) * 4) as usize;
+                    let r = pixels[idx] as u16;
+                    let g = pixels[idx + 1] as u16;
+                    let b = pixels[idx + 2] as u16;
+                    let src_a = pixels[idx + 3] as u16;
+                    let lum = r.max(g).max(b);
+                    let alpha = ((lum * src_a + 127) / 255) as u8;
+                    if preserve_color {
+                        pixels[idx + 3] = alpha;
+                    } else {
+                        pixels[idx] = 255;
+                        pixels[idx + 1] = 255;
+                        pixels[idx + 2] = 255;
+                        pixels[idx + 3] = alpha;
+                    }
+                    if alpha > 6 {
+                        orn_found = true;
+                        orn_min_x = orn_min_x.min(x);
+                        orn_min_y = orn_min_y.min(y);
+                        orn_max_x = orn_max_x.max(x);
+                        orn_max_y = orn_max_y.max(y);
+                    }
+                }
+            }
+            if orn_found {
+                let tight_w = (orn_max_x - orn_min_x + 1).max(1);
+                let tight_h = (orn_max_y - orn_min_y + 1).max(1);
+                (
+                    [
+                        ((slot_x + orn_min_x) as f32) / atlas_wf,
+                        (orn_min_y as f32) / atlas_hf,
+                        ((slot_x + orn_max_x + 1) as f32) / atlas_wf,
+                        ((orn_max_y + 1) as f32) / atlas_hf,
+                    ],
+                    (tight_w as f32 / tight_h as f32).clamp(0.2, 5.0),
+                )
+            } else {
+                (
+                    [
+                        (slot_x as f32) / atlas_wf,
+                        0.0,
+                        ((slot_x + slot_w) as f32) / atlas_wf,
+                        (slot_h as f32) / atlas_hf,
+                    ],
+                    (slot_w as f32 / slot_h as f32).clamp(0.2, 5.0),
+                )
+            }
+        };
+        let (default_ornament_uv, default_ornament_aspect) =
+            extract_ornament(ornament_x, ornament_w, ornament_h, false);
+        let (sequoia_ornament_uv, sequoia_ornament_aspect) = extract_ornament(
+            sequoia_ornament_x,
+            sequoia_ornament_w,
+            sequoia_ornament_h,
+            true,
+        );
+        let icon_v1 = (icon_cell_h as f32 / atlas_hf).clamp(0.0, 1.0);
+        let mut uv_by_kind = HashMap::with_capacity((ICON_COUNT + 1) as usize);
+        let resource_icon_uv = |index: u32| {
+            let x0 = resource_x + index * icon_cell_w;
+            let x1 = (resource_x + (index + 1) * icon_cell_w).min(resource_x + resource_atlas_w);
+            [(x0 as f32) / atlas_wf, 0.0, (x1 as f32) / atlas_wf, icon_v1]
+        };
+        uv_by_kind.insert(IconKind::Emerald, resource_icon_uv(0));
+        uv_by_kind.insert(IconKind::Ore, resource_icon_uv(1));
+        uv_by_kind.insert(IconKind::Crops, resource_icon_uv(2));
+        uv_by_kind.insert(IconKind::Fish, resource_icon_uv(3));
+        uv_by_kind.insert(IconKind::Wood, resource_icon_uv(4));
+        uv_by_kind.insert(IconKind::Rainbow, resource_icon_uv(5));
+        uv_by_kind.insert(
+            IconKind::HqCrown,
+            [
+                (crown_x as f32) / atlas_wf,
+                0.0,
+                ((crown_x + crown_slot_w) as f32) / atlas_wf,
+                icon_v1,
+            ],
+        );
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("icon-atlas-tex"),
@@ -2052,6 +2025,10 @@ impl GpuRenderer {
             instance_capacity: initial_capacity,
             instances_buf: Vec::new(),
             uv_by_kind,
+            default_ornament_uv,
+            default_ornament_aspect,
+            sequoia_ornament_uv,
+            sequoia_ornament_aspect,
         })
     }
 
@@ -2844,6 +2821,7 @@ impl GpuRenderer {
         halo_instances.clear();
 
         if !self.use_static_gpu_labels || vp.scale < LABEL_VISIBILITY_MIN_SCALE {
+            set_claim_label_debug(vp.scale, false, 0, 0);
             text_renderer.static_fill_instances = fill_instances;
             text_renderer.static_halo_instances = halo_instances;
             text_renderer.static_fill_count = 0;
@@ -2853,131 +2831,160 @@ impl GpuRenderer {
         }
 
         let scale = vp.scale as f32;
-        let static_zoom_boost = static_label_zoom_boost(scale);
-        let mut static_frame_max_preboost_tag = 0.0_f32;
-        if static_zoom_boost > 1.0 {
-            for ct in territories.values() {
-                let loc = &ct.territory.location;
-                let ww = loc.width() as f32;
-                let hh = loc.height() as f32;
-                if let Some(preboost_tag) = static_preboost_tag_size(ww, hh, scale) {
-                    static_frame_max_preboost_tag = static_frame_max_preboost_tag.max(preboost_tag);
-                }
-            }
-        }
-
         {
             let glyphs = &text_renderer.glyphs;
             let kerning = &text_renderer.kerning;
             let line_height = text_renderer.line_height;
             let tag_tracking_units = line_height * STATIC_TAG_LETTER_SPACING_EM;
             let name_tracking_units = line_height * STATIC_NAME_LETTER_SPACING_EM;
-            for (name, ct) in territories {
-                let loc = &ct.territory.location;
-                let ww = loc.width() as f32;
-                let hh = loc.height() as f32;
-                let Some(preboost_tag_size) = static_preboost_tag_size(ww, hh, scale) else {
-                    continue;
-                };
-                let effective_zoom_boost = apply_relative_boost(
-                    static_zoom_boost,
-                    preboost_tag_size,
-                    static_frame_max_preboost_tag,
-                );
-                let Some(sizing) = compute_static_label_sizing(ww, hh, scale, effective_zoom_boost)
-                else {
-                    continue;
-                };
-                let cx = loc.midpoint_x() as f32;
-                let cy = loc.midpoint_y() as f32;
-                let detail_layout_alpha = sizing.detail_layout_alpha;
-                let tag_size = sizing.tag_size * static_tag_scale;
-                let detail_size = sizing.detail_size * static_name_scale;
-                let px_per_world = scale.max(0.0001);
-                // At far/mid zoom, allow labels to overflow territory bounds for readability.
-                let max_static_scale = static_tag_scale.max(static_name_scale);
-                let overflow_scale =
-                    (1.0 + (max_static_scale - 1.0).max(0.0) * 0.22).clamp(1.0, 1.35);
-                let overflow =
-                    (1.0 + (1.0 - smoothstep_f32(0.25, 0.65, px_per_world)) * 0.7) * overflow_scale;
-                let tag_padding = lerp_f32(3.0, 8.0, detail_layout_alpha);
-                let tag_max_w = (ww * overflow - tag_padding).max(3.0);
-                let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha);
-                let tag = ct.territory.guild.prefix.as_str();
-                let tag_color = {
-                    let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
-                    c[3] = 1.0;
-                    c
-                };
-                let tag_px = tag_size * px_per_world;
-                let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
-                let tag_halo_alpha = (0.70 - tag_halo_boost * 0.10).clamp(0.54, 0.76);
-
-                push_text_line_dual_with_tracking(
-                    &mut fill_instances,
-                    &mut halo_instances,
-                    glyphs,
-                    kerning,
+            if claim_label_zoom_active(vp.scale) {
+                let claim_tracking_units = line_height * CLAIM_LABEL_LETTER_SPACING_EM;
+                let claim_clusters = build_claim_clusters(territories);
+                let claim_labels = select_claim_label_candidates(
+                    &claim_clusters,
+                    vp,
+                    crate::claim_labels::Rect {
+                        left: 0.0,
+                        top: 0.0,
+                        right: self.surface_config.width as f32,
+                        bottom: self.surface_config.height as f32,
+                    },
                     line_height,
-                    tag,
-                    cx,
-                    tag_y,
-                    tag_size,
-                    tag_max_w,
-                    tag_tracking_units,
-                    tag_color,
-                    [0.0, 0.0, 0.0, tag_halo_alpha],
+                    |text| line_units_with_tracking(text, glyphs, kerning, claim_tracking_units),
                 );
-
-                if self.static_show_names && detail_layout_alpha > 0.02 {
-                    let fallback_abbrev;
-                    let base_name = if let Some((abbreviated, full)) =
-                        self.territory_name_cache.get(name.as_str())
-                    {
-                        if self.static_abbreviate_names {
-                            abbreviated.as_str()
-                        } else {
-                            full.as_str()
-                        }
-                    } else if self.static_abbreviate_names {
-                        fallback_abbrev = abbreviate_name(name);
-                        fallback_abbrev.as_str()
-                    } else {
-                        name.as_str()
-                    };
-                    let name_max_w = (ww * overflow - 10.0).max(4.0);
-                    let units_per_world = line_height / detail_size.max(0.001);
-                    let fitted = fit_text_to_units_with_tracking(
-                        base_name,
-                        name_max_w * units_per_world,
-                        glyphs,
-                        kerning,
-                        name_tracking_units,
+                let rendered_claim_label_count = claim_labels.len();
+                for claim in claim_labels {
+                    let (r, g, b) = brighten(
+                        claim.guild_color.0,
+                        claim.guild_color.1,
+                        claim.guild_color.2,
+                        1.8,
                     );
-                    let name_y =
-                        tag_y + tag_size * 0.5 + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
-                    let mut name_rgba = name_color_rgba(self.static_name_color, ct.guild_color);
-                    name_rgba[3] *= detail_layout_alpha.clamp(0.0, 1.0);
-                    let name_px = detail_size * px_per_world;
-                    let name_halo_boost = 1.0 - smoothstep_f32(8.4, 12.2, name_px);
-                    let name_halo_alpha = ((0.68 - name_halo_boost * 0.12)
-                        * detail_layout_alpha.clamp(0.0, 1.0))
-                    .clamp(0.0, 0.74);
                     push_text_line_dual_with_tracking(
                         &mut fill_instances,
                         &mut halo_instances,
                         glyphs,
                         kerning,
                         line_height,
-                        &fitted,
-                        cx,
-                        name_y,
-                        detail_size,
-                        name_max_w,
-                        name_tracking_units,
-                        name_rgba,
-                        [0.0, 0.0, 0.0, name_halo_alpha],
+                        &claim.text,
+                        claim.center_world[0],
+                        claim.center_world[1],
+                        claim.font_height_world,
+                        claim.max_width_world,
+                        claim_tracking_units,
+                        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.97],
+                        [0.0, 0.0, 0.0, 0.84],
                     );
+                }
+                set_claim_label_debug(
+                    vp.scale,
+                    true,
+                    claim_clusters.len(),
+                    rendered_claim_label_count,
+                );
+            } else {
+                set_claim_label_debug(vp.scale, false, 0, 0);
+                for (name, ct) in territories {
+                    let loc = &ct.territory.location;
+                    let ww = loc.width() as f32;
+                    let hh = loc.height() as f32;
+                    let Some(sizing) = compute_static_label_sizing(ww, hh) else {
+                        continue;
+                    };
+                    let cx = loc.midpoint_x() as f32;
+                    let cy = loc.midpoint_y() as f32;
+                    let detail_layout_alpha = sizing.detail_layout_alpha;
+                    let tag_size = sizing.tag_size * static_tag_scale;
+                    let detail_size = sizing.detail_size * static_name_scale;
+                    let px_per_world = scale.max(0.0001);
+                    // Keep static label sizing stable in world space; only user scale settings widen
+                    // the fit budget a bit to accommodate larger configured text.
+                    let max_static_scale = static_tag_scale.max(static_name_scale);
+                    let overflow_scale =
+                        (1.0 + (max_static_scale - 1.0).max(0.0) * 0.22).clamp(1.0, 1.35);
+                    let overflow = overflow_scale;
+                    let tag_padding = lerp_f32(3.0, 8.0, detail_layout_alpha);
+                    let tag_max_w = (ww * overflow - tag_padding).max(STATIC_TAG_MIN_WIDTH_WORLD);
+                    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha);
+                    let tag = ct.territory.guild.prefix.as_str();
+                    let tag_color = {
+                        let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
+                        c[3] = 1.0;
+                        c
+                    };
+                    let tag_px = tag_size * px_per_world;
+                    let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
+                    let tag_halo_alpha = (0.70 - tag_halo_boost * 0.10).clamp(0.54, 0.76);
+
+                    push_text_line_dual_with_tracking(
+                        &mut fill_instances,
+                        &mut halo_instances,
+                        glyphs,
+                        kerning,
+                        line_height,
+                        tag,
+                        cx,
+                        tag_y,
+                        tag_size,
+                        tag_max_w,
+                        tag_tracking_units,
+                        tag_color,
+                        [0.0, 0.0, 0.0, tag_halo_alpha],
+                    );
+
+                    if self.static_show_names && detail_layout_alpha > 0.02 {
+                        let fallback_abbrev;
+                        let base_name = if let Some((abbreviated, full)) =
+                            self.territory_name_cache.get(name.as_str())
+                        {
+                            if self.static_abbreviate_names {
+                                abbreviated.as_str()
+                            } else {
+                                full.as_str()
+                            }
+                        } else if self.static_abbreviate_names {
+                            fallback_abbrev = abbreviate_name(name);
+                            fallback_abbrev.as_str()
+                        } else {
+                            name.as_str()
+                        };
+                        let name_max_w = (ww * overflow - 10.0).max(STATIC_NAME_MIN_WIDTH_WORLD);
+                        let units_per_world = line_height / detail_size.max(0.001);
+                        let fitted = fit_text_to_units_with_tracking(
+                            base_name,
+                            name_max_w * units_per_world,
+                            glyphs,
+                            kerning,
+                            name_tracking_units,
+                        );
+                        let name_y = tag_y
+                            + tag_size * 0.5
+                            + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
+                        let mut name_rgba = name_color_rgba(self.static_name_color, ct.guild_color);
+                        name_rgba[3] *=
+                            STATIC_NAME_FILL_ALPHA_MULTIPLIER * detail_layout_alpha.clamp(0.0, 1.0);
+                        let name_px = detail_size * px_per_world;
+                        let name_halo_boost = 1.0 - smoothstep_f32(8.4, 12.2, name_px);
+                        let name_halo_alpha = ((0.68 - name_halo_boost * 0.12)
+                            * STATIC_NAME_HALO_ALPHA_MULTIPLIER
+                            * detail_layout_alpha.clamp(0.0, 1.0))
+                        .clamp(0.0, 0.74);
+                        push_text_line_dual_with_tracking(
+                            &mut fill_instances,
+                            &mut halo_instances,
+                            glyphs,
+                            kerning,
+                            line_height,
+                            &fitted,
+                            cx,
+                            name_y,
+                            detail_size,
+                            name_max_w,
+                            name_tracking_units,
+                            name_rgba,
+                            [0.0, 0.0, 0.0, name_halo_alpha],
+                        );
+                    }
                 }
             }
         }
@@ -3037,33 +3044,6 @@ impl GpuRenderer {
         }
 
         let scale = vp.scale as f32;
-        let dynamic_zoom_boost = dynamic_timer_zoom_boost(scale);
-        let static_zoom_boost = static_label_zoom_boost(scale);
-        let need_static_name_bottom = self.use_static_gpu_labels && self.static_show_names;
-        let mut dynamic_frame_max_preboost_tag = 0.0_f32;
-        let mut static_frame_max_preboost_tag = 0.0_f32;
-        if dynamic_zoom_boost > 1.0 || (need_static_name_bottom && static_zoom_boost > 1.0) {
-            for ct in territories.values() {
-                let loc = &ct.territory.location;
-                let ww = loc.width() as f32;
-                let hh = loc.height() as f32;
-                let sw = ww * scale;
-                let sh = hh * scale;
-                if dynamic_zoom_boost > 1.0
-                    && let Some(preboost_tag) = dynamic_preboost_tag_size(ww, hh, scale, sw, sh)
-                {
-                    dynamic_frame_max_preboost_tag =
-                        dynamic_frame_max_preboost_tag.max(preboost_tag);
-                }
-                if need_static_name_bottom
-                    && static_zoom_boost > 1.0
-                    && let Some(preboost_tag) = static_preboost_tag_size(ww, hh, scale)
-                {
-                    static_frame_max_preboost_tag = static_frame_max_preboost_tag.max(preboost_tag);
-                }
-            }
-        }
-
         let mut next_update_secs = i64::MAX;
         let mut text_buf = String::with_capacity(16);
         {
@@ -3076,16 +3056,6 @@ impl GpuRenderer {
                 let hh = loc.height() as f32;
                 let sw = ww * scale;
                 let sh = hh * scale;
-                let Some(preboost_tag_size) = dynamic_preboost_tag_size(ww, hh, scale, sw, sh)
-                else {
-                    continue;
-                };
-                let effective_zoom_boost = apply_relative_boost(
-                    dynamic_zoom_boost,
-                    preboost_tag_size,
-                    dynamic_frame_max_preboost_tag,
-                );
-
                 let state =
                     dynamic_text_state(reference_time_secs, ct.territory.acquired.timestamp());
                 let next_age = dynamic_label_next_update_age(
@@ -3100,44 +3070,22 @@ impl GpuRenderer {
                 let metrics = compute_label_layout_metrics(sw as f64, sh as f64, false);
                 let detail_layout_alpha = metrics.detail_layout_alpha;
 
-                let box_size = ww.min(hh);
-                let px_per_world = scale.max(0.0001);
-                let small_timer_factor = small_territory_timer_factor(sw, sh);
-                let min_tag_world = (9.6 / px_per_world).min(box_size * 0.40);
-                let min_time_px = lerp_f32(10.0, DYNAMIC_TIME_MIN_PX, small_timer_factor);
-                let min_cooldown_px = lerp_f32(8.8, DYNAMIC_COOLDOWN_MIN_PX, small_timer_factor);
-                let min_time_world = (min_time_px / px_per_world)
-                    .min(box_size * lerp_f32(0.35, 0.80, small_timer_factor));
-                let min_cooldown_world = (min_cooldown_px / px_per_world)
-                    .min(box_size * lerp_f32(0.50, 0.92, small_timer_factor));
-                let tag_floor = 6.0_f32.max(min_tag_world);
-                let tag_cap = 76.0_f32.max(tag_floor * 1.08);
-                let time_floor = 6.0_f32.max(min_time_world);
-                let time_cap = 44.0_f32.max(time_floor * 1.08);
-                let cooldown_floor = DYNAMIC_COOLDOWN_MIN_WORLD.max(min_cooldown_world);
-                let cooldown_cap = DYNAMIC_COOLDOWN_MAX_WORLD.max(cooldown_floor * 1.08);
-                let tag_size = (box_size * 0.236 * effective_zoom_boost).clamp(tag_floor, tag_cap)
-                    * dynamic_label_scale;
-                let detail_size = (box_size * 0.125).clamp(5.2, 38.0) * dynamic_label_scale;
-                let time_size_full =
-                    (box_size * DYNAMIC_TIME_SIZE_MULTIPLIER * effective_zoom_boost)
-                        .clamp(time_floor, time_cap)
-                        * dynamic_label_scale;
-                let time_size = if state.is_fresh {
-                    time_size_full
-                } else {
-                    (time_size_full * DYNAMIC_TIME_STALE_SCALE).max(5.6)
+                let Some(sizing) = compute_dynamic_label_sizing(
+                    ww,
+                    hh,
+                    scale,
+                    dynamic_label_scale,
+                    state.is_fresh,
+                ) else {
+                    continue;
                 };
-                let cooldown_zoom_boost = dynamic_cooldown_zoom_boost(effective_zoom_boost);
-                let cooldown_size_soften = dynamic_cooldown_size_soften(box_size);
-                let cooldown_size =
-                    (box_size
-                        * DYNAMIC_COOLDOWN_SIZE_MULTIPLIER
-                        * cooldown_zoom_boost
-                        * cooldown_size_soften)
-                        .clamp(cooldown_floor, cooldown_cap)
-                        * dynamic_label_scale;
-                let line_gap = (box_size * 0.048).clamp(2.0, 16.0) * dynamic_label_scale;
+                let px_per_world = scale.max(0.0001);
+                let small_timer_factor = sizing.small_timer_factor;
+                let tag_size = sizing.tag_size;
+                let detail_size = sizing.detail_size;
+                let time_size = sizing.time_size;
+                let cooldown_size = sizing.cooldown_size;
+                let line_gap = sizing.line_gap;
                 let time_tracking_units = line_height * DYNAMIC_TIME_LETTER_SPACING_EM;
                 let cooldown_tracking_units = line_height
                     * lerp_f32(
@@ -3145,10 +3093,8 @@ impl GpuRenderer {
                         DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN,
                         small_timer_factor,
                     );
-                let time_max_width =
-                    timer_max_width_world(ww, small_timer_factor, DYNAMIC_TIME_MAX_WIDTH_BONUS);
-                let cooldown_max_width =
-                    timer_max_width_world(ww, small_timer_factor, DYNAMIC_COOLDOWN_MAX_WIDTH_BONUS);
+                let time_max_width = sizing.time_max_width;
+                let cooldown_max_width = sizing.cooldown_max_width;
 
                 let cx = loc.midpoint_x() as f32;
                 let cy = loc.midpoint_y() as f32;
@@ -3163,11 +3109,8 @@ impl GpuRenderer {
                     ww,
                     hh,
                     cy,
-                    scale,
                     static_tag_scale,
                     static_name_scale,
-                    static_zoom_boost,
-                    static_frame_max_preboost_tag,
                 );
                 let compact_bottom_y = cy + tag_size / 2.0;
                 let mut time_y = compact_bottom_y;
@@ -3249,7 +3192,7 @@ impl GpuRenderer {
                     let remaining = 600 - state.age_secs;
                     text_buf.clear();
                     let _ = write!(&mut text_buf, "{}:{:02}", remaining / 60, remaining % 60);
-                    let cooldown_gap = (3.5 / scale).max(0.0) + line_gap * 0.35;
+                    let cooldown_gap = 3.5 + line_gap * 0.35;
                     let cd_y = content_bottom_y + cooldown_size / 2.0 + cooldown_gap;
                     let urgency = 1.0 - state.cooldown_frac as f64;
                     let (cr, cg, cb) = cooldown_color(urgency);
@@ -3332,6 +3275,10 @@ impl GpuRenderer {
             self.icon_dirty = false;
             return;
         };
+        let default_ornament_uv = renderer.default_ornament_uv;
+        let default_ornament_aspect = renderer.default_ornament_aspect.max(0.2);
+        let sequoia_ornament_uv = renderer.sequoia_ornament_uv;
+        let sequoia_ornament_aspect = renderer.sequoia_ornament_aspect.max(0.2);
         renderer.instances_buf.clear();
         if !self.use_full_gpu_text || vp.scale < LABEL_VISIBILITY_MIN_SCALE {
             renderer.instance_count = 0;
@@ -3340,33 +3287,6 @@ impl GpuRenderer {
         }
 
         let scale = vp.scale as f32;
-        let dynamic_zoom_boost = dynamic_timer_zoom_boost(scale);
-        let static_zoom_boost = static_label_zoom_boost(scale);
-        let need_static_name_bottom = self.use_static_gpu_labels && self.static_show_names;
-        let mut dynamic_frame_max_preboost_tag = 0.0_f32;
-        let mut static_frame_max_preboost_tag = 0.0_f32;
-        if dynamic_zoom_boost > 1.0 || (need_static_name_bottom && static_zoom_boost > 1.0) {
-            for ct in territories.values() {
-                let loc = &ct.territory.location;
-                let ww = loc.width() as f32;
-                let hh = loc.height() as f32;
-                let sw = ww * scale;
-                let sh = hh * scale;
-                if dynamic_zoom_boost > 1.0
-                    && let Some(preboost_tag) = dynamic_preboost_tag_size(ww, hh, scale, sw, sh)
-                {
-                    dynamic_frame_max_preboost_tag =
-                        dynamic_frame_max_preboost_tag.max(preboost_tag);
-                }
-                if need_static_name_bottom
-                    && static_zoom_boost > 1.0
-                    && let Some(preboost_tag) = static_preboost_tag_size(ww, hh, scale)
-                {
-                    static_frame_max_preboost_tag = static_frame_max_preboost_tag.max(preboost_tag);
-                }
-            }
-        }
-
         for (_name, ct) in territories {
             let loc = &ct.territory.location;
             let ww = loc.width() as f32;
@@ -3382,46 +3302,102 @@ impl GpuRenderer {
             let px_per_world = scale.max(0.0001);
             let cx = loc.midpoint_x() as f32;
             let cy = loc.midpoint_y() as f32;
+            if self.show_territory_ornaments
+                && sw >= ORNAMENT_MIN_BOX_PX
+                && sh >= ORNAMENT_MIN_BOX_PX
+            {
+                let use_sequoia_ornament =
+                    is_sequoia_guild(&ct.territory.guild.name, &ct.territory.guild.prefix);
+                let (base_ornament_uv, ornament_aspect, tint) = if use_sequoia_ornament {
+                    (
+                        sequoia_ornament_uv,
+                        sequoia_ornament_aspect,
+                        [1.0, 1.0, 1.0, 1.0],
+                    )
+                } else {
+                    (
+                        default_ornament_uv,
+                        default_ornament_aspect,
+                        compute_territory_ornament_tint(ct.guild_color),
+                    )
+                };
+                let ornament_sizing =
+                    compute_territory_ornament_sizing(ww, hh, ornament_aspect, icon_scale);
+                let corner_w_world = ornament_sizing.corner_w_world;
+                let corner_h_world = ornament_sizing.corner_h_world;
+                if corner_w_world * px_per_world >= 6.0 && corner_h_world * px_per_world >= 6.0 {
+                    let inset_world = ornament_sizing.inset_world;
+                    let left = loc.left() as f32 + inset_world;
+                    let top = loc.top() as f32 + inset_world;
+                    let right = loc.left() as f32 + ww - inset_world - corner_w_world;
+                    let bottom = loc.top() as f32 + hh - inset_world - corner_h_world;
+                    if right >= left + corner_w_world && bottom >= top + corner_h_world {
+                        renderer.instances_buf.push(IconInstance {
+                            rect: [left, top, corner_w_world, corner_h_world],
+                            uv_rect: base_ornament_uv,
+                            tint,
+                        });
+                        renderer.instances_buf.push(IconInstance {
+                            rect: [right, top, corner_w_world, corner_h_world],
+                            uv_rect: [
+                                base_ornament_uv[2],
+                                base_ornament_uv[1],
+                                base_ornament_uv[0],
+                                base_ornament_uv[3],
+                            ],
+                            tint,
+                        });
+                        renderer.instances_buf.push(IconInstance {
+                            rect: [left, bottom, corner_w_world, corner_h_world],
+                            uv_rect: [
+                                base_ornament_uv[0],
+                                base_ornament_uv[3],
+                                base_ornament_uv[2],
+                                base_ornament_uv[1],
+                            ],
+                            tint,
+                        });
+                        renderer.instances_buf.push(IconInstance {
+                            rect: [right, bottom, corner_w_world, corner_h_world],
+                            uv_rect: [
+                                base_ornament_uv[2],
+                                base_ornament_uv[3],
+                                base_ornament_uv[0],
+                                base_ornament_uv[1],
+                            ],
+                            tint,
+                        });
+                    }
+                }
+            }
             if is_hq
                 && let Some(crown_uv) = renderer.uv_by_kind.get(&IconKind::HqCrown).copied()
-                && let Some(static_preboost_tag) = static_preboost_tag_size(ww, hh, scale)
+                && let Some(static_sizing) = compute_static_label_sizing(ww, hh)
             {
-                let static_effective_boost = apply_relative_boost(
-                    static_zoom_boost,
-                    static_preboost_tag,
-                    static_frame_max_preboost_tag,
+                let crown_tag_size = static_sizing.tag_size * static_tag_scale;
+                let crown_detail_size = static_sizing.detail_size * static_name_scale;
+                let crown_tag_y = lerp_f32(
+                    cy,
+                    cy - (crown_detail_size + 1.0) * 0.45,
+                    static_sizing.detail_layout_alpha,
                 );
-                if let Some(static_sizing) =
-                    compute_static_label_sizing(ww, hh, scale, static_effective_boost)
-                {
-                    let crown_tag_size = static_sizing.tag_size * static_tag_scale;
-                    let crown_detail_size = static_sizing.detail_size * static_name_scale;
-                    let crown_tag_y = lerp_f32(
-                        cy,
-                        cy - (crown_detail_size + 1.0) * 0.45,
-                        static_sizing.detail_layout_alpha,
-                    );
-                    let min_crown_world = (HQ_CROWN_MIN_PX / px_per_world).max(1.0);
-                    let max_crown_world =
-                        (ww.min(hh) * HQ_CROWN_MAX_BOX_FRACTION).max(min_crown_world);
-                    let crown_size_world = (crown_tag_size * HQ_CROWN_SIZE_MULTIPLIER)
-                        .clamp(min_crown_world, max_crown_world);
-                    let crown_gap_world = ((2.5 / px_per_world) + crown_tag_size * 0.08).max(0.0);
-                    let crown_center_y = crown_tag_y
-                        - crown_tag_size * 0.5
-                        - crown_gap_world
-                        - crown_size_world * 0.5;
-                    renderer.instances_buf.push(IconInstance {
-                        rect: [
-                            cx - crown_size_world * 0.5,
-                            crown_center_y - crown_size_world * 0.5,
-                            crown_size_world,
-                            crown_size_world,
-                        ],
-                        uv_rect: crown_uv,
-                        tint: [1.0, 0.90, 0.30, 1.0],
-                    });
-                }
+                let min_crown_world = 1.0;
+                let max_crown_world = (ww.min(hh) * HQ_CROWN_MAX_BOX_FRACTION).max(min_crown_world);
+                let crown_size_world = (crown_tag_size * HQ_CROWN_SIZE_MULTIPLIER)
+                    .clamp(min_crown_world, max_crown_world);
+                let crown_gap_world = (2.5 + crown_tag_size * 0.08).max(0.0);
+                let crown_center_y =
+                    crown_tag_y - crown_tag_size * 0.5 - crown_gap_world - crown_size_world * 0.5;
+                renderer.instances_buf.push(IconInstance {
+                    rect: [
+                        cx - crown_size_world * 0.5,
+                        crown_center_y - crown_size_world * 0.5,
+                        crown_size_world,
+                        crown_size_world,
+                    ],
+                    uv_rect: crown_uv,
+                    tint: [1.0, 0.90, 0.30, 1.0],
+                });
             }
 
             if !self.dynamic_show_resource_icons
@@ -3444,50 +3420,16 @@ impl GpuRenderer {
                 continue;
             }
 
-            let box_size = ww.min(hh);
-            let small_timer_factor = small_territory_timer_factor(sw, sh);
-            let Some(preboost_tag_size) = dynamic_preboost_tag_size(ww, hh, scale, sw, sh) else {
+            let Some(sizing) =
+                compute_dynamic_label_sizing(ww, hh, scale, dynamic_label_scale, state.is_fresh)
+            else {
                 continue;
             };
-            let effective_zoom_boost = apply_relative_boost(
-                dynamic_zoom_boost,
-                preboost_tag_size,
-                dynamic_frame_max_preboost_tag,
-            );
-            let min_tag_world = (9.6 / px_per_world).min(box_size * 0.40);
-            let min_time_px = lerp_f32(10.0, DYNAMIC_TIME_MIN_PX, small_timer_factor);
-            let min_cooldown_px = lerp_f32(8.8, DYNAMIC_COOLDOWN_MIN_PX, small_timer_factor);
-            let min_time_world = (min_time_px / px_per_world)
-                .min(box_size * lerp_f32(0.35, 0.80, small_timer_factor));
-            let min_cooldown_world = (min_cooldown_px / px_per_world)
-                .min(box_size * lerp_f32(0.50, 0.92, small_timer_factor));
-            let tag_floor = 6.0_f32.max(min_tag_world);
-            let tag_cap = 76.0_f32.max(tag_floor * 1.08);
-            let time_floor = 6.0_f32.max(min_time_world);
-            let time_cap = 44.0_f32.max(time_floor * 1.08);
-            let cooldown_floor = DYNAMIC_COOLDOWN_MIN_WORLD.max(min_cooldown_world);
-            let cooldown_cap = DYNAMIC_COOLDOWN_MAX_WORLD.max(cooldown_floor * 1.08);
-            let tag_size = (box_size * 0.236 * effective_zoom_boost).clamp(tag_floor, tag_cap)
-                * dynamic_label_scale;
-            let detail_size = (box_size * 0.125).clamp(5.2, 38.0) * dynamic_label_scale;
-            let time_size_full = (box_size * DYNAMIC_TIME_SIZE_MULTIPLIER * effective_zoom_boost)
-                .clamp(time_floor, time_cap)
-                * dynamic_label_scale;
-            let time_size = if state.is_fresh {
-                time_size_full
-            } else {
-                (time_size_full * DYNAMIC_TIME_STALE_SCALE).max(5.6)
-            };
-            let cooldown_zoom_boost = dynamic_cooldown_zoom_boost(effective_zoom_boost);
-            let cooldown_size_soften = dynamic_cooldown_size_soften(box_size);
-            let cooldown_size =
-                (box_size
-                    * DYNAMIC_COOLDOWN_SIZE_MULTIPLIER
-                    * cooldown_zoom_boost
-                    * cooldown_size_soften)
-                    .clamp(cooldown_floor, cooldown_cap)
-                    * dynamic_label_scale;
-            let line_gap = (box_size * 0.048).clamp(2.0, 16.0) * dynamic_label_scale;
+            let tag_size = sizing.tag_size;
+            let detail_size = sizing.detail_size;
+            let time_size = sizing.time_size;
+            let cooldown_size = sizing.cooldown_size;
+            let line_gap = sizing.line_gap;
             let timer_visible_at_zoom = vp.scale >= DYNAMIC_TIMER_VISIBILITY_MIN_SCALE;
             let cooldown_timer_visible =
                 timer_visible_at_zoom && state.is_fresh && self.dynamic_show_countdown;
@@ -3500,11 +3442,8 @@ impl GpuRenderer {
                 ww,
                 hh,
                 cy,
-                scale,
                 static_tag_scale,
                 static_name_scale,
-                static_zoom_boost,
-                static_frame_max_preboost_tag,
             );
             let compact_bottom_y = cy + tag_size / 2.0;
             let mut content_bottom_y = compact_bottom_y;
@@ -3524,15 +3463,13 @@ impl GpuRenderer {
             if let Some(name_bottom_y) = static_name_bottom {
                 content_bottom_y = content_bottom_y.max(name_bottom_y + line_gap * 0.6);
             }
-            let cooldown_anchor_y = content_bottom_y
-                + cooldown_size / 2.0
-                + (lerp_f32(3.0, 4.0, detail_layout_alpha) / scale);
+            let cooldown_anchor_y =
+                content_bottom_y + cooldown_size / 2.0 + lerp_f32(3.0, 4.0, detail_layout_alpha);
 
-            // Slightly larger icon footprint (+~12.5%) for better readability at gameplay zooms.
-            let icon_size_px = ((sw.min(sh) * 0.27).clamp(13.0, 38.0) * icon_scale).round();
-            let icon_size_world = (icon_size_px / scale).max(1.0);
+            // Keep resource icons on the same world-space sizing model as the text overlays.
+            let icon_size_world = compute_resource_icon_size_world(icon_scale);
             let icon_gap_world = icon_size_world * 1.3;
-            let icon_offset_world = (lerp_f32(3.0, 4.0, detail_layout_alpha) / scale).max(0.0);
+            let icon_offset_world = lerp_f32(3.0, 4.0, detail_layout_alpha).max(0.0);
             let icon_y = if cooldown_timer_visible {
                 cooldown_anchor_y + cooldown_size / 2.0 + icon_size_world / 2.0 + icon_offset_world
             } else {
