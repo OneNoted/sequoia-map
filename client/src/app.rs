@@ -161,6 +161,8 @@ pub(crate) struct SidebarItems(pub RwSignal<Vec<String>>);
 #[derive(Clone, Copy)]
 pub(crate) struct ResetSettingsTrigger(pub RwSignal<u64>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowSettings(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct IsMobile(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct PeekTerritory(pub RwSignal<Option<String>>);
@@ -752,6 +754,7 @@ pub fn App() -> impl IntoView {
     let sidebar_index: RwSignal<usize> = RwSignal::new(0);
     let sidebar_items: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
     let reset_settings_trigger: RwSignal<u64> = RwSignal::new(0);
+    let show_settings: RwSignal<bool> = RwSignal::new(false);
     // Live-first boot: defer non-essential work (tiles/history checks/icons)
     // until we have initial territory data and a short settle window.
     let deferred_boot_ready: RwSignal<bool> = RwSignal::new(false);
@@ -849,6 +852,7 @@ pub fn App() -> impl IntoView {
     provide_context(SidebarIndex(sidebar_index));
     provide_context(SidebarItems(sidebar_items));
     provide_context(ResetSettingsTrigger(reset_settings_trigger));
+    provide_context(ShowSettings(show_settings));
     provide_context(CurrentMode(map_mode));
     provide_context(HistoryTimestamp(history_timestamp));
     provide_context(PlaybackActive(playback_active));

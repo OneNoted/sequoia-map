@@ -25,7 +25,7 @@ use crate::app::{
     NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont, ResetSettingsTrigger,
     ResourceHighlight, Selected, SelectedGuild, ShowCompoundMapTime, ShowCountdown,
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
-    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowResourceIcons,
+    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
     ShowTerritoryOrnaments, SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient,
     TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders, canvas_dimensions,
     clamp_connection_opacity_scale, clamp_connection_thickness_scale, clamp_label_scale_group,
@@ -157,9 +157,6 @@ fn iris_source_display_label(source: &str) -> Option<&'static str> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ShowSettings(RwSignal<bool>);
-
 /// Sidebar with search, leaderboard, detail panel, and stats.
 #[component]
 pub fn Sidebar() -> impl IntoView {
@@ -169,8 +166,7 @@ pub fn Sidebar() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
-    let show_settings = RwSignal::new(false);
-    provide_context(ShowSettings(show_settings));
+    let ShowSettings(show_settings) = expect_context();
 
     // Scroll focused item into view when index changes
     Effect::new(move || {
@@ -552,6 +548,7 @@ fn SearchBar() -> impl IntoView {
 #[component]
 fn SettingsPanel() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
+    let ShowSettings(show_settings) = expect_context();
     let AbbreviateNames(abbreviate_names) = expect_context();
     let show_connections: RwSignal<bool> = expect_context();
     let ShowCountdown(show_countdown) = expect_context();
@@ -592,8 +589,31 @@ fn SettingsPanel() -> impl IntoView {
 
     view! {
         <div style="border-bottom: 1px solid #282c3e;">
-            <div style="padding: 14px 24px 8px; font-family: 'Silkscreen', monospace; font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860;">
-                <span style="color: #f5c542; margin-right: 6px; font-size: 0.812rem;">{"\u{2699}"}</span>"Settings"
+            <div style="padding: 12px 14px 8px; display: flex; align-items: center; gap: 10px;">
+                <button
+                    style="width: 30px; height: 30px; border-radius: 999px; border: 1px solid #282c3e; background: #1a1d2a; color: #9a9590; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color 0.15s, background 0.15s, color 0.15s; font-family: 'JetBrains Mono', monospace; font-size: 0.92rem; line-height: 1;"
+                    title="Back"
+                    on:click=move |_| show_settings.set(false)
+                    on:mouseenter=move |e| {
+                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                            el.style().set_property("color", "#f5c542").ok();
+                            el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
+                            el.style().set_property("background", "#13161f").ok();
+                        }
+                    }
+                    on:mouseleave=move |e| {
+                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                            el.style().set_property("color", "#9a9590").ok();
+                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("background", "#1a1d2a").ok();
+                        }
+                    }
+                >
+                    "\u{2039}"
+                </button>
+                <div style="font-family: 'Silkscreen', monospace; font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860;">
+                    <span style="color: #f5c542; margin-right: 6px; font-size: 0.812rem;">{"\u{2699}"}</span>"Settings"
+                </div>
             </div>
             <div style="padding: 0 12px 12px;">
                 <SettingsSectionHeader title="Labels" />

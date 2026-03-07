@@ -12,8 +12,8 @@ use crate::app::{
     HeatWindowLabel, HistoryTimestamp, Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons,
     LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, MapMode, NameColorSetting,
     PeekTerritory, ReadableFont, ResourceHighlight, Selected, ShowCompoundMapTime, ShowCountdown,
-    ShowGranularMapTime, ShowMinimap, ShowNames, ShowResourceIcons, ShowTerritoryOrnaments,
-    SidebarOpen, SidebarTransient, TagColorSetting, ThickCooldownBorders,
+    ShowGranularMapTime, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
+    ShowTerritoryOrnaments, SidebarOpen, SidebarTransient, TagColorSetting, ThickCooldownBorders,
 };
 use crate::gpu::{GpuRenderer, RenderFrameInput};
 use crate::icons::{self, ResourceAtlas};
@@ -320,6 +320,7 @@ pub fn MapCanvas() -> impl IntoView {
     let LabelScaleIcons(label_scale_icons) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarTransient(sidebar_transient) = expect_context();
+    let ShowSettings(show_settings) = expect_context();
 
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let icon_atlas_requested = Rc::new(Cell::new(false));
@@ -936,6 +937,7 @@ pub fn MapCanvas() -> impl IntoView {
             let (wx, wy) = vp.screen_to_world(sx, sy);
             let hit = spatial_grid.borrow().find_at(wx, wy);
             if hit.is_some() {
+                show_settings.set(false);
                 if !sidebar_open.get_untracked() {
                     sidebar_open.set(true);
                     sidebar_transient.set(true);
