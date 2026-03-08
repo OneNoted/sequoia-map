@@ -1733,7 +1733,7 @@ impl GpuRenderer {
         let icon_cell_w = (resource_atlas_w / ICON_COUNT).max(1);
         let icon_cell_h = resource_atlas_h.max(1);
         let crown_slot_w = icon_cell_w.max(crown_w);
-        let crown_slot_h = crown_h.max(1);
+        let crown_slot_h = crown_h;
         let resource_x = 0u32;
         let crown_x = resource_x + resource_atlas_w;
         let ornament_x = crown_x + crown_slot_w;
