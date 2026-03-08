@@ -221,7 +221,6 @@ const DYNAMIC_TIMER_VISIBILITY_MIN_SCALE: f64 = 0.31;
 const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.02;
 const HQ_CROWN_MAX_BOX_FRACTION: f32 = 0.40;
-const ORNAMENT_MIN_BOX_PX: f32 = 34.0;
 
 #[inline]
 fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
@@ -3302,10 +3301,7 @@ impl GpuRenderer {
             let px_per_world = scale.max(0.0001);
             let cx = loc.midpoint_x() as f32;
             let cy = loc.midpoint_y() as f32;
-            if self.show_territory_ornaments
-                && sw >= ORNAMENT_MIN_BOX_PX
-                && sh >= ORNAMENT_MIN_BOX_PX
-            {
+            if self.show_territory_ornaments {
                 let use_sequoia_ornament =
                     is_sequoia_guild(&ct.territory.guild.name, &ct.territory.guild.prefix);
                 let (base_ornament_uv, ornament_aspect, tint) = if use_sequoia_ornament {
@@ -3325,7 +3321,7 @@ impl GpuRenderer {
                     compute_territory_ornament_sizing(ww, hh, ornament_aspect, icon_scale);
                 let corner_w_world = ornament_sizing.corner_w_world;
                 let corner_h_world = ornament_sizing.corner_h_world;
-                if corner_w_world * px_per_world >= 6.0 && corner_h_world * px_per_world >= 6.0 {
+                if corner_w_world > 0.0 && corner_h_world > 0.0 {
                     let inset_world = ornament_sizing.inset_world;
                     let left = loc.left() as f32 + inset_world;
                     let top = loc.top() as f32 + inset_world;

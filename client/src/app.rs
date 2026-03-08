@@ -2438,7 +2438,7 @@ fn Tooltip() -> impl IntoView {
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 title="Open Wynncraft guild stats"
-                                style="font-size: 0.78rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif; text-decoration: none;"
+                                style="font-size: 0.78rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif; text-decoration: none; pointer-events: auto;"
                             >
                                 {info.guild_name.clone()}
                             </a>
