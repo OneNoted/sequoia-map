@@ -222,6 +222,7 @@ const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.75;
 const HQ_CROWN_MAX_BOX_FRACTION: f32 = 0.48;
 const ORNAMENT_MIN_RENDERED_PX: f32 = 1.0;
+const SEQUOIA_ORNAMENT_FALLBACK_GOLD: [u8; 3] = [245, 197, 66];
 
 #[inline]
 fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
@@ -235,6 +236,77 @@ fn smoothstep_f32(edge0: f32, edge1: f32, x: f32) -> f32 {
     }
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+#[inline]
+fn ornament_mask_alpha(r: u8, g: u8, b: u8, src_a: u8) -> u8 {
+    let lum = u16::from(r.max(g).max(b));
+    ((lum * u16::from(src_a) + 127) / 255) as u8
+}
+
+#[inline]
+fn is_sequoia_ornament_gold_sample(r: u8, g: u8, b: u8, alpha: u8) -> bool {
+    if alpha <= 24 {
+        return false;
+    }
+    let maxc = r.max(g).max(b);
+    let minc = r.min(g).min(b);
+    let spread = maxc - minc;
+    r >= 110 && g >= 80 && r > g && g > b.saturating_add(6) && spread >= 20
+}
+
+#[inline]
+fn is_sequoia_ornament_neutral_highlight(r: u8, g: u8, b: u8, alpha: u8) -> bool {
+    if alpha <= 24 {
+        return false;
+    }
+    let maxc = r.max(g).max(b);
+    let minc = r.min(g).min(b);
+    let spread = maxc - minc;
+    maxc >= 150 && spread <= 36
+}
+
+fn derive_sequoia_ornament_gold(
+    pixels: &[u8],
+    atlas_w: u32,
+    slot_x: u32,
+    slot_w: u32,
+    slot_h: u32,
+) -> [u8; 3] {
+    let mut sum_r = 0u64;
+    let mut sum_g = 0u64;
+    let mut sum_b = 0u64;
+    let mut weight_total = 0u64;
+
+    for y in 0..slot_h {
+        for x in 0..slot_w {
+            let atlas_px_x = slot_x + x;
+            let idx = ((y * atlas_w + atlas_px_x) * 4) as usize;
+            let r = pixels[idx];
+            let g = pixels[idx + 1];
+            let b = pixels[idx + 2];
+            let src_a = pixels[idx + 3];
+            let alpha = ornament_mask_alpha(r, g, b, src_a);
+            if !is_sequoia_ornament_gold_sample(r, g, b, alpha) {
+                continue;
+            }
+            let weight = u64::from(alpha) * u64::from(r.max(g).max(b));
+            sum_r += u64::from(r) * weight;
+            sum_g += u64::from(g) * weight;
+            sum_b += u64::from(b) * weight;
+            weight_total += weight;
+        }
+    }
+
+    if weight_total == 0 {
+        return SEQUOIA_ORNAMENT_FALLBACK_GOLD;
+    }
+
+    [
+        (sum_r / weight_total) as u8,
+        (sum_g / weight_total) as u8,
+        (sum_b / weight_total) as u8,
+    ]
 }
 
 #[inline]
@@ -1784,70 +1856,94 @@ impl GpuRenderer {
 
         let atlas_wf = atlas_w as f32;
         let atlas_hf = atlas_h as f32;
-        let mut extract_ornament = |slot_x: u32, slot_w: u32, slot_h: u32, preserve_color: bool| {
-            let mut orn_min_x = slot_w;
-            let mut orn_min_y = slot_h;
-            let mut orn_max_x = 0u32;
-            let mut orn_max_y = 0u32;
-            let mut orn_found = false;
-            for y in 0..slot_h {
-                for x in 0..slot_w {
-                    let atlas_px_x = slot_x + x;
-                    let idx = ((y * atlas_w + atlas_px_x) * 4) as usize;
-                    let r = pixels[idx] as u16;
-                    let g = pixels[idx + 1] as u16;
-                    let b = pixels[idx + 2] as u16;
-                    let src_a = pixels[idx + 3] as u16;
-                    let lum = r.max(g).max(b);
-                    let alpha = ((lum * src_a + 127) / 255) as u8;
-                    if preserve_color {
-                        pixels[idx + 3] = alpha;
-                    } else {
-                        pixels[idx] = 255;
-                        pixels[idx + 1] = 255;
-                        pixels[idx + 2] = 255;
-                        pixels[idx + 3] = alpha;
-                    }
-                    if alpha > 6 {
-                        orn_found = true;
-                        orn_min_x = orn_min_x.min(x);
-                        orn_min_y = orn_min_y.min(y);
-                        orn_max_x = orn_max_x.max(x);
-                        orn_max_y = orn_max_y.max(y);
+        let sequoia_target_gold = derive_sequoia_ornament_gold(
+            &pixels,
+            atlas_w,
+            sequoia_ornament_x,
+            sequoia_ornament_w,
+            sequoia_ornament_h,
+        );
+        #[derive(Clone, Copy)]
+        enum OrnamentColorMode {
+            MonochromeMask,
+            MatchSequoiaBorderGold,
+        }
+        let mut extract_ornament =
+            |slot_x: u32, slot_w: u32, slot_h: u32, color_mode: OrnamentColorMode| {
+                let mut orn_min_x = slot_w;
+                let mut orn_min_y = slot_h;
+                let mut orn_max_x = 0u32;
+                let mut orn_max_y = 0u32;
+                let mut orn_found = false;
+                for y in 0..slot_h {
+                    for x in 0..slot_w {
+                        let atlas_px_x = slot_x + x;
+                        let idx = ((y * atlas_w + atlas_px_x) * 4) as usize;
+                        let r = pixels[idx];
+                        let g = pixels[idx + 1];
+                        let b = pixels[idx + 2];
+                        let src_a = pixels[idx + 3];
+                        let alpha = ornament_mask_alpha(r, g, b, src_a);
+                        match color_mode {
+                            OrnamentColorMode::MonochromeMask => {
+                                pixels[idx] = 255;
+                                pixels[idx + 1] = 255;
+                                pixels[idx + 2] = 255;
+                                pixels[idx + 3] = alpha;
+                            }
+                            OrnamentColorMode::MatchSequoiaBorderGold => {
+                                if is_sequoia_ornament_neutral_highlight(r, g, b, alpha) {
+                                    pixels[idx] = sequoia_target_gold[0];
+                                    pixels[idx + 1] = sequoia_target_gold[1];
+                                    pixels[idx + 2] = sequoia_target_gold[2];
+                                }
+                                pixels[idx + 3] = alpha;
+                            }
+                        }
+                        if alpha > 6 {
+                            orn_found = true;
+                            orn_min_x = orn_min_x.min(x);
+                            orn_min_y = orn_min_y.min(y);
+                            orn_max_x = orn_max_x.max(x);
+                            orn_max_y = orn_max_y.max(y);
+                        }
                     }
                 }
-            }
-            if orn_found {
-                let tight_w = (orn_max_x - orn_min_x + 1).max(1);
-                let tight_h = (orn_max_y - orn_min_y + 1).max(1);
-                (
-                    [
-                        ((slot_x + orn_min_x) as f32) / atlas_wf,
-                        (orn_min_y as f32) / atlas_hf,
-                        ((slot_x + orn_max_x + 1) as f32) / atlas_wf,
-                        ((orn_max_y + 1) as f32) / atlas_hf,
-                    ],
-                    (tight_w as f32 / tight_h as f32).clamp(0.2, 5.0),
-                )
-            } else {
-                (
-                    [
-                        (slot_x as f32) / atlas_wf,
-                        0.0,
-                        ((slot_x + slot_w) as f32) / atlas_wf,
-                        (slot_h as f32) / atlas_hf,
-                    ],
-                    (slot_w as f32 / slot_h as f32).clamp(0.2, 5.0),
-                )
-            }
-        };
-        let (default_ornament_uv, default_ornament_aspect) =
-            extract_ornament(ornament_x, ornament_w, ornament_h, false);
+                if orn_found {
+                    let tight_w = (orn_max_x - orn_min_x + 1).max(1);
+                    let tight_h = (orn_max_y - orn_min_y + 1).max(1);
+                    (
+                        [
+                            ((slot_x + orn_min_x) as f32) / atlas_wf,
+                            (orn_min_y as f32) / atlas_hf,
+                            ((slot_x + orn_max_x + 1) as f32) / atlas_wf,
+                            ((orn_max_y + 1) as f32) / atlas_hf,
+                        ],
+                        (tight_w as f32 / tight_h as f32).clamp(0.2, 5.0),
+                    )
+                } else {
+                    (
+                        [
+                            (slot_x as f32) / atlas_wf,
+                            0.0,
+                            ((slot_x + slot_w) as f32) / atlas_wf,
+                            (slot_h as f32) / atlas_hf,
+                        ],
+                        (slot_w as f32 / slot_h as f32).clamp(0.2, 5.0),
+                    )
+                }
+            };
+        let (default_ornament_uv, default_ornament_aspect) = extract_ornament(
+            ornament_x,
+            ornament_w,
+            ornament_h,
+            OrnamentColorMode::MonochromeMask,
+        );
         let (sequoia_ornament_uv, sequoia_ornament_aspect) = extract_ornament(
             sequoia_ornament_x,
             sequoia_ornament_w,
             sequoia_ornament_h,
-            true,
+            OrnamentColorMode::MatchSequoiaBorderGold,
         );
         let icon_v1 = (icon_cell_h as f32 / atlas_hf).clamp(0.0, 1.0);
         let mut uv_by_kind = HashMap::with_capacity((ICON_COUNT + 1) as usize);
@@ -4317,5 +4413,52 @@ impl GpuRenderer {
 
         // Check if any animations are still running (cached during instance rebuild)
         now < self.max_anim_end_ms
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SEQUOIA_ORNAMENT_FALLBACK_GOLD, derive_sequoia_ornament_gold,
+        is_sequoia_ornament_neutral_highlight, ornament_mask_alpha,
+    };
+
+    #[test]
+    fn derives_sequoia_gold_from_existing_warm_accents() {
+        let pixels = vec![
+            236, 189, 74, 255, 201, 158, 57, 255, 242, 238, 232, 255, 0, 0, 0, 0,
+        ];
+        let derived = derive_sequoia_ornament_gold(&pixels, 4, 0, 4, 1);
+
+        assert!((220..=236).contains(&derived[0]));
+        assert!((170..=189).contains(&derived[1]));
+        assert!((60..=74).contains(&derived[2]));
+    }
+
+    #[test]
+    fn falls_back_to_default_gold_without_warm_samples() {
+        let pixels = vec![
+            242, 240, 236, 255, 230, 228, 224, 255, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(
+            derive_sequoia_ornament_gold(&pixels, 4, 0, 4, 1),
+            SEQUOIA_ORNAMENT_FALLBACK_GOLD
+        );
+    }
+
+    #[test]
+    fn only_neutral_bright_sequoia_pixels_get_recolored() {
+        let white_alpha = ornament_mask_alpha(242, 240, 236, 255);
+        let gold_alpha = ornament_mask_alpha(236, 189, 74, 255);
+
+        assert!(is_sequoia_ornament_neutral_highlight(
+            242,
+            240,
+            236,
+            white_alpha
+        ));
+        assert!(!is_sequoia_ornament_neutral_highlight(
+            236, 189, 74, gold_alpha
+        ));
     }
 }
