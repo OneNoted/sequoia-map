@@ -120,6 +120,72 @@ thread_local! {
 pub(crate) const SEQUOIA_WEBSITE_URL: &str = "https://seqwawa.com";
 pub(crate) const IRIS_RELEASES_URL: &str = "https://github.com/OneNoted/sequoia-map/releases";
 
+fn encode_uri_component_fallback(input: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        let is_safe = matches!(
+            byte,
+            b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'-'
+                | b'_'
+                | b'.'
+                | b'!'
+                | b'~'
+                | b'*'
+                | b'\''
+                | b'('
+                | b')'
+        );
+        if is_safe {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+    }
+    encoded
+}
+
+#[cfg(target_arch = "wasm32")]
+fn encode_guild_name_for_url(guild_name: &str) -> String {
+    js_sys::encode_uri_component(guild_name)
+        .as_string()
+        .unwrap_or_else(|| encode_uri_component_fallback(guild_name))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_guild_name_for_url(guild_name: &str) -> String {
+    encode_uri_component_fallback(guild_name)
+}
+
+pub(crate) fn guild_stats_url(guild_name: &str) -> String {
+    let encoded = encode_guild_name_for_url(guild_name);
+    format!("https://wynncraft.com/stats/guild/{encoded}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_uri_component_fallback, guild_stats_url};
+
+    #[test]
+    fn fallback_uri_encoder_escapes_reserved_characters() {
+        assert_eq!(encode_uri_component_fallback("A/B? C"), "A%2FB%3F%20C");
+    }
+
+    #[test]
+    fn guild_stats_url_uses_encoded_path_segment() {
+        assert_eq!(
+            guild_stats_url("Sequoia/Map? Guild"),
+            "https://wynncraft.com/stats/guild/Sequoia%2FMap%3F%20Guild"
+        );
+    }
+}
+
 fn main() {
     console_error_panic_hook::set_once();
     let Some(window) = web_sys::window() else {

@@ -2561,7 +2561,15 @@ fn Tooltip() -> impl IntoView {
                         </div>
                         // Guild name + prefix
                         <div style="display: flex; align-items: baseline; gap: 4px; margin-left: 22px; margin-bottom: 8px;">
-                            <span style="font-size: 0.78rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif;">{info.guild_name.clone()}</span>
+                            <a
+                                href=crate::guild_stats_url(&info.guild_name)
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Open Wynncraft guild stats"
+                                style="font-size: 0.78rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif; text-decoration: none; pointer-events: auto;"
+                            >
+                                {info.guild_name.clone()}
+                            </a>
                             <span style="font-size: 0.70rem; color: #9a9590; font-family: 'JetBrains Mono', monospace;">"[" {info.guild_prefix.clone()} "]"</span>
                         </div>
 

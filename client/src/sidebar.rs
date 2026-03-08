@@ -1771,12 +1771,9 @@ fn GuildPanel() -> impl IntoView {
                     }}
                     {move || {
                         let guild_name = selected_guild.get().unwrap_or_default();
-                        let encoded = js_sys::encode_uri_component(&guild_name)
-                            .as_string()
-                            .unwrap_or_else(|| guild_name.clone());
-                        let stats_url = format!("https://wynncraft.com/stats/guild/{}", encoded);
+                        let guild_stats_url = crate::guild_stats_url(&guild_name);
                         view! {
-                            <a href=stats_url
+                            <a href=guild_stats_url
                                target="_blank"
                                rel="noopener noreferrer"
                                title="Open Wynncraft guild stats"
@@ -2305,6 +2302,7 @@ fn DetailPanel() -> impl IntoView {
                                 None
                             }
                         });
+                        let guild_stats_url = crate::guild_stats_url(&guild_name);
                         view! {
                             // Guild color accent bar at top
                             <div style={format!(
@@ -2322,7 +2320,15 @@ fn DetailPanel() -> impl IntoView {
                                     )} />
                                     <div style="font-size: 1.242rem; font-weight: 700; color: #e2e0d8; font-family: 'Silkscreen', monospace;">{name}</div>
                                 </div>
-                                <div style="font-size: 1.102rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif; margin-bottom: 2px; margin-left: 28px;">{guild_name}</div>
+                                <a
+                                    href=guild_stats_url
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title="Open Wynncraft guild stats"
+                                    style="display: inline-block; font-size: 1.102rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif; margin-bottom: 2px; margin-left: 28px; text-decoration: none;"
+                                >
+                                    {guild_name}
+                                </a>
                                 <div style="font-size: 0.928rem; color: #9a9590; font-family: 'JetBrains Mono', monospace; margin-bottom: 16px; margin-left: 28px;">
                                     "[" {guild_prefix} "]"
                                 </div>

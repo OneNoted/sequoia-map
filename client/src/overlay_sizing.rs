@@ -199,13 +199,15 @@ pub(crate) fn compute_territory_ornament_sizing(
         .clamp(0.0, 1.0);
     let fit_h = ((available_h * ORNAMENT_TINY_FIT_BOX_FRACTION) / corner_h_world.max(0.001))
         .clamp(0.0, 1.0);
+    let pair_fit_w = ((available_w * 0.5) / corner_w_world.max(0.001)).clamp(0.0, 1.0);
+    let pair_fit_h = ((available_h * 0.5) / corner_h_world.max(0.001)).clamp(0.0, 1.0);
     let tiny_fit = 1.0
         - smoothstep_f32(
             ORNAMENT_TINY_FIT_START_WORLD,
             ORNAMENT_TINY_FIT_END_WORLD,
             territory_short_side,
         );
-    let fit_scale = lerp_f32(1.0, fit_w.min(fit_h), tiny_fit);
+    let fit_scale = lerp_f32(1.0, fit_w.min(fit_h), tiny_fit).min(pair_fit_w.min(pair_fit_h));
     TerritoryOrnamentSizing {
         inset_world: ORNAMENT_INSET_WORLD,
         corner_w_world: corner_w_world * fit_scale,
@@ -315,10 +317,21 @@ mod tests {
         assert!(small.corner_h_world <= (48.0 - small.inset_world * 2.0) * 0.5);
         assert_close(large.corner_w_world, 69.3);
         assert_close(large.corner_h_world, 69.3);
-        assert_close(wide.corner_w_world, 138.6);
-        assert_close(wide.corner_h_world, 69.3);
+        assert_close(wide.corner_w_world, 127.0);
+        assert_close(wide.corner_h_world, 63.5);
         assert_close(scaled.corner_w_world, 103.95);
         assert_close(scaled.corner_h_world, 103.95);
+    }
+
+    #[test]
+    fn territory_ornament_shrinks_wide_borders_to_fit_small_territories() {
+        let wide = compute_territory_ornament_sizing(120.0, 120.0, 2.0, 1.0);
+        let available = 120.0 - wide.inset_world * 2.0;
+
+        assert!(wide.corner_w_world > 0.0);
+        assert!(wide.corner_h_world > 0.0);
+        assert!(wide.corner_w_world <= available * 0.5);
+        assert!(wide.corner_h_world <= available * 0.5);
     }
 
     #[test]
