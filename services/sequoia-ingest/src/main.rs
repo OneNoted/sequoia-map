@@ -43,6 +43,7 @@ const DEFAULT_INGEST_API_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_MAX_REPORTS_PER_BATCH: usize = 1024;
 const DEFAULT_MAX_TERRITORY_NAME_LEN: usize = 96;
 const DEFAULT_MAX_IDEMPOTENCY_KEY_LEN: usize = 128;
+const DEFAULT_QUORUM_MIN_DISTINCT_ORIGINS: usize = 1;
 const DEFAULT_SIGNED_NONCE_WINDOW_SECS: u64 = 300;
 const DEFAULT_MAX_SIGNED_NONCE_KEYS: usize = 100_000;
 const DEFAULT_WORLD_ATTESTATION_MAX_AGE_SECS: u64 = 120;
@@ -68,6 +69,7 @@ struct Config {
     rate_limit_reporter_per_min: usize,
     max_rate_limit_keys: usize,
     quorum_min_reporters: usize,
+    quorum_min_origins: usize,
     degraded_single_reporter_enabled: bool,
     raw_retention_days: i64,
     reporter_retention_days: i64,
@@ -134,6 +136,11 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2),
+            quorum_min_origins: std::env::var("INGEST_QUORUM_MIN_DISTINCT_ORIGINS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(DEFAULT_QUORUM_MIN_DISTINCT_ORIGINS),
             degraded_single_reporter_enabled: std::env::var(
                 "INGEST_DEGRADED_SINGLE_REPORTER_ENABLED",
             )
@@ -396,6 +403,7 @@ struct ForwardJob {
 #[derive(Clone)]
 struct PendingTerritoryClaim {
     reporter_id: String,
+    device_identity: String,
     origin_ip: IpAddr,
     claim_hash: String,
     update: CanonicalTerritoryUpdate,
@@ -1105,6 +1113,8 @@ async fn report_territory(
         }
     }
 
+    let device_identity = canonical_device_identity_hash(&authed.device_pubkey_b64);
+
     let mut accepted = 0_u64;
     let mut rejected = 0_u64;
     let mut degraded = 0_u64;
@@ -1157,8 +1167,14 @@ async fn report_territory(
         let ownership_claim = update.guild.clone().map(|guild| (guild.uuid, guild.name));
         let acquired_claim = update.acquired.clone();
 
-        let decision =
-            evaluate_territory_claim(&state, &authed.reporter_id, client_ip, update.clone()).await;
+        let decision = evaluate_territory_claim(
+            &state,
+            &authed.reporter_id,
+            &device_identity,
+            client_ip,
+            update.clone(),
+        )
+        .await;
         if let Some((mut accepted_update, was_degraded, was_quorum)) = decision {
             if let Some(runtime) = accepted_update.runtime.as_mut() {
                 let mut provenance = runtime
@@ -2042,6 +2058,7 @@ async fn claim_idempotency_key(state: &Arc<AppState>, key: &str) -> bool {
 async fn evaluate_territory_claim(
     state: &Arc<AppState>,
     reporter_id: &str,
+    device_identity: &str,
     origin_ip: IpAddr,
     update: CanonicalTerritoryUpdate,
 ) -> Option<(CanonicalTerritoryUpdate, bool, bool)> {
@@ -2096,6 +2113,7 @@ async fn evaluate_territory_claim(
 
     bucket.push(PendingTerritoryClaim {
         reporter_id: reporter_id.to_string(),
+        device_identity: device_identity.to_string(),
         origin_ip,
         claim_hash: claim_hash.clone(),
         update: update.clone(),
@@ -2103,23 +2121,36 @@ async fn evaluate_territory_claim(
     });
 
     let mut reporters = HashSet::new();
+    let mut devices = HashSet::new();
     let mut origins = HashSet::new();
     for claim in bucket.iter().filter(|claim| claim.claim_hash == claim_hash) {
         reporters.insert(claim.reporter_id.clone());
+        devices.insert(claim.device_identity.clone());
         origins.insert(claim.origin_ip);
     }
 
     let distinct_reporters = reporters.len();
+    let distinct_devices = devices.len();
     let distinct_origins = origins.len();
-    let corroborating = distinct_reporters.min(distinct_origins);
-    let quorum_threshold = state.cfg.quorum_min_reporters.max(1);
-    let quorum_ok = quorum_satisfied(distinct_reporters, distinct_origins, quorum_threshold);
+    let quorum_reporter_threshold = state.cfg.quorum_min_reporters.max(1);
+    let quorum_origin_threshold = state
+        .cfg
+        .quorum_min_origins
+        .max(1)
+        .min(quorum_reporter_threshold);
+    let quorum_ok = quorum_satisfied(
+        distinct_reporters,
+        distinct_devices,
+        distinct_origins,
+        quorum_reporter_threshold,
+        quorum_origin_threshold,
+    );
     let active_reporters = active_reporter_count(state).await;
     let degraded_ok = !quorum_ok
         && state.cfg.degraded_single_reporter_enabled
         && active_reporters <= 1
         && distinct_reporters == 1
-        && distinct_origins == 1;
+        && distinct_devices == 1;
 
     if quorum_ok || degraded_ok {
         let mut accepted = update.clone();
@@ -2135,7 +2166,7 @@ async fn evaluate_territory_claim(
 
         let mut runtime = accepted.runtime.take().unwrap_or_default();
         let mut provenance = runtime.provenance.take().unwrap_or_else(default_provenance);
-        provenance.reporter_count = corroborating as u16;
+        provenance.reporter_count = u16::try_from(distinct_devices).unwrap_or(u16::MAX);
         runtime.provenance = Some(provenance);
         accepted.runtime = Some(runtime);
 
@@ -2253,9 +2284,21 @@ fn has_scalar_menu_provenance(provenance: &DataProvenance) -> bool {
         && provenance.menu_sr_per_hour.is_some()
 }
 
-fn quorum_satisfied(distinct_reporters: usize, distinct_origins: usize, threshold: usize) -> bool {
-    let required = threshold.max(1);
-    distinct_reporters >= required && distinct_origins >= required
+fn quorum_satisfied(
+    distinct_reporters: usize,
+    distinct_devices: usize,
+    distinct_origins: usize,
+    reporter_threshold: usize,
+    origin_threshold: usize,
+) -> bool {
+    let required_reporters = reporter_threshold.max(1);
+    let required_origins = origin_threshold.max(1).min(required_reporters);
+    // Distinct device identities are the hard corroboration boundary. Shared public IPs are
+    // common for legitimate observers behind the same NAT, so origin diversity remains a
+    // configurable soft floor rather than a mandatory one-to-one quorum gate.
+    distinct_reporters >= required_reporters
+        && distinct_devices >= required_reporters
+        && distinct_origins >= required_origins
 }
 
 fn canonicalize_json_value(value: serde_json::Value) -> serde_json::Value {
@@ -2313,6 +2356,18 @@ fn token_hash(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+fn canonical_device_identity_hash(device_pubkey: &str) -> String {
+    decode_ed25519_public_key(device_pubkey)
+        .map(|public_key| {
+            let mut hasher = Sha256::new();
+            hasher.update(public_key.to_bytes());
+            hex::encode(hasher.finalize())
+        })
+        // Fall back to the textual hash in malformed-key or auth-disabled flows so local dev/test
+        // behavior stays backward-compatible.
+        .unwrap_or_else(|| token_hash(device_pubkey))
 }
 
 fn normalize_persisted_token(token: &str) -> String {
@@ -3360,12 +3415,14 @@ async fn persist_raw_report(
 mod tests {
     use super::{
         AppState, Config, Metrics, ReporterFieldToggles, ReporterRecord, apply_toggle_policy,
-        check_rate_limit, evaluate_territory_claim, initialize_db, normalize_idempotency_key,
-        normalize_persisted_token, normalize_territory_name, parse_trusted_proxy_cidrs,
-        quorum_satisfied, resolve_client_ip, session_verifier_within_fail_open_grace,
-        territory_claim_hash, territory_idempotency_hash,
+        canonical_device_identity_hash, check_rate_limit, evaluate_territory_claim, initialize_db,
+        normalize_idempotency_key, normalize_persisted_token, normalize_territory_name,
+        parse_trusted_proxy_cidrs, quorum_satisfied, resolve_client_ip,
+        session_verifier_within_fail_open_grace, territory_claim_hash, territory_idempotency_hash,
+        token_hash,
     };
     use axum::http::{HeaderMap, HeaderValue};
+    use base64::Engine;
     use chrono::Utc;
     use reqwest::Client;
     use sequoia_shared::{
@@ -3421,6 +3478,8 @@ mod tests {
     async fn test_state_with_active_reporters(
         degraded_single_reporter_enabled: bool,
         active_reporters: usize,
+        quorum_min_reporters: usize,
+        quorum_min_origins: usize,
     ) -> Arc<AppState> {
         let now = Utc::now();
         let db = SqlitePoolOptions::new()
@@ -3439,7 +3498,8 @@ mod tests {
                 rate_limit_ip_per_min: 300,
                 rate_limit_reporter_per_min: 120,
                 max_rate_limit_keys: 20_000,
-                quorum_min_reporters: 2,
+                quorum_min_reporters,
+                quorum_min_origins,
                 degraded_single_reporter_enabled,
                 raw_retention_days: 7,
                 reporter_retention_days: 30,
@@ -3728,6 +3788,20 @@ mod tests {
         assert_eq!(parsed.len(), 2);
     }
 
+    #[test]
+    fn canonical_device_identity_hash_normalizes_equivalent_base64_encodings() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32]);
+        let public_key = signing_key.verifying_key().to_bytes();
+        let standard_b64 = base64::engine::general_purpose::STANDARD.encode(public_key);
+        let urlsafe_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public_key);
+
+        assert_ne!(token_hash(&standard_b64), token_hash(&urlsafe_b64));
+        assert_eq!(
+            canonical_device_identity_hash(&standard_b64),
+            canonical_device_identity_hash(&urlsafe_b64)
+        );
+    }
+
     #[tokio::test]
     async fn initialize_db_migrates_legacy_reporters_last_attested_at() {
         let db = SqlitePoolOptions::new()
@@ -3832,15 +3906,17 @@ mod tests {
     }
 
     #[test]
-    fn quorum_requires_distinct_reporters_and_origins() {
-        assert!(!quorum_satisfied(2, 1, 2));
-        assert!(!quorum_satisfied(1, 2, 2));
-        assert!(quorum_satisfied(2, 2, 2));
+    fn quorum_requires_distinct_devices_and_supports_origin_floors() {
+        assert!(!quorum_satisfied(1, 1, 1, 2, 1));
+        assert!(!quorum_satisfied(2, 1, 1, 2, 1));
+        assert!(quorum_satisfied(2, 2, 1, 2, 1));
+        assert!(!quorum_satisfied(2, 2, 1, 2, 2));
+        assert!(quorum_satisfied(2, 2, 2, 2, 2));
     }
 
     #[tokio::test]
     async fn degraded_mode_accepts_single_reporter_when_only_one_active() {
-        let state = test_state_with_active_reporters(true, 1).await;
+        let state = test_state_with_active_reporters(true, 1, 2, 1).await;
         let mut owner_only = basic_claim_update();
         owner_only.runtime = None;
         owner_only.guild = Some(GuildRef {
@@ -3853,6 +3929,7 @@ mod tests {
         let decision = evaluate_territory_claim(
             &state,
             "reporter-a",
+            "device-a",
             IpAddr::from([203, 0, 113, 10]),
             owner_only,
         )
@@ -3874,10 +3951,11 @@ mod tests {
 
     #[tokio::test]
     async fn single_reporter_requires_quorum_when_degraded_mode_disabled() {
-        let state = test_state_with_active_reporters(false, 1).await;
+        let state = test_state_with_active_reporters(false, 1, 2, 1).await;
         let decision = evaluate_territory_claim(
             &state,
             "reporter-a",
+            "device-a",
             IpAddr::from([203, 0, 113, 10]),
             basic_claim_update(),
         )
@@ -3887,6 +3965,116 @@ mod tests {
             decision.is_none(),
             "single reporter should be held pending when degraded mode is disabled"
         );
+    }
+
+    #[tokio::test]
+    async fn quorum_accepts_distinct_reporters_sharing_one_origin_by_default() {
+        let state = test_state_with_active_reporters(false, 2, 2, 1).await;
+        let shared_origin = IpAddr::from([203, 0, 113, 10]);
+
+        let first = evaluate_territory_claim(
+            &state,
+            "reporter-a",
+            "device-a",
+            shared_origin,
+            basic_claim_update(),
+        )
+        .await;
+        assert!(
+            first.is_none(),
+            "first corroborating report should stay pending"
+        );
+
+        let second = evaluate_territory_claim(
+            &state,
+            "reporter-b",
+            "device-b",
+            shared_origin,
+            basic_claim_update(),
+        )
+        .await
+        .expect("second distinct reporter should satisfy quorum behind one NAT");
+
+        assert!(
+            !second.1,
+            "same-origin corroboration should not use degraded mode"
+        );
+        assert!(
+            second.2,
+            "same-origin corroboration should still count as quorum"
+        );
+        let provenance = second
+            .0
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.provenance.as_ref())
+            .expect("accepted quorum update should include provenance metadata");
+        assert_eq!(provenance.reporter_count, 2);
+    }
+
+    #[tokio::test]
+    async fn quorum_rejects_same_device_reenrollment_without_origin_diversity() {
+        let state = test_state_with_active_reporters(false, 2, 2, 1).await;
+        let shared_origin = IpAddr::from([203, 0, 113, 10]);
+
+        assert!(
+            evaluate_territory_claim(
+                &state,
+                "reporter-a",
+                "shared-device",
+                shared_origin,
+                basic_claim_update(),
+            )
+            .await
+            .is_none()
+        );
+        assert!(
+            evaluate_territory_claim(
+                &state,
+                "reporter-b",
+                "shared-device",
+                shared_origin,
+                basic_claim_update(),
+            )
+            .await
+            .is_none(),
+            "same device should not satisfy quorum by minting another reporter id"
+        );
+    }
+
+    #[tokio::test]
+    async fn quorum_can_still_require_distinct_origins_when_configured() {
+        let state = test_state_with_active_reporters(false, 3, 2, 2).await;
+        let ip_a = IpAddr::from([203, 0, 113, 10]);
+        let ip_b = IpAddr::from([203, 0, 113, 11]);
+
+        assert!(
+            evaluate_territory_claim(&state, "reporter-a", "device-a", ip_a, basic_claim_update())
+                .await
+                .is_none()
+        );
+        assert!(
+            evaluate_territory_claim(&state, "reporter-b", "device-b", ip_a, basic_claim_update())
+                .await
+                .is_none(),
+            "strict origin policy should keep same-origin corroboration pending"
+        );
+
+        let accepted =
+            evaluate_territory_claim(&state, "reporter-c", "device-c", ip_b, basic_claim_update())
+                .await
+                .expect("distinct origin should satisfy the stricter quorum floor");
+        assert!(
+            accepted.2,
+            "distinct-origin corroboration should count as quorum"
+        );
+        let provenance = accepted
+            .0
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.provenance.as_ref())
+            .expect("accepted quorum update should include provenance metadata");
+        assert_eq!(provenance.reporter_count, 3);
     }
 
     #[test]

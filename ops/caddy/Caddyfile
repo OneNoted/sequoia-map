@@ -1,4 +1,8 @@
 {
+    servers {
+        trusted_proxies static private_ranges
+        trusted_proxies_strict
+    }
     email {$ACME_EMAIL}
 }
 
