@@ -6,8 +6,12 @@ ENV_FILE="${ROOT_DIR}/.env.dev.local"
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.dev.yml"
 PROJECT_NAME="sequoia-map-mod-ingest"
 PGDATA_VOLUME="${PROJECT_NAME}_pgdata-dev"
+POSTGRES_IMAGE="postgres:17-alpine"
+POSTGRES_PGDATA_ROOT="/var/lib/postgresql/data"
+POSTGRES_PGDATA_SUBDIR="${POSTGRES_PGDATA_ROOT}/pgdata"
 DOCKER_BIN=()
 COMPOSE_BIN=()
+POSTGRES_VOLUME_STATE=""
 
 resolve_docker_bin() {
   if [[ ${#DOCKER_BIN[@]} -gt 0 ]]; then
@@ -144,6 +148,60 @@ read_postgres_port_from_container() {
     | awk -F: 'NR == 1 { print $NF }'
 }
 
+detect_postgres_volume_state() {
+  if [[ -n "${POSTGRES_VOLUME_STATE}" ]]; then
+    printf '%s\n' "${POSTGRES_VOLUME_STATE}"
+    return
+  fi
+
+  resolve_docker_bin
+
+  if ! "${DOCKER_BIN[@]}" volume inspect "${PGDATA_VOLUME}" >/dev/null 2>&1; then
+    POSTGRES_VOLUME_STATE="missing"
+    printf '%s\n' "${POSTGRES_VOLUME_STATE}"
+    return
+  fi
+
+  POSTGRES_VOLUME_STATE="$("${DOCKER_BIN[@]}" run --rm --entrypoint sh \
+    -v "${PGDATA_VOLUME}:/pgdata" \
+    "${POSTGRES_IMAGE}" \
+    -ceu '
+if [ -f /pgdata/PG_VERSION ]; then
+  echo initialized-root
+elif [ -f /pgdata/pgdata/PG_VERSION ]; then
+  echo initialized-subdir
+elif [ -n "$(ls -A /pgdata 2>/dev/null)" ]; then
+  echo nonempty-uninitialized
+else
+  echo empty
+fi
+')"
+
+  printf '%s\n' "${POSTGRES_VOLUME_STATE}"
+}
+
+configure_postgres_pgdata() {
+  local volume_state
+  volume_state="$(detect_postgres_volume_state)"
+
+  case "${volume_state}" in
+    initialized-root)
+      export POSTGRES_PGDATA="${POSTGRES_PGDATA_ROOT}"
+      ;;
+    missing|empty|initialized-subdir|nonempty-uninitialized)
+      export POSTGRES_PGDATA="${POSTGRES_PGDATA_SUBDIR}"
+      ;;
+    *)
+      echo "Unable to determine the state of Docker volume ${PGDATA_VOLUME}." >&2
+      exit 1
+      ;;
+  esac
+
+  if [[ "${volume_state}" == "nonempty-uninitialized" ]]; then
+    echo "Detected a non-empty but uninitialized Postgres dev volume; using ${POSTGRES_PGDATA} so the stack can initialize cleanly."
+  fi
+}
+
 write_env_file() {
   local postgres_password="${1}"
   local internal_ingest_token="${2}"
@@ -208,14 +266,19 @@ ensure_env_file() {
       return
     fi
 
-    if "${DOCKER_BIN[@]}" volume inspect "${PGDATA_VOLUME}" >/dev/null 2>&1; then
-      cat >&2 <<EOF
+    case "$(detect_postgres_volume_state)" in
+      initialized-root|initialized-subdir)
+        cat >&2 <<EOF
 Found existing Docker volume ${PGDATA_VOLUME} but could not recover the dev credentials for it.
 Either remove that volume if you do not need the local database anymore, or create ${ENV_FILE}
 manually with matching POSTGRES_PASSWORD, INTERNAL_INGEST_TOKEN, and POSTGRES_PORT values.
 EOF
-      exit 1
-    fi
+        exit 1
+        ;;
+      nonempty-uninitialized)
+        echo "Found Docker volume ${PGDATA_VOLUME} without an initialized Postgres cluster; generating fresh dev credentials."
+        ;;
+    esac
   fi
 
   local postgres_port
@@ -245,6 +308,12 @@ main() {
   fi
 
   ensure_env_file
+
+  if compose_command_requires_daemon "${compose_args[0]}"; then
+    configure_postgres_pgdata
+  else
+    export POSTGRES_PGDATA="${POSTGRES_PGDATA_SUBDIR}"
+  fi
 
   exec "${COMPOSE_BIN[@]}" \
     --project-name "${PROJECT_NAME}" \
