@@ -1075,136 +1075,139 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
 
     view! {
         <div style="position: relative; width: 100%; height: 100%; background: #0c0e17; color: #e6e3d9; overflow: hidden;">
+            <input
+                node_ref=file_input_ref
+                type="file"
+                accept=".json,application/json"
+                style="display: none;"
+                on:change=on_file_change
+            />
             {move || {
                 if is_ready.get() && session.get().is_some() {
                     view! { <MapCanvas /> }.into_any()
                 } else {
-                    view! { <div style="position: absolute; inset: 0; background: #0c0e17;" /> }
+                    view! { <div style="position: absolute; inset: 0; background: #0c0e17; pointer-events: none;" /> }
                         .into_any()
                 }
             }}
-            <div style="position: absolute; top: 16px; left: 16px; z-index: 12; display: flex; gap: 10px; flex-wrap: wrap; max-width: min(92vw, 780px);">
-                <div style="display: flex; gap: 6px; padding: 10px; background: rgba(19,22,31,0.94); border: 1px solid #2c3146; border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,0.35);">
-                    {[
-                        ClaimTool::Paint,
-                        ClaimTool::EraseToNeutral,
-                        ClaimTool::Select,
-                        ClaimTool::Eyedropper,
-                    ]
-                        .into_iter()
-                        .map(|entry| {
-                            view! {
-                                <button
-                                    style:background=move || if tool.get() == entry { "#f5c542" } else { "#171b28" }
-                                    style:color=move || if tool.get() == entry { "#161821" } else { "#d9d4c3" }
-                                    style="padding: 8px 12px; border-radius: 8px; border: 1px solid #3a415c; font-family: 'Silkscreen', monospace; cursor: pointer;"
-                                    on:click=move |_| tool.set(entry)
-                                >
-                                    {entry.label()}
-                                </button>
-                            }
-                        })
-                        .collect_view()}
-                </div>
+            {move || {
+                if session.get().is_some() {
+                    view! {
+                        <div style="position: absolute; top: 16px; left: 16px; z-index: 12; display: flex; gap: 10px; flex-wrap: wrap; max-width: min(92vw, 780px);">
+                            <div style="display: flex; gap: 6px; padding: 10px; background: rgba(19,22,31,0.94); border: 1px solid #2c3146; border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,0.35);">
+                                {[
+                                    ClaimTool::Paint,
+                                    ClaimTool::EraseToNeutral,
+                                    ClaimTool::Select,
+                                    ClaimTool::Eyedropper,
+                                ]
+                                    .into_iter()
+                                    .map(|entry| {
+                                        view! {
+                                            <button
+                                                style:background=move || if tool.get() == entry { "#f5c542" } else { "#171b28" }
+                                                style:color=move || if tool.get() == entry { "#161821" } else { "#d9d4c3" }
+                                                style="padding: 8px 12px; border-radius: 8px; border: 1px solid #3a415c; font-family: 'Silkscreen', monospace; cursor: pointer;"
+                                                on:click=move |_| tool.set(entry)
+                                            >
+                                                {entry.label()}
+                                            </button>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </div>
 
-                <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: rgba(19,22,31,0.94); border: 1px solid #2c3146; border-radius: 10px;">
-                    <button
-                        style="padding: 8px 10px; border-radius: 8px; border: 1px solid #45506e; background: #5b5f70; color: #f1eee6; cursor: pointer;"
-                        on:click=move |_| active_owner.set(neutral_owner())
-                    >
-                        "Neutral"
-                    </button>
-                    <input
-                        prop:value=move || guild_query.get()
-                        placeholder="Search guilds"
-                        style="width: 220px; padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #111521; color: #e6e3d9;"
-                        on:input=move |event| guild_query.set(event_target_value(&event))
-                    />
-                    <div style="display: flex; gap: 6px; flex-wrap: wrap; max-width: 240px;">
-                        {move || guild_results.get().into_iter().map(|entry| {
-                            let owner = ClaimOwner::from_guild(GuildRef {
-                                uuid: entry.uuid.clone(),
-                                name: entry.name.clone(),
-                                prefix: entry.prefix.clone(),
-                                color: entry.color,
-                            });
-                            let label = format!("{} [{}]", entry.name, entry.prefix);
-                            view! {
+                            <div style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: rgba(19,22,31,0.94); border: 1px solid #2c3146; border-radius: 10px;">
                                 <button
-                                    style="padding: 6px 8px; border-radius: 8px; border: 1px solid #36405d; background: #171b28; color: #e6e3d9; cursor: pointer; text-align: left;"
+                                    style="padding: 8px 10px; border-radius: 8px; border: 1px solid #45506e; background: #5b5f70; color: #f1eee6; cursor: pointer;"
+                                    on:click=move |_| active_owner.set(neutral_owner())
+                                >
+                                    "Neutral"
+                                </button>
+                                <input
+                                    prop:value=move || guild_query.get()
+                                    placeholder="Search guilds"
+                                    style="width: 220px; padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #111521; color: #e6e3d9;"
+                                    on:input=move |event| guild_query.set(event_target_value(&event))
+                                />
+                                <div style="display: flex; gap: 6px; flex-wrap: wrap; max-width: 240px;">
+                                    {move || guild_results.get().into_iter().map(|entry| {
+                                        let owner = ClaimOwner::from_guild(GuildRef {
+                                            uuid: entry.uuid.clone(),
+                                            name: entry.name.clone(),
+                                            prefix: entry.prefix.clone(),
+                                            color: entry.color,
+                                        });
+                                        let label = format!("{} [{}]", entry.name, entry.prefix);
+                                        view! {
+                                            <button
+                                                style="padding: 6px 8px; border-radius: 8px; border: 1px solid #36405d; background: #171b28; color: #e6e3d9; cursor: pointer; text-align: left;"
+                                                on:click=move |_| {
+                                                    active_owner.set(owner.clone());
+                                                    guild_query.set(String::new());
+                                                    guild_results.set(Vec::new());
+                                                }
+                                            >
+                                                {label}
+                                            </button>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            </div>
+
+                            <div style="display: flex; gap: 6px; padding: 10px; background: rgba(19,22,31,0.94); border: 1px solid #2c3146; border-radius: 10px;">
+                                <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=undo>"Undo"</button>
+                                <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=redo>"Redo"</button>
+                                <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=clear_selection>"Clear Selection"</button>
+                                <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=apply_active_to_selection>"Apply To Selection"</button>
+                                <button
+                                    style:background=move || if session.get().is_some_and(|session| session.follow_live) { "#f5c542" } else { "#171b28" }
+                                    style:color=move || if session.get().is_some_and(|session| session.follow_live) { "#161821" } else { "#e6e3d9" }
+                                    style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; cursor: pointer;"
                                     on:click=move |_| {
-                                        active_owner.set(owner.clone());
-                                        guild_query.set(String::new());
-                                        guild_results.set(Vec::new());
+                                        session.update(|state| {
+                                            if let Some(state) = state.as_mut() {
+                                                state.follow_live = !state.follow_live;
+                                                state.dirty = true;
+                                            }
+                                        });
                                     }
                                 >
-                                    {label}
+                                    {move || if session.get().is_some_and(|session| session.follow_live) { "Live Follow" } else { "Frozen" }}
                                 </button>
-                            }
-                        }).collect_view()}
-                    </div>
-                </div>
+                                <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=freeze_now>"Freeze Now"</button>
+                            </div>
+                        </div>
 
-                <div style="display: flex; gap: 6px; padding: 10px; background: rgba(19,22,31,0.94); border: 1px solid #2c3146; border-radius: 10px;">
-                    <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=undo>"Undo"</button>
-                    <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=redo>"Redo"</button>
-                    <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=clear_selection>"Clear Selection"</button>
-                    <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=apply_active_to_selection>"Apply To Selection"</button>
-                    <button
-                        style:background=move || if session.get().is_some_and(|session| session.follow_live) { "#f5c542" } else { "#171b28" }
-                        style:color=move || if session.get().is_some_and(|session| session.follow_live) { "#161821" } else { "#e6e3d9" }
-                        style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; cursor: pointer;"
-                        on:click=move |_| {
-                            session.update(|state| {
-                                if let Some(state) = state.as_mut() {
-                                    state.follow_live = !state.follow_live;
-                                    state.dirty = true;
-                                }
-                            });
-                        }
-                    >
-                        {move || if session.get().is_some_and(|session| session.follow_live) { "Live Follow" } else { "Frozen" }}
-                    </button>
-                    <button style="padding: 8px 10px; border-radius: 8px; border: 1px solid #3a415c; background: #171b28; color: #e6e3d9; cursor: pointer;" on:click=freeze_now>"Freeze Now"</button>
-                </div>
-            </div>
-
-            <div style="position: absolute; top: 16px; right: 16px; bottom: 16px; width: min(360px, 34vw); z-index: 12; display: flex; flex-direction: column; background: rgba(19,22,31,0.96); border: 1px solid #2c3146; border-radius: 14px; box-shadow: 0 18px 40px rgba(0,0,0,0.4); overflow: hidden;">
-                <div style="display: flex; gap: 6px; padding: 12px; border-bottom: 1px solid #2c3146; background: rgba(14,16,24,0.9);">
-                    {[ClaimTab::Summary, ClaimTab::Compare, ClaimTab::Macros, ClaimTab::Share]
-                        .into_iter()
-                        .map(|entry| {
-                            view! {
-                                <button
-                                    style:background=move || if tab.get() == entry { "#f5c542" } else { "#171b28" }
-                                    style:color=move || if tab.get() == entry { "#161821" } else { "#d9d4c3" }
-                                    style="flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid #36405d; cursor: pointer; font-family: 'Silkscreen', monospace; font-size: 0.72rem;"
-                                    on:click=move |_| tab.set(entry)
-                                >
-                                    {entry.label()}
-                                </button>
-                            }
-                        })
-                        .collect_view()}
-                </div>
-                <div style="flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
-                    <input
-                        node_ref=file_input_ref
-                        type="file"
-                        accept=".json,application/json"
-                        style="display: none;"
-                        on:change=on_file_change
-                    />
-                    {move || {
-                        if let Some(message) = error_message.get() {
-                            view! { <div style="padding: 10px; border-radius: 10px; background: rgba(190,72,72,0.16); border: 1px solid rgba(190,72,72,0.4); color: #ffcfcf;">{message}</div> }.into_any()
-                        } else if let Some(message) = status_message.get() {
-                            view! { <div style="padding: 10px; border-radius: 10px; background: rgba(112,170,92,0.14); border: 1px solid rgba(112,170,92,0.38); color: #d7ffd1;">{message}</div> }.into_any()
-                        } else {
-                            ().into_any()
-                        }
-                    }}
-                    {move || match tab.get() {
+                        <div style="position: absolute; top: 16px; right: 16px; bottom: 16px; width: min(360px, 34vw); z-index: 12; display: flex; flex-direction: column; background: rgba(19,22,31,0.96); border: 1px solid #2c3146; border-radius: 14px; box-shadow: 0 18px 40px rgba(0,0,0,0.4); overflow: hidden;">
+                            <div style="display: flex; gap: 6px; padding: 12px; border-bottom: 1px solid #2c3146; background: rgba(14,16,24,0.9);">
+                                {[ClaimTab::Summary, ClaimTab::Compare, ClaimTab::Macros, ClaimTab::Share]
+                                    .into_iter()
+                                    .map(|entry| {
+                                        view! {
+                                            <button
+                                                style:background=move || if tab.get() == entry { "#f5c542" } else { "#171b28" }
+                                                style:color=move || if tab.get() == entry { "#161821" } else { "#d9d4c3" }
+                                                style="flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid #36405d; cursor: pointer; font-family: 'Silkscreen', monospace; font-size: 0.72rem;"
+                                                on:click=move |_| tab.set(entry)
+                                            >
+                                                {entry.label()}
+                                            </button>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </div>
+                            <div style="flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
+                                {move || {
+                                    if let Some(message) = error_message.get() {
+                                        view! { <div style="padding: 10px; border-radius: 10px; background: rgba(190,72,72,0.16); border: 1px solid rgba(190,72,72,0.4); color: #ffcfcf;">{message}</div> }.into_any()
+                                    } else if let Some(message) = status_message.get() {
+                                        view! { <div style="padding: 10px; border-radius: 10px; background: rgba(112,170,92,0.14); border: 1px solid rgba(112,170,92,0.38); color: #d7ffd1;">{message}</div> }.into_any()
+                                    } else {
+                                        ().into_any()
+                                    }
+                                }}
+                                {move || match tab.get() {
                         ClaimTab::Summary => {
                             view! {
                                 <div style="display: flex; flex-direction: column; gap: 10px;">
@@ -1551,13 +1554,18 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
                             .into_any()
                         }
                     }}
-                </div>
-            </div>
+                            </div>
+                        </div>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }
+            }}
 
             {move || {
                 if is_loading_snapshot.get() {
                     view! {
-                        <div style="position: absolute; inset: 0; z-index: 18; display: flex; align-items: center; justify-content: center; background: rgba(10,12,19,0.72);">
+                        <div style="position: fixed; inset: 0; z-index: 38; display: flex; align-items: center; justify-content: center; background: rgba(10,12,19,0.72); pointer-events: auto;">
                             <div style="padding: 14px 18px; border-radius: 12px; background: #121725; border: 1px solid #2c3146;">
                                 "Loading saved snapshot…"
                             </div>
@@ -1566,8 +1574,8 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
                 } else if session.get().is_none() {
                     let import_input_ref = file_input_ref.clone();
                     view! {
-                        <div style="position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(10,12,19,0.90);">
-                            <div style="width: min(880px, 92vw); padding: 24px; border-radius: 18px; background: linear-gradient(180deg, rgba(22,26,38,0.98), rgba(15,18,27,0.96)); border: 1px solid rgba(245,197,66,0.18); box-shadow: 0 24px 60px rgba(0,0,0,0.45); display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;">
+                        <div style="position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; background: rgba(10,12,19,0.90); pointer-events: auto;">
+                            <div style="position: relative; z-index: 41; width: min(880px, 92vw); padding: 24px; border-radius: 18px; background: linear-gradient(180deg, rgba(22,26,38,0.98), rgba(15,18,27,0.96)); border: 1px solid rgba(245,197,66,0.18); box-shadow: 0 24px 60px rgba(0,0,0,0.45); display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; pointer-events: auto;">
                                 <div style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 12px; border: 1px solid #2c3146; background: rgba(17,21,33,0.88);">
                                     <div style="font-family: 'Silkscreen', monospace; color: #f5c542;">"Claims Editor"</div>
                                     <div style="color: #d9d4c3; font-size: 0.84rem;">
