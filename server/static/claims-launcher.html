@@ -522,17 +522,17 @@
             </p>
             <div class="board-grid">
                 <div class="card-grid">
-                    <a class="card" href="/claims/new/blank">
+                    <a id="blank-card" class="card" href="/claims/new/blank">
                         <span class="card-badge">Fastest path</span>
                         <h2>Blank Board</h2>
                         <p>Open a neutral territory layout and start painting immediately.</p>
                         <div class="card-footer">
-                            <span>No live snapshot needed</span>
+                            <span>Live geometry is staged ahead of entry</span>
                             <span class="card-arrow">-></span>
                         </div>
                     </a>
 
-                    <a class="card" href="/claims/new/live">
+                    <a id="live-card" class="card" href="/claims/new/live">
                         <span class="card-badge">Snapshot</span>
                         <h2>Current Live Map</h2>
                         <p>Freeze the current live territory ownership and use that as your baseline.</p>
@@ -605,8 +605,12 @@
         const DRAFT_STORAGE_KEY = "sequoia_claim_draft_v1";
         const PRESET_STORAGE_KEY = "sequoia_claim_presets_v1";
         const IMPORT_HANDOFF_STORAGE_KEY = "sequoia_claim_import_handoff_v1";
+        const LIVE_BOOTSTRAP_STORAGE_KEY = "sequoia_claim_live_bootstrap_v1";
+        const LIVE_BOOTSTRAP_MAX_AGE_MS = 120000;
 
         const statusEl = document.getElementById("launcher-status");
+        const blankCard = document.getElementById("blank-card");
+        const liveCard = document.getElementById("live-card");
         const draftCard = document.getElementById("draft-card");
         const draftCopy = document.getElementById("draft-copy");
         const draftMeta = document.getElementById("draft-meta");
@@ -619,6 +623,7 @@
         const snapshotInput = document.getElementById("snapshot-id");
         const snapshotOpen = document.getElementById("snapshot-open");
         const refreshLauncher = document.getElementById("refresh-launcher");
+        let liveBootstrapPromise = null;
 
         function setStatus(message, tone) {
           statusEl.textContent = message;
@@ -637,6 +642,88 @@
             console.warn("claims launcher storage read failed", key, error);
             return fallbackValue;
           }
+        }
+
+        function safeSessionParse(key, fallbackValue) {
+          try {
+            const raw = window.sessionStorage.getItem(key);
+            if (!raw) {
+              return fallbackValue;
+            }
+            return JSON.parse(raw);
+          } catch (error) {
+            console.warn("claims launcher session storage read failed", key, error);
+            return fallbackValue;
+          }
+        }
+
+        function readFreshLiveBootstrap() {
+          const payload = safeSessionParse(LIVE_BOOTSTRAP_STORAGE_KEY, null);
+          if (!payload || typeof payload.cached_at_ms !== "number" || !payload.state) {
+            return null;
+          }
+          if (Date.now() - payload.cached_at_ms > LIVE_BOOTSTRAP_MAX_AGE_MS) {
+            return null;
+          }
+          return payload;
+        }
+
+        async function stageLiveBootstrap(force) {
+          if (!force) {
+            const cached = readFreshLiveBootstrap();
+            if (cached) {
+              return cached;
+            }
+            if (liveBootstrapPromise) {
+              return liveBootstrapPromise;
+            }
+          }
+
+          setStatus("Syncing live territory data in the background...", "");
+          liveBootstrapPromise = fetch("/api/live/state", {
+            credentials: "same-origin",
+            cache: "no-store"
+          })
+            .then(async (response) => {
+              if (!response.ok) {
+                throw new Error("HTTP " + response.status);
+              }
+              const state = await response.json();
+              const payload = {
+                cached_at_ms: Date.now(),
+                state
+              };
+              window.sessionStorage.setItem(LIVE_BOOTSTRAP_STORAGE_KEY, JSON.stringify(payload));
+              return payload;
+            })
+            .then((payload) => {
+              setStatus("Launcher ready. Live territory data is staged for instant editor entry.", "");
+              return payload;
+            })
+            .catch((error) => {
+              console.error("claims launcher live bootstrap failed", error);
+              setStatus("Launcher ready. Live territory prefetch failed, so the editor will fetch on entry.", "warn");
+              throw error;
+            })
+            .finally(() => {
+              liveBootstrapPromise = null;
+            });
+
+          return liveBootstrapPromise;
+        }
+
+        async function navigateWithWarmLiveState(event, href, label) {
+          event.preventDefault();
+          setStatus("Preparing " + label + "...", "");
+          try {
+            await Promise.race([
+              stageLiveBootstrap(false),
+              new Promise((resolve) => window.setTimeout(resolve, 900))
+            ]);
+          } catch (_) {
+            // The editor route still has its own bootstrap fallback.
+          }
+          window.location.href = href;
         }
 
         function setDraftEnabled(enabled) {
@@ -745,6 +832,14 @@
           }
         });
 
+        blankCard.addEventListener("click", (event) => {
+          navigateWithWarmLiveState(event, blankCard.href, "blank board");
+        });
+
+        liveCard.addEventListener("click", (event) => {
+          navigateWithWarmLiveState(event, liveCard.href, "live snapshot");
+        });
+
         importTrigger.addEventListener("click", () => {
           importInput.value = "";
           importInput.click();
@@ -777,6 +872,7 @@
 
         refreshLauncher.addEventListener("click", refreshLocalState);
         refreshLocalState();
+        stageLiveBootstrap(false).catch(() => {});
       })();
     </script>
 </body>

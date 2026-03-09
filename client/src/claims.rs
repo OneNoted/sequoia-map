@@ -10,8 +10,8 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 use sequoia_shared::{
     ClaimDocumentBase, ClaimDocumentV1, ClaimMacro, ClaimOwner, ClaimValidationError,
-    ClaimViewState, GuildRef, TerritoryMap, compact_claim_overrides, compute_claim_metrics,
-    validate_claim_document,
+    ClaimViewState, GuildRef, LiveState, TerritoryMap, compact_claim_overrides,
+    compute_claim_metrics, validate_claim_document,
 };
 
 use crate::app::{
@@ -37,8 +37,10 @@ const DRAFT_STORAGE_KEY: &str = "sequoia_claim_draft_v1";
 const PRESET_STORAGE_KEY: &str = "sequoia_claim_presets_v1";
 const MACRO_LIBRARY_STORAGE_KEY: &str = "sequoia_claim_macros_v1";
 const IMPORT_HANDOFF_STORAGE_KEY: &str = "sequoia_claim_import_handoff_v1";
+const LIVE_BOOTSTRAP_STORAGE_KEY: &str = "sequoia_claim_live_bootstrap_v1";
 const SHARE_FRAGMENT_PREFIX: &str = "#c=";
 const MAX_SHARE_FRAGMENT_BYTES: usize = 120_000;
+const LIVE_BOOTSTRAP_MAX_AGE_MS: f64 = 120_000.0;
 
 const NEUTRAL_GUILD_UUID: &str = "__neutral__";
 
@@ -105,6 +107,12 @@ struct StartupImportHandoff {
     selection: Vec<String>,
     #[serde(default)]
     source_snapshot_id: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct StagedLiveBootstrap {
+    cached_at_ms: f64,
+    state: LiveState,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -501,6 +509,32 @@ fn take_startup_import_handoff() -> Option<StartupImportHandoff> {
     handoff
 }
 
+fn read_staged_live_bootstrap() -> Option<LiveState> {
+    let staged: StagedLiveBootstrap =
+        gloo_storage::SessionStorage::get(LIVE_BOOTSTRAP_STORAGE_KEY).ok()?;
+    let age_ms = js_sys::Date::now() - staged.cached_at_ms;
+    if age_ms.is_finite() && age_ms <= LIVE_BOOTSTRAP_MAX_AGE_MS {
+        Some(staged.state)
+    } else {
+        None
+    }
+}
+
+fn apply_live_state(
+    live_territories: RwSignal<ClientTerritoryMap>,
+    live_seq: RwSignal<u64>,
+    last_live_seq: RwSignal<Option<u64>>,
+    live_bootstrap_pending: RwSignal<bool>,
+    live_bootstrap_error: RwSignal<Option<String>>,
+    state: LiveState,
+) {
+    live_seq.set(state.seq);
+    last_live_seq.set(Some(state.seq));
+    live_territories.set(crate::territory::from_snapshot(state.territories));
+    live_bootstrap_pending.set(false);
+    live_bootstrap_error.set(None);
+}
+
 fn validate_document_against_live(
     document: &ClaimDocumentV1,
     live_territories: &ClientTerritoryMap,
@@ -556,6 +590,10 @@ fn trigger_import_picker(file_input_ref: NodeRef<html::Input>) {
 pub fn ClaimsPage(initial_path: String) -> impl IntoView {
     let route = parse_claims_route(&initial_path);
     let requires_live_bootstrap = !matches!(&route, ClaimsRoute::Root);
+    let wait_for_live_before_session = matches!(
+        &route,
+        ClaimsRoute::NewLive | ClaimsRoute::Draft | ClaimsRoute::Import
+    );
     let is_root_route = matches!(&route, ClaimsRoute::Root);
     let route_title = match &route {
         ClaimsRoute::Root => "Claims Launcher Moved".to_string(),
@@ -568,7 +606,8 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
     let route_boot_message = match &route {
         ClaimsRoute::Root => "Open the dedicated launcher to choose a claims session.".to_string(),
         ClaimsRoute::NewBlank => {
-            "Booting the dedicated claims editor and preparing a neutral board.".to_string()
+            "Opening a neutral claims session while territory geometry syncs in the background."
+                .to_string()
         }
         ClaimsRoute::NewLive => {
             "Fetching live territory ownership before the editor mounts.".to_string()
@@ -632,6 +671,17 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
     let needs_live_resync: RwSignal<bool> = RwSignal::new(false);
     let live_resync_in_flight: RwSignal<bool> = RwSignal::new(false);
     let sse_seq_gap_detected_count: RwSignal<u64> = RwSignal::new(0);
+
+    if let Some(state) = read_staged_live_bootstrap() {
+        apply_live_state(
+            live_territories,
+            live_seq,
+            last_live_seq,
+            live_bootstrap_pending,
+            live_bootstrap_error,
+            state,
+        );
+    }
 
     provide_context(effective_territories);
     provide_context(viewport);
@@ -849,9 +899,8 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
     });
 
     Effect::new(move || {
-        if is_ready.get_untracked()
-            || (requires_live_bootstrap && live_territories.get().is_empty())
-        {
+        let live_ready = !live_territories.get().is_empty();
+        if is_ready.get_untracked() || (wait_for_live_before_session && !live_ready) {
             return;
         }
 
@@ -1023,11 +1072,14 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
 
                 match history::fetch_live_state().await {
                     Ok(state) => {
-                        live_seq.set(state.seq);
-                        last_live_seq.set(Some(state.seq));
-                        live_territories.set(crate::territory::from_snapshot(state.territories));
-                        live_bootstrap_pending.set(false);
-                        live_bootstrap_error.set(None);
+                        apply_live_state(
+                            live_territories,
+                            live_seq,
+                            last_live_seq,
+                            live_bootstrap_pending,
+                            live_bootstrap_error,
+                            state,
+                        );
                         break;
                     }
                     Err(error) => {
@@ -1220,11 +1272,23 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
                 on:change=on_file_change
             />
             {move || {
-                if is_ready.get() && session.get().is_some() {
+                if session.get().is_some() && !effective_territories.get().is_empty() {
                     view! { <MapCanvas /> }.into_any()
                 } else {
                     view! { <div style="position: absolute; inset: 0; background: #0c0e17; pointer-events: none;" /> }
                         .into_any()
+                }
+            }}
+            {move || {
+                if session.get().is_some() && live_territories.get().is_empty() {
+                    view! {
+                        <div style="position: absolute; top: 18px; left: 50%; transform: translateX(-50%); z-index: 20; padding: 10px 14px; border-radius: 999px; border: 1px solid rgba(245,197,66,0.2); background: rgba(12,16,25,0.92); color: #dfe5f5; font-size: 0.72rem; box-shadow: 0 16px 36px rgba(0,0,0,0.34);">
+                            "Syncing live territory geometry..."
+                        </div>
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
                 }
             }}
             {move || {
