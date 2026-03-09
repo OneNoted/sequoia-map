@@ -6,6 +6,75 @@ ENV_FILE="${ROOT_DIR}/.env.dev.local"
 COMPOSE_FILE="${ROOT_DIR}/docker-compose.dev.yml"
 PROJECT_NAME="sequoia-map-mod-ingest"
 PGDATA_VOLUME="${PROJECT_NAME}_pgdata-dev"
+DOCKER_BIN=()
+COMPOSE_BIN=()
+
+resolve_docker_bin() {
+  if [[ ${#DOCKER_BIN[@]} -gt 0 ]]; then
+    return
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    DOCKER_BIN=(docker)
+    return
+  fi
+
+  echo "Docker CLI is required but was not found in PATH." >&2
+  exit 1
+}
+
+resolve_compose_bin() {
+  if [[ ${#COMPOSE_BIN[@]} -gt 0 ]]; then
+    return
+  fi
+
+  resolve_docker_bin
+
+  if "${DOCKER_BIN[@]}" compose version >/dev/null 2>&1; then
+    COMPOSE_BIN=("${DOCKER_BIN[@]}" compose)
+    return
+  fi
+
+  if command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_BIN=(docker-compose)
+    return
+  fi
+
+  cat >&2 <<'EOF'
+Docker Compose is required but was not found.
+Install either the Docker Compose v2 plugin (`docker compose`) or the standalone `docker-compose` binary.
+EOF
+  exit 1
+}
+
+docker_daemon_available() {
+  resolve_docker_bin
+  "${DOCKER_BIN[@]}" info >/dev/null 2>&1
+}
+
+require_docker_daemon() {
+  if docker_daemon_available; then
+    return
+  fi
+
+  cat >&2 <<'EOF'
+Docker is installed, but the Docker daemon is not reachable.
+Start Docker Desktop or the Docker service, then rerun ./dev.sh.
+EOF
+  exit 1
+}
+
+compose_command_requires_daemon() {
+  local subcommand="${1:-up}"
+  case "${subcommand}" in
+    config|convert|help|version)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
 
 random_hex() {
   local bytes="${1}"
@@ -52,7 +121,7 @@ select_postgres_port() {
 
 find_service_container() {
   local service="${1}"
-  docker ps -a \
+  "${DOCKER_BIN[@]}" ps -a \
     --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
     --filter "label=com.docker.compose.service=${service}" \
     --format '{{.Names}}' \
@@ -63,7 +132,7 @@ read_container_env() {
   local container="${1}"
   local key="${2}"
 
-  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${container}" \
+  "${DOCKER_BIN[@]}" inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${container}" \
     | sed -n "s/^${key}=//p" \
     | tail -n1
 }
@@ -71,7 +140,7 @@ read_container_env() {
 read_postgres_port_from_container() {
   local container="${1}"
 
-  docker port "${container}" 5432/tcp \
+  "${DOCKER_BIN[@]}" port "${container}" 5432/tcp \
     | awk -F: 'NR == 1 { print $NF }'
 }
 
@@ -134,17 +203,19 @@ ensure_env_file() {
     return
   fi
 
-  if recover_env_file_from_existing_stack; then
-    return
-  fi
+  if docker_daemon_available; then
+    if recover_env_file_from_existing_stack; then
+      return
+    fi
 
-  if docker volume inspect "${PGDATA_VOLUME}" >/dev/null 2>&1; then
-    cat >&2 <<EOF
+    if "${DOCKER_BIN[@]}" volume inspect "${PGDATA_VOLUME}" >/dev/null 2>&1; then
+      cat >&2 <<EOF
 Found existing Docker volume ${PGDATA_VOLUME} but could not recover the dev credentials for it.
 Either remove that volume if you do not need the local database anymore, or create ${ENV_FILE}
 manually with matching POSTGRES_PASSWORD, INTERNAL_INGEST_TOKEN, and POSTGRES_PORT values.
 EOF
-    exit 1
+      exit 1
+    fi
   fi
 
   local postgres_port
@@ -166,10 +237,18 @@ main() {
     compose_args=(up --build)
   fi
 
+  cd "${ROOT_DIR}"
+  resolve_compose_bin
+
+  if compose_command_requires_daemon "${compose_args[0]}"; then
+    require_docker_daemon
+  fi
+
   ensure_env_file
 
-  exec docker compose \
+  exec "${COMPOSE_BIN[@]}" \
     --project-name "${PROJECT_NAME}" \
+    --project-directory "${ROOT_DIR}" \
     --env-file "${ENV_FILE}" \
     -f "${COMPOSE_FILE}" \
     "${compose_args[@]}"
