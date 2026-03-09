@@ -606,7 +606,10 @@
         const PRESET_STORAGE_KEY = "sequoia_claim_presets_v1";
         const IMPORT_HANDOFF_STORAGE_KEY = "sequoia_claim_import_handoff_v1";
         const LIVE_BOOTSTRAP_STORAGE_KEY = "sequoia_claim_live_bootstrap_v1";
+        const GEOMETRY_BOOTSTRAP_STORAGE_KEY = "sequoia_claim_geometry_bootstrap_v1";
+        const BOOTSTRAP_STORAGE_VERSION = 1;
         const LIVE_BOOTSTRAP_MAX_AGE_MS = 120000;
+        const GEOMETRY_BOOTSTRAP_MAX_AGE_MS = 3600000;
 
         const statusEl = document.getElementById("launcher-status");
         const blankCard = document.getElementById("blank-card");
@@ -624,6 +627,12 @@
         const snapshotOpen = document.getElementById("snapshot-open");
         const refreshLauncher = document.getElementById("refresh-launcher");
         let liveBootstrapPromise = null;
+        let geometryBootstrapPromise = null;
+
+        if (window.location.hash && window.location.hash.startsWith("#c=")) {
+          window.location.replace("/claims/new/import" + window.location.hash);
+          return;
+        }
 
         function setStatus(message, tone) {
           statusEl.textContent = message;
@@ -659,13 +668,59 @@
 
         function readFreshLiveBootstrap() {
           const payload = safeSessionParse(LIVE_BOOTSTRAP_STORAGE_KEY, null);
-          if (!payload || typeof payload.cached_at_ms !== "number" || !payload.state) {
+          if (!payload || payload.version !== BOOTSTRAP_STORAGE_VERSION || typeof payload.cached_at_ms !== "number" || !payload.state) {
             return null;
           }
           if (Date.now() - payload.cached_at_ms > LIVE_BOOTSTRAP_MAX_AGE_MS) {
             return null;
           }
           return payload;
+        }
+
+        function readFreshGeometryBootstrap() {
+          const payload = safeSessionParse(GEOMETRY_BOOTSTRAP_STORAGE_KEY, null);
+          if (!payload || payload.version !== BOOTSTRAP_STORAGE_VERSION || typeof payload.cached_at_ms !== "number" || !payload.geometry) {
+            return null;
+          }
+          if (Date.now() - payload.cached_at_ms > GEOMETRY_BOOTSTRAP_MAX_AGE_MS) {
+            return null;
+          }
+          return payload;
+        }
+
+        async function stageGeometryBootstrap(force) {
+          if (!force) {
+            const cached = readFreshGeometryBootstrap();
+            if (cached) {
+              return cached;
+            }
+            if (geometryBootstrapPromise) {
+              return geometryBootstrapPromise;
+            }
+          }
+
+          geometryBootstrapPromise = fetch("/api/claims/bootstrap/geometry", {
+            credentials: "same-origin",
+            cache: "default"
+          })
+            .then(async (response) => {
+              if (!response.ok) {
+                throw new Error("HTTP " + response.status);
+              }
+              const geometry = await response.json();
+              const payload = {
+                version: BOOTSTRAP_STORAGE_VERSION,
+                cached_at_ms: Date.now(),
+                geometry
+              };
+              window.sessionStorage.setItem(GEOMETRY_BOOTSTRAP_STORAGE_KEY, JSON.stringify(payload));
+              return payload;
+            })
+            .finally(() => {
+              geometryBootstrapPromise = null;
+            });
+
+          return geometryBootstrapPromise;
         }
 
         async function stageLiveBootstrap(force) {
@@ -690,6 +745,7 @@
               }
               const state = await response.json();
               const payload = {
+                version: BOOTSTRAP_STORAGE_VERSION,
                 cached_at_ms: Date.now(),
                 state
               };
@@ -712,12 +768,17 @@
           return liveBootstrapPromise;
         }
 
-        async function navigateWithWarmLiveState(event, href, label) {
+        async function navigateWithWarmBootstrap(event, href, label, options) {
           event.preventDefault();
+          const warmLive = !!(options && options.live);
           setStatus("Preparing " + label + "...", "");
           try {
+            const warmers = [stageGeometryBootstrap(false)];
+            if (warmLive) {
+              warmers.push(stageLiveBootstrap(false));
+            }
             await Promise.race([
-              stageLiveBootstrap(false),
+              Promise.all(warmers),
               new Promise((resolve) => window.setTimeout(resolve, 900))
             ]);
           } catch (_) {
@@ -792,6 +853,7 @@
             button.addEventListener("click", () => {
               try {
                 writeImportHandoff(preset.document, "preset");
+                stageGeometryBootstrap(false).catch(() => {});
                 window.location.href = "/claims/new/import";
               } catch (error) {
                 console.error(error);
@@ -833,11 +895,11 @@
         });
 
         blankCard.addEventListener("click", (event) => {
-          navigateWithWarmLiveState(event, blankCard.href, "blank board");
+          navigateWithWarmBootstrap(event, blankCard.href, "blank board", { live: false });
         });
 
         liveCard.addEventListener("click", (event) => {
-          navigateWithWarmLiveState(event, liveCard.href, "live snapshot");
+          navigateWithWarmBootstrap(event, liveCard.href, "live snapshot", { live: true });
         });
 
         importTrigger.addEventListener("click", () => {
@@ -855,6 +917,7 @@
             const text = await file.text();
             const document = JSON.parse(text);
             writeImportHandoff(document, "file");
+            stageGeometryBootstrap(false).catch(() => {});
             window.location.href = "/claims/new/import";
           } catch (error) {
             console.error(error);
@@ -872,7 +935,13 @@
 
         refreshLauncher.addEventListener("click", refreshLocalState);
         refreshLocalState();
-        stageLiveBootstrap(false).catch(() => {});
+        stageGeometryBootstrap(false)
+          .then(() => {
+            setStatus("Launcher ready. Territory geometry is staged for fast editor entry.", "");
+          })
+          .catch(() => {
+            setStatus("Launcher ready. Geometry prefetch failed, so the editor will fetch on entry.", "warn");
+          });
       })();
     </script>
 </body>

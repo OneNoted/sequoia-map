@@ -49,6 +49,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             axum::routing::get(routes::claims::get_guild_catalog),
         )
         .route(
+            "/api/claims/bootstrap/geometry",
+            axum::routing::get(routes::claims::get_claims_bootstrap_geometry),
+        )
+        .route(
             "/api/season/scalar/current",
             axum::routing::get(routes::api::get_season_scalar_current),
         )

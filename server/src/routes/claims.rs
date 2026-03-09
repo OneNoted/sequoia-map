@@ -1,12 +1,17 @@
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
 use chrono::Utc;
 use sequoia_shared::{
-    CLAIM_DOCUMENT_VERSION_V1, ClaimDocumentV1, ClaimValidationError, validate_claim_document,
+    CLAIM_DOCUMENT_VERSION_V1, ClaimDocumentV1, ClaimValidationError, ClaimsBootstrapGeometry,
+    ClaimsTerritoryGeometry, validate_claim_document,
 };
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +100,47 @@ pub async fn get_guild_catalog(
         guilds: entries,
         cached_at: catalog.fetched_at.to_rfc3339(),
     }))
+}
+
+pub async fn get_claims_bootstrap_geometry(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, StatusCode> {
+    let body = {
+        let snapshot = state.live_snapshot.read().await;
+        let geometry = ClaimsBootstrapGeometry {
+            territories: snapshot
+                .territories
+                .iter()
+                .map(|(name, territory)| {
+                    (
+                        name.clone(),
+                        ClaimsTerritoryGeometry {
+                            location: territory.location.clone(),
+                            resources: territory.resources.clone(),
+                            connections: territory.connections.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        serde_json::to_vec(&geometry).map(Bytes::from)
+    }
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let etag = claims_geometry_etag(body.as_ref());
+    if if_none_match_matches(&headers, &etag) {
+        return Ok(not_modified_response(
+            "public, max-age=86400",
+            Some(etag.as_str()),
+        ));
+    }
+
+    Ok(json_bytes_response(
+        body,
+        "public, max-age=86400",
+        Some(etag.as_str()),
+    ))
 }
 
 pub async fn create_claim_layout(
@@ -299,6 +345,64 @@ fn validation_status(error: ClaimValidationError) -> StatusCode {
     }
 }
 
+fn claims_geometry_etag(body: &[u8]) -> String {
+    let mut hasher = DefaultHasher::new();
+    body.hash(&mut hasher);
+    format!("\"claims-geometry-{:016x}\"", hasher.finish())
+}
+
+fn json_bytes_response(body: Bytes, cache_control: &'static str, etag: Option<&str>) -> Response {
+    let mut response = Response::new(axum::body::Body::from(body));
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
+    if let Some(etag) = etag
+        && let Ok(value) = HeaderValue::from_str(etag)
+    {
+        headers.insert(header::ETAG, value);
+    }
+    response
+}
+
+fn not_modified_response(cache_control: &'static str, etag: Option<&str>) -> Response {
+    let mut response = StatusCode::NOT_MODIFIED.into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
+    if let Some(etag) = etag
+        && let Ok(value) = HeaderValue::from_str(etag)
+    {
+        headers.insert(header::ETAG, value);
+    }
+    response
+}
+
+fn normalize_etag(candidate: &str) -> &str {
+    candidate.strip_prefix("W/").unwrap_or(candidate).trim()
+}
+
+fn if_none_match_matches(headers: &HeaderMap, etag: &str) -> bool {
+    let Some(value) = headers.get(header::IF_NONE_MATCH) else {
+        return false;
+    };
+    let Ok(raw) = value.to_str() else {
+        return false;
+    };
+
+    raw.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == "*" || normalize_etag(candidate) == normalize_etag(etag)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +447,12 @@ mod tests {
             compare_catalog_entries(&alpha, &beta, "alp"),
             Ordering::Less
         );
+    }
+
+    #[test]
+    fn claims_geometry_etag_changes_with_payload() {
+        let first = claims_geometry_etag(br#"{"territories":{"A":{}}}"#);
+        let second = claims_geometry_etag(br#"{"territories":{"B":{}}}"#);
+        assert_ne!(first, second);
     }
 }

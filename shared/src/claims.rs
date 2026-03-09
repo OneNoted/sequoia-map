@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::territory::{GuildRef, TerritoryMap};
+use crate::territory::{GuildRef, Region, Resources, TerritoryMap};
 use crate::tower::count_guild_connections;
 
 pub const CLAIM_DOCUMENT_VERSION_V1: u8 = 1;
@@ -47,6 +47,21 @@ impl ClaimOwner {
             ClaimOwner::Guild { guild } => guild.name.as_str(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ClaimsBootstrapGeometry {
+    #[serde(default)]
+    pub territories: HashMap<String, ClaimsTerritoryGeometry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClaimsTerritoryGeometry {
+    pub location: Region,
+    #[serde(default)]
+    pub resources: Resources,
+    #[serde(default)]
+    pub connections: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
