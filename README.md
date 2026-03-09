@@ -114,7 +114,7 @@ Security notes:
 - Public edge routes block `/api/metrics`, `/metrics`, and `/iris/metrics`; scrape metrics over private service networking.
 - Compose defaults `INGEST_SINGLE_REPORTER_MODE=false`; only enable it explicitly for controlled single-reporter deployments.
 - Compose defaults `INGEST_DEGRADED_SINGLE_REPORTER_ENABLED=false`; set it to `true` explicitly only if single-reporter degraded updates are required.
-- Compose defaults `INGEST_QUORUM_MIN_DISTINCT_ORIGINS=1`, so same-NAT observers can still corroborate; raise it to `2` only if you want strict cross-origin quorum.
+- Compose defaults `INGEST_QUORUM_MIN_DISTINCT_ORIGINS=1`, so same-NAT observers can still corroborate; raise it to `2` only if you want strict cross-origin quorum. Values above `INGEST_QUORUM_MIN_REPORTERS` are capped to the reporter quorum threshold.
 - Compose defaults `INGEST_TRUSTED_PROXY_CIDRS` to loopback + RFC1918 private ranges for containerized edge proxies; set explicit edge proxy CIDRs in production to narrow trust as needed.
 - For local development, use `docker-compose.dev.yml` (plain localhost HTTP endpoints).
 
@@ -213,7 +213,7 @@ Notes:
 | `INGEST_TRUSTED_PROXY_CIDRS` | Comma-separated trusted reverse proxy CIDRs for `X-Forwarded-For` | *(empty in service; prod/coolify compose defaults to loopback + RFC1918 private ranges)* |
 | `INGEST_SINGLE_REPORTER_MODE` | Restrict active enrollment/reporting to one reporter identity at a time | `false` *(prod/coolify compose defaults to `false`)* |
 | `INGEST_DEGRADED_SINGLE_REPORTER_ENABLED` | Allow single active reporter to emit degraded canonical updates without quorum | `false` *(prod/coolify compose defaults to `false`; dev compose defaults to `true`)* |
-| `INGEST_QUORUM_MIN_DISTINCT_ORIGINS` | Minimum distinct origin IPs required in addition to reporter/device quorum | `1` *(set `2` for strict cross-origin corroboration)* |
+| `INGEST_QUORUM_MIN_DISTINCT_ORIGINS` | Minimum distinct origin IPs required in addition to reporter/device quorum | `1` *(capped to `INGEST_QUORUM_MIN_REPORTERS`; set `2` for strict cross-origin corroboration)* |
 | `INGEST_API_BODY_LIMIT_BYTES` | Max request body size accepted by ingest routes | `2097152` |
 | `INGEST_MAX_REPORTS_PER_BATCH` | Max territory updates accepted per reporter upload batch | `1024` |
 | `DOCKER_LOG_MAX_SIZE` | Docker log max size before rotation (Compose) | `10m` |
