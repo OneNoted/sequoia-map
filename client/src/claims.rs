@@ -1238,8 +1238,9 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                         }
                     }
                     ClaimTool::Select => {
-                        if !session_state.selection.contains(&territory_name) {
-                            session_state.selection.push(territory_name);
+                        let next_selection = vec![territory_name.clone()];
+                        if session_state.selection != next_selection {
+                            session_state.selection = next_selection;
                             session_state.dirty = true;
                         }
                     }
@@ -1254,9 +1255,25 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
             });
         }
     });
+    let apply_box_select = Arc::new({
+        move |territory_names: Vec<String>| {
+            let next_selection = territory_names;
+            selected.set(next_selection.last().cloned());
+            session.update(|session_state| {
+                let Some(session_state) = session_state.as_mut() else {
+                    return;
+                };
+                if session_state.selection != next_selection {
+                    session_state.selection = next_selection.clone();
+                    session_state.dirty = true;
+                }
+            });
+        }
+    });
     provide_context(ClaimCanvasController {
         tool,
         handle_hit: apply_hit,
+        handle_box_select: apply_box_select,
     });
 
     let metrics = Memo::new(move |_| {
@@ -1655,7 +1672,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                 on:change=on_file_change
             />
             {move || {
-                if editor_canvas_ready.get() && !effective_territories.get().is_empty() {
+                if editor_canvas_ready.get() {
                     view! { <MapCanvas /> }.into_any()
                 } else {
                     view! {
