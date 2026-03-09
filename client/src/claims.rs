@@ -28,6 +28,7 @@ use crate::app::{
 };
 use crate::canvas::MapCanvas;
 use crate::history;
+use crate::sse::{self, ConnectionStatus};
 use crate::territory::{ClientTerritory, ClientTerritoryMap};
 use crate::tiles::{self, LoadedTile};
 use crate::viewport::Viewport;
@@ -565,6 +566,8 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
     let tab: RwSignal<ClaimTab> = RwSignal::new(ClaimTab::Summary);
     let is_ready: RwSignal<bool> = RwSignal::new(false);
     let is_loading_snapshot: RwSignal<bool> = RwSignal::new(false);
+    let live_bootstrap_pending: RwSignal<bool> = RwSignal::new(true);
+    let live_bootstrap_error: RwSignal<Option<String>> = RwSignal::new(None);
     let error_message: RwSignal<Option<String>> = RwSignal::new(None);
     let status_message: RwSignal<Option<String>> = RwSignal::new(None);
     let claims_persistence_available: RwSignal<bool> = RwSignal::new(false);
@@ -589,6 +592,7 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
         RwSignal::new(canvas_dimensions().0 < crate::app::MOBILE_BREAKPOINT);
 
     let current_mode: RwSignal<MapMode> = RwSignal::new(MapMode::Live);
+    let connection: RwSignal<ConnectionStatus> = RwSignal::new(ConnectionStatus::Connecting);
     let history_timestamp: RwSignal<Option<i64>> = RwSignal::new(None);
     let history_buffered_updates: RwSignal<Vec<crate::app::BufferedUpdate>> =
         RwSignal::new(Vec::new());
@@ -787,86 +791,122 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
         tiles::fetch_tiles(loaded_tiles, context);
     });
 
-    spawn_local(async move {
-        loop {
-            match history::fetch_live_state().await {
-                Ok(state) => {
-                    if !is_ready.get_untracked() {
-                        is_ready.set(true);
-                        set_loading_shell_step("Starting claim editor");
-                        remove_loading_shell();
+    Effect::new(move || {
+        set_loading_shell_step("Starting claim editor");
+        remove_loading_shell();
+    });
 
-                        match current_hash_document() {
-                            Ok(Some(document)) => {
-                                apply_document_to_session(
-                                    active_owner,
-                                    viewport,
-                                    session,
-                                    tab,
-                                    status_message,
-                                    error_message,
-                                    document,
-                                    None,
-                                    false,
-                                );
-                            }
-                            Ok(None) => {
-                                if let ClaimsRoute::Saved(snapshot_id) = &route {
-                                    is_loading_snapshot.set(true);
-                                    let snapshot_id = snapshot_id.clone();
-                                    spawn_local(async move {
-                                        let url = format!("/api/claims/{snapshot_id}");
-                                        match gloo_net::http::Request::get(&url).send().await {
-                                            Ok(response) if response.ok() => {
-                                                match response
-                                                    .json::<SavedClaimDocumentResponse>()
-                                                    .await
-                                                {
-                                                    Ok(payload) => {
-                                                        apply_document_to_session(
-                                                            active_owner,
-                                                            viewport,
-                                                            session,
-                                                            tab,
-                                                            status_message,
-                                                            error_message,
-                                                            payload.document,
-                                                            Some(payload.id),
-                                                            false,
-                                                        );
-                                                    }
-                                                    Err(error) => {
-                                                        error_message.set(Some(error.to_string()));
-                                                    }
-                                                }
-                                            }
-                                            _ => {
-                                                error_message.set(Some(
-                                                    "Failed to load saved snapshot".to_string(),
-                                                ));
-                                            }
-                                        }
-                                        is_loading_snapshot.set(false);
-                                    });
+    Effect::new(move || {
+        sse::connect(live_territories, connection);
+        on_cleanup(|| {
+            sse::disconnect();
+        });
+    });
+
+    Effect::new(move || {
+        if !live_territories.get().is_empty() {
+            live_bootstrap_pending.set(false);
+            live_bootstrap_error.set(None);
+        }
+    });
+
+    Effect::new(move || {
+        if live_territories.get().is_empty() || is_ready.get_untracked() {
+            return;
+        }
+
+        is_ready.set(true);
+
+        match current_hash_document() {
+            Ok(Some(document)) => {
+                apply_document_to_session(
+                    active_owner,
+                    viewport,
+                    session,
+                    tab,
+                    status_message,
+                    error_message,
+                    document,
+                    None,
+                    false,
+                );
+            }
+            Ok(None) => {
+                if let ClaimsRoute::Saved(snapshot_id) = &route {
+                    is_loading_snapshot.set(true);
+                    let snapshot_id = snapshot_id.clone();
+                    spawn_local(async move {
+                        let url = format!("/api/claims/{snapshot_id}");
+                        match gloo_net::http::Request::get(&url).send().await {
+                            Ok(response) if response.ok() => {
+                                match response.json::<SavedClaimDocumentResponse>().await {
+                                    Ok(payload) => {
+                                        apply_document_to_session(
+                                            active_owner,
+                                            viewport,
+                                            session,
+                                            tab,
+                                            status_message,
+                                            error_message,
+                                            payload.document,
+                                            Some(payload.id),
+                                            false,
+                                        );
+                                    }
+                                    Err(error) => {
+                                        error_message.set(Some(error.to_string()));
+                                    }
                                 }
                             }
-                            Err(error) => {
-                                error_message.set(Some(error));
+                            _ => {
+                                error_message
+                                    .set(Some("Failed to load saved snapshot".to_string()));
                             }
                         }
-                    }
+                        is_loading_snapshot.set(false);
+                    });
+                }
+            }
+            Err(error) => {
+                error_message.set(Some(error));
+            }
+        }
+    });
+
+    Effect::new(move || {
+        live_seq.set(last_live_seq.get().unwrap_or(0));
+    });
+
+    spawn_local(async move {
+        loop {
+            if !live_territories.get_untracked().is_empty() {
+                live_bootstrap_pending.set(false);
+                live_bootstrap_error.set(None);
+                break;
+            }
+
+            match history::fetch_live_state().await {
+                Ok(state) => {
                     live_seq.set(state.seq);
+                    last_live_seq.set(Some(state.seq));
                     live_territories.set(crate::territory::from_snapshot(state.territories));
+                    live_bootstrap_pending.set(false);
+                    live_bootstrap_error.set(None);
+                    break;
                 }
                 Err(error) => {
-                    if !is_ready.get_untracked() {
-                        error_message.set(Some(error));
-                        is_ready.set(true);
-                        remove_loading_shell();
-                    }
+                    live_bootstrap_pending.set(true);
+                    live_bootstrap_error
+                        .set(Some(format!("Live territory bootstrap failed: {error}")));
                 }
             }
 
+            gloo_timers::future::sleep(std::time::Duration::from_secs(3)).await;
+        }
+    });
+
+    spawn_local(async move {
+        loop {
             match gloo_net::http::Request::get("/api/health").send().await {
                 Ok(response) if response.ok() => {
                     if let Ok(json) = response.json::<serde_json::Value>().await {
@@ -1528,6 +1568,25 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
                     view! {
                         <div style="position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(10,12,19,0.90);">
                             <div style="width: min(880px, 92vw); padding: 24px; border-radius: 18px; background: linear-gradient(180deg, rgba(22,26,38,0.98), rgba(15,18,27,0.96)); border: 1px solid rgba(245,197,66,0.18); box-shadow: 0 24px 60px rgba(0,0,0,0.45); display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px;">
+                                <div style="grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 12px; border: 1px solid #2c3146; background: rgba(17,21,33,0.88);">
+                                    <div style="font-family: 'Silkscreen', monospace; color: #f5c542;">"Claims Editor"</div>
+                                    <div style="color: #d9d4c3; font-size: 0.84rem;">
+                                        {move || {
+                                            if live_bootstrap_pending.get() {
+                                                "Syncing live territory data in the background…".to_string()
+                                            } else {
+                                                "Live territory data ready.".to_string()
+                                            }
+                                        }}
+                                    </div>
+                                    {move || live_bootstrap_error.get().map(|message| {
+                                        view! {
+                                            <div style="padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(190,72,72,0.4); background: rgba(190,72,72,0.12); color: #ffcfcf; font-size: 0.78rem;">
+                                                {message}
+                                            </div>
+                                        }
+                                    })}
+                                </div>
                                 <button
                                     style="padding: 18px; border-radius: 14px; border: 1px solid #36405d; background: #131928; color: #e6e3d9; cursor: pointer; text-align: left;"
                                     on:click=move |_| {
@@ -1580,6 +1639,7 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
                                             false,
                                         );
                                     }
+                                    disabled=move || live_bootstrap_pending.get()
                                 >
                                     <div style="font-family: 'Silkscreen', monospace; color: #f5c542; margin-bottom: 8px;">"Current Live Map"</div>
                                     <div>"Freeze the current live map as the starting state."</div>

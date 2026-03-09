@@ -29,3 +29,7 @@ opt-level = 3
 
 [profile.release.package."sequoia-shared"]
 opt-level = 3
+
+[profile.dev.package."sequoia-client"]
+opt-level = 1
+debug = 0
