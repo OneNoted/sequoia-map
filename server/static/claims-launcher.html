@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sequoia Claims</title>
     <link rel="preload" href="/fonts/minecraft-regular.otf" as="font" type="font/otf" crossorigin />
+    <link rel="preconnect" href="https://fonts.bunny.net" />
+    <link href="https://fonts.bunny.net/css?family=inter:400,500" rel="stylesheet" />
     <style>
       @font-face {
         font-family: "Silkscreen";
@@ -24,581 +26,413 @@
 
       :root {
         color-scheme: dark;
-        --bg: #070b13;
-        --bg-deep: #04060d;
-        --panel: rgba(15, 20, 32, 0.84);
-        --panel-strong: rgba(19, 26, 40, 0.96);
-        --panel-soft: rgba(13, 18, 29, 0.72);
-        --line: rgba(102, 127, 187, 0.28);
-        --line-strong: rgba(245, 197, 66, 0.22);
-        --text: #edf1ff;
-        --muted: #94a0bc;
-        --accent: #f5c542;
-        --accent-soft: rgba(245, 197, 66, 0.18);
-        --danger: #ff8b80;
-        --shadow: 0 28px 80px rgba(0, 0, 0, 0.4);
-        --radius-xl: 28px;
-        --radius-lg: 20px;
-        --radius-md: 14px;
+        --color-abyss: #0c0e17;
+        --color-deep: #13161f;
+        --color-surface: #1a1d2a;
+        --color-surface-hover: #232738;
+        --color-border-subtle: #282c3e;
+        --color-border-accent: #3a3f5c;
+        --color-gold: #f5c542;
+        --color-gold-dark: #c49a2a;
+        --color-danger: #e05252;
+        --color-text-primary: #e2e0d8;
+        --color-text-secondary: #9a9590;
+        --color-text-dim: #5a5860;
       }
 
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
 
-      html,
-      body {
+      html, body {
         margin: 0;
         min-height: 100%;
-        background:
-          radial-gradient(circle at 12% 18%, rgba(48, 83, 157, 0.18), transparent 28%),
-          radial-gradient(circle at 88% 14%, rgba(245, 197, 66, 0.12), transparent 24%),
-          radial-gradient(circle at 50% 100%, rgba(23, 55, 105, 0.18), transparent 38%),
-          linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
-        color: var(--text);
-        font-family: "Silkscreen", ui-monospace, monospace;
-      }
-
-      body::before {
-        content: "";
-        position: fixed;
-        inset: 0;
-        background-image:
-          linear-gradient(rgba(78, 92, 125, 0.06) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(78, 92, 125, 0.06) 1px, transparent 1px);
-        background-size: 56px 56px;
-        mask-image: linear-gradient(180deg, rgba(255, 255, 255, 0.52), transparent 88%);
-        pointer-events: none;
+        background: var(--color-abyss);
+        color: var(--color-text-primary);
+        font-family: "Inter", system-ui, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
       }
 
       .page {
-        position: relative;
-        width: min(1240px, calc(100vw - 32px));
+        width: min(720px, calc(100vw - 32px));
         margin: 0 auto;
-        padding: 28px 0 48px;
+        padding: 48px 0 64px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
       }
 
-      .masthead {
-        display: grid;
-        grid-template-columns: 1.15fr 0.85fr;
-        gap: 18px;
-        align-items: stretch;
-      }
-
-      .hero,
-      .status-panel,
-      .board,
-      .presets {
-        position: relative;
-        overflow: hidden;
-        border-radius: var(--radius-xl);
-        border: 1px solid var(--line);
-        background: linear-gradient(180deg, rgba(13, 18, 29, 0.92), rgba(8, 12, 20, 0.9));
-        box-shadow: var(--shadow);
-      }
-
-      .hero {
-        padding: 28px;
-      }
-
-      .hero::after,
-      .status-panel::after,
-      .board::after,
-      .presets::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(140deg, rgba(245, 197, 66, 0.08), transparent 32%, transparent 68%, rgba(70, 112, 212, 0.08));
-        pointer-events: none;
-      }
-
-      .eyebrow {
-        display: inline-flex;
+      /* ── Header ── */
+      .header {
+        display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 8px 12px;
-        border-radius: 999px;
-        border: 1px solid var(--line-strong);
-        background: rgba(245, 197, 66, 0.08);
-        color: var(--accent);
-        font-size: 0.72rem;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
+        justify-content: space-between;
+        gap: 16px;
       }
 
-      .hero h1 {
-        margin: 18px 0 12px;
-        font-size: clamp(2.2rem, 6vw, 4.8rem);
-        line-height: 0.94;
-        letter-spacing: -0.06em;
-        text-transform: uppercase;
-      }
-
-      .hero p,
-      .status-line,
-      .card p,
-      .preset-copy,
-      .empty-copy,
-      .field-copy {
+      .header h1 {
         margin: 0;
-        color: var(--muted);
-        font-size: 0.84rem;
-        line-height: 1.8;
-      }
-
-      .hero-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 12px;
-        margin-top: 20px;
-      }
-
-      .hero-chip {
-        padding: 14px;
-        border-radius: var(--radius-md);
-        border: 1px solid rgba(104, 129, 184, 0.22);
-        background: var(--panel-soft);
-      }
-
-      .hero-chip strong,
-      .status-label,
-      .section-title,
-      .card h2,
-      .preset-card h3,
-      .field-card h2 {
-        display: block;
-        color: var(--text);
-        font-size: 0.82rem;
+        font-family: "Silkscreen", monospace;
+        font-size: 1.1rem;
+        color: var(--color-gold);
         letter-spacing: 0.04em;
         text-transform: uppercase;
       }
 
-      .hero-chip span {
-        display: block;
-        margin-top: 8px;
-        color: var(--muted);
-        font-size: 0.72rem;
-        line-height: 1.7;
-      }
-
-      .status-panel {
-        display: grid;
-        grid-template-rows: auto 1fr;
-        padding: 24px;
-      }
-
-      .status-stack {
-        display: grid;
-        gap: 14px;
-        align-content: start;
-      }
-
       .status-callout {
-        padding: 14px 16px;
-        border-radius: 16px;
-        border: 1px solid rgba(104, 129, 184, 0.24);
-        background: var(--panel-soft);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.82rem;
+        color: var(--color-text-secondary);
       }
 
-      .status-callout[data-tone="warn"] {
-        border-color: rgba(245, 197, 66, 0.28);
-        background: rgba(245, 197, 66, 0.08);
+      .status-callout::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--color-gold);
+        flex-shrink: 0;
       }
 
-      .status-callout[data-tone="error"] {
-        border-color: rgba(255, 139, 128, 0.28);
-        background: rgba(255, 139, 128, 0.08);
-      }
+      .status-callout[data-tone="warn"]::before { background: var(--color-gold); }
+      .status-callout[data-tone="error"]::before { background: var(--color-danger); }
+      .status-callout[data-tone="warn"] { color: var(--color-gold); }
+      .status-callout[data-tone="error"] { color: var(--color-danger); }
 
-      .status-label {
-        color: var(--accent);
-        margin-bottom: 8px;
-      }
-
-      .board,
-      .presets {
-        margin-top: 18px;
-        padding: 24px;
-      }
-
-      .section-title {
-        margin-bottom: 10px;
-      }
-
-      .section-copy {
-        margin: 0 0 18px;
-        color: var(--muted);
-        font-size: 0.8rem;
-        line-height: 1.75;
-      }
-
-      .card-grid {
+      /* ── Session Grid (2×2) ── */
+      .session-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 14px;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
       }
 
-      .card,
-      .preset-card,
-      .field-card {
-        position: relative;
+      .card {
         display: flex;
         flex-direction: column;
-        gap: 14px;
-        min-height: 212px;
-        padding: 18px;
-        border-radius: var(--radius-lg);
-        border: 1px solid rgba(104, 129, 184, 0.24);
-        background: linear-gradient(180deg, rgba(19, 27, 43, 0.92), rgba(12, 18, 30, 0.94));
+        gap: 8px;
+        padding: 16px;
+        border-radius: 10px;
+        border: 1px solid var(--color-border-subtle);
+        background: var(--color-surface);
         text-decoration: none;
         color: inherit;
-        transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
-      }
-
-      button.card,
-      button.preset-card {
-        width: 100%;
-        text-align: left;
-        font: inherit;
+        transition: border-color 150ms ease, background 150ms ease;
         cursor: pointer;
       }
 
-      .card:hover,
-      .card:focus-visible,
-      .preset-card:hover,
-      .preset-card:focus-visible,
-      .field-card:focus-within {
-        transform: translateY(-2px);
-        border-color: rgba(245, 197, 66, 0.34);
-        box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32);
+      a.card, button.card {
+        font: inherit;
+        text-align: left;
+        width: 100%;
+      }
+
+      .card:hover, .card:focus-visible {
+        border-color: var(--color-border-accent);
+        background: var(--color-surface-hover);
       }
 
       .card[aria-disabled="true"] {
         cursor: not-allowed;
-        opacity: 0.5;
+        opacity: 0.4;
       }
 
-      .card-badge,
-      .preset-badge {
-        display: inline-flex;
-        align-self: flex-start;
-        padding: 7px 10px;
-        border-radius: 999px;
-        background: rgba(245, 197, 66, 0.1);
-        color: var(--accent);
-        font-size: 0.68rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
+      .card[aria-disabled="true"]:hover {
+        border-color: var(--color-border-subtle);
+        background: var(--color-surface);
       }
 
-      .card h2,
-      .field-card h2,
-      .preset-card h3 {
+      .card h2 {
         margin: 0;
-        font-size: 1rem;
+        font-family: "Silkscreen", monospace;
+        font-size: 0.85rem;
+        color: var(--color-text-primary);
+        letter-spacing: 0.02em;
       }
 
-      .card-footer,
-      .preset-meta {
+      .card p {
+        margin: 0;
+        font-size: 0.82rem;
+        color: var(--color-text-secondary);
+        line-height: 1.5;
+      }
+
+      .card-footer {
         margin-top: auto;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 12px;
-        color: #c4d2ff;
-        font-size: 0.7rem;
+        font-size: 0.75rem;
+        color: var(--color-text-dim);
       }
 
       .card-arrow {
-        color: var(--accent);
-        font-size: 1rem;
+        color: var(--color-gold);
+        font-family: "Silkscreen", monospace;
+        font-size: 0.85rem;
       }
 
-      .board-grid {
-        display: grid;
-        grid-template-columns: 1.2fr 0.8fr;
-        gap: 14px;
-      }
-
-      .fields {
-        display: grid;
-        gap: 14px;
-      }
-
-      .field-card {
-        min-height: 0;
-      }
-
-      .field-row {
+      /* ── Snapshot Row ── */
+      .snapshot-row {
         display: flex;
-        gap: 10px;
+        gap: 8px;
         align-items: stretch;
       }
 
-      .field-row input {
+      .snapshot-row input {
         flex: 1;
         min-width: 0;
-        padding: 12px 14px;
-        border-radius: 12px;
-        border: 1px solid rgba(104, 129, 184, 0.24);
-        background: rgba(7, 11, 18, 0.88);
-        color: var(--text);
+        padding: 10px 14px;
+        border-radius: 8px;
+        border: 1px solid var(--color-border-subtle);
+        background: var(--color-deep);
+        color: var(--color-text-primary);
         font: inherit;
+        font-size: 0.85rem;
       }
 
-      .field-row input::placeholder {
-        color: #66718d;
+      .snapshot-row input::placeholder {
+        color: var(--color-text-dim);
       }
 
-      .field-row button,
-      .ghost-button {
-        padding: 12px 16px;
-        border: 1px solid rgba(245, 197, 66, 0.26);
-        border-radius: 12px;
-        background: linear-gradient(180deg, rgba(245, 197, 66, 0.14), rgba(245, 197, 66, 0.07));
-        color: var(--text);
+      .snapshot-row input:focus {
+        outline: none;
+        border-color: var(--color-border-accent);
+      }
+
+      .snapshot-row button {
+        padding: 10px 18px;
+        border-radius: 8px;
+        border: 1px solid var(--color-border-accent);
+        background: var(--color-surface);
+        color: var(--color-text-primary);
         font: inherit;
+        font-size: 0.85rem;
         cursor: pointer;
+        transition: border-color 150ms ease, background 150ms ease;
       }
 
-      .ghost-button {
-        align-self: flex-start;
+      .snapshot-row button:hover, .snapshot-row button:focus-visible {
+        border-color: var(--color-gold-dark);
+        background: var(--color-surface-hover);
       }
 
-      .field-row button:hover,
-      .field-row button:focus-visible,
-      .ghost-button:hover,
-      .ghost-button:focus-visible {
-        border-color: rgba(245, 197, 66, 0.42);
-      }
-
-      .preset-header {
+      /* ── Presets Section ── */
+      .presets-section {
         display: flex;
-        align-items: end;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .presets-header {
+        display: flex;
+        align-items: center;
         justify-content: space-between;
-        gap: 14px;
-        margin-bottom: 18px;
+        gap: 12px;
+      }
+
+      .presets-header h2 {
+        margin: 0;
+        font-family: "Silkscreen", monospace;
+        font-size: 0.85rem;
+        color: var(--color-text-primary);
+        letter-spacing: 0.02em;
+      }
+
+      .pill {
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--color-border-subtle);
+        background: var(--color-deep);
+        color: var(--color-text-secondary);
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
       }
 
       .preset-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 14px;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 12px;
       }
 
       .preset-card {
-        min-height: 164px;
-      }
-
-      .empty-state {
-        padding: 22px;
-        border-radius: var(--radius-lg);
-        border: 1px dashed rgba(104, 129, 184, 0.24);
-        background: rgba(10, 14, 22, 0.6);
-      }
-
-      .hidden-input {
-        position: absolute;
-        width: 0;
-        height: 0;
-        opacity: 0;
-        pointer-events: none;
-      }
-
-      .status-footer {
         display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-        margin-top: 14px;
+        flex-direction: column;
+        gap: 8px;
+        padding: 14px;
+        border-radius: 10px;
+        border: 1px solid var(--color-border-subtle);
+        background: var(--color-surface);
+        text-align: left;
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+        width: 100%;
+        transition: border-color 150ms ease, background 150ms ease;
       }
 
-      .status-pill {
-        padding: 8px 10px;
+      .preset-card:hover, .preset-card:focus-visible {
+        border-color: var(--color-border-accent);
+        background: var(--color-surface-hover);
+      }
+
+      .preset-badge {
+        display: inline-flex;
+        align-self: flex-start;
+        padding: 3px 8px;
         border-radius: 999px;
-        border: 1px solid rgba(104, 129, 184, 0.22);
-        background: rgba(11, 15, 24, 0.72);
-        color: var(--muted);
+        background: rgba(245, 197, 66, 0.1);
+        color: var(--color-gold);
         font-size: 0.68rem;
         letter-spacing: 0.06em;
         text-transform: uppercase;
       }
 
-      @media (max-width: 960px) {
-        .page {
-          width: min(100vw - 20px, 100%);
-          padding-top: 20px;
-        }
-
-        .masthead,
-        .board-grid,
-        .card-grid,
-        .preset-grid,
-        .hero-grid {
-          grid-template-columns: 1fr;
-        }
+      .preset-card h3 {
+        margin: 0;
+        font-family: "Silkscreen", monospace;
+        font-size: 0.8rem;
+        color: var(--color-text-primary);
       }
 
-      @media (prefers-reduced-motion: no-preference) {
-        .hero,
-        .status-panel,
-        .board,
-        .presets {
-          animation: panel-rise 500ms ease both;
-        }
+      .preset-copy {
+        margin: 0;
+        font-size: 0.78rem;
+        color: var(--color-text-secondary);
+        line-height: 1.5;
+      }
 
-        .board {
-          animation-delay: 60ms;
-        }
+      .preset-meta {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 0.72rem;
+        color: var(--color-text-dim);
+      }
 
-        .presets {
-          animation-delay: 110ms;
-        }
+      .empty-state {
+        padding: 20px;
+        border-radius: 10px;
+        border: 1px dashed var(--color-border-subtle);
+        background: var(--color-deep);
+      }
 
-        @keyframes panel-rise {
-          from {
-            opacity: 0;
-            transform: translateY(18px);
-          }
+      .empty-copy {
+        margin: 0;
+        font-size: 0.82rem;
+        color: var(--color-text-dim);
+        line-height: 1.5;
+      }
 
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
+      /* ── Refresh Button ── */
+      .refresh-btn {
+        align-self: center;
+        padding: 6px 16px;
+        border-radius: 999px;
+        border: 1px solid var(--color-border-subtle);
+        background: var(--color-deep);
+        color: var(--color-text-secondary);
+        font: inherit;
+        font-size: 0.75rem;
+        cursor: pointer;
+        transition: border-color 150ms ease, color 150ms ease;
+      }
+
+      .refresh-btn:hover, .refresh-btn:focus-visible {
+        border-color: var(--color-border-accent);
+        color: var(--color-text-primary);
+      }
+
+      /* ── Utility ── */
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
+
+      [hidden] { display: none !important; }
+
+      @media (max-width: 640px) {
+        .page { padding: 28px 0 48px; }
+        .session-grid { grid-template-columns: 1fr; }
+        .preset-grid { grid-template-columns: 1fr; }
+        .header { flex-direction: column; align-items: flex-start; }
       }
     </style>
 </head>
 <body>
     <main class="page">
-        <section class="masthead">
-            <article class="hero">
-                <div class="eyebrow">Sequoia Claims Suite</div>
-                <h1>Plan. Freeze. Share.</h1>
-                <p>
-                    Claims now launches from a dedicated board instead of booting the full map app first.
-                    Pick a starting state, then enter the editor only when you actually need the heavy canvas.
-                </p>
-                <div class="hero-grid">
-                    <div class="hero-chip">
-                        <strong>Instant entry</strong>
-                        <span>The launcher stays static. No wasm editor boot until you choose a session.</span>
-                    </div>
-                    <div class="hero-chip">
-                        <strong>Local recovery</strong>
-                        <span>Drafts and presets are read straight from your browser so recovery is immediate.</span>
-                    </div>
-                    <div class="hero-chip">
-                        <strong>Shareable states</strong>
-                        <span>Imports, saved snapshots, and local presets all reopen inside the same editor flow.</span>
-                    </div>
-                </div>
-            </article>
-            <aside class="status-panel">
-                <div class="status-stack">
-                    <div class="status-callout">
-                        <div class="status-label">Launcher Status</div>
-                        <p id="launcher-status" class="status-line">Reading local drafts and presets...</p>
-                    </div>
-                    <div class="status-callout" data-tone="warn">
-                        <div class="status-label">Dev Note</div>
-                        <p class="status-line">
-                            The claims editor now lives on its own route bundle. If the editor feels slow, the problem is in the editor itself, not the launcher.
-                        </p>
-                    </div>
-                </div>
-                <div class="status-footer">
-                    <span id="draft-pill" class="status-pill">Draft unknown</span>
-                    <span id="preset-pill" class="status-pill">Presets unknown</span>
-                    <span class="status-pill">Route split active</span>
-                </div>
-            </aside>
-        </section>
-
-        <section class="board">
-            <div class="section-title">Start a Session</div>
-            <p class="section-copy">
-                Choose the base state you want to edit. Blank and live boot directly into the claims editor.
-                Draft and preset recovery stay local until the editor is opened.
-            </p>
-            <div class="board-grid">
-                <div class="card-grid">
-                    <a id="blank-card" class="card" href="/claims/new/blank">
-                        <span class="card-badge">Fastest path</span>
-                        <h2>Blank Board</h2>
-                        <p>Open a neutral territory layout and start painting immediately.</p>
-                        <div class="card-footer">
-                            <span>Live geometry is staged ahead of entry</span>
-                            <span class="card-arrow">-></span>
-                        </div>
-                    </a>
-
-                    <a id="live-card" class="card" href="/claims/new/live">
-                        <span class="card-badge">Snapshot</span>
-                        <h2>Current Live Map</h2>
-                        <p>Freeze the current live territory ownership and use that as your baseline.</p>
-                        <div class="card-footer">
-                            <span>Build from live state</span>
-                            <span class="card-arrow">-></span>
-                        </div>
-                    </a>
-
-                    <button id="import-trigger" class="card" type="button">
-                        <span class="card-badge">Handoff</span>
-                        <h2>Import JSON</h2>
-                        <p>Validate a local claims export here, then pass it into the editor in one step.</p>
-                        <div class="card-footer">
-                            <span>File stays in-browser</span>
-                            <span class="card-arrow">-></span>
-                        </div>
-                    </button>
-
-                    <a id="draft-card" class="card" href="/claims/new/draft">
-                        <span class="card-badge">Recovery</span>
-                        <h2>Continue Draft</h2>
-                        <p id="draft-copy">Resume the latest local working copy from this browser.</p>
-                        <div class="card-footer">
-                            <span id="draft-meta">Checking local storage</span>
-                            <span class="card-arrow">-></span>
-                        </div>
-                    </a>
-                </div>
-
-                <div class="fields">
-                    <div class="field-card">
-                        <h2>Open Saved Snapshot</h2>
-                        <p class="field-copy">Load an immutable snapshot from the server by id.</p>
-                        <div class="field-row">
-                            <input id="snapshot-id" type="text" placeholder="Snapshot id" autocomplete="off" />
-                            <button id="snapshot-open" type="button">Open</button>
-                        </div>
-                    </div>
-
-                    <div class="field-card">
-                        <h2>Launch Rules</h2>
-                        <p class="field-copy">
-                            Launcher actions should feel instant. If this page becomes slow again, that means editor code leaked back into the launcher path.
-                        </p>
-                        <button id="refresh-launcher" class="ghost-button" type="button">Refresh local state</button>
-                    </div>
-                </div>
+        <div class="header">
+            <h1>Claims Editor</h1>
+            <div class="status-callout">
+                <span id="launcher-status">Reading local drafts and presets...</span>
             </div>
-        </section>
+        </div>
 
-        <section class="presets">
-            <div class="preset-header">
-                <div>
-                    <div class="section-title">Local Presets</div>
-                    <p class="section-copy">
-                        Presets are staged into session storage and opened through the same import route as manual JSON imports.
-                    </p>
+        <div class="session-grid">
+            <a id="blank-card" class="card" href="/claims/new/blank">
+                <h2>Blank Board</h2>
+                <p>Open a neutral territory layout and start painting.</p>
+                <div class="card-footer">
+                    <span>Geometry staged ahead</span>
+                    <span class="card-arrow">-></span>
                 </div>
-                <span id="preset-count" class="status-pill">0 presets</span>
+            </a>
+
+            <a id="live-card" class="card" href="/claims/new/live">
+                <h2>Current Live Map</h2>
+                <p>Freeze the live territory ownership as your baseline.</p>
+                <div class="card-footer">
+                    <span>Build from live state</span>
+                    <span class="card-arrow">-></span>
+                </div>
+            </a>
+
+            <button id="import-trigger" class="card" type="button">
+                <h2>Import JSON</h2>
+                <p>Load a local claims export into the editor.</p>
+                <div class="card-footer">
+                    <span>File stays in-browser</span>
+                    <span class="card-arrow">-></span>
+                </div>
+            </button>
+
+            <a id="draft-card" class="card" href="/claims/new/draft">
+                <h2>Continue Draft</h2>
+                <p id="draft-copy">Resume the latest local working copy from this browser.</p>
+                <div class="card-footer">
+                    <span id="draft-meta">Checking local storage</span>
+                    <span class="card-arrow">-></span>
+                </div>
+            </a>
+        </div>
+
+        <div class="snapshot-row">
+            <input id="snapshot-id" type="text" placeholder="Snapshot id" autocomplete="off" />
+            <button id="snapshot-open" type="button">Open</button>
+        </div>
+
+        <div class="presets-section">
+            <div class="presets-header">
+                <h2>Presets</h2>
+                <span id="preset-count" class="pill">0 presets</span>
             </div>
             <div id="preset-grid" class="preset-grid"></div>
-        </section>
+        </div>
+
+        <button id="refresh-launcher" class="refresh-btn" type="button">Refresh local state</button>
+
+        <span id="draft-pill" hidden>Draft unknown</span>
+        <span id="preset-pill" hidden>Presets unknown</span>
     </main>
 
-    <input id="import-input" class="hidden-input" type="file" accept=".json,application/json" />
+    <input id="import-input" class="sr-only" type="file" accept=".json,application/json" />
 
     <script>
       (() => {

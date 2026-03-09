@@ -2597,12 +2597,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "sequoia-claims-client"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "chrono",
+ "console_error_panic_hook",
+ "futures",
+ "gloo-net",
+ "gloo-storage",
+ "gloo-timers",
+ "js-sys",
+ "leptos",
+ "sequoia-shared",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
 name = "sequoia-client"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "chrono",
  "console_error_panic_hook",
+ "futures",
  "gloo-net",
  "gloo-storage",
  "gloo-timers",
