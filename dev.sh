@@ -170,6 +170,8 @@ if [ -f /pgdata/PG_VERSION ]; then
   echo initialized-root
 elif [ -f /pgdata/pgdata/PG_VERSION ]; then
   echo initialized-subdir
+elif find /pgdata -mindepth 2 -maxdepth 2 -path '*/docker/PG_VERSION' | grep -q .; then
+  echo initialized-versioned-subdir
 elif [ -n "$(ls -A /pgdata 2>/dev/null)" ]; then
   echo nonempty-uninitialized
 else
@@ -188,7 +190,7 @@ configure_postgres_pgdata() {
     initialized-root)
       export POSTGRES_PGDATA="${POSTGRES_PGDATA_ROOT}"
       ;;
-    missing|empty|initialized-subdir|nonempty-uninitialized)
+    missing|empty|initialized-subdir|initialized-versioned-subdir|nonempty-uninitialized)
       export POSTGRES_PGDATA="${POSTGRES_PGDATA_SUBDIR}"
       ;;
     *)
@@ -197,9 +199,14 @@ configure_postgres_pgdata() {
       ;;
   esac
 
-  if [[ "${volume_state}" == "nonempty-uninitialized" ]]; then
-    echo "Detected a non-empty but uninitialized Postgres dev volume; using ${POSTGRES_PGDATA} so the stack can initialize cleanly."
-  fi
+  case "${volume_state}" in
+    initialized-versioned-subdir)
+      echo "Detected a versioned Postgres data directory in ${PGDATA_VOLUME}; using ${POSTGRES_PGDATA} so the dev stack can start without reusing an incompatible cluster layout."
+      ;;
+    nonempty-uninitialized)
+      echo "Detected a non-empty but uninitialized Postgres dev volume; using ${POSTGRES_PGDATA} so the stack can initialize cleanly."
+      ;;
+  esac
 }
 
 write_env_file() {
@@ -275,8 +282,8 @@ manually with matching POSTGRES_PASSWORD, INTERNAL_INGEST_TOKEN, and POSTGRES_PO
 EOF
         exit 1
         ;;
-      nonempty-uninitialized)
-        echo "Found Docker volume ${PGDATA_VOLUME} without an initialized Postgres cluster; generating fresh dev credentials."
+      initialized-versioned-subdir|nonempty-uninitialized)
+        echo "Found Docker volume ${PGDATA_VOLUME} without an initialized Postgres cluster at the active PGDATA path; generating fresh dev credentials."
         ;;
     esac
   fi

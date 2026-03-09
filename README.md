@@ -62,6 +62,7 @@ Run the full dev stack (Postgres + server hot reload + ingest hot reload + clien
 - Postgres (optional host access): `localhost:55432` (override with `POSTGRES_PORT`)
 - `./dev.sh` creates `.env.dev.local` on first run with stable `POSTGRES_PASSWORD`, `INTERNAL_INGEST_TOKEN`, and a free `POSTGRES_PORT`, then reuses them on later runs.
 - `./dev.sh` also pins the Docker Compose project name to `sequoia-map-mod-ingest`, so this repo always reuses the same local containers and volumes instead of creating a second stack under a different checkout name.
+- `./dev.sh` forces dev Postgres to use a `PGDATA` subdirectory, so older or versioned volume layouts do not wedge `initdb` on later launches.
 - Pass normal Compose args through the script when needed: `./dev.sh down`, `./dev.sh logs -f server`, `./dev.sh ps`
 - Server reload: `cargo watch` (watches `server/` and `shared/`)
 - Ingest reload: `cargo watch` (watches `services/sequoia-ingest/` and `shared/`)
