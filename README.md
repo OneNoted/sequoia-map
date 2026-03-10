@@ -12,6 +12,8 @@
 
 A [Wynncraft](https://wynncraft.com/) guild territory map built entirely in Rust: server, client, and shared types, compiled to WebAssembly & GPU Accelerated *for reasons!!*. 
 
+*largely inspired by other wynncraft web maps like [Wynnmap](http://wynnmap.zatzou.com/) and [Avicia's map](https://www.avicia.info/map)*
+
 
 ## Stack
 
