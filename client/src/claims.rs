@@ -587,9 +587,11 @@ fn canonical_document_for_session(
     session: &ClaimWorkingSession,
     live_territories: &ClientTerritoryMap,
     live_seq: u64,
+    view: ClaimViewState,
 ) -> ClaimDocumentV1 {
     let live_owners = current_live_owner_map(live_territories);
     let mut document = session.document.clone();
+    document.view = view;
     if session.follow_live {
         document.base = ClaimDocumentBase::FrozenLiveSnapshot {
             captured_at: Utc::now().to_rfc3339(),
@@ -1525,7 +1527,12 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         let session = session.get()?;
         let live_map = live_territories.get();
         let territory_map = territory_map_from_client(&live_map);
-        let document = canonical_document_for_session(&session, &live_map, live_seq.get());
+        let document = canonical_document_for_session(
+            &session,
+            &live_map,
+            live_seq.get(),
+            session.document.view.clone(),
+        );
         Some(compute_claim_metrics(&document, &territory_map))
     });
 
@@ -1715,14 +1722,15 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         first_frame.forget();
     });
 
+    on_cleanup(|| {
+        sse::disconnect();
+    });
+
     Effect::new(move || {
-        if !deferred_editor_work_ready.get() || session.get().is_none() {
+        if !deferred_editor_work_ready.get() {
             return;
         }
         sse::connect(live_territories, connection);
-        on_cleanup(|| {
-            sse::disconnect();
-        });
     });
 
     Effect::new(move || {
@@ -1894,6 +1902,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
             &session_state,
             &live_territories.get_untracked(),
             live_seq.get_untracked(),
+            default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
         );
         session.update(|state| {
             if let Some(state) = state.as_mut() {
@@ -2528,6 +2537,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
+                                                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
                                             );
                                             match encode_claim_fragment(&document) {
                                                 Ok(fragment) => {
@@ -2557,6 +2567,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
+                                                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
                                             );
                                             spawn_local(async move {
                                                 let request_body = serde_json::json!({
@@ -2592,6 +2603,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
+                                                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
                                             );
                                             if let Ok(json) = serde_json::to_string_pretty(&document)
                                                 && let Some(window) = web_sys::window()
@@ -2631,6 +2643,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
+                                                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
                                             );
                                             local_presets.update(|presets| {
                                                 presets.push(StoredClaimPreset {

@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
 use axum::Json;
@@ -10,8 +11,8 @@ use bytes::Bytes;
 use super::http_util::{if_none_match_matches, json_bytes_response, not_modified_response};
 use chrono::Utc;
 use sequoia_shared::{
-    CLAIM_DOCUMENT_VERSION_V1, ClaimDocumentV1, ClaimValidationError, ClaimsBootstrapGeometry,
-    ClaimsTerritoryGeometry, validate_claim_document,
+    CLAIM_DOCUMENT_VERSION_V1, ClaimDocumentV1, ClaimValidationError, ClaimsTerritoryGeometry,
+    validate_claim_document,
 };
 use serde::{Deserialize, Serialize};
 
@@ -110,23 +111,7 @@ pub async fn get_claims_bootstrap_geometry(
 ) -> Result<Response, StatusCode> {
     let body = {
         let snapshot = state.live_snapshot.read().await;
-        let geometry = ClaimsBootstrapGeometry {
-            territories: snapshot
-                .territories
-                .iter()
-                .map(|(name, territory)| {
-                    (
-                        name.clone(),
-                        ClaimsTerritoryGeometry {
-                            location: territory.location.clone(),
-                            resources: territory.resources.clone(),
-                            connections: territory.connections.clone(),
-                        },
-                    )
-                })
-                .collect(),
-        };
-        serde_json::to_vec(&geometry).map(Bytes::from)
+        serialize_claims_bootstrap_geometry(&snapshot.territories)
     }
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -356,9 +341,37 @@ fn claims_geometry_etag(body: &[u8]) -> String {
     format!("\"claims-geometry-{hash:016x}\"")
 }
 
+#[derive(Debug, Serialize)]
+struct StableClaimsBootstrapGeometry {
+    territories: BTreeMap<String, ClaimsTerritoryGeometry>,
+}
+
+fn serialize_claims_bootstrap_geometry(
+    territories: &sequoia_shared::TerritoryMap,
+) -> Result<Bytes, serde_json::Error> {
+    let geometry = StableClaimsBootstrapGeometry {
+        territories: territories
+            .iter()
+            .map(|(name, territory)| {
+                (
+                    name.clone(),
+                    ClaimsTerritoryGeometry {
+                        location: territory.location.clone(),
+                        resources: territory.resources.clone(),
+                        connections: territory.connections.clone(),
+                    },
+                )
+            })
+            .collect(),
+    };
+    serde_json::to_vec(&geometry).map(Bytes::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use sequoia_shared::{GuildRef, Region, Resources, Territory, TerritoryMap};
 
     #[test]
     fn parse_catalog_entries_reads_name_keyed_payload() {
@@ -415,5 +428,37 @@ mod tests {
             claims_geometry_etag(br#"{"territories":{"A":{}}}"#),
             "\"claims-geometry-ebe620cff86e5348\""
         );
+    }
+
+    #[test]
+    fn bootstrap_geometry_serialization_is_stable_across_hash_map_order() {
+        let mut first = TerritoryMap::new();
+        first.insert("Bravo".to_string(), test_territory([2, 2], [4, 4]));
+        first.insert("Alpha".to_string(), test_territory([0, 0], [1, 1]));
+
+        let mut second = TerritoryMap::new();
+        second.insert("Alpha".to_string(), test_territory([0, 0], [1, 1]));
+        second.insert("Bravo".to_string(), test_territory([2, 2], [4, 4]));
+
+        let first = serialize_claims_bootstrap_geometry(&first).expect("serialize first map");
+        let second = serialize_claims_bootstrap_geometry(&second).expect("serialize second map");
+
+        assert_eq!(first, second);
+    }
+
+    fn test_territory(start: [i32; 2], end: [i32; 2]) -> Territory {
+        Territory {
+            guild: GuildRef {
+                uuid: "guild".to_string(),
+                name: "Guild".to_string(),
+                prefix: "GLD".to_string(),
+                color: None,
+            },
+            acquired: Utc::now(),
+            location: Region { start, end },
+            resources: Resources::default(),
+            connections: vec!["Neighbor".to_string()],
+            runtime: None,
+        }
     }
 }
