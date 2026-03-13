@@ -100,7 +100,7 @@ struct StoredClaimDraft {
     #[serde(default = "stored_claim_draft_dirty_default")]
     dirty: bool,
     selection: Vec<String>,
-    source_snapshot_url: Option<String>,
+    source_snapshot_id: Option<String>,
     #[serde(default)]
     source_snapshot_url: Option<String>,
     active_owner: ClaimOwner,
@@ -1148,6 +1148,20 @@ fn reusable_share_url(session: &ClaimWorkingSession) -> Option<String> {
         .or_else(|| session.source_snapshot_id.as_deref().map(saved_claim_url))
 }
 
+fn invalidate_reusable_share_url_for_live_update(
+    session: &mut ClaimWorkingSession,
+    previous_live_seq: Option<u64>,
+    next_live_seq: Option<u64>,
+) {
+    if !session.follow_live || previous_live_seq == next_live_seq || next_live_seq.is_none() {
+        return;
+    }
+
+    session.dirty = true;
+    session.source_snapshot_id = None;
+    session.source_snapshot_url = None;
+}
+
 fn documents_match_for_saved_snapshot(
     current_document: &ClaimDocumentV1,
     saved_document: &ClaimDocumentV1,
@@ -1911,6 +1925,28 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     Effect::new(move || {
         live_seq.set(last_live_seq.get().unwrap_or(0));
     });
+
+    {
+        let observed_live_seq: StoredValue<Option<u64>> = StoredValue::new(initial_last_live_seq);
+        Effect::new(move || {
+            let next_live_seq = last_live_seq.get();
+            let previous_live_seq = observed_live_seq.get_value();
+            observed_live_seq.set_value(next_live_seq);
+            if previous_live_seq == next_live_seq {
+                return;
+            }
+            session.update(|session_state| {
+                let Some(session_state) = session_state.as_mut() else {
+                    return;
+                };
+                invalidate_reusable_share_url_for_live_update(
+                    session_state,
+                    previous_live_seq,
+                    next_live_seq,
+                );
+            });
+        });
+    }
 
     Effect::new(move || {
         if !deferred_editor_work_ready.get()
@@ -2697,10 +2733,6 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                     <button class="btn"
                                         disabled=move || snapshot_save_in_flight.get()
                                         on:click=move |_| {
-                                            if !claims_persistence_available.get_untracked() {
-                                                error_message.set(Some("Short share URLs require server-side claims persistence on this deployment".to_string()));
-                                                return;
-                                            }
                                             if snapshot_save_in_flight.get_untracked() {
                                                 return;
                                             }
@@ -2710,6 +2742,10 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                             if let Some(url) = reusable_share_url(&session_state) {
                                                 copy_url_to_clipboard(&url);
                                                 status_message.set(Some("Copied short share URL".to_string()));
+                                                return;
+                                            }
+                                            if !claims_persistence_available.get_untracked() {
+                                                error_message.set(Some("Short share URLs require server-side claims persistence on this deployment".to_string()));
                                                 return;
                                             }
                                             let document = canonical_document_for_session(
@@ -3006,6 +3042,49 @@ mod tests {
             ..session
         };
         assert_eq!(reusable_share_url(&dirty_session), None);
+    }
+
+    #[test]
+    fn live_updates_invalidate_reusable_share_urls_for_live_sessions() {
+        let mut session = ClaimWorkingSession {
+            document: ClaimDocumentV1::blank(),
+            follow_live: true,
+            dirty: false,
+            selection: Vec::new(),
+            source_snapshot_id: Some("snapshot-123".to_string()),
+            source_snapshot_url: Some("https://example.test/custom/snapshot-123".to_string()),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        };
+
+        invalidate_reusable_share_url_for_live_update(&mut session, Some(41), Some(42));
+
+        assert!(session.dirty);
+        assert_eq!(session.source_snapshot_id, None);
+        assert_eq!(session.source_snapshot_url, None);
+    }
+
+    #[test]
+    fn live_updates_do_not_invalidate_reusable_share_urls_for_frozen_sessions() {
+        let mut session = ClaimWorkingSession {
+            document: ClaimDocumentV1::blank(),
+            follow_live: false,
+            dirty: false,
+            selection: Vec::new(),
+            source_snapshot_id: Some("snapshot-123".to_string()),
+            source_snapshot_url: Some("https://example.test/custom/snapshot-123".to_string()),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        };
+
+        invalidate_reusable_share_url_for_live_update(&mut session, Some(41), Some(42));
+
+        assert!(!session.dirty);
+        assert_eq!(session.source_snapshot_id.as_deref(), Some("snapshot-123"));
+        assert_eq!(
+            session.source_snapshot_url.as_deref(),
+            Some("https://example.test/custom/snapshot-123")
+        );
     }
 
     #[test]
