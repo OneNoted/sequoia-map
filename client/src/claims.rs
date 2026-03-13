@@ -100,7 +100,7 @@ struct StoredClaimDraft {
     #[serde(default = "stored_claim_draft_dirty_default")]
     dirty: bool,
     selection: Vec<String>,
-    source_snapshot_id: Option<String>,
+    source_snapshot_url: Option<String>,
     #[serde(default)]
     source_snapshot_url: Option<String>,
     active_owner: ClaimOwner,
