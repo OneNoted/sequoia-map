@@ -222,6 +222,7 @@ const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.75;
 const HQ_CROWN_MAX_BOX_FRACTION: f32 = 0.48;
 const ORNAMENT_MIN_RENDERED_PX: f32 = 1.0;
+const ORNAMENT_UV_PADDING_PX: u32 = 2;
 const SEQUOIA_ORNAMENT_FALLBACK_GOLD: [u8; 3] = [245, 197, 66];
 
 #[inline]
@@ -1894,6 +1895,11 @@ impl GpuRenderer {
         }
         let mut extract_ornament =
             |slot_x: u32, slot_w: u32, slot_h: u32, color_mode: OrnamentColorMode| {
+                let mut orn_min_x = slot_w;
+                let mut orn_min_y = slot_h;
+                let mut orn_max_x = 0u32;
+                let mut orn_max_y = 0u32;
+                let mut orn_found = false;
                 for y in 0..slot_h {
                     for x in 0..slot_w {
                         let atlas_px_x = slot_x + x;
@@ -1919,19 +1925,48 @@ impl GpuRenderer {
                                 pixels[idx + 3] = alpha;
                             }
                         }
+                        if alpha > 6 {
+                            orn_found = true;
+                            orn_min_x = orn_min_x.min(x);
+                            orn_min_y = orn_min_y.min(y);
+                            orn_max_x = orn_max_x.max(x);
+                            orn_max_y = orn_max_y.max(y);
+                        }
                     }
                 }
-                // Preserve the source slot's transparent padding so corner ornaments stay
-                // tucked into the territory corner instead of scaling outward from a tight crop.
-                (
-                    [
-                        (slot_x as f32) / atlas_wf,
-                        0.0,
-                        ((slot_x + slot_w) as f32) / atlas_wf,
-                        (slot_h as f32) / atlas_hf,
-                    ],
-                    (slot_w as f32 / slot_h as f32).clamp(0.2, 5.0),
-                )
+                if orn_found {
+                    // Keep the ornament tight enough to hug the corner, but leave a tiny UV
+                    // gutter so linear sampling does not chew into the decorative edge.
+                    let padded_min_x = orn_min_x.saturating_sub(ORNAMENT_UV_PADDING_PX);
+                    let padded_min_y = orn_min_y.saturating_sub(ORNAMENT_UV_PADDING_PX);
+                    let padded_max_x = orn_max_x
+                        .saturating_add(ORNAMENT_UV_PADDING_PX)
+                        .min(slot_w.saturating_sub(1));
+                    let padded_max_y = orn_max_y
+                        .saturating_add(ORNAMENT_UV_PADDING_PX)
+                        .min(slot_h.saturating_sub(1));
+                    let tight_w = (padded_max_x - padded_min_x + 1).max(1);
+                    let tight_h = (padded_max_y - padded_min_y + 1).max(1);
+                    (
+                        [
+                            ((slot_x + padded_min_x) as f32) / atlas_wf,
+                            (padded_min_y as f32) / atlas_hf,
+                            ((slot_x + padded_max_x + 1) as f32) / atlas_wf,
+                            ((padded_max_y + 1) as f32) / atlas_hf,
+                        ],
+                        (tight_w as f32 / tight_h as f32).clamp(0.2, 5.0),
+                    )
+                } else {
+                    (
+                        [
+                            (slot_x as f32) / atlas_wf,
+                            0.0,
+                            ((slot_x + slot_w) as f32) / atlas_wf,
+                            (slot_h as f32) / atlas_hf,
+                        ],
+                        (slot_w as f32 / slot_h as f32).clamp(0.2, 5.0),
+                    )
+                }
             };
         let (default_ornament_uv, default_ornament_aspect) = extract_ornament(
             ornament_x,
