@@ -222,6 +222,7 @@ const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.75;
 const HQ_CROWN_MAX_BOX_FRACTION: f32 = 0.48;
 const ORNAMENT_MIN_RENDERED_PX: f32 = 1.0;
+const ORNAMENT_UV_PADDING_PX: u32 = 2;
 const SEQUOIA_ORNAMENT_FALLBACK_GOLD: [u8; 3] = [245, 197, 66];
 
 #[inline]
@@ -941,7 +942,10 @@ impl GpuRenderer {
         backends: wgpu::Backends,
         backend_path: &str,
     ) -> Result<Self, String> {
-        let supports_gpu_icons = backends != wgpu::Backends::GL;
+        // The icon overlay pipeline uses the same textured-quad primitives as the text
+        // overlay path, so it can run on the active WebGL2 renderer as well. Only fall
+        // back if icon renderer initialization itself fails.
+        let supports_gpu_icons = true;
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
         let rect = canvas.get_bounding_client_rect();
@@ -1037,11 +1041,6 @@ impl GpuRenderer {
             .into(),
         );
         surface.configure(&device, &surface_config);
-        if !supports_gpu_icons {
-            web_sys::console::warn_1(
-                &"GPU icon overlays disabled on the WebGL renderer path".into(),
-            );
-        }
 
         // --- Shared geometry ---
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1652,6 +1651,9 @@ impl GpuRenderer {
     }
 
     fn ensure_icon_renderer(&mut self, icons: &ResourceAtlas) -> bool {
+        if !self.supports_gpu_icons {
+            return false;
+        }
         if self.icon_renderer.is_some() {
             return true;
         }
@@ -1664,6 +1666,13 @@ impl GpuRenderer {
             &vertex_layout,
             icons,
         );
+        if self.icon_renderer.is_none() {
+            self.supports_gpu_icons = false;
+            self.capabilities.compatibility_fallback = true;
+            web_sys::console::warn_1(
+                &"GPU icon overlays disabled: failed to initialize the icon renderer".into(),
+            );
+        }
         self.icon_renderer.is_some()
     }
 
@@ -1926,14 +1935,24 @@ impl GpuRenderer {
                     }
                 }
                 if orn_found {
-                    let tight_w = (orn_max_x - orn_min_x + 1).max(1);
-                    let tight_h = (orn_max_y - orn_min_y + 1).max(1);
+                    // Keep the ornament tight enough to hug the corner, but leave a tiny UV
+                    // gutter so linear sampling does not chew into the decorative edge.
+                    let padded_min_x = orn_min_x.saturating_sub(ORNAMENT_UV_PADDING_PX);
+                    let padded_min_y = orn_min_y.saturating_sub(ORNAMENT_UV_PADDING_PX);
+                    let padded_max_x = orn_max_x
+                        .saturating_add(ORNAMENT_UV_PADDING_PX)
+                        .min(slot_w.saturating_sub(1));
+                    let padded_max_y = orn_max_y
+                        .saturating_add(ORNAMENT_UV_PADDING_PX)
+                        .min(slot_h.saturating_sub(1));
+                    let tight_w = (padded_max_x - padded_min_x + 1).max(1);
+                    let tight_h = (padded_max_y - padded_min_y + 1).max(1);
                     (
                         [
-                            ((slot_x + orn_min_x) as f32) / atlas_wf,
-                            (orn_min_y as f32) / atlas_hf,
-                            ((slot_x + orn_max_x + 1) as f32) / atlas_wf,
-                            ((orn_max_y + 1) as f32) / atlas_hf,
+                            ((slot_x + padded_min_x) as f32) / atlas_wf,
+                            (padded_min_y as f32) / atlas_hf,
+                            ((slot_x + padded_max_x + 1) as f32) / atlas_wf,
+                            ((padded_max_y + 1) as f32) / atlas_hf,
                         ],
                         (tight_w as f32 / tight_h as f32).clamp(0.2, 5.0),
                     )

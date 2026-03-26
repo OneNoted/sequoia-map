@@ -1514,7 +1514,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     let tile_fetch_scheduled: RwSignal<bool> = RwSignal::new(false);
     let resource_highlight: RwSignal<bool> = RwSignal::new(false);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(false);
-    let show_territory_ornaments: RwSignal<bool> = RwSignal::new(true);
+    let show_territory_ornaments: RwSignal<bool> = RwSignal::new(false);
 
     let current_mode: RwSignal<MapMode> = RwSignal::new(MapMode::Live);
     let connection: RwSignal<ConnectionStatus> = RwSignal::new(ConnectionStatus::Connecting);

@@ -3,12 +3,60 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Sequoia Map — Wynncraft Territory Map</title>
+    <title>Sequoia Map | Live Wynncraft Territory Map</title>
+    <meta
+      name="description"
+      content="Sequoia Map, also searched as Seqwawa Map, is a live Wynncraft territory map with guild ownership, cooldown timers, resources, routes, and history mode."
+    />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <meta name="theme-color" content="#0c0e17" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Sequoia Map | Live Wynncraft Territory Map" />
+    <meta
+      property="og:description"
+      content="Track live Wynncraft territory ownership, guild control, cooldown timers, routes, resources, and map history on Sequoia Map."
+    />
+    <meta property="og:url" content="__SEQUOIA_CANONICAL_URL__" />
+    <meta property="og:image" content="__SEQUOIA_OG_IMAGE_URL__" />
+    <meta
+      property="og:image:alt"
+      content="Sequoia Map preview showing a section of the Wynncraft territory map"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Sequoia Map | Live Wynncraft Territory Map" />
+    <meta
+      name="twitter:description"
+      content="Track live Wynncraft territory ownership, guild control, cooldown timers, routes, resources, and map history on Sequoia Map."
+    />
+    <meta name="twitter:image" content="__SEQUOIA_OG_IMAGE_URL__" />
+    <link rel="canonical" href="__SEQUOIA_CANONICAL_URL__" />
     <link data-trunk rel="tailwind-css" href="input.css" />
     <link data-trunk rel="copy-dir" href="public/tiles" />
     <link data-trunk rel="copy-dir" href="public/icons" />
     <link data-trunk rel="copy-dir" href="public/fonts" />
     <link rel="preload" href="/fonts/minecraft-regular.otf" as="font" type="font/otf" crossorigin />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "name": "Sequoia Map",
+            "alternateName": ["Seqwawa Map"],
+            "description": "A live Wynncraft territory map with guild ownership, cooldown timers, routes, resources, and history mode."
+          },
+          {
+            "@type": "WebPage",
+            "name": "Sequoia Map | Live Wynncraft Territory Map",
+            "description": "Track live Wynncraft territory ownership, guild control, cooldown timers, routes, resources, and history on Sequoia Map.",
+            "about": {
+              "@type": "VideoGame",
+              "name": "Wynncraft"
+            }
+          }
+        ]
+      }
+    </script>
     <style>
       @font-face {
         font-family: "Silkscreen";
@@ -52,6 +100,20 @@
         color: #e6e3d9;
         font-family: "SilkscreenLocal", monospace;
         overflow: hidden;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .seo-links a {
+        color: inherit;
       }
       #app-loading-shell {
         position: fixed;
@@ -107,6 +169,27 @@
     </style>
 </head>
 <body>
+    <main class="sr-only" aria-label="Sequoia Map summary">
+      <h1>Sequoia Map: Live Wynncraft Territory Map</h1>
+      <p>
+        Sequoia Map, also searched as Seqwawa Map, tracks live Wynncraft territory ownership,
+        guild control, cooldown timers, trading routes, resource production, and historical map
+        views.
+      </p>
+      <nav class="seo-links" aria-label="Map pages">
+        <a href="/">Live Wynncraft territory map</a>
+        <a href="/history">Wynncraft territory history map</a>
+      </nav>
+    </main>
+    <noscript>
+      <section
+        style="padding: 16px; background: #0c0e17; color: #e6e3d9; font-family: 'SilkscreenLocal', monospace;"
+        aria-label="Sequoia Map fallback"
+      >
+        JavaScript is required for the interactive map. Sequoia Map tracks live Wynncraft
+        territories, cooldowns, resources, routes, and history.
+      </section>
+    </noscript>
     <div id="app-loading-shell" role="status" aria-live="polite">
       <div class="shell-core">
         <div class="shell-spinner" aria-hidden="true"></div>
