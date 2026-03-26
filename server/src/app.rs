@@ -16,6 +16,9 @@ use crate::routes;
 use crate::state::AppState;
 
 const X_ROBOTS_TAG: &str = "x-robots-tag";
+const CANONICAL_URL_TOKEN: &str = "__SEQUOIA_CANONICAL_URL__";
+const OG_IMAGE_URL_TOKEN: &str = "__SEQUOIA_OG_IMAGE_URL__";
+const DEFAULT_OG_IMAGE_PATH: &str = "/tiles/main-3-2.webp";
 
 #[derive(Clone, Debug, Default)]
 struct HtmlResponseOptions {
@@ -238,6 +241,7 @@ async fn serve_claims_route(request: Request) -> impl IntoResponse {
 async fn serve_html_file(path: &str, options: HtmlResponseOptions) -> Response {
     match tokio::fs::read(path).await {
         Ok(body) => {
+            let body = apply_html_body_substitutions(body, &options);
             let mut response = (
                 [
                     (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -254,6 +258,27 @@ async fn serve_html_file(path: &str, options: HtmlResponseOptions) -> Response {
             axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+fn apply_html_body_substitutions(body: Vec<u8>, options: &HtmlResponseOptions) -> Vec<u8> {
+    let mut html = match String::from_utf8(body) {
+        Ok(html) => html,
+        Err(err) => return err.into_bytes(),
+    };
+
+    if let Some(canonical) = options.canonical.as_deref() {
+        html = html.replace(CANONICAL_URL_TOKEN, canonical);
+        html = html.replace(
+            OG_IMAGE_URL_TOKEN,
+            &format!(
+                "{}{}",
+                crate::config::map_public_base_url(),
+                DEFAULT_OG_IMAGE_PATH
+            ),
+        );
+    }
+
+    html.into_bytes()
 }
 
 fn apply_html_response_options(headers: &mut HeaderMap, options: &HtmlResponseOptions) {
@@ -486,7 +511,11 @@ mod tests {
         let body = String::from_utf8(body.to_vec()).expect("utf8 body");
         assert!(body.contains("Sequoia Map | Live Wynncraft Territory Map"));
         assert!(body.contains("name=\"description\""));
-        assert!(body.contains("rel=\"canonical\" href=\"/\""));
+        assert!(body.contains("rel=\"canonical\" href=\"https://map.example.com/\""));
+        assert!(body.contains("property=\"og:url\" content=\"https://map.example.com/\""));
+        assert!(body.contains(
+            "property=\"og:image\" content=\"https://map.example.com/tiles/main-3-2.webp\""
+        ));
         assert!(body.contains("application/ld+json"));
         assert!(body.contains("Sequoia Map: Live Wynncraft Territory Map"));
         assert!(body.contains("id=\"app\""));

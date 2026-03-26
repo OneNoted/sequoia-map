@@ -20,7 +20,7 @@ const ATLAS_PATH: &str = "icons/territory-resources-atlas.png";
 const HQ_CROWN_PATH: &str = "icons/crown_icon.png";
 const TERRITORY_ORNAMENT_PATH: &str = "icons/territory-ornament.png";
 const SEQUOIA_TERRITORY_ORNAMENT_PATH: &str = "icons/seq-border-v1.png";
-const TRANSPARENT_PLACEHOLDER_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnRdtwAAAAASUVORK5CYII=";
+const TRANSPARENT_PLACEHOLDER_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==";
 
 static ATLAS_WARNED: AtomicBool = AtomicBool::new(false);
 
