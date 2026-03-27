@@ -2,6 +2,7 @@ pub mod extra_data_loader;
 pub mod guild_color_loader;
 pub mod guild_evictor;
 pub mod retention_cleaner;
+pub mod season_race;
 pub mod season_scalar_estimator;
 pub mod snapshot_service;
 pub mod territory_poller;

@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
+use tracing::warn;
 
 use super::http_util::{if_none_match_matches, json_bytes_response, not_modified_response};
 
@@ -16,10 +17,12 @@ use crate::config::{
     GUILD_CACHE_TTL_SECS, MAX_GUILD_CACHE_ENTRIES, WYNNCRAFT_GUILD_URL,
     guilds_online_cache_ttl_secs, guilds_online_max_concurrency,
 };
+use crate::services::season_race::{self, SeasonRaceError};
 use crate::state::{AppState, CachedGuild, ObservabilitySnapshot};
 
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 const MAX_GUILD_NAME_LEN: usize = 64;
+type LatestObservedRatingRow = (String, DateTime<Utc>, i32);
 
 pub async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     let territory_count = state.live_snapshot.read().await.territories.len();
@@ -100,6 +103,32 @@ pub async fn get_season_scalar_current(State(state): State<AppState>) -> impl In
     };
 
     json_bytes_response(body, "public, max-age=60", None)
+}
+
+#[derive(serde::Deserialize)]
+pub struct SeasonRaceQuery {
+    #[serde(default)]
+    pub season_id: Option<i32>,
+}
+
+pub async fn get_season_race(
+    State(state): State<AppState>,
+    Query(query): Query<SeasonRaceQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let response = season_race::build_race_response(&state, query.season_id)
+        .await
+        .map_err(|error| match error {
+            SeasonRaceError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            SeasonRaceError::BadRequest => StatusCode::BAD_REQUEST,
+            SeasonRaceError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        })?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=60"),
+    );
+    Ok((headers, Json(response)))
 }
 
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
@@ -366,11 +395,22 @@ pub struct GuildsOnlineQuery {
     pub names: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuildSeasonRatingSource {
+    Live,
+    SnapshotFallback,
+}
+
 #[derive(serde::Serialize)]
 pub struct GuildOnlineEntry {
     pub online: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_rating: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_rating_source: Option<GuildSeasonRatingSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_rating_sampled_at: Option<String>,
 }
 
 pub async fn get_guilds_online(
@@ -471,6 +511,29 @@ pub async fn get_guilds_online(
         }
     }
 
+    if let Some(pool) = state.db.as_ref() {
+        let missing_rating_names: Vec<String> = result
+            .iter()
+            .filter(|(_, entry)| entry.season_rating.is_none())
+            .map(|(name, _)| name.clone())
+            .collect();
+        if !missing_rating_names.is_empty() {
+            let fallback =
+                match load_latest_observed_season_ratings(pool, &missing_rating_names).await {
+                    Ok(fallback) => fallback,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            guild_count = missing_rating_names.len(),
+                            "failed to load snapshot season rating fallback"
+                        );
+                        HashMap::new()
+                    }
+                };
+            apply_snapshot_fallback(&mut result, fallback);
+        }
+    }
+
     Ok(Json(result))
 }
 
@@ -501,7 +564,57 @@ fn parse_guild_online_entry(json_str: &str) -> Option<GuildOnlineEntry> {
     Some(GuildOnlineEntry {
         online,
         season_rating,
+        season_rating_source: season_rating.map(|_| GuildSeasonRatingSource::Live),
+        season_rating_sampled_at: None,
     })
+}
+
+async fn load_latest_observed_season_ratings(
+    pool: &sqlx::PgPool,
+    guild_names: &[String],
+) -> Result<HashMap<String, (DateTime<Utc>, i64)>, String> {
+    if guild_names.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows: Vec<LatestObservedRatingRow> = sqlx::query_as(
+        "SELECT guild_name, observed_at, season_rating \
+         FROM ( \
+             SELECT DISTINCT ON (guild_name) guild_name, observed_at, season_rating \
+             FROM season_guild_observations \
+             WHERE season_id = (SELECT MAX(season_id) FROM season_guild_observations) \
+               AND guild_name = ANY($1) \
+             ORDER BY guild_name, observed_at DESC \
+         ) latest",
+    )
+    .bind(guild_names)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load latest observed season ratings: {e}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(guild_name, observed_at, season_rating)| {
+            (guild_name, (observed_at, i64::from(season_rating)))
+        })
+        .collect())
+}
+
+fn apply_snapshot_fallback(
+    result: &mut HashMap<String, GuildOnlineEntry>,
+    fallback: HashMap<String, (DateTime<Utc>, i64)>,
+) {
+    for (guild_name, (observed_at, season_rating)) in fallback {
+        let Some(entry) = result.get_mut(&guild_name) else {
+            continue;
+        };
+        if entry.season_rating.is_some() {
+            continue;
+        }
+        entry.season_rating = Some(season_rating);
+        entry.season_rating_source = Some(GuildSeasonRatingSource::SnapshotFallback);
+        entry.season_rating_sampled_at = Some(observed_at.to_rfc3339());
+    }
 }
 
 fn normalize_guild_name(name: &str) -> Result<&str, StatusCode> {
@@ -573,12 +686,14 @@ fn live_state_etag(seq: u64) -> String {
 mod tests {
     use bytes::Bytes;
     use chrono::Utc;
+    use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::sync::Arc;
 
     use super::{
-        StatusCode, guild_details_url, if_none_match_matches, normalize_guild_name,
-        parse_guild_online_entry, parse_guilds_online_names, render_prometheus_metrics,
+        GuildOnlineEntry, GuildSeasonRatingSource, StatusCode, apply_snapshot_fallback,
+        guild_details_url, if_none_match_matches, normalize_guild_name, parse_guild_online_entry,
+        parse_guilds_online_names, render_prometheus_metrics,
     };
     use crate::state::{AppState, ObservabilitySnapshot};
     use sequoia_shared::{SeasonScalarCurrent, SeasonScalarSample};
@@ -679,6 +794,59 @@ mod tests {
         let entry = parse_guild_online_entry(payload).expect("guild payload should parse");
         assert_eq!(entry.online, 14);
         assert_eq!(entry.season_rating, Some(12000));
+        assert_eq!(
+            entry.season_rating_source,
+            Some(GuildSeasonRatingSource::Live)
+        );
+        assert!(entry.season_rating_sampled_at.is_none());
+    }
+
+    #[test]
+    fn apply_snapshot_fallback_backfills_missing_season_rating_only() {
+        let observed_at = Utc::now();
+        let mut result = HashMap::from([
+            (
+                "Aequitas".to_string(),
+                GuildOnlineEntry {
+                    online: 12,
+                    season_rating: None,
+                    season_rating_source: None,
+                    season_rating_sampled_at: None,
+                },
+            ),
+            (
+                "Sequoia".to_string(),
+                GuildOnlineEntry {
+                    online: 8,
+                    season_rating: Some(345_000),
+                    season_rating_source: Some(GuildSeasonRatingSource::Live),
+                    season_rating_sampled_at: None,
+                },
+            ),
+        ]);
+
+        apply_snapshot_fallback(
+            &mut result,
+            HashMap::from([
+                ("Aequitas".to_string(), (observed_at, 346_900)),
+                ("Sequoia".to_string(), (observed_at, 999_999)),
+            ]),
+        );
+
+        assert_eq!(result["Aequitas"].season_rating, Some(346_900));
+        assert_eq!(
+            result["Aequitas"].season_rating_source,
+            Some(GuildSeasonRatingSource::SnapshotFallback)
+        );
+        assert_eq!(
+            result["Aequitas"].season_rating_sampled_at,
+            Some(observed_at.to_rfc3339())
+        );
+        assert_eq!(result["Sequoia"].season_rating, Some(345_000));
+        assert_eq!(
+            result["Sequoia"].season_rating_source,
+            Some(GuildSeasonRatingSource::Live)
+        );
     }
 
     #[test]
