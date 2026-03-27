@@ -14,6 +14,10 @@ A [Wynncraft](https://wynncraft.com/) guild territory map built entirely in Rust
 
 *largely inspired by other wynncraft web maps like [Wynnmap](http://wynnmap.zatzou.com/) and [Avicia's map](https://www.avicia.info/map)*
 
+<img width="1155" height="424" alt="image" src="https://github.com/user-attachments/assets/a5690c41-44b5-4a7d-b18c-df695ba448f4" />
+
+
+
 
 ## Stack
 
