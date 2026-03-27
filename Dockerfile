@@ -23,8 +23,8 @@ RUN set -eux; \
         esac; \
     fi; \
     echo "Using Binaryen archive architecture: ${RESOLVED_BINARYEN_ARCH} (target=${TARGET_ARCH})"; \
-    curl -fsSLo /tmp/binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${RESOLVED_BINARYEN_ARCH}.tar.gz"; \
-    curl -fsSLo /tmp/binaryen.tar.gz.sha256 "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${RESOLVED_BINARYEN_ARCH}.tar.gz.sha256"; \
+    curl --retry 8 --retry-delay 2 --retry-all-errors --continue-at - -fsSLo /tmp/binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${RESOLVED_BINARYEN_ARCH}.tar.gz"; \
+    curl --retry 8 --retry-delay 2 --retry-all-errors -fsSLo /tmp/binaryen.tar.gz.sha256 "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${RESOLVED_BINARYEN_ARCH}.tar.gz.sha256"; \
     EXPECTED_SHA="$(awk '{print $1}' /tmp/binaryen.tar.gz.sha256)"; \
     echo "${EXPECTED_SHA}  /tmp/binaryen.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/binaryen.tar.gz -C /tmp; \
