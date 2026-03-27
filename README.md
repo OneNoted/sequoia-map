@@ -125,8 +125,7 @@ Security notes:
 - Compose defaults `INGEST_TRUSTED_PROXY_CIDRS` to loopback + RFC1918 private ranges for containerized edge proxies; set explicit edge proxy CIDRs in production to narrow trust as needed.
 - For local development, use `docker-compose.dev.yml` (plain localhost HTTP endpoints).
 
-For faster repeat builds/deploys (especially on Coolify/VPS), use BuildKit cache and avoid
-rebuilding unless needed:
+For faster local/manual source builds, use BuildKit cache and avoid rebuilding unless needed:
 
 ```bash
 # First build (or after Dockerfile/dependency changes)
@@ -150,6 +149,12 @@ Required environment variables in Coolify:
 - `POSTGRES_PASSWORD`
 - `INTERNAL_INGEST_TOKEN`
 
+Optional image overrides in Coolify:
+
+- `SEQUOIA_SERVER_IMAGE` (defaults to `ghcr.io/sequoiawynncraft/sequoia-map-server:main`)
+- `SEQUOIA_INGEST_IMAGE` (defaults to `ghcr.io/sequoiawynncraft/sequoia-map-ingest:main`)
+- `SEQUOIA_EDGE_IMAGE` (defaults to `ghcr.io/sequoiawynncraft/sequoia-map-edge:main`)
+
 Routing in Coolify should target the `edge` service (port `8080`) for your map domain.
 The included edge config then routes:
 
@@ -158,6 +163,13 @@ The included edge config then routes:
 - everything else -> `server:3000` (map UI + API)
 
 This allows a single public domain such as `https://map.example.com` for both map and ingest.
+
+Production deploy recommendation:
+
+- build and publish the `server`, `ingest`, and `edge` images from GitHub Actions
+- deploy from prebuilt GHCR images instead of source builds on the Coolify VPS
+- trigger Coolify with a deploy webhook only after image publication succeeds
+- if GHCR packages are private, configure registry credentials in Coolify before switching the stack
 
 Health checks:
 
