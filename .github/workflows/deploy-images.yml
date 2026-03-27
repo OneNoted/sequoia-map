@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: deploy-images-${{ github.ref }}
@@ -23,6 +22,7 @@ jobs:
   changes:
     if: github.repository == 'SequoiaWynncraft/sequoia-map'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       server: ${{ steps.filter.outputs.server }}
       ingest: ${{ steps.filter.outputs.ingest }}
@@ -30,11 +30,14 @@ jobs:
       deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Detect Deploy-Relevant Changes
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         with:
           filters: |
             server:
@@ -78,15 +81,21 @@ jobs:
     if: github.repository == 'SequoiaWynncraft/sequoia-map' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true')
     runs-on: apollo-sequoia-map
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Set Up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Log In To GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -96,16 +105,16 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
         run: |
           mkdir -p .ci/binaryen
-          curl --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo .ci/binaryen/binaryen.tar.gz \
+          curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo .ci/binaryen/binaryen.tar.gz \
             https://github.com/WebAssembly/binaryen/releases/download/version_126/binaryen-version_126-x86_64-linux.tar.gz
-          curl --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 60 -fsSLo .ci/binaryen/binaryen.tar.gz.sha256 \
+          curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 60 -fsSLo .ci/binaryen/binaryen.tar.gz.sha256 \
             https://github.com/WebAssembly/binaryen/releases/download/version_126/binaryen-version_126-x86_64-linux.tar.gz.sha256
           EXPECTED_SHA="$(awk '{print $1}' .ci/binaryen/binaryen.tar.gz.sha256)"
           echo "${EXPECTED_SHA}  .ci/binaryen/binaryen.tar.gz" | sha256sum -c -
 
       - name: Build And Push Server Image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: ./Dockerfile
@@ -121,7 +130,7 @@ jobs:
 
       - name: Build And Push Ingest Image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.ingest == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: ./services/sequoia-ingest/Dockerfile
@@ -137,7 +146,7 @@ jobs:
 
       - name: Build And Push Edge Image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.edge == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: .
           file: ./ops/caddy/Dockerfile.coolify
@@ -162,9 +171,9 @@ jobs:
           fi
 
           if [ -n "${COOLIFY_TOKEN:-}" ]; then
-            curl -fsS -X POST \
+            curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 10 --max-time 60 -fsS -X POST \
               -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
               "${COOLIFY_WEBHOOK}"
           else
-            curl -fsS -X POST "${COOLIFY_WEBHOOK}"
+            curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 10 --max-time 60 -fsS -X POST "${COOLIFY_WEBHOOK}"
           fi
