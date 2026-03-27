@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
 pub const WYNNCRAFT_TERRITORY_URL: &str = "https://api.wynncraft.com/v3/guild/list/territory";
 pub const WYNNCRAFT_GUILD_URL: &str = "https://api.wynncraft.com/v3/guild";
@@ -56,6 +57,13 @@ pub struct ActiveSeasonRaceConfig {
     pub label: Option<String>,
     pub top_guilds: usize,
     pub lookback_hours: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SeasonScalarOverridePoint {
+    pub season_id: i32,
+    pub starts_at: DateTime<Utc>,
+    pub scalar_weighted: f64,
 }
 
 pub fn seq_live_handoff_v1_enabled() -> bool {
@@ -215,6 +223,13 @@ pub fn active_season_race_config() -> Result<Option<ActiveSeasonRaceConfig>, Str
     )
 }
 
+pub fn season_scalar_override_points() -> Result<Vec<SeasonScalarOverridePoint>, String> {
+    let Some(raw) = std::env::var("SEASON_SCALAR_OVERRIDE_POINTS").ok() else {
+        return Ok(Vec::new());
+    };
+    parse_season_scalar_override_points(&raw)
+}
+
 fn parse_active_season_race_config(
     season_id: Option<&str>,
     start_at: Option<&str>,
@@ -258,6 +273,27 @@ fn parse_active_season_race_config(
         top_guilds,
         lookback_hours,
     }))
+}
+
+fn parse_season_scalar_override_points(
+    raw: &str,
+) -> Result<Vec<SeasonScalarOverridePoint>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut points: Vec<SeasonScalarOverridePoint> = serde_json::from_str(trimmed)
+        .map_err(|_| "SEASON_SCALAR_OVERRIDE_POINTS must be valid JSON".to_string())?;
+    points.retain(|point| {
+        point.season_id > 0 && point.scalar_weighted.is_finite() && point.scalar_weighted > 0.0
+    });
+    points.sort_by(|left, right| {
+        left.season_id
+            .cmp(&right.season_id)
+            .then_with(|| left.starts_at.cmp(&right.starts_at))
+    });
+    Ok(points)
 }
 
 pub fn canonical_override_ttl() -> Duration {
@@ -320,7 +356,8 @@ fn sanitize_internal_ingest_token(raw: &str) -> Option<String> {
 mod tests {
     use super::{
         ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES, normalize_public_base_url,
-        normalize_watchlist_key, parse_active_season_race_config, sanitize_internal_ingest_token,
+        normalize_watchlist_key, parse_active_season_race_config,
+        parse_season_scalar_override_points, sanitize_internal_ingest_token,
     };
     use chrono::{DateTime, Utc};
 
@@ -403,5 +440,22 @@ mod tests {
                 lookback_hours: 18,
             })
         );
+    }
+
+    #[test]
+    fn season_scalar_override_points_parse_and_sort() {
+        let parsed = parse_season_scalar_override_points(
+            r#"
+            [
+              {"season_id": 30, "starts_at": "2026-04-04T00:00:00Z", "scalar_weighted": 1.5},
+              {"season_id": 30, "starts_at": "2026-03-30T00:00:00Z", "scalar_weighted": 1.0}
+            ]
+            "#,
+        )
+        .expect("parse override points");
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].scalar_weighted, 1.0);
+        assert_eq!(parsed[1].scalar_weighted, 1.5);
     }
 }
