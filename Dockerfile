@@ -6,6 +6,7 @@ ARG BINARYEN_VERSION=126
 ARG BINARYEN_ARCH=
 
 RUN apt-get update && apt-get install -y --no-install-recommends brotli gzip ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY .ci/binaryen/ /tmp/binaryen-assets/
 RUN set -eux; \
     TARGET_ARCH="${TARGETARCH:-}"; \
     if [ -z "${TARGET_ARCH}" ]; then \
@@ -23,8 +24,13 @@ RUN set -eux; \
         esac; \
     fi; \
     echo "Using Binaryen archive architecture: ${RESOLVED_BINARYEN_ARCH} (target=${TARGET_ARCH})"; \
-    curl --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --continue-at - --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo /tmp/binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${RESOLVED_BINARYEN_ARCH}.tar.gz"; \
-    curl --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 60 -fsSLo /tmp/binaryen.tar.gz.sha256 "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${RESOLVED_BINARYEN_ARCH}.tar.gz.sha256"; \
+    if [ -f /tmp/binaryen-assets/binaryen.tar.gz ] && [ -f /tmp/binaryen-assets/binaryen.tar.gz.sha256 ]; then \
+        cp /tmp/binaryen-assets/binaryen.tar.gz /tmp/binaryen.tar.gz; \
+        cp /tmp/binaryen-assets/binaryen.tar.gz.sha256 /tmp/binaryen.tar.gz.sha256; \
+    else \
+        curl --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --continue-at - --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo /tmp/binaryen.tar.gz "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${RESOLVED_BINARYEN_ARCH}.tar.gz"; \
+        curl --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 60 -fsSLo /tmp/binaryen.tar.gz.sha256 "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${RESOLVED_BINARYEN_ARCH}.tar.gz.sha256"; \
+    fi; \
     EXPECTED_SHA="$(awk '{print $1}' /tmp/binaryen.tar.gz.sha256)"; \
     echo "${EXPECTED_SHA}  /tmp/binaryen.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/binaryen.tar.gz -C /tmp; \
