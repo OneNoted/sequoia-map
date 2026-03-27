@@ -68,6 +68,14 @@ pub(crate) fn build_app(state: AppState) -> Router {
             axum::routing::get(routes::api::get_season_scalar_current),
         )
         .route(
+            "/api/season/windows",
+            axum::routing::get(routes::api::get_season_windows),
+        )
+        .route(
+            "/api/season/series",
+            axum::routing::get(routes::api::get_season_series),
+        )
+        .route(
             "/api/season/race",
             axum::routing::get(routes::api::get_season_race),
         )
