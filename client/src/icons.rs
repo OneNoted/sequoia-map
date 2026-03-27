@@ -20,6 +20,7 @@ const ATLAS_PATH: &str = "icons/territory-resources-atlas.png";
 const HQ_CROWN_PATH: &str = "icons/crown_icon.png";
 const TERRITORY_ORNAMENT_PATH: &str = "icons/territory-ornament.png";
 const SEQUOIA_TERRITORY_ORNAMENT_PATH: &str = "icons/seq-border-v1.png";
+const TRANSPARENT_PLACEHOLDER_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==";
 
 static ATLAS_WARNED: AtomicBool = AtomicBool::new(false);
 
@@ -66,6 +67,37 @@ fn warn_atlas_once(message: &str) {
     }
 }
 
+async fn decode_image(src: &str) -> Result<HtmlImageElement, String> {
+    let image =
+        HtmlImageElement::new().map_err(|_| format!("Failed to create image element for {src}"))?;
+    image.set_src(src);
+    wasm_bindgen_futures::JsFuture::from(image.decode())
+        .await
+        .map_err(|err| format!("{err:?}"))?;
+    Ok(image)
+}
+
+async fn load_optional_image(
+    asset_src: &str,
+    asset_name: &str,
+) -> Result<HtmlImageElement, String> {
+    match decode_image(asset_src).await {
+        Ok(image) => Ok(image),
+        Err(err) => {
+            warn_atlas_once(&format!(
+                "Failed to decode {asset_name}; using transparent placeholder: {err}"
+            ));
+            decode_image(TRANSPARENT_PLACEHOLDER_DATA_URL)
+                .await
+                .map_err(|placeholder_err| {
+                    format!(
+                        "transparent icon placeholder failed after {asset_name} load failure: {placeholder_err}"
+                    )
+                })
+        }
+    }
+}
+
 pub fn load_resource_atlas(signal: RwSignal<Option<ResourceAtlas>>) {
     wasm_bindgen_futures::spawn_local(async move {
         let atlas_src = app_asset_url(ATLAS_PATH);
@@ -85,56 +117,30 @@ pub fn load_resource_atlas(signal: RwSignal<Option<ResourceAtlas>>) {
             return;
         }
 
-        let Ok(hq_crown_image) = HtmlImageElement::new() else {
-            signal.set(None);
-            warn_atlas_once("Failed to create HQ crown icon image element.");
-            return;
-        };
-        hq_crown_image.set_src(&hq_crown_src);
-        let Ok(territory_ornament_image) = HtmlImageElement::new() else {
-            signal.set(None);
-            warn_atlas_once("Failed to create territory ornament image element.");
-            return;
-        };
-        territory_ornament_image.set_src(&territory_ornament_src);
-        let Ok(sequoia_territory_ornament_image) = HtmlImageElement::new() else {
-            signal.set(None);
-            warn_atlas_once("Failed to create Sequoia territory ornament image element.");
-            return;
-        };
-        sequoia_territory_ornament_image.set_src(&sequoia_territory_ornament_src);
-
-        let (crown_result, ornament_result, sequoia_ornament_result) = join3(
-            wasm_bindgen_futures::JsFuture::from(hq_crown_image.decode()),
-            wasm_bindgen_futures::JsFuture::from(territory_ornament_image.decode()),
-            wasm_bindgen_futures::JsFuture::from(sequoia_territory_ornament_image.decode()),
+        let (hq_crown_image, territory_ornament_image, sequoia_territory_ornament_image) = join3(
+            load_optional_image(&hq_crown_src, "HQ crown icon"),
+            load_optional_image(&territory_ornament_src, "territory ornament icon"),
+            load_optional_image(
+                &sequoia_territory_ornament_src,
+                "Sequoia territory ornament icon",
+            ),
         )
         .await;
 
-        if let Err(err) = crown_result {
+        let Ok(hq_crown_image) = hq_crown_image else {
             signal.set(None);
-            warn_atlas_once(&format!("Failed to decode HQ crown icon: {:?}", err));
+            warn_atlas_once("Failed to create an HQ crown placeholder image.");
             return;
-        }
-
-        if let Err(err) = ornament_result {
+        };
+        let Ok(territory_ornament_image) = territory_ornament_image else {
             signal.set(None);
-            warn_atlas_once(&format!(
-                "Failed to decode territory ornament icon: {:?}",
-                err
-            ));
+            warn_atlas_once("Failed to create a territory ornament placeholder image.");
             return;
-        }
-
-        let sequoia_territory_ornament_image = match sequoia_ornament_result {
-            Ok(_) => sequoia_territory_ornament_image,
-            Err(err) => {
-                warn_atlas_once(&format!(
-                    "Failed to decode Sequoia territory ornament icon: {:?}",
-                    err
-                ));
-                territory_ornament_image.clone()
-            }
+        };
+        let Ok(sequoia_territory_ornament_image) = sequoia_territory_ornament_image else {
+            signal.set(None);
+            warn_atlas_once("Failed to create a Sequoia ornament placeholder image.");
+            return;
         };
 
         signal.set(Some(ResourceAtlas {

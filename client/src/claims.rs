@@ -43,6 +43,7 @@ const IMPORT_HANDOFF_STORAGE_KEY: &str = "sequoia_claim_import_handoff_v1";
 const LIVE_BOOTSTRAP_STORAGE_KEY: &str = "sequoia_claim_live_bootstrap_v1";
 const GEOMETRY_BOOTSTRAP_STORAGE_KEY: &str = "sequoia_claim_geometry_bootstrap_v1";
 const SHARE_FRAGMENT_PREFIX: &str = "#c=";
+#[cfg(test)]
 const MAX_SHARE_FRAGMENT_BYTES: usize = 120_000;
 const LIVE_BOOTSTRAP_MAX_AGE_MS: f64 = 120_000.0;
 const GEOMETRY_BOOTSTRAP_MAX_AGE_MS: f64 = 3_600_000.0;
@@ -87,6 +88,7 @@ struct ClaimWorkingSession {
     dirty: bool,
     selection: Vec<String>,
     source_snapshot_id: Option<String>,
+    source_snapshot_url: Option<String>,
     undo_stack: Vec<ClaimUndoState>,
     redo_stack: Vec<ClaimUndoState>,
 }
@@ -95,8 +97,12 @@ struct ClaimWorkingSession {
 struct StoredClaimDraft {
     document: ClaimDocumentV1,
     follow_live: bool,
+    #[serde(default = "stored_claim_draft_dirty_default")]
+    dirty: bool,
     selection: Vec<String>,
     source_snapshot_id: Option<String>,
+    #[serde(default)]
+    source_snapshot_url: Option<String>,
     active_owner: ClaimOwner,
 }
 
@@ -116,6 +122,8 @@ struct StartupImportHandoff {
     selection: Vec<String>,
     #[serde(default)]
     source_snapshot_id: Option<String>,
+    #[serde(default)]
+    source_snapshot_url: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -140,8 +148,10 @@ struct ClaimsEditorInit {
     live_state: Option<LiveState>,
     document: ClaimDocumentV1,
     follow_live: bool,
+    dirty: bool,
     selection: Vec<String>,
     source_snapshot_id: Option<String>,
+    source_snapshot_url: Option<String>,
     active_owner: ClaimOwner,
 }
 
@@ -207,6 +217,10 @@ enum ClaimsRoute {
 
 const fn bootstrap_storage_version() -> u8 {
     BOOTSTRAP_STORAGE_VERSION
+}
+
+const fn stored_claim_draft_dirty_default() -> bool {
+    true
 }
 
 fn parse_claims_route(path: &str) -> ClaimsRoute {
@@ -662,6 +676,7 @@ fn next_macro_id(name: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn encode_claim_fragment(document: &ClaimDocumentV1) -> Result<String, String> {
     let bytes = serde_json::to_vec(document).map_err(|error| error.to_string())?;
     if bytes.len() > MAX_SHARE_FRAGMENT_BYTES {
@@ -675,6 +690,7 @@ fn decode_claim_fragment(encoded: &str) -> Result<ClaimDocumentV1, String> {
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 fn base64_url_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::new();
@@ -888,8 +904,10 @@ fn editor_init(
     live_state: Option<LiveState>,
     document: ClaimDocumentV1,
     follow_live: bool,
+    dirty: bool,
     selection: Vec<String>,
     source_snapshot_id: Option<String>,
+    source_snapshot_url: Option<String>,
     active_owner: ClaimOwner,
 ) -> ClaimsEditorInit {
     ClaimsEditorInit {
@@ -897,8 +915,10 @@ fn editor_init(
         live_state,
         document,
         follow_live,
+        dirty,
         selection,
         source_snapshot_id,
+        source_snapshot_url,
         active_owner,
     }
 }
@@ -918,7 +938,9 @@ fn hash_import_boot_payload(
         live_state,
         document,
         false,
+        false,
         Vec::new(),
+        None,
         None,
         active_owner,
     ))
@@ -958,6 +980,7 @@ fn apply_document_to_session(
     error_message: RwSignal<Option<String>>,
     document: ClaimDocumentV1,
     source_snapshot_id: Option<String>,
+    source_snapshot_url: Option<String>,
     follow_live: bool,
 ) {
     let active = document
@@ -978,6 +1001,7 @@ fn apply_document_to_session(
         dirty: false,
         selection: Vec::new(),
         source_snapshot_id,
+        source_snapshot_url,
         undo_stack: Vec::new(),
         redo_stack: Vec::new(),
     }));
@@ -1055,6 +1079,137 @@ async fn fetch_saved_claim_document(
         .map_err(|error| format!("parse error: {error}"))
 }
 
+async fn create_saved_claim(document: ClaimDocumentV1) -> Result<SavedClaimResponse, String> {
+    let request_body = serde_json::json!({
+        "title": document.title.clone(),
+        "document": document,
+    });
+    let request_body = serde_json::to_string(&request_body)
+        .map_err(|error| format!("serialize error: {error}"))?;
+    let request = gloo_net::http::Request::post("/api/claims")
+        .header("Content-Type", "application/json")
+        .body(request_body)
+        .map_err(|_| "Failed to build save request".to_string())?;
+    let response = request
+        .send()
+        .await
+        .map_err(|_| "Failed to save snapshot".to_string())?;
+
+    if !response.ok() {
+        return Err(format!(
+            "Failed to save snapshot (HTTP {})",
+            response.status()
+        ));
+    }
+
+    response
+        .json::<SavedClaimResponse>()
+        .await
+        .map_err(|error| format!("parse error: {error}"))
+}
+
+fn absolute_claim_url(url: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return url.to_string();
+    }
+
+    let origin = current_origin();
+    if origin.is_empty() {
+        url.to_string()
+    } else {
+        format!("{origin}{url}")
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_origin() -> String {
+    web_sys::window()
+        .and_then(|window| window.location().origin().ok())
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn current_origin() -> String {
+    String::new()
+}
+
+fn saved_claim_url(snapshot_id: &str) -> String {
+    absolute_claim_url(&format!("/claims/s/{snapshot_id}"))
+}
+
+fn reusable_share_url(session: &ClaimWorkingSession) -> Option<String> {
+    if session.dirty {
+        return None;
+    }
+
+    session
+        .source_snapshot_url
+        .clone()
+        .or_else(|| session.source_snapshot_id.as_deref().map(saved_claim_url))
+}
+
+fn invalidate_reusable_share_url_for_live_update(
+    session: &mut ClaimWorkingSession,
+    previous_live_seq: Option<u64>,
+    next_live_seq: Option<u64>,
+) {
+    if !session.follow_live || previous_live_seq == next_live_seq || next_live_seq.is_none() {
+        return;
+    }
+
+    session.dirty = true;
+    session.source_snapshot_id = None;
+    session.source_snapshot_url = None;
+}
+
+fn documents_match_for_saved_snapshot(
+    current_document: &ClaimDocumentV1,
+    saved_document: &ClaimDocumentV1,
+) -> bool {
+    let mut current_document = current_document.clone();
+    let mut saved_document = saved_document.clone();
+    current_document.view = ClaimViewState::default();
+    saved_document.view = ClaimViewState::default();
+    if let ClaimDocumentBase::FrozenLiveSnapshot { captured_at, .. } = &mut current_document.base {
+        captured_at.clear();
+    }
+    if let ClaimDocumentBase::FrozenLiveSnapshot { captured_at, .. } = &mut saved_document.base {
+        captured_at.clear();
+    }
+    current_document == saved_document
+}
+
+fn apply_saved_snapshot_if_current(
+    session: RwSignal<Option<ClaimWorkingSession>>,
+    live_territories: RwSignal<ClientTerritoryMap>,
+    live_seq: RwSignal<u64>,
+    viewport: RwSignal<Viewport>,
+    active_owner: RwSignal<ClaimOwner>,
+    snapshot_id: String,
+    snapshot_url: String,
+    saved_document: &ClaimDocumentV1,
+) -> bool {
+    let mut applied = false;
+    session.update(|state| {
+        if let Some(state) = state.as_mut() {
+            let current_document = canonical_document_for_session(
+                state,
+                &live_territories.get_untracked(),
+                live_seq.get_untracked(),
+                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
+            );
+            if !documents_match_for_saved_snapshot(&current_document, saved_document) {
+                return;
+            }
+            state.source_snapshot_id = Some(snapshot_id);
+            state.source_snapshot_url = Some(snapshot_url);
+            state.dirty = false;
+            applied = true;
+        }
+    });
+    applied
+}
+
 async fn resolve_boot_payload(
     route: ClaimsRoute,
     boot_status: RwSignal<String>,
@@ -1085,7 +1240,9 @@ async fn resolve_boot_payload(
             read_staged_live_bootstrap(),
             ClaimDocumentV1::blank(),
             false,
+            false,
             Vec::new(),
+            None,
             None,
             neutral_owner(),
         ))),
@@ -1106,7 +1263,9 @@ async fn resolve_boot_payload(
                 Some(live_state),
                 document,
                 false,
+                false,
                 Vec::new(),
+                None,
                 None,
                 neutral_owner(),
             )))
@@ -1122,8 +1281,10 @@ async fn resolve_boot_payload(
                 read_staged_live_bootstrap(),
                 draft.document,
                 draft.follow_live,
+                draft.dirty,
                 draft.selection,
                 draft.source_snapshot_id,
+                draft.source_snapshot_url,
                 draft.active_owner,
             )))
         }
@@ -1139,8 +1300,10 @@ async fn resolve_boot_payload(
                 read_staged_live_bootstrap(),
                 handoff.document.clone(),
                 handoff.follow_live,
+                false,
                 handoff.selection,
                 handoff.source_snapshot_id,
+                handoff.source_snapshot_url,
                 document_active_owner(&handoff.document),
             )))
         }
@@ -1154,8 +1317,10 @@ async fn resolve_boot_payload(
                 read_staged_live_bootstrap(),
                 payload.document.clone(),
                 false,
+                false,
                 Vec::new(),
-                Some(snapshot_id),
+                Some(snapshot_id.clone()),
+                Some(saved_claim_url(&snapshot_id)),
                 document_active_owner(&payload.document),
             )))
         }
@@ -1279,8 +1444,10 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         live_state: initial_live_state,
         document: initial_document,
         follow_live: initial_follow_live,
+        dirty: initial_dirty,
         selection: initial_selection,
         source_snapshot_id: initial_source_snapshot_id,
+        source_snapshot_url: initial_source_snapshot_url,
         active_owner: initial_active_owner,
     } = boot.into_editor_init();
     let initial_live_territories = initial_live_state
@@ -1295,9 +1462,10 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     let initial_session = ClaimWorkingSession {
         document: initial_document.clone(),
         follow_live: initial_follow_live,
-        dirty: false,
+        dirty: initial_dirty,
         selection: initial_selection,
         source_snapshot_id: initial_source_snapshot_id,
+        source_snapshot_url: initial_source_snapshot_url,
         undo_stack: Vec::new(),
         redo_stack: Vec::new(),
     };
@@ -1315,6 +1483,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     let tab: RwSignal<ClaimTab> = RwSignal::new(ClaimTab::Territory);
     let editor_canvas_ready: RwSignal<bool> = RwSignal::new(false);
     let deferred_editor_work_ready: RwSignal<bool> = RwSignal::new(false);
+    let snapshot_save_in_flight: RwSignal<bool> = RwSignal::new(false);
     let live_bootstrap_pending: RwSignal<bool> = RwSignal::new(initial_live_state.is_none());
     let live_bootstrap_error: RwSignal<Option<String>> = RwSignal::new(None);
     let error_message: RwSignal<Option<String>> = RwSignal::new(None);
@@ -1345,7 +1514,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     let tile_fetch_scheduled: RwSignal<bool> = RwSignal::new(false);
     let resource_highlight: RwSignal<bool> = RwSignal::new(false);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(false);
-    let show_territory_ornaments: RwSignal<bool> = RwSignal::new(true);
+    let show_territory_ornaments: RwSignal<bool> = RwSignal::new(false);
 
     let current_mode: RwSignal<MapMode> = RwSignal::new(MapMode::Live);
     let connection: RwSignal<ConnectionStatus> = RwSignal::new(ConnectionStatus::Connecting);
@@ -1624,8 +1793,10 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
             let draft = StoredClaimDraft {
                 document,
                 follow_live: session_state.follow_live,
+                dirty: session_state.dirty,
                 selection: session_state.selection.clone(),
                 source_snapshot_id: session_state.source_snapshot_id.clone(),
+                source_snapshot_url: session_state.source_snapshot_url.clone(),
                 active_owner: active_owner.get(),
             };
             let _ = gloo_storage::LocalStorage::set(DRAFT_STORAGE_KEY, &draft);
@@ -1754,6 +1925,28 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     Effect::new(move || {
         live_seq.set(last_live_seq.get().unwrap_or(0));
     });
+
+    {
+        let observed_live_seq: StoredValue<Option<u64>> = StoredValue::new(initial_last_live_seq);
+        Effect::new(move || {
+            let next_live_seq = last_live_seq.get();
+            let previous_live_seq = observed_live_seq.get_value();
+            observed_live_seq.set_value(next_live_seq);
+            if previous_live_seq == next_live_seq {
+                return;
+            }
+            session.update(|session_state| {
+                let Some(session_state) = session_state.as_mut() else {
+                    return;
+                };
+                invalidate_reusable_share_url_for_live_update(
+                    session_state,
+                    previous_live_seq,
+                    next_live_seq,
+                );
+            });
+        });
+    }
 
     Effect::new(move || {
         if !deferred_editor_work_ready.get()
@@ -1953,6 +2146,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                 status_message,
                                 error_message,
                                 document,
+                                None,
                                 None,
                                 false,
                             );
@@ -2537,33 +2731,68 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                             view! {
                                 <div style="display: flex; flex-direction: column; gap: 10px;">
                                     <button class="btn"
+                                        disabled=move || snapshot_save_in_flight.get()
                                         on:click=move |_| {
+                                            if snapshot_save_in_flight.get_untracked() {
+                                                return;
+                                            }
                                             let Some(session_state) = session.get_untracked() else {
                                                 return;
                                             };
+                                            if let Some(url) = reusable_share_url(&session_state) {
+                                                copy_url_to_clipboard(&url);
+                                                status_message.set(Some("Copied short share URL".to_string()));
+                                                return;
+                                            }
+                                            if !claims_persistence_available.get_untracked() {
+                                                error_message.set(Some("Short share URLs require server-side claims persistence on this deployment".to_string()));
+                                                return;
+                                            }
                                             let document = canonical_document_for_session(
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
                                                 default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
                                             );
-                                            match encode_claim_fragment(&document) {
-                                                Ok(fragment) => {
-                                                    if let Some(window) = web_sys::window() {
-                                                        let origin = window.location().origin().unwrap_or_default();
-                                                        let url = format!("{origin}/claims/new/import{SHARE_FRAGMENT_PREFIX}{fragment}");
-                                                        copy_url_to_clipboard(&url);
-                                                        status_message.set(Some("Copied share URL".to_string()));
+                                            let saved_document = document.clone();
+                                            snapshot_save_in_flight.set(true);
+                                            spawn_local(async move {
+                                                let result = create_saved_claim(document).await;
+                                                snapshot_save_in_flight.set(false);
+                                                match result {
+                                                    Ok(payload) => {
+                                                        let share_url = absolute_claim_url(&payload.url);
+                                                        if !apply_saved_snapshot_if_current(
+                                                            session,
+                                                            live_territories,
+                                                            live_seq,
+                                                            viewport,
+                                                            active_owner,
+                                                            payload.id.clone(),
+                                                            share_url.clone(),
+                                                            &saved_document,
+                                                        ) {
+                                                            status_message.set(Some(
+                                                                "Snapshot finished saving, but newer edits are not included".to_string(),
+                                                            ));
+                                                            return;
+                                                        }
+                                                        copy_url_to_clipboard(&share_url);
+                                                        status_message.set(Some("Copied short share URL".to_string()));
                                                     }
+                                                    Err(error) => error_message.set(Some(error)),
                                                 }
-                                                Err(error) => error_message.set(Some(error)),
-                                            }
+                                            });
                                         }
                                     >
-                                        "Copy Share URL"
+                                        "Copy Short Share URL"
                                     </button>
                                     <button class="btn"
+                                        disabled=move || snapshot_save_in_flight.get()
                                         on:click=move |_| {
+                                            if snapshot_save_in_flight.get_untracked() {
+                                                return;
+                                            }
                                             let Some(session_state) = session.get_untracked() else {
                                                 return;
                                             };
@@ -2577,25 +2806,38 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 live_seq.get_untracked(),
                                                 default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
                                             );
+                                            let saved_document = document.clone();
+                                            snapshot_save_in_flight.set(true);
                                             spawn_local(async move {
-                                                let request_body = serde_json::json!({
-                                                    "title": document.title.clone(),
-                                                    "document": document,
-                                                });
-                                                let request = gloo_net::http::Request::post("/api/claims")
-                                                    .header("Content-Type", "application/json")
-                                                    .body(serde_json::to_string(&request_body).unwrap_or_default());
-
-                                                match request {
-                                                    Ok(request) => match request.send().await {
-                                                        Ok(response) if response.ok() => {
-                                                            if let Ok(payload) = response.json::<SavedClaimResponse>().await {
-                                                                status_message.set(Some(format!("Saved snapshot {}", payload.id)));
-                                                            }
+                                                let result = create_saved_claim(document).await;
+                                                snapshot_save_in_flight.set(false);
+                                                match result {
+                                                    Ok(payload) => {
+                                                        let share_url = absolute_claim_url(&payload.url);
+                                                        if !apply_saved_snapshot_if_current(
+                                                            session,
+                                                            live_territories,
+                                                            live_seq,
+                                                            viewport,
+                                                            active_owner,
+                                                            payload.id.clone(),
+                                                            share_url,
+                                                            &saved_document,
+                                                        ) {
+                                                            status_message.set(Some(
+                                                                format!(
+                                                                    "Saved snapshot {} while newer edits remained unsaved",
+                                                                    payload.id
+                                                                ),
+                                                            ));
+                                                            return;
                                                         }
-                                                        _ => error_message.set(Some("Failed to save snapshot".to_string())),
-                                                    },
-                                                    Err(_) => error_message.set(Some("Failed to build save request".to_string())),
+                                                        status_message
+                                                            .set(Some(format!("Saved snapshot {}", payload.id)));
+                                                    }
+                                                    Err(error) => {
+                                                        error_message.set(Some(error));
+                                                    }
                                                 }
                                             });
                                         }
@@ -2684,6 +2926,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                             error_message,
                                                             document.clone(),
                                                             None,
+                                                            None,
                                                             false,
                                                         );
                                                     }
@@ -2769,6 +3012,139 @@ mod tests {
     }
 
     #[test]
+    fn reusable_share_url_prefers_stored_url_and_requires_clean_saved_session() {
+        let session = ClaimWorkingSession {
+            document: ClaimDocumentV1::blank(),
+            follow_live: false,
+            dirty: false,
+            selection: Vec::new(),
+            source_snapshot_id: Some("snapshot-123".to_string()),
+            source_snapshot_url: Some("https://example.test/custom/snapshot-123".to_string()),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        };
+        assert_eq!(
+            reusable_share_url(&session),
+            Some("https://example.test/custom/snapshot-123".to_string())
+        );
+
+        let fallback_session = ClaimWorkingSession {
+            source_snapshot_url: None,
+            ..session.clone()
+        };
+        assert_eq!(
+            reusable_share_url(&fallback_session),
+            Some("/claims/s/snapshot-123".to_string())
+        );
+
+        let dirty_session = ClaimWorkingSession {
+            dirty: true,
+            ..session
+        };
+        assert_eq!(reusable_share_url(&dirty_session), None);
+    }
+
+    #[test]
+    fn live_updates_invalidate_reusable_share_urls_for_live_sessions() {
+        let mut session = ClaimWorkingSession {
+            document: ClaimDocumentV1::blank(),
+            follow_live: true,
+            dirty: false,
+            selection: Vec::new(),
+            source_snapshot_id: Some("snapshot-123".to_string()),
+            source_snapshot_url: Some("https://example.test/custom/snapshot-123".to_string()),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        };
+
+        invalidate_reusable_share_url_for_live_update(&mut session, Some(41), Some(42));
+
+        assert!(session.dirty);
+        assert_eq!(session.source_snapshot_id, None);
+        assert_eq!(session.source_snapshot_url, None);
+    }
+
+    #[test]
+    fn live_updates_do_not_invalidate_reusable_share_urls_for_frozen_sessions() {
+        let mut session = ClaimWorkingSession {
+            document: ClaimDocumentV1::blank(),
+            follow_live: false,
+            dirty: false,
+            selection: Vec::new(),
+            source_snapshot_id: Some("snapshot-123".to_string()),
+            source_snapshot_url: Some("https://example.test/custom/snapshot-123".to_string()),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        };
+
+        invalidate_reusable_share_url_for_live_update(&mut session, Some(41), Some(42));
+
+        assert!(!session.dirty);
+        assert_eq!(session.source_snapshot_id.as_deref(), Some("snapshot-123"));
+        assert_eq!(
+            session.source_snapshot_url.as_deref(),
+            Some("https://example.test/custom/snapshot-123")
+        );
+    }
+
+    #[test]
+    fn documents_match_for_saved_snapshot_ignores_captured_at() {
+        let owners = HashMap::from([("Ragni".to_string(), neutral_owner())]);
+        let current_document = ClaimDocumentV1::frozen_live(None, 42, owners.clone());
+        let mut saved_document = ClaimDocumentV1::frozen_live(None, 42, owners);
+        if let ClaimDocumentBase::FrozenLiveSnapshot { captured_at, .. } = &mut saved_document.base
+        {
+            *captured_at = "2000-01-01T00:00:00Z".to_string();
+        }
+        assert!(documents_match_for_saved_snapshot(
+            &current_document,
+            &saved_document
+        ));
+    }
+
+    #[test]
+    fn documents_match_for_saved_snapshot_ignores_view() {
+        let mut current_document = ClaimDocumentV1::blank();
+        current_document.view = ClaimViewState {
+            offset_x: 120.0,
+            offset_y: -45.0,
+            scale: 0.9,
+            active_owner: Some(neutral_owner()),
+        };
+        let mut saved_document = current_document.clone();
+        saved_document.view = ClaimViewState {
+            offset_x: -80.0,
+            offset_y: 300.0,
+            scale: 0.15,
+            active_owner: Some(ClaimOwner::from_guild(GuildRef {
+                uuid: "guild-1".to_string(),
+                name: "Alpha".to_string(),
+                prefix: "ALP".to_string(),
+                color: Some((10, 20, 30)),
+            })),
+        };
+        assert!(documents_match_for_saved_snapshot(
+            &current_document,
+            &saved_document
+        ));
+    }
+
+    #[test]
+    fn stored_claim_draft_defaults_dirty_for_legacy_data() {
+        let draft = serde_json::from_value::<StoredClaimDraft>(serde_json::json!({
+            "document": ClaimDocumentV1::blank(),
+            "follow_live": false,
+            "selection": [],
+            "source_snapshot_id": "snapshot-123",
+            "active_owner": neutral_owner(),
+        }))
+        .expect("deserialize legacy draft");
+        assert!(draft.dirty);
+        assert_eq!(draft.source_snapshot_id.as_deref(), Some("snapshot-123"));
+        assert_eq!(draft.source_snapshot_url, None);
+    }
+
+    #[test]
     fn staged_cache_freshness_requires_matching_version_and_age() {
         assert!(staged_cache_is_fresh_at(
             BOOTSTRAP_STORAGE_VERSION,
@@ -2813,6 +3189,7 @@ mod tests {
 
         assert_eq!(init.geometry, geometry);
         assert_eq!(init.document, document);
+        assert!(!init.dirty);
         assert!(!init.follow_live);
         assert!(init.selection.is_empty());
     }

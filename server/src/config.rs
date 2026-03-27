@@ -23,6 +23,7 @@ pub const DEFAULT_BROADCAST_BUFFER: usize = 256;
 pub const DEFAULT_DB_MAX_CONNECTIONS: u32 = 10;
 pub const DEFAULT_UPSTREAM_HTTP_TIMEOUT_SECS: u64 = 10;
 pub const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 3;
+pub const DEFAULT_MAP_DOMAIN: &str = "map.example.com";
 pub const SERVER_PORT: u16 = 3000;
 pub const DEFAULT_CANONICAL_OVERRIDE_TTL_SECS: u64 = 180;
 pub const DEFAULT_API_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
@@ -268,6 +269,28 @@ pub fn canonical_override_ttl() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_CANONICAL_OVERRIDE_TTL_SECS))
 }
 
+pub fn map_public_base_url() -> String {
+    std::env::var("MAP_DOMAIN")
+        .ok()
+        .as_deref()
+        .map(normalize_public_base_url)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("https://{DEFAULT_MAP_DOMAIN}"))
+}
+
+fn normalize_public_base_url(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    }
+}
+
 fn parse_rfc3339_utc(raw: &str, env_name: &str) -> Result<DateTime<Utc>, String> {
     raw.trim()
         .parse::<DateTime<Utc>>()
@@ -296,8 +319,8 @@ fn sanitize_internal_ingest_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES, normalize_watchlist_key,
-        parse_active_season_race_config, sanitize_internal_ingest_token,
+        ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES, normalize_public_base_url,
+        normalize_watchlist_key, parse_active_season_race_config, sanitize_internal_ingest_token,
     };
     use chrono::{DateTime, Utc};
 
@@ -323,6 +346,19 @@ mod tests {
     #[test]
     fn default_api_body_limit_matches_ingest_forwarder_default_size() {
         assert_eq!(DEFAULT_API_BODY_LIMIT_BYTES, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn normalize_public_base_url_adds_https_and_trims_trailing_slashes() {
+        assert_eq!(
+            normalize_public_base_url(" map.seqwawa.com/ "),
+            "https://map.seqwawa.com"
+        );
+        assert_eq!(
+            normalize_public_base_url("https://seqwawa.com///"),
+            "https://seqwawa.com"
+        );
+        assert_eq!(normalize_public_base_url(""), "");
     }
 
     #[test]
