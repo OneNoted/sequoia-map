@@ -6,6 +6,7 @@ use serde::Serialize;
 use sequoia_shared::{SeasonScalarSample, passive_sr_per_hour};
 
 use crate::config;
+use crate::services::season_data::{self, SeasonDataError};
 use crate::state::AppState;
 
 type LatestGuildRow = (String, String, String, i16, i32, DateTime<Utc>);
@@ -86,18 +87,19 @@ pub async fn build_race_response(
     let Some(pool) = state.db.as_ref() else {
         return Err(SeasonRaceError::Unavailable);
     };
-    let active = config::active_season_race_config()
-        .map_err(|_| SeasonRaceError::Internal)?
+    let window = season_data::resolve_requested_window(state, requested_season_id)
+        .await
+        .map_err(map_season_data_error)?
         .ok_or(SeasonRaceError::Unavailable)?;
-    if requested_season_id.is_some_and(|season_id| season_id != active.season_id) {
-        return Err(SeasonRaceError::BadRequest);
-    }
+    let lookback_hours = config::season_race_lookback_hours();
+    let top_guilds = config::season_race_top_guilds();
 
     let generated_at = Utc::now();
-    let range_end = generated_at.min(active.end_at);
-    let remaining_hours = ((active.end_at - generated_at).num_seconds().max(0) as f64) / 3600.0;
+    let range_end = generated_at.min(window.end_at);
+    let remaining_hours = ((window.end_at - generated_at).num_seconds().max(0) as f64) / 3600.0;
     let recent_query_start =
-        recent_observation_query_start(active.start_at, range_end, active.lookback_hours);
+        recent_observation_query_start(window.start_at, range_end, lookback_hours);
+    let season_complete = generated_at >= window.end_at;
 
     let latest_rows: Vec<LatestGuildRow> = sqlx::query_as(
         "SELECT guild_name, COALESCE(guild_uuid, ''), COALESCE(guild_prefix, ''), territory_count, season_rating, observed_at \
@@ -112,29 +114,28 @@ pub async fn build_race_response(
          ORDER BY season_rating DESC, territory_count DESC, guild_name ASC \
          LIMIT $4",
     )
-    .bind(active.season_id)
-    .bind(active.start_at)
+    .bind(window.season_id)
+    .bind(window.start_at)
     .bind(range_end)
-    .bind(i64::try_from(active.top_guilds).unwrap_or(i64::MAX))
+    .bind(i64::try_from(top_guilds).unwrap_or(i64::MAX))
     .fetch_all(pool)
     .await
     .map_err(|_| SeasonRaceError::Internal)?;
 
     if latest_rows.is_empty() {
         return Ok(SeasonRaceResponse {
-            season_id: active.season_id,
-            label: active.label,
-            start_at: active.start_at.to_rfc3339(),
-            end_at: active.end_at.to_rfc3339(),
+            season_id: window.season_id,
+            label: window.label.clone(),
+            start_at: window.start_at.to_rfc3339(),
+            end_at: window.end_at.to_rfc3339(),
             generated_at: generated_at.to_rfc3339(),
             remaining_hours,
             entries: Vec::new(),
             assumptions: SeasonRaceAssumptions {
-                lookback_hours: active.lookback_hours,
-                passive_scalar_weighted: latest_scalar_weighted_for_season(state, active.season_id)
+                lookback_hours,
+                passive_scalar_weighted: latest_scalar_weighted_for_season(state, window.season_id)
                     .await,
-                note: "Projection assumes the current pace continues from recent observed season rating snapshots."
-                    .to_string(),
+                note: assumptions_note(season_complete).to_string(),
             },
         });
     }
@@ -149,7 +150,7 @@ pub async fn build_race_response(
            AND observed_at <= $4 \
          ORDER BY guild_name ASC, observed_at ASC",
     )
-    .bind(active.season_id)
+    .bind(window.season_id)
     .bind(&guild_names)
     .bind(recent_query_start)
     .bind(range_end)
@@ -171,9 +172,9 @@ pub async fn build_race_response(
          ) hourly \
          ORDER BY guild_name ASC, observed_at ASC",
     )
-    .bind(active.season_id)
+    .bind(window.season_id)
     .bind(&guild_names)
-    .bind(active.start_at)
+    .bind(window.start_at)
     .bind(range_end)
     .fetch_all(pool)
     .await
@@ -207,7 +208,7 @@ pub async fn build_race_response(
     }
 
     let live_territory_counts = live_territory_counts(state).await;
-    let passive_scalar = latest_scalar_sample_for_season(state, active.season_id)
+    let passive_scalar = latest_scalar_sample_for_season(state, window.season_id)
         .await
         .map(|sample| sample.scalar_weighted);
 
@@ -229,9 +230,9 @@ pub async fn build_race_response(
         let chart_observations = series_by_guild.remove(&guild_name).unwrap_or_default();
         let observed_rate = observed_rate_per_hour(
             &recent_observations,
-            active.start_at,
+            window.start_at,
             range_end,
-            active.lookback_hours,
+            lookback_hours,
         );
         let passive_rate =
             passive_scalar.map(|scalar| passive_sr_per_hour(current_territory_count, scalar));
@@ -259,20 +260,35 @@ pub async fn build_race_response(
     apply_projected_ranks(&mut entries);
 
     Ok(SeasonRaceResponse {
-        season_id: active.season_id,
-        label: active.label,
-        start_at: active.start_at.to_rfc3339(),
-        end_at: active.end_at.to_rfc3339(),
+        season_id: window.season_id,
+        label: window.label,
+        start_at: window.start_at.to_rfc3339(),
+        end_at: window.end_at.to_rfc3339(),
         generated_at: generated_at.to_rfc3339(),
         remaining_hours,
         entries,
         assumptions: SeasonRaceAssumptions {
-            lookback_hours: active.lookback_hours,
+            lookback_hours,
             passive_scalar_weighted: passive_scalar,
-            note: "Projection assumes the current pace continues from recent observed season rating snapshots."
-                .to_string(),
+            note: assumptions_note(season_complete).to_string(),
         },
     })
+}
+
+fn map_season_data_error(error: SeasonDataError) -> SeasonRaceError {
+    match error {
+        SeasonDataError::Unavailable => SeasonRaceError::Unavailable,
+        SeasonDataError::BadRequest => SeasonRaceError::BadRequest,
+        SeasonDataError::Internal => SeasonRaceError::Internal,
+    }
+}
+
+fn assumptions_note(season_complete: bool) -> &'static str {
+    if season_complete {
+        "Season is complete; projected values equal the latest observed final season rating."
+    } else {
+        "Projection assumes the current pace continues from recent observed season rating snapshots."
+    }
 }
 
 async fn live_territory_counts(state: &AppState) -> HashMap<String, usize> {
