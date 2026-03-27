@@ -74,7 +74,7 @@ jobs:
     name: Publish Images And Trigger Coolify
     needs: changes
     if: github.repository == 'SequoiaWynncraft/sequoia-map' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true')
-    runs-on: apollo-sequoia
+    runs-on: apollo-sequoia-map
     timeout-minutes: 45
     steps:
       - name: Checkout
