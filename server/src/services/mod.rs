@@ -5,5 +5,6 @@ pub mod retention_cleaner;
 pub mod season_data;
 pub mod season_race;
 pub mod season_scalar_estimator;
+pub mod season_scalar_forecast;
 pub mod snapshot_service;
 pub mod territory_poller;
