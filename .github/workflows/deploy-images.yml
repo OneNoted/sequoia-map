@@ -91,6 +91,32 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Validate Coolify Deploy Credentials
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+        run: |
+          if [ -z "${COOLIFY_WEBHOOK:-}" ]; then
+            echo "Missing required secret: COOLIFY_WEBHOOK"
+            exit 1
+          fi
+          if [ -z "${COOLIFY_TOKEN:-}" ]; then
+            echo "Missing required secret: COOLIFY_TOKEN"
+            exit 1
+          fi
+
+          COOLIFY_API_BASE="${COOLIFY_WEBHOOK%%/api/v1/deploy*}"
+          PROBE_URL="${COOLIFY_API_BASE}/api/v1/deploy?uuid=auth-probe-missing-resource"
+          PROBE_STATUS="$(curl --proto '=https' --tlsv1.2 --silent --show-error --output /tmp/coolify-probe.json --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+            "${PROBE_URL}")"
+
+          if [ "${PROBE_STATUS}" != "404" ]; then
+            echo "Coolify deploy credential probe failed with status ${PROBE_STATUS}."
+            cat /tmp/coolify-probe.json
+            exit 1
+          fi
+
       - name: Set Up Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
@@ -106,9 +132,12 @@ jobs:
         env:
           TAILWINDCSS_VERSION: 4.2.0
           TAILWINDCSS_LINUX_X64_SHA256: 8f65e2d21c675f1e8d265219979d17d10634c1f553a2f583265b7edb28726432
+          WASM_BINDGEN_VERSION: 0.2.113
+          WASM_BINDGEN_X64_MUSL_SHA256: 0366bf5936d5e2578b06fc318a5696ddecfb66382e671e51f469b83f3494712f
         run: |
           mkdir -p .ci/binaryen
           mkdir -p .ci/tailwindcss
+          mkdir -p .ci/wasm-bindgen
           curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo .ci/binaryen/binaryen.tar.gz \
             https://github.com/WebAssembly/binaryen/releases/download/version_126/binaryen-version_126-x86_64-linux.tar.gz
           curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 60 -fsSLo .ci/binaryen/binaryen.tar.gz.sha256 \
@@ -119,6 +148,10 @@ jobs:
             https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-linux-x64
           echo "${TAILWINDCSS_LINUX_X64_SHA256}" > .ci/tailwindcss/tailwindcss.sha256
           echo "${TAILWINDCSS_LINUX_X64_SHA256}  .ci/tailwindcss/tailwindcss" | sha256sum -c -
+          curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo .ci/wasm-bindgen/wasm-bindgen.tar.gz \
+            https://github.com/rustwasm/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          echo "${WASM_BINDGEN_X64_MUSL_SHA256}" > .ci/wasm-bindgen/wasm-bindgen.tar.gz.sha256
+          echo "${WASM_BINDGEN_X64_MUSL_SHA256}  .ci/wasm-bindgen/wasm-bindgen.tar.gz" | sha256sum -c -
 
       - name: Build And Push Server Image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
@@ -177,11 +210,11 @@ jobs:
             echo "Missing required secret: COOLIFY_WEBHOOK"
             exit 1
           fi
-
-          if [ -n "${COOLIFY_TOKEN:-}" ]; then
-            curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 10 --max-time 60 -fsS -X POST \
-              -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
-              "${COOLIFY_WEBHOOK}"
-          else
-            curl --proto '=https' --tlsv1.2 --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 10 --max-time 60 -fsS -X POST "${COOLIFY_WEBHOOK}"
+          if [ -z "${COOLIFY_TOKEN:-}" ]; then
+            echo "Missing required secret: COOLIFY_TOKEN"
+            exit 1
           fi
+
+          curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error --connect-timeout 10 --max-time 60 \
+            -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+            "${COOLIFY_WEBHOOK}"

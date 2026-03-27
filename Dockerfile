@@ -5,10 +5,12 @@ ARG TARGETARCH
 ARG BINARYEN_VERSION=126
 ARG BINARYEN_ARCH=
 ARG TAILWINDCSS_VERSION=4.2.0
+ARG WASM_BINDGEN_VERSION=0.2.113
 
 RUN apt-get update && apt-get install -y --no-install-recommends brotli gzip ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY .ci/binaryen/ /tmp/binaryen-assets/
 COPY .ci/tailwindcss/ /tmp/tailwindcss-assets/
+COPY .ci/wasm-bindgen/ /tmp/wasm-bindgen-assets/
 RUN set -eux; \
     TARGET_ARCH="${TARGETARCH:-}"; \
     if [ -z "${TARGET_ARCH}" ]; then \
@@ -65,6 +67,37 @@ RUN set -eux; \
         rm -f /tmp/tailwindcss; \
     fi; \
     tailwindcss --help >/dev/null
+RUN set -eux; \
+    TARGET_ARCH="${TARGETARCH:-}"; \
+    if [ -z "${TARGET_ARCH}" ]; then \
+        TARGET_ARCH="$(dpkg --print-architecture)"; \
+    fi; \
+    if [ -f /tmp/wasm-bindgen-assets/wasm-bindgen.tar.gz ] && [ -f /tmp/wasm-bindgen-assets/wasm-bindgen.tar.gz.sha256 ]; then \
+        cp /tmp/wasm-bindgen-assets/wasm-bindgen.tar.gz /tmp/wasm-bindgen.tar.gz; \
+        cp /tmp/wasm-bindgen-assets/wasm-bindgen.tar.gz.sha256 /tmp/wasm-bindgen.tar.gz.sha256; \
+    else \
+        case "${TARGET_ARCH}" in \
+            amd64|x86_64) \
+                WASM_BINDGEN_TARGET="x86_64-unknown-linux-musl"; \
+                EXPECTED_SHA="0366bf5936d5e2578b06fc318a5696ddecfb66382e671e51f469b83f3494712f" ;; \
+            arm64|aarch64) \
+                WASM_BINDGEN_TARGET="aarch64-unknown-linux-gnu"; \
+                EXPECTED_SHA="965dd0d7aff65600f44b500a19b38fce68ec6ff135f3683d35731294ed46d66d" ;; \
+            *) \
+                echo "Unsupported architecture '${TARGET_ARCH}' for wasm-bindgen auto-selection."; \
+                exit 1 ;; \
+        esac; \
+        curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo /tmp/wasm-bindgen.tar.gz "https://github.com/rustwasm/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_BINDGEN_TARGET}.tar.gz"; \
+        printf '%s\n' "${EXPECTED_SHA}" > /tmp/wasm-bindgen.tar.gz.sha256; \
+    fi; \
+    EXPECTED_SHA="$(awk '{print $1}' /tmp/wasm-bindgen.tar.gz.sha256)"; \
+    echo "${EXPECTED_SHA}  /tmp/wasm-bindgen.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/wasm-bindgen.tar.gz -C /tmp; \
+    EXTRACTED_DIR="$(find /tmp -maxdepth 1 -type d -name "wasm-bindgen-${WASM_BINDGEN_VERSION}-*" | head -n 1)"; \
+    test -n "${EXTRACTED_DIR}"; \
+    install -m 0755 "${EXTRACTED_DIR}/wasm-bindgen" /usr/local/bin/wasm-bindgen; \
+    rm -rf /tmp/wasm-bindgen.tar.gz /tmp/wasm-bindgen.tar.gz.sha256 "${EXTRACTED_DIR}"; \
+    wasm-bindgen --version >/dev/null
 RUN rustup target add wasm32-unknown-unknown
 RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=sequoia-cargo-git,target=/usr/local/cargo/git,sharing=locked \
