@@ -6,6 +6,7 @@ use serde::Serialize;
 use sequoia_shared::{SeasonScalarSample, passive_sr_per_hour};
 
 use crate::config;
+use crate::services::season_components::{self, ProjectedSeasonComponents};
 use crate::services::season_data::{self, SeasonDataError};
 use crate::services::season_scalar_forecast::{self, ScalarProjection};
 use crate::state::AppState;
@@ -54,6 +55,12 @@ pub struct SeasonRaceEntry {
     pub projected_passive_sr_gain: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projected_excess_sr_gain: Option<i64>,
+    pub current_raid_sr: i64,
+    pub current_passive_hold_sr: i64,
+    pub current_conquest_sr: i64,
+    pub projected_raid_sr: i64,
+    pub projected_passive_hold_sr: i64,
+    pub projected_conquest_sr: i64,
     pub forecast_rate_per_hour: f64,
     pub forecast_source: ForecastSource,
     pub series: Vec<SeasonRacePoint>,
@@ -259,6 +266,14 @@ pub async fn build_race_response(
         .as_ref()
         .map(ScalarProjection::current_scalar_weighted)
         .or(passive_scalar);
+    let actual_guild_names = latest_rows
+        .iter()
+        .map(|row| row.0.clone())
+        .collect::<Vec<_>>();
+    let components_by_name =
+        season_components::build_components(state, &window, &actual_guild_names, range_end)
+            .await
+            .map_err(|_| SeasonRaceError::Internal)?;
 
     let mut entries = Vec::with_capacity(latest_rows.len());
     for (
@@ -276,6 +291,7 @@ pub async fn build_race_response(
         let current_territory_count = live_count.max(fallback_count);
         let recent_observations = recent_by_guild.remove(&guild_name).unwrap_or_default();
         let chart_observations = series_by_guild.remove(&guild_name).unwrap_or_default();
+        let components = components_by_name.get(&guild_name.to_ascii_lowercase());
         let observed_rate = observed_rate_per_hour(
             &recent_observations,
             window.start_at,
@@ -328,6 +344,33 @@ pub async fn build_race_response(
             )
         };
 
+        let current_raid_sr = components
+            .map(season_components::current_raid_sr)
+            .unwrap_or(0);
+        let current_passive_hold_sr = components
+            .map(season_components::current_passive_hold_sr)
+            .unwrap_or(0);
+        let current_conquest_sr = components
+            .map(season_components::current_conquest_sr)
+            .unwrap_or(current_sr.saturating_sub(current_raid_sr));
+        let projected_components = components
+            .map(|components| {
+                season_components::project_components(
+                    components,
+                    current_sr,
+                    projected_final_sr,
+                    projected_passive_sr_gain,
+                    remaining_hours,
+                )
+            })
+            .unwrap_or(ProjectedSeasonComponents {
+                projected_raid_sr: current_raid_sr,
+                projected_passive_hold_sr: current_passive_hold_sr,
+                projected_conquest_sr: projected_final_sr
+                    .saturating_sub(current_raid_sr)
+                    .saturating_sub(current_passive_hold_sr),
+            });
+
         entries.push(SeasonRaceEntry {
             guild_name,
             guild_prefix,
@@ -342,6 +385,12 @@ pub async fn build_race_response(
             passive_rate_per_hour: passive_rate,
             projected_passive_sr_gain,
             projected_excess_sr_gain,
+            current_raid_sr,
+            current_passive_hold_sr,
+            current_conquest_sr,
+            projected_raid_sr: projected_components.projected_raid_sr,
+            projected_passive_hold_sr: projected_components.projected_passive_hold_sr,
+            projected_conquest_sr: projected_components.projected_conquest_sr,
             forecast_rate_per_hour: forecast_rate,
             forecast_source,
             series: downsample_series_hourly(chart_observations),
@@ -686,6 +735,12 @@ mod tests {
                 passive_rate_per_hour: None,
                 projected_passive_sr_gain: None,
                 projected_excess_sr_gain: None,
+                current_raid_sr: 0,
+                current_passive_hold_sr: 0,
+                current_conquest_sr: 0,
+                projected_raid_sr: 0,
+                projected_passive_hold_sr: 0,
+                projected_conquest_sr: 200,
                 forecast_rate_per_hour: 0.0,
                 forecast_source: ForecastSource::FlatFallback,
                 series: Vec::new(),
@@ -704,6 +759,12 @@ mod tests {
                 passive_rate_per_hour: None,
                 projected_passive_sr_gain: None,
                 projected_excess_sr_gain: None,
+                current_raid_sr: 0,
+                current_passive_hold_sr: 0,
+                current_conquest_sr: 0,
+                projected_raid_sr: 0,
+                projected_passive_hold_sr: 0,
+                projected_conquest_sr: 200,
                 forecast_rate_per_hour: 0.0,
                 forecast_source: ForecastSource::FlatFallback,
                 series: Vec::new(),

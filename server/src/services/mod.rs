@@ -3,6 +3,7 @@ pub mod guild_color_loader;
 pub mod guild_evictor;
 pub mod retention_cleaner;
 pub mod season_data;
+pub mod season_components;
 pub mod season_race;
 pub mod season_scalar_estimator;
 pub mod season_scalar_forecast;

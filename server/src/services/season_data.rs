@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::config;
+use crate::services::season_components::{self, SeasonComponentPoint};
 use crate::state::AppState;
 
 type SeasonMetadataRow = (i32, Option<String>, DateTime<Utc>, DateTime<Utc>, String);
@@ -55,6 +56,14 @@ pub struct SeasonSeriesEntry {
     pub sample_count: u32,
     pub last_sampled_at: String,
     pub series: Vec<SeasonSeriesPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raid_sr_series: Vec<SeasonComponentPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passive_hold_sr_series: Vec<SeasonComponentPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conquest_sr_series: Vec<SeasonComponentPoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub daily_raid_count_series: Vec<SeasonComponentPoint>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,11 +185,20 @@ pub async fn build_series_response(
 
     let total_guilds = u32::try_from(latest_rows.len()).unwrap_or(u32::MAX);
     let mut entries = Vec::with_capacity(latest_rows.len());
+    let actual_guild_names = latest_rows
+        .iter()
+        .map(|row| row.0.clone())
+        .collect::<Vec<_>>();
+    let components_by_name =
+        season_components::build_components(state, &window, &actual_guild_names, range_end)
+            .await
+            .map_err(|_| SeasonDataError::Internal)?;
     for (idx, (guild_name, guild_prefix, season_rating, observed_at)) in
         latest_rows.into_iter().enumerate()
     {
         let normalized_name = guild_name.to_ascii_lowercase();
         let observations = series_by_name.remove(&normalized_name).unwrap_or_default();
+        let components = components_by_name.get(&normalized_name);
         entries.push((
             requested_lookup
                 .get(&normalized_name)
@@ -195,6 +213,18 @@ pub async fn build_series_response(
                 sample_count: u32::try_from(observations.len()).unwrap_or(u32::MAX),
                 last_sampled_at: observed_at.to_rfc3339(),
                 series: downsample_series_hourly(observations),
+                raid_sr_series: components
+                    .map(|components| components.cumulative_raid_sr_series.clone())
+                    .unwrap_or_default(),
+                passive_hold_sr_series: components
+                    .map(|components| components.cumulative_passive_hold_sr_series.clone())
+                    .unwrap_or_default(),
+                conquest_sr_series: components
+                    .map(|components| components.cumulative_conquest_sr_series.clone())
+                    .unwrap_or_default(),
+                daily_raid_count_series: components
+                    .map(|components| components.daily_raid_count_series.clone())
+                    .unwrap_or_default(),
             },
         ));
     }

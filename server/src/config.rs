@@ -34,6 +34,7 @@ pub const DEFAULT_MAX_HISTORY_SR_SAMPLE_ROWS: i64 = 20_000;
 pub const DEFAULT_SEASON_RACE_TOP_GUILDS: usize = 10;
 pub const DEFAULT_SEASON_RACE_LOOKBACK_HOURS: i64 = 24;
 pub const MIN_INTERNAL_INGEST_TOKEN_LEN: usize = 24;
+pub const MIN_INTERNAL_API_TOKEN_LEN: usize = 24;
 
 // History feature
 pub const SNAPSHOT_INTERVAL_SECS: u64 = 21600; // every 6 hours
@@ -160,6 +161,20 @@ pub fn internal_ingest_token() -> Option<String> {
         .or_else(|_| std::env::var("internal_ingest_token"))
         .ok()
         .and_then(|value| sanitize_internal_ingest_token(&value))
+}
+
+pub fn sequoia_backend_base_url() -> Option<String> {
+    std::env::var("SEQUOIA_BACKEND_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn sequoia_backend_internal_token() -> Option<String> {
+    std::env::var("SEQUOIA_BACKEND_INTERNAL_TOKEN")
+        .or_else(|_| std::env::var("sequoia_backend_internal_token"))
+        .ok()
+        .and_then(|value| sanitize_internal_api_token(&value))
 }
 
 pub fn api_body_limit_bytes() -> usize {
@@ -352,6 +367,14 @@ fn sanitize_internal_ingest_token(raw: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+fn sanitize_internal_api_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() < MIN_INTERNAL_API_TOKEN_LEN {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -377,6 +400,15 @@ mod tests {
         assert_eq!(
             sanitize_internal_ingest_token("  this-is-a-long-random-token-value-12345 "),
             Some("this-is-a-long-random-token-value-12345".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_internal_api_token_requires_reasonable_length() {
+        assert_eq!(super::sanitize_internal_api_token("short"), None);
+        assert_eq!(
+            super::sanitize_internal_api_token("  this-is-a-long-internal-api-token  "),
+            Some("this-is-a-long-internal-api-token".to_string())
         );
     }
 
