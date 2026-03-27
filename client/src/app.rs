@@ -185,6 +185,8 @@ pub(crate) struct DetailReturnGuild(pub RwSignal<Option<String>>);
 pub(crate) struct GuildOnlineInfo {
     pub online: u32,
     pub season_rating: Option<i64>,
+    pub season_rating_source: Option<String>,
+    pub season_rating_sampled_at: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1317,12 +1319,22 @@ pub fn MapPage() -> impl IntoView {
                         GuildOnlineInfo {
                             online: obj.get("online").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                             season_rating: obj.get("season_rating").and_then(|v| v.as_i64()),
+                            season_rating_source: obj
+                                .get("season_rating_source")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
+                            season_rating_sampled_at: obj
+                                .get("season_rating_sampled_at")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
                         }
                     } else if let Some(n) = val.as_u64() {
                         // Legacy format: plain u32
                         GuildOnlineInfo {
                             online: n as u32,
                             season_rating: None,
+                            season_rating_source: None,
+                            season_rating_sampled_at: None,
                         }
                     } else {
                         return None;

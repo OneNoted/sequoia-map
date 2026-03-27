@@ -11,17 +11,17 @@ use tracing::{info, warn};
 
 use sequoia_shared::{SeasonScalarCurrent, SeasonScalarSample};
 
-use crate::config::WYNNCRAFT_GUILD_URL;
+use crate::config::{WYNNCRAFT_GUILD_URL, season_rating_contender_count, season_rating_watchlist};
 use crate::state::AppState;
 
 const OBSERVATION_INTERVAL_SECS: u64 = 300;
-const LEADERBOARD_SAMPLE_GUILDS: usize = 50;
 const AUTHORITATIVE_CONFIDENCE_MIN: f64 = 0.99;
 const AUTHORITATIVE_SAMPLE_COUNT_MIN: i32 = 1;
 
 type LatestScalarSampleRow = (DateTime<Utc>, i32, f64, f64, f64, i32);
+type LatestObservationCandidateRow = (String, String, String, i16);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CandidateGuild {
     guild_name: String,
     guild_uuid: String,
@@ -47,6 +47,12 @@ struct GuildSeasonRank {
 
 #[derive(Debug, Deserialize)]
 struct GuildPayload {
+    #[serde(default)]
+    uuid: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    prefix: Option<String>,
     #[serde(default, rename = "seasonRanks")]
     season_ranks: HashMap<String, GuildSeasonRank>,
 }
@@ -59,8 +65,9 @@ pub async fn run(state: AppState) {
 
     info!(
         interval_secs = OBSERVATION_INTERVAL_SECS,
-        leaderboard_sample_guilds = LEADERBOARD_SAMPLE_GUILDS,
-        "season guild observation sampler started (scalar inference disabled; authoritative ingest only)"
+        contender_count = season_rating_contender_count(),
+        watchlist_size = season_rating_watchlist().len(),
+        "season guild observation sampler started"
     );
 
     warm_cache(&state).await;
@@ -86,7 +93,13 @@ pub async fn warm_cache(state: &AppState) {
 }
 
 async fn sample_once(state: &AppState, pool: &sqlx::PgPool) -> Result<(), String> {
-    let sampled_candidates = top_candidate_guilds(state, LEADERBOARD_SAMPLE_GUILDS).await;
+    let sampled_candidates = top_candidate_guilds(
+        state,
+        pool,
+        season_rating_contender_count(),
+        &season_rating_watchlist(),
+    )
+    .await?;
     if sampled_candidates.is_empty() {
         return Ok(());
     }
@@ -276,26 +289,51 @@ fn build_cached_scalar_sample(
     }
 }
 
-async fn top_candidate_guilds(state: &AppState, limit: usize) -> Vec<CandidateGuild> {
+async fn top_candidate_guilds(
+    state: &AppState,
+    pool: &sqlx::PgPool,
+    contender_count: usize,
+    watchlist: &[String],
+) -> Result<Vec<CandidateGuild>, String> {
     let snapshot = state.live_snapshot.read().await;
     if snapshot.territories.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let mut candidates: HashMap<String, CandidateGuild> = HashMap::new();
     for territory in snapshot.territories.values() {
-        let guild_name = territory.guild.name.clone();
-        let entry = candidates
-            .entry(guild_name.clone())
-            .or_insert_with(|| CandidateGuild {
-                guild_name,
+        merge_candidate(
+            &mut candidates,
+            CandidateGuild {
+                guild_name: territory.guild.name.clone(),
                 guild_uuid: territory.guild.uuid.clone(),
                 guild_prefix: territory.guild.prefix.clone(),
-                territory_count: 0,
-            });
-        entry.territory_count += 1;
+                territory_count: 1,
+            },
+        );
     }
     drop(snapshot);
+
+    for contender in latest_top_contender_guilds(pool, contender_count).await? {
+        merge_candidate(&mut candidates, contender);
+    }
+
+    let watchlist_details = latest_observed_guilds_by_name(pool, watchlist).await?;
+    for guild_name in watchlist {
+        if let Some(candidate) = watchlist_details.get(guild_name) {
+            merge_candidate(&mut candidates, candidate.clone());
+        } else {
+            merge_candidate(
+                &mut candidates,
+                CandidateGuild {
+                    guild_name: guild_name.clone(),
+                    guild_uuid: String::new(),
+                    guild_prefix: String::new(),
+                    territory_count: 0,
+                },
+            );
+        }
+    }
 
     let mut guilds: Vec<CandidateGuild> = candidates.into_values().collect();
     guilds.sort_by(|a, b| {
@@ -303,8 +341,7 @@ async fn top_candidate_guilds(state: &AppState, limit: usize) -> Vec<CandidateGu
             .cmp(&a.territory_count)
             .then_with(|| a.guild_name.cmp(&b.guild_name))
     });
-    guilds.truncate(limit);
-    guilds
+    Ok(guilds)
 }
 
 async fn fetch_guild_snapshot(
@@ -354,14 +391,114 @@ async fn fetch_guild_snapshot(
 
     let (season_id, rating) = latest_season_rating(&payload.season_ranks)?;
     Some(GuildSeasonSnapshot {
-        guild_name: candidate.guild_name.clone(),
-        guild_uuid: candidate.guild_uuid.clone(),
-        guild_prefix: candidate.guild_prefix.clone(),
+        guild_name: payload
+            .name
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| candidate.guild_name.clone()),
+        guild_uuid: payload
+            .uuid
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| candidate.guild_uuid.clone()),
+        guild_prefix: payload
+            .prefix
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| candidate.guild_prefix.clone()),
         observed_at,
         season_id,
         rating,
         territory_count: candidate.territory_count,
     })
+}
+
+async fn latest_top_contender_guilds(
+    pool: &sqlx::PgPool,
+    contender_count: usize,
+) -> Result<Vec<CandidateGuild>, String> {
+    if contender_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let rows: Vec<LatestObservationCandidateRow> = sqlx::query_as(
+        "SELECT guild_name, COALESCE(guild_uuid, ''), COALESCE(guild_prefix, ''), territory_count \
+         FROM ( \
+             SELECT DISTINCT ON (guild_name) guild_name, guild_uuid, guild_prefix, territory_count, season_rating \
+             FROM season_guild_observations \
+             WHERE season_id = (SELECT MAX(season_id) FROM season_guild_observations) \
+             ORDER BY guild_name, observed_at DESC \
+         ) latest \
+         ORDER BY season_rating DESC, territory_count DESC, guild_name ASC \
+         LIMIT $1",
+    )
+    .bind(i64::try_from(contender_count).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load latest top contender guilds: {e}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(candidate_from_observation_row)
+        .collect())
+}
+
+async fn latest_observed_guilds_by_name(
+    pool: &sqlx::PgPool,
+    guild_names: &[String],
+) -> Result<HashMap<String, CandidateGuild>, String> {
+    if guild_names.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows: Vec<LatestObservationCandidateRow> = sqlx::query_as(
+        "SELECT guild_name, COALESCE(guild_uuid, ''), COALESCE(guild_prefix, ''), territory_count \
+         FROM ( \
+             SELECT DISTINCT ON (guild_name) guild_name, guild_uuid, guild_prefix, territory_count \
+             FROM season_guild_observations \
+             WHERE season_id = (SELECT MAX(season_id) FROM season_guild_observations) \
+               AND guild_name = ANY($1) \
+             ORDER BY guild_name, observed_at DESC \
+         ) latest",
+    )
+    .bind(guild_names)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("load latest observed guild details: {e}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(candidate_from_observation_row)
+        .map(|candidate| (candidate.guild_name.clone(), candidate))
+        .collect())
+}
+
+fn candidate_from_observation_row(row: LatestObservationCandidateRow) -> CandidateGuild {
+    let (guild_name, guild_uuid, guild_prefix, territory_count) = row;
+    CandidateGuild {
+        guild_name,
+        guild_uuid,
+        guild_prefix,
+        territory_count: usize::try_from(territory_count.max(0)).unwrap_or(0),
+    }
+}
+
+fn merge_candidate(target: &mut HashMap<String, CandidateGuild>, candidate: CandidateGuild) {
+    use std::collections::hash_map::Entry;
+
+    match target.entry(candidate.guild_name.clone()) {
+        Entry::Vacant(entry) => {
+            entry.insert(candidate);
+        }
+        Entry::Occupied(mut entry) => {
+            let existing = entry.get_mut();
+            if existing.guild_uuid.trim().is_empty() && !candidate.guild_uuid.trim().is_empty() {
+                existing.guild_uuid = candidate.guild_uuid;
+            }
+            if existing.guild_prefix.trim().is_empty() && !candidate.guild_prefix.trim().is_empty()
+            {
+                existing.guild_prefix = candidate.guild_prefix;
+            }
+            existing.territory_count = existing.territory_count.max(candidate.territory_count);
+        }
+    }
 }
 
 fn latest_season_rating(season_ranks: &HashMap<String, GuildSeasonRank>) -> Option<(i32, i64)> {
@@ -373,7 +510,10 @@ fn latest_season_rating(season_ranks: &HashMap<String, GuildSeasonRank>) -> Opti
 
 #[cfg(test)]
 mod tests {
-    use super::{GuildSeasonRank, GuildSeasonSnapshot, latest_season_rating, rank_snapshots};
+    use super::{
+        CandidateGuild, GuildSeasonRank, GuildSeasonSnapshot, latest_season_rating,
+        merge_candidate, rank_snapshots,
+    };
     use chrono::Utc;
     use std::collections::HashMap;
 
@@ -426,5 +566,38 @@ mod tests {
         assert_eq!(ranks.get("Alpha"), Some(&1));
         assert_eq!(ranks.get("Beta"), Some(&2));
         assert_eq!(ranks.get("Gamma"), Some(&3));
+    }
+
+    #[test]
+    fn merge_candidate_preserves_identity_and_highest_territory_count() {
+        let mut candidates = HashMap::new();
+        merge_candidate(
+            &mut candidates,
+            CandidateGuild {
+                guild_name: "Sequoia".to_string(),
+                guild_uuid: String::new(),
+                guild_prefix: String::new(),
+                territory_count: 3,
+            },
+        );
+        merge_candidate(
+            &mut candidates,
+            CandidateGuild {
+                guild_name: "Sequoia".to_string(),
+                guild_uuid: "uuid-1".to_string(),
+                guild_prefix: "SEQ".to_string(),
+                territory_count: 1,
+            },
+        );
+
+        assert_eq!(
+            candidates.get("Sequoia"),
+            Some(&CandidateGuild {
+                guild_name: "Sequoia".to_string(),
+                guild_uuid: "uuid-1".to_string(),
+                guild_prefix: "SEQ".to_string(),
+                territory_count: 3,
+            })
+        );
     }
 }
