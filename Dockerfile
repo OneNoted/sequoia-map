@@ -4,9 +4,11 @@ FROM rust:1.88-bookworm AS client-build
 ARG TARGETARCH
 ARG BINARYEN_VERSION=126
 ARG BINARYEN_ARCH=
+ARG TAILWINDCSS_VERSION=4.2.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends brotli gzip ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY .ci/binaryen/ /tmp/binaryen-assets/
+COPY .ci/tailwindcss/ /tmp/tailwindcss-assets/
 RUN set -eux; \
     TARGET_ARCH="${TARGETARCH:-}"; \
     if [ -z "${TARGET_ARCH}" ]; then \
@@ -37,6 +39,32 @@ RUN set -eux; \
     install -m 0755 "/tmp/binaryen-version_${BINARYEN_VERSION}/bin/wasm-opt" /usr/local/bin/wasm-opt; \
     rm -rf /tmp/binaryen.tar.gz /tmp/binaryen.tar.gz.sha256 "/tmp/binaryen-version_${BINARYEN_VERSION}"; \
     wasm-opt --version
+RUN set -eux; \
+    TARGET_ARCH="${TARGETARCH:-}"; \
+    if [ -z "${TARGET_ARCH}" ]; then \
+        TARGET_ARCH="$(dpkg --print-architecture)"; \
+    fi; \
+    if [ -f /tmp/tailwindcss-assets/tailwindcss ] && [ -f /tmp/tailwindcss-assets/tailwindcss.sha256 ]; then \
+        echo "$(cat /tmp/tailwindcss-assets/tailwindcss.sha256)  /tmp/tailwindcss-assets/tailwindcss" | sha256sum -c -; \
+        install -m 0755 /tmp/tailwindcss-assets/tailwindcss /usr/local/bin/tailwindcss; \
+    else \
+        case "${TARGET_ARCH}" in \
+            amd64|x86_64) \
+                TAILWIND_SUFFIX="linux-x64"; \
+                EXPECTED_SHA="8f65e2d21c675f1e8d265219979d17d10634c1f553a2f583265b7edb28726432" ;; \
+            arm64|aarch64) \
+                TAILWIND_SUFFIX="linux-arm64"; \
+                EXPECTED_SHA="376fd4da2c29eb81ae0638cd2f84a4304af92532f2f1576555f41bdb44c185da" ;; \
+            *) \
+                echo "Unsupported architecture '${TARGET_ARCH}' for Tailwind auto-selection."; \
+                exit 1 ;; \
+        esac; \
+        curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo /tmp/tailwindcss "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-${TAILWIND_SUFFIX}"; \
+        echo "${EXPECTED_SHA}  /tmp/tailwindcss" | sha256sum -c -; \
+        install -m 0755 /tmp/tailwindcss /usr/local/bin/tailwindcss; \
+        rm -f /tmp/tailwindcss; \
+    fi; \
+    tailwindcss --help >/dev/null
 RUN rustup target add wasm32-unknown-unknown
 RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=sequoia-cargo-git,target=/usr/local/cargo/git,sharing=locked \

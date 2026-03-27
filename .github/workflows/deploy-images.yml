@@ -101,16 +101,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare Binaryen Archive
+      - name: Prepare Client Build Tool Archives
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
+        env:
+          TAILWINDCSS_VERSION: 4.2.0
+          TAILWINDCSS_LINUX_X64_SHA256: 8f65e2d21c675f1e8d265219979d17d10634c1f553a2f583265b7edb28726432
         run: |
           mkdir -p .ci/binaryen
+          mkdir -p .ci/tailwindcss
           curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo .ci/binaryen/binaryen.tar.gz \
             https://github.com/WebAssembly/binaryen/releases/download/version_126/binaryen-version_126-x86_64-linux.tar.gz
           curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 60 -fsSLo .ci/binaryen/binaryen.tar.gz.sha256 \
             https://github.com/WebAssembly/binaryen/releases/download/version_126/binaryen-version_126-x86_64-linux.tar.gz.sha256
           EXPECTED_SHA="$(awk '{print $1}' .ci/binaryen/binaryen.tar.gz.sha256)"
           echo "${EXPECTED_SHA}  .ci/binaryen/binaryen.tar.gz" | sha256sum -c -
+          curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo .ci/tailwindcss/tailwindcss \
+            https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-linux-x64
+          echo "${TAILWINDCSS_LINUX_X64_SHA256}" > .ci/tailwindcss/tailwindcss.sha256
+          echo "${TAILWINDCSS_LINUX_X64_SHA256}  .ci/tailwindcss/tailwindcss" | sha256sum -c -
 
       - name: Build And Push Server Image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
