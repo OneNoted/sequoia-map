@@ -68,6 +68,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             axum::routing::get(routes::api::get_season_scalar_current),
         )
         .route(
+            "/api/season/race",
+            axum::routing::get(routes::api::get_season_race),
+        )
+        .route(
             "/api/claims",
             axum::routing::post(routes::claims::create_claim_layout),
         )
