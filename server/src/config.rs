@@ -33,6 +33,8 @@ pub const DEFAULT_MAX_HISTORY_REPLAY_EVENTS: i64 = 20_000;
 pub const DEFAULT_MAX_HISTORY_SR_SAMPLE_ROWS: i64 = 20_000;
 pub const DEFAULT_SEASON_RACE_TOP_GUILDS: usize = 10;
 pub const DEFAULT_SEASON_RACE_LOOKBACK_HOURS: i64 = 24;
+pub const DEFAULT_SEASON_RAID_PLAYERS_PER_COMPLETION: f64 = 4.0;
+pub const DEFAULT_SEASON_RAID_SR_PER_COMPLETION: f64 = 380.0;
 pub const MIN_INTERNAL_INGEST_TOKEN_LEN: usize = 24;
 pub const MIN_INTERNAL_API_TOKEN_LEN: usize = 24;
 
@@ -223,6 +225,22 @@ pub fn season_race_lookback_hours() -> i64 {
         .and_then(|value| value.parse::<i64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_SEASON_RACE_LOOKBACK_HOURS)
+}
+
+pub fn season_raid_players_per_completion() -> f64 {
+    std::env::var("SEASON_RAID_PLAYERS_PER_COMPLETION")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(DEFAULT_SEASON_RAID_PLAYERS_PER_COMPLETION)
+}
+
+pub fn season_raid_sr_per_completion() -> f64 {
+    std::env::var("SEASON_RAID_SR_PER_COMPLETION")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(DEFAULT_SEASON_RAID_SR_PER_COMPLETION)
 }
 
 pub fn active_season_race_config() -> Result<Option<ActiveSeasonRaceConfig>, String> {

@@ -54,14 +54,7 @@ struct RaidActivityEntry {
 
 #[derive(Debug, Deserialize)]
 struct SeasonRaidActivityResponse {
-    averages: Vec<RaidTypeAverage>,
     entries: Vec<SeasonRaidActivityEntryResponse>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RaidTypeAverage {
-    raid_name: String,
-    average_sr: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,7 +71,6 @@ struct SeasonRaidActivityDayResponse {
 
 #[derive(Debug, Deserialize)]
 struct RaidCountResponse {
-    raid_name: String,
     count: i64,
 }
 
@@ -262,11 +254,8 @@ async fn fetch_raid_activity(
         }
     };
 
-    let average_by_type = payload
-        .averages
-        .into_iter()
-        .map(|entry| (entry.raid_name, entry.average_sr))
-        .collect::<HashMap<_, _>>();
+    let players_per_completion = config::season_raid_players_per_completion();
+    let sr_per_completion = config::season_raid_sr_per_completion();
 
     let mut by_name = HashMap::new();
     for entry in payload.entries {
@@ -275,25 +264,42 @@ async fn fetch_raid_activity(
             let Ok(day_date) = NaiveDate::parse_from_str(&day.day, "%Y-%m-%d") else {
                 continue;
             };
-            let mut total_count = 0i64;
-            let mut estimated_sr_gain = 0f64;
-            for raid_count in day.raid_counts {
-                total_count += raid_count.count.max(0);
-                if let Some(avg_sr) = average_by_type.get(&raid_count.raid_name) {
-                    estimated_sr_gain += (raid_count.count.max(0) as f64) * avg_sr;
-                }
-            }
+            let total_count = day
+                .raid_counts
+                .iter()
+                .map(|raid_count| raid_count.count.max(0))
+                .sum::<i64>();
+            let normalized_count = normalize_raid_count(total_count, players_per_completion);
+            let estimated_sr_gain = estimate_raid_sr_gain(total_count, players_per_completion, sr_per_completion);
             by_day.insert(
                 day_date,
                 RaidActivityDay {
-                    total_count,
-                    estimated_sr_gain: estimated_sr_gain.round().max(0.0) as i64,
+                    total_count: normalized_count,
+                    estimated_sr_gain,
                 },
             );
         }
         by_name.insert(entry.guild_name.to_ascii_lowercase(), RaidActivityEntry { by_day });
     }
     by_name
+}
+
+fn normalize_raid_count(total_player_completions: i64, players_per_completion: f64) -> i64 {
+    if total_player_completions <= 0 {
+        return 0;
+    }
+    ((total_player_completions as f64) / players_per_completion)
+        .round()
+        .max(0.0) as i64
+}
+
+fn estimate_raid_sr_gain(total_player_completions: i64, players_per_completion: f64, sr_per_completion: f64) -> i64 {
+    if total_player_completions <= 0 {
+        return 0;
+    }
+    (((total_player_completions as f64) / players_per_completion) * sr_per_completion)
+        .round()
+        .max(0.0) as i64
 }
 
 fn fill_daily_totals(
@@ -552,7 +558,7 @@ fn ewma_last_n(series: &[SeasonComponentPoint], count: usize) -> f64 {
 mod tests {
     use super::{
         GuildSeasonComponents, SeasonComponentPoint, build_component_series,
-        project_components,
+        estimate_raid_sr_gain, normalize_raid_count, project_components,
     };
     use chrono::NaiveDate;
     use std::collections::BTreeMap;
@@ -648,5 +654,60 @@ mod tests {
                 + projected.projected_conquest_sr,
             400
         );
+    }
+
+    #[test]
+    fn normalized_raid_metrics_convert_player_completions_to_guild_completions() {
+        assert_eq!(normalize_raid_count(0, 4.0), 0);
+        assert_eq!(normalize_raid_count(10, 4.0), 3);
+        assert_eq!(estimate_raid_sr_gain(10, 4.0, 380.0), 950);
+    }
+
+    #[test]
+    fn build_component_series_leaves_conquest_when_raid_estimate_is_reasonable() {
+        let total_by_day = vec![
+            (
+                NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"),
+                200,
+            ),
+            (
+                NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"),
+                400,
+            ),
+        ];
+        let passive_by_day = BTreeMap::from([
+            (NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"), 50),
+            (NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"), 75),
+        ]);
+        let mut raid_entry = super::RaidActivityEntry::default();
+        raid_entry.by_day.insert(
+            NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"),
+            super::RaidActivityDay {
+                total_count: 2,
+                estimated_sr_gain: 80,
+            },
+        );
+        raid_entry.by_day.insert(
+            NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"),
+            super::RaidActivityDay {
+                total_count: 3,
+                estimated_sr_gain: 90,
+            },
+        );
+
+        let components = build_component_series(
+            total_by_day,
+            passive_by_day,
+            raid_entry,
+            NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"),
+            NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"),
+        );
+
+        assert!(components
+            .cumulative_conquest_sr_series
+            .last()
+            .expect("conquest series")
+            .value
+            > 0);
     }
 }
