@@ -24,6 +24,7 @@ pub enum SeasonRaceError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForecastSource {
+    RaidAwareProjection,
     ScalarProjection,
     ObservedTrend,
     PassiveFallback,
@@ -300,18 +301,70 @@ pub async fn build_race_response(
         );
         let passive_rate =
             current_scalar.map(|scalar| passive_sr_per_hour(current_territory_count, scalar));
-        let (
-            projected_final_sr,
-            projected_passive_sr_gain,
-            projected_excess_sr_gain,
-            forecast_rate,
-            forecast_source,
-        ) = if let Some(projection) = scalar_projection.as_ref() {
-            let passive_gain = projection.projected_passive_gain(
+        let current_raid_sr = components
+            .map(season_components::current_raid_sr)
+            .unwrap_or(0);
+        let current_passive_hold_sr = components
+            .map(season_components::current_passive_hold_sr)
+            .unwrap_or(0);
+        let current_conquest_sr = components
+            .map(season_components::current_conquest_sr)
+            .unwrap_or(current_sr.saturating_sub(current_raid_sr));
+        let projected_passive_sr_gain = if let Some(projection) = scalar_projection.as_ref() {
+            Some(projection.projected_passive_gain(
                 current_territory_count,
                 generated_at,
                 window.end_at,
+            ))
+        } else {
+            passive_rate.map(|rate| (rate * remaining_hours).round().max(0.0) as i64)
+        };
+
+        let (
+            projected_final_sr,
+            projected_excess_sr_gain,
+            forecast_rate,
+            forecast_source,
+            projected_components,
+        ) = if let Some(components) = components {
+            let projected_components = season_components::project_components(
+                components,
+                projected_passive_sr_gain,
+                remaining_hours,
+                season_scalar_forecast::momentum_half_life_hours(),
             );
+            let projected_final_sr = projected_components
+                .projected_raid_sr
+                .saturating_add(projected_components.projected_passive_hold_sr)
+                .saturating_add(projected_components.projected_conquest_sr);
+            let projected_non_passive_gain = projected_components
+                .projected_raid_sr
+                .saturating_sub(current_raid_sr)
+                .saturating_add(
+                    projected_components
+                        .projected_conquest_sr
+                        .saturating_sub(current_conquest_sr),
+                );
+            let forecast_rate = if remaining_hours > 0.0 {
+                projected_final_sr.saturating_sub(current_sr) as f64 / remaining_hours
+            } else {
+                0.0
+            };
+            (
+                projected_final_sr,
+                Some(projected_non_passive_gain),
+                forecast_rate,
+                ForecastSource::RaidAwareProjection,
+                projected_components,
+            )
+        } else if let Some(projection) = scalar_projection.as_ref() {
+            let passive_gain = projected_passive_sr_gain.unwrap_or_else(|| {
+                projection.projected_passive_gain(
+                    current_territory_count,
+                    generated_at,
+                    window.end_at,
+                )
+            });
             let excess_rate = observed_rate
                 .zip(passive_rate)
                 .map(|(observed, passive)| (observed - passive).max(0.0))
@@ -328,48 +381,36 @@ pub async fn build_race_response(
             };
             (
                 projected_final_sr,
-                Some(passive_gain),
                 Some(excess_gain),
                 forecast_rate,
                 ForecastSource::ScalarProjection,
+                ProjectedSeasonComponents {
+                    projected_raid_sr: current_raid_sr,
+                    projected_passive_hold_sr: current_passive_hold_sr.saturating_add(passive_gain),
+                    projected_conquest_sr: current_conquest_sr.saturating_add(excess_gain),
+                },
             )
         } else {
             let (forecast_rate, forecast_source) = forecast_rate(observed_rate, passive_rate);
+            let projected_final_sr = project_final_sr(current_sr, forecast_rate, remaining_hours);
             (
-                project_final_sr(current_sr, forecast_rate, remaining_hours),
-                None,
+                projected_final_sr,
                 None,
                 forecast_rate,
                 forecast_source,
+                ProjectedSeasonComponents {
+                    projected_raid_sr: current_raid_sr,
+                    projected_passive_hold_sr: current_passive_hold_sr
+                        .saturating_add(projected_passive_sr_gain.unwrap_or(0)),
+                    projected_conquest_sr: projected_final_sr
+                        .saturating_sub(current_raid_sr)
+                        .saturating_sub(
+                            current_passive_hold_sr
+                                .saturating_add(projected_passive_sr_gain.unwrap_or(0)),
+                        ),
+                },
             )
         };
-
-        let current_raid_sr = components
-            .map(season_components::current_raid_sr)
-            .unwrap_or(0);
-        let current_passive_hold_sr = components
-            .map(season_components::current_passive_hold_sr)
-            .unwrap_or(0);
-        let current_conquest_sr = components
-            .map(season_components::current_conquest_sr)
-            .unwrap_or(current_sr.saturating_sub(current_raid_sr));
-        let projected_components = components
-            .map(|components| {
-                season_components::project_components(
-                    components,
-                    current_sr,
-                    projected_final_sr,
-                    projected_passive_sr_gain,
-                    remaining_hours,
-                )
-            })
-            .unwrap_or(ProjectedSeasonComponents {
-                projected_raid_sr: current_raid_sr,
-                projected_passive_hold_sr: current_passive_hold_sr,
-                projected_conquest_sr: projected_final_sr
-                    .saturating_sub(current_raid_sr)
-                    .saturating_sub(current_passive_hold_sr),
-            });
 
         entries.push(SeasonRaceEntry {
             guild_name,
@@ -438,14 +479,14 @@ fn assumptions_note(
         "Season is complete; projected values equal the latest observed final season rating."
     } else if let Some(projection) = scalar_projection {
         if projection.uses_manual_override_points() {
-            "Projection uses manual scalar overrides when provided, keeps territory count flat, and damps above-passive pace over 72 hours."
+            "Projection uses manual scalar overrides when provided, keeps territory count flat, projects raid SR from recent guild raid activity, and damps conquest pace over 72 hours."
         } else if projection.uses_estimated_points() {
-            "Projection estimates future scalar growth from observed season samples, keeps territory count flat, and damps above-passive pace over 72 hours."
+            "Projection estimates future scalar growth from observed season samples, keeps territory count flat, projects raid SR from recent guild raid activity, and damps conquest pace over 72 hours."
         } else {
-            "Projection uses the current observed scalar and flat territory count because future scalar transitions are not observed yet."
+            "Projection uses the current observed scalar and flat territory count, projects raid SR from recent guild raid activity, and damps conquest pace over 72 hours."
         }
     } else {
-        "Projection assumes the current pace continues from recent observed season rating snapshots."
+        "Projection uses current passive hold assumptions, projects raid SR from recent guild raid activity, and damps conquest pace over 72 hours."
     }
 }
 

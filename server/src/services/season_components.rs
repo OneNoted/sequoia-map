@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
 use sequoia_shared::passive_sr_per_hour;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config;
@@ -143,12 +143,24 @@ pub async fn build_components(
         let key = guild_name.trim().to_ascii_lowercase();
         let observations = observations_by_name.remove(&key).unwrap_or_default();
         let total_by_day = fill_daily_totals(&observations, start_day, observed_day);
-        let passive_by_day =
-            integrate_passive_daily(&observations, &scalar_rows, window.start_at, range_end, start_day, observed_day);
+        let passive_by_day = integrate_passive_daily(
+            &observations,
+            &scalar_rows,
+            window.start_at,
+            range_end,
+            start_day,
+            observed_day,
+        );
         let raid_entry = raid_activity.get(&key).cloned().unwrap_or_default();
         components_by_name.insert(
             key,
-            build_component_series(total_by_day, passive_by_day, raid_entry, start_day, observed_day),
+            build_component_series(
+                total_by_day,
+                passive_by_day,
+                raid_entry,
+                start_day,
+                observed_day,
+            ),
         );
     }
 
@@ -157,29 +169,23 @@ pub async fn build_components(
 
 pub fn project_components(
     components: &GuildSeasonComponents,
-    current_total_sr: i64,
-    projected_total_sr: i64,
     projected_passive_hold_gain: Option<i64>,
     remaining_hours: f64,
+    conquest_half_life_hours: f64,
 ) -> ProjectedSeasonComponents {
     let current_raid_sr = current_raid_sr(components);
     let current_passive_hold_sr = current_passive_hold_sr(components);
+    let current_conquest_sr = current_conquest_sr(components);
     let projected_passive_hold_gain = projected_passive_hold_gain.unwrap_or(0).max(0);
-    let projected_passive_hold_sr = (current_passive_hold_sr + projected_passive_hold_gain).min(projected_total_sr);
-
-    let remaining_days = (remaining_hours.max(0.0) / 24.0).max(0.0);
-    let ewma_daily_raid_sr = ewma_last_n(&components.daily_raid_sr_series, 7);
-    let projected_raid_gain = (ewma_daily_raid_sr * remaining_days).round().max(0.0) as i64;
-
-    let total_remaining_gain = (projected_total_sr - current_total_sr).max(0);
-    let remaining_after_passive = total_remaining_gain.saturating_sub(projected_passive_hold_gain);
-    let projected_raid_sr = current_raid_sr + projected_raid_gain.min(remaining_after_passive);
-    let projected_conquest_sr = (projected_total_sr - projected_passive_hold_sr - projected_raid_sr).max(0);
+    let projected_raid_gain = projected_raid_gain(components, remaining_hours);
+    let projected_conquest_gain =
+        projected_conquest_gain(components, remaining_hours, conquest_half_life_hours);
 
     ProjectedSeasonComponents {
-        projected_raid_sr,
-        projected_passive_hold_sr,
-        projected_conquest_sr,
+        projected_raid_sr: current_raid_sr.saturating_add(projected_raid_gain),
+        projected_passive_hold_sr: current_passive_hold_sr
+            .saturating_add(projected_passive_hold_gain),
+        projected_conquest_sr: current_conquest_sr.saturating_add(projected_conquest_gain),
     }
 }
 
@@ -270,7 +276,8 @@ async fn fetch_raid_activity(
                 .map(|raid_count| raid_count.count.max(0))
                 .sum::<i64>();
             let normalized_count = normalize_raid_count(total_count, players_per_completion);
-            let estimated_sr_gain = estimate_raid_sr_gain(total_count, players_per_completion, sr_per_completion);
+            let estimated_sr_gain =
+                estimate_raid_sr_gain(total_count, players_per_completion, sr_per_completion);
             by_day.insert(
                 day_date,
                 RaidActivityDay {
@@ -279,7 +286,10 @@ async fn fetch_raid_activity(
                 },
             );
         }
-        by_name.insert(entry.guild_name.to_ascii_lowercase(), RaidActivityEntry { by_day });
+        by_name.insert(
+            entry.guild_name.to_ascii_lowercase(),
+            RaidActivityEntry { by_day },
+        );
     }
     by_name
 }
@@ -293,7 +303,11 @@ fn normalize_raid_count(total_player_completions: i64, players_per_completion: f
         .max(0.0) as i64
 }
 
-fn estimate_raid_sr_gain(total_player_completions: i64, players_per_completion: f64, sr_per_completion: f64) -> i64 {
+fn estimate_raid_sr_gain(
+    total_player_completions: i64,
+    players_per_completion: f64,
+    sr_per_completion: f64,
+) -> i64 {
     if total_player_completions <= 0 {
         return 0;
     }
@@ -436,7 +450,10 @@ fn build_component_series(
         let passive_gain_raw = passive_by_day.get(&day).copied().unwrap_or(0).max(0);
         let passive_gain = passive_gain_raw.min(total_gain);
         let remaining_after_passive = total_gain.saturating_sub(passive_gain);
-        let raid_sr_gain = raid_day.estimated_sr_gain.min(remaining_after_passive).max(0);
+        let raid_sr_gain = raid_day
+            .estimated_sr_gain
+            .min(remaining_after_passive)
+            .max(0);
         let conquest_gain = remaining_after_passive.saturating_sub(raid_sr_gain);
 
         cumulative_raid += raid_sr_gain;
@@ -554,11 +571,54 @@ fn ewma_last_n(series: &[SeasonComponentPoint], count: usize) -> f64 {
     current
 }
 
+pub fn projected_raid_gain(components: &GuildSeasonComponents, remaining_hours: f64) -> i64 {
+    if remaining_hours <= 0.0 {
+        return 0;
+    }
+    let remaining_days = remaining_hours / 24.0;
+    let ewma_daily_raid_sr = ewma_last_n(&components.daily_raid_sr_series, 7);
+    (ewma_daily_raid_sr * remaining_days).round().max(0.0) as i64
+}
+
+pub fn projected_conquest_gain(
+    components: &GuildSeasonComponents,
+    remaining_hours: f64,
+    conquest_half_life_hours: f64,
+) -> i64 {
+    if remaining_hours <= 0.0 || conquest_half_life_hours <= 0.0 {
+        return 0;
+    }
+
+    let daily_conquest_sr_series = daily_delta_series(&components.cumulative_conquest_sr_series);
+    let conquest_rate_per_hour = ewma_last_n(&daily_conquest_sr_series, 7) / 24.0;
+    if !conquest_rate_per_hour.is_finite() || conquest_rate_per_hour <= 0.0 {
+        return 0;
+    }
+
+    let lambda = std::f64::consts::LN_2 / conquest_half_life_hours;
+    let gain = conquest_rate_per_hour * ((1.0 - (-lambda * remaining_hours).exp()) / lambda);
+    gain.round().max(0.0) as i64
+}
+
+fn daily_delta_series(series: &[SeasonComponentPoint]) -> Vec<SeasonComponentPoint> {
+    let mut previous = 0i64;
+    let mut deltas = Vec::with_capacity(series.len());
+    for point in series {
+        let value = point.value.saturating_sub(previous).max(0);
+        deltas.push(SeasonComponentPoint {
+            sampled_at: point.sampled_at.clone(),
+            value,
+        });
+        previous = point.value;
+    }
+    deltas
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        GuildSeasonComponents, SeasonComponentPoint, build_component_series,
-        estimate_raid_sr_gain, normalize_raid_count, project_components,
+        GuildSeasonComponents, SeasonComponentPoint, build_component_series, estimate_raid_sr_gain,
+        normalize_raid_count, project_components, projected_conquest_gain, projected_raid_gain,
     };
     use chrono::NaiveDate;
     use std::collections::BTreeMap;
@@ -573,14 +633,8 @@ mod tests {
     #[test]
     fn build_component_series_bounds_raid_and_passive_to_total_gain() {
         let total_by_day = vec![
-            (
-                NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"),
-                100,
-            ),
-            (
-                NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"),
-                220,
-            ),
+            (NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"), 100),
+            (NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"), 220),
         ];
         let passive_by_day = BTreeMap::from([
             (NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"), 40),
@@ -637,23 +691,55 @@ mod tests {
     }
 
     #[test]
-    fn project_components_keeps_bucket_sum_equal_to_projection() {
+    fn project_components_projects_passive_raid_and_conquest_independently() {
         let components = GuildSeasonComponents {
             daily_raid_count_series: vec![point("2026-03-01", 2), point("2026-03-02", 3)],
             daily_raid_sr_series: vec![point("2026-03-01", 50), point("2026-03-02", 60)],
             cumulative_raid_sr_series: vec![point("2026-03-01", 50), point("2026-03-02", 110)],
-            cumulative_passive_hold_sr_series: vec![point("2026-03-01", 30), point("2026-03-02", 80)],
+            cumulative_passive_hold_sr_series: vec![
+                point("2026-03-01", 30),
+                point("2026-03-02", 80),
+            ],
             cumulative_conquest_sr_series: vec![point("2026-03-01", 20), point("2026-03-02", 60)],
         };
 
-        let projected = project_components(&components, 250, 400, Some(70), 48.0);
+        let projected = project_components(&components, Some(70), 48.0, 72.0);
 
-        assert_eq!(
-            projected.projected_raid_sr
-                + projected.projected_passive_hold_sr
-                + projected.projected_conquest_sr,
-            400
-        );
+        assert_eq!(projected.projected_passive_hold_sr, 150);
+        assert_eq!(projected.projected_raid_sr, 223);
+        assert_eq!(projected.projected_conquest_sr, 113);
+    }
+
+    #[test]
+    fn projected_raid_gain_uses_recent_daily_raid_sr() {
+        let components = GuildSeasonComponents {
+            daily_raid_count_series: vec![point("2026-03-01", 0), point("2026-03-02", 0)],
+            daily_raid_sr_series: vec![point("2026-03-01", 50), point("2026-03-02", 70)],
+            cumulative_raid_sr_series: vec![point("2026-03-01", 50), point("2026-03-02", 120)],
+            cumulative_passive_hold_sr_series: vec![
+                point("2026-03-01", 30),
+                point("2026-03-02", 80),
+            ],
+            cumulative_conquest_sr_series: vec![point("2026-03-01", 20), point("2026-03-02", 60)],
+        };
+
+        assert_eq!(projected_raid_gain(&components, 48.0), 127);
+    }
+
+    #[test]
+    fn projected_conquest_gain_decays_recent_conquest_sr() {
+        let components = GuildSeasonComponents {
+            daily_raid_count_series: vec![point("2026-03-01", 0), point("2026-03-02", 0)],
+            daily_raid_sr_series: vec![point("2026-03-01", 0), point("2026-03-02", 0)],
+            cumulative_raid_sr_series: vec![point("2026-03-01", 0), point("2026-03-02", 0)],
+            cumulative_passive_hold_sr_series: vec![
+                point("2026-03-01", 30),
+                point("2026-03-02", 80),
+            ],
+            cumulative_conquest_sr_series: vec![point("2026-03-01", 20), point("2026-03-02", 80)],
+        };
+
+        assert!(projected_conquest_gain(&components, 72.0, 72.0) > 0);
     }
 
     #[test]
@@ -666,14 +752,8 @@ mod tests {
     #[test]
     fn build_component_series_leaves_conquest_when_raid_estimate_is_reasonable() {
         let total_by_day = vec![
-            (
-                NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"),
-                200,
-            ),
-            (
-                NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"),
-                400,
-            ),
+            (NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"), 200),
+            (NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"), 400),
         ];
         let passive_by_day = BTreeMap::from([
             (NaiveDate::from_ymd_opt(2026, 3, 1).expect("day"), 50),
@@ -703,11 +783,13 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 3, 2).expect("day"),
         );
 
-        assert!(components
-            .cumulative_conquest_sr_series
-            .last()
-            .expect("conquest series")
-            .value
-            > 0);
+        assert!(
+            components
+                .cumulative_conquest_sr_series
+                .last()
+                .expect("conquest series")
+                .value
+                > 0
+        );
     }
 }
