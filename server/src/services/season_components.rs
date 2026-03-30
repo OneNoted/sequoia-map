@@ -222,15 +222,10 @@ async fn fetch_raid_activity(
     let Some(base_url) = config::sequoia_backend_base_url() else {
         return HashMap::new();
     };
-    let Some(token) = config::sequoia_backend_internal_token() else {
-        return HashMap::new();
-    };
-
-    let url = format!("{base_url}/internal/season/raid-activity");
+    let url = format!("{base_url}/api/season/raid-activity");
     let response = match state
         .http_client
         .get(url)
-        .bearer_auth(token)
         .query(&[
             ("from", window.start_at.to_rfc3339()),
             ("to", range_end.to_rfc3339()),
