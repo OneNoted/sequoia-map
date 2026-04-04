@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
 pub const WYNNCRAFT_TERRITORY_URL: &str = "https://api.wynncraft.com/v3/guild/list/territory";
 pub const WYNNCRAFT_GUILD_URL: &str = "https://api.wynncraft.com/v3/guild";
@@ -32,7 +33,10 @@ pub const DEFAULT_MAX_HISTORY_REPLAY_EVENTS: i64 = 20_000;
 pub const DEFAULT_MAX_HISTORY_SR_SAMPLE_ROWS: i64 = 20_000;
 pub const DEFAULT_SEASON_RACE_TOP_GUILDS: usize = 10;
 pub const DEFAULT_SEASON_RACE_LOOKBACK_HOURS: i64 = 24;
+pub const DEFAULT_SEASON_RAID_PLAYERS_PER_COMPLETION: f64 = 4.0;
+pub const DEFAULT_SEASON_RAID_SR_PER_COMPLETION: f64 = 380.0;
 pub const MIN_INTERNAL_INGEST_TOKEN_LEN: usize = 24;
+pub const MIN_INTERNAL_API_TOKEN_LEN: usize = 24;
 
 // History feature
 pub const SNAPSHOT_INTERVAL_SECS: u64 = 21600; // every 6 hours
@@ -56,6 +60,13 @@ pub struct ActiveSeasonRaceConfig {
     pub label: Option<String>,
     pub top_guilds: usize,
     pub lookback_hours: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SeasonScalarOverridePoint {
+    pub season_id: i32,
+    pub starts_at: DateTime<Utc>,
+    pub scalar_weighted: f64,
 }
 
 pub fn seq_live_handoff_v1_enabled() -> bool {
@@ -154,6 +165,20 @@ pub fn internal_ingest_token() -> Option<String> {
         .and_then(|value| sanitize_internal_ingest_token(&value))
 }
 
+pub fn sequoia_backend_base_url() -> Option<String> {
+    std::env::var("SEQUOIA_BACKEND_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn sequoia_backend_internal_token() -> Option<String> {
+    std::env::var("SEQUOIA_BACKEND_INTERNAL_TOKEN")
+        .or_else(|_| std::env::var("sequoia_backend_internal_token"))
+        .ok()
+        .and_then(|value| sanitize_internal_api_token(&value))
+}
+
 pub fn api_body_limit_bytes() -> usize {
     std::env::var("API_BODY_LIMIT_BYTES")
         .ok()
@@ -202,6 +227,22 @@ pub fn season_race_lookback_hours() -> i64 {
         .unwrap_or(DEFAULT_SEASON_RACE_LOOKBACK_HOURS)
 }
 
+pub fn season_raid_players_per_completion() -> f64 {
+    std::env::var("SEASON_RAID_PLAYERS_PER_COMPLETION")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(DEFAULT_SEASON_RAID_PLAYERS_PER_COMPLETION)
+}
+
+pub fn season_raid_sr_per_completion() -> f64 {
+    std::env::var("SEASON_RAID_SR_PER_COMPLETION")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(DEFAULT_SEASON_RAID_SR_PER_COMPLETION)
+}
+
 pub fn active_season_race_config() -> Result<Option<ActiveSeasonRaceConfig>, String> {
     parse_active_season_race_config(
         std::env::var("SEASON_RACE_ACTIVE_SEASON_ID")
@@ -213,6 +254,13 @@ pub fn active_season_race_config() -> Result<Option<ActiveSeasonRaceConfig>, Str
         season_race_top_guilds(),
         season_race_lookback_hours(),
     )
+}
+
+pub fn season_scalar_override_points() -> Result<Vec<SeasonScalarOverridePoint>, String> {
+    let Some(raw) = std::env::var("SEASON_SCALAR_OVERRIDE_POINTS").ok() else {
+        return Ok(Vec::new());
+    };
+    parse_season_scalar_override_points(&raw)
 }
 
 fn parse_active_season_race_config(
@@ -258,6 +306,27 @@ fn parse_active_season_race_config(
         top_guilds,
         lookback_hours,
     }))
+}
+
+fn parse_season_scalar_override_points(
+    raw: &str,
+) -> Result<Vec<SeasonScalarOverridePoint>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut points: Vec<SeasonScalarOverridePoint> = serde_json::from_str(trimmed)
+        .map_err(|_| "SEASON_SCALAR_OVERRIDE_POINTS must be valid JSON".to_string())?;
+    points.retain(|point| {
+        point.season_id > 0 && point.scalar_weighted.is_finite() && point.scalar_weighted > 0.0
+    });
+    points.sort_by(|left, right| {
+        left.season_id
+            .cmp(&right.season_id)
+            .then_with(|| left.starts_at.cmp(&right.starts_at))
+    });
+    Ok(points)
 }
 
 pub fn canonical_override_ttl() -> Duration {
@@ -316,11 +385,20 @@ fn sanitize_internal_ingest_token(raw: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+fn sanitize_internal_api_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() < MIN_INTERNAL_API_TOKEN_LEN {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES, normalize_public_base_url,
-        normalize_watchlist_key, parse_active_season_race_config, sanitize_internal_ingest_token,
+        normalize_watchlist_key, parse_active_season_race_config,
+        parse_season_scalar_override_points, sanitize_internal_ingest_token,
     };
     use chrono::{DateTime, Utc};
 
@@ -340,6 +418,15 @@ mod tests {
         assert_eq!(
             sanitize_internal_ingest_token("  this-is-a-long-random-token-value-12345 "),
             Some("this-is-a-long-random-token-value-12345".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_internal_api_token_requires_reasonable_length() {
+        assert_eq!(super::sanitize_internal_api_token("short"), None);
+        assert_eq!(
+            super::sanitize_internal_api_token("  this-is-a-long-internal-api-token  "),
+            Some("this-is-a-long-internal-api-token".to_string())
         );
     }
 
@@ -403,5 +490,22 @@ mod tests {
                 lookback_hours: 18,
             })
         );
+    }
+
+    #[test]
+    fn season_scalar_override_points_parse_and_sort() {
+        let parsed = parse_season_scalar_override_points(
+            r#"
+            [
+              {"season_id": 30, "starts_at": "2026-04-04T00:00:00Z", "scalar_weighted": 1.5},
+              {"season_id": 30, "starts_at": "2026-03-30T00:00:00Z", "scalar_weighted": 1.0}
+            ]
+            "#,
+        )
+        .expect("parse override points");
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].scalar_weighted, 1.0);
+        assert_eq!(parsed[1].scalar_weighted, 1.5);
     }
 }

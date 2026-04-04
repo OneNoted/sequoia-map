@@ -17,6 +17,7 @@ use crate::config::{
     GUILD_CACHE_TTL_SECS, MAX_GUILD_CACHE_ENTRIES, WYNNCRAFT_GUILD_URL,
     guilds_online_cache_ttl_secs, guilds_online_max_concurrency,
 };
+use crate::services::season_data::{self, SeasonDataError};
 use crate::services::season_race::{self, SeasonRaceError};
 use crate::state::{AppState, CachedGuild, ObservabilitySnapshot};
 
@@ -111,6 +112,53 @@ pub struct SeasonRaceQuery {
     pub season_id: Option<i32>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct SeasonSeriesQuery {
+    #[serde(default)]
+    pub season_id: Option<i32>,
+    #[serde(default)]
+    pub guild_names: Option<String>,
+}
+
+pub async fn get_season_windows(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let response = season_data::build_windows_response(&state)
+        .await
+        .map_err(map_season_data_status)?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
+    );
+    Ok((headers, Json(response)))
+}
+
+pub async fn get_season_series(
+    State(state): State<AppState>,
+    Query(query): Query<SeasonSeriesQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let guild_names = query
+        .guild_names
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let response = season_data::build_series_response(&state, query.season_id, &guild_names)
+        .await
+        .map_err(map_season_data_status)?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=60"),
+    );
+    Ok((headers, Json(response)))
+}
+
 pub async fn get_season_race(
     State(state): State<AppState>,
     Query(query): Query<SeasonRaceQuery>,
@@ -129,6 +177,14 @@ pub async fn get_season_race(
         HeaderValue::from_static("public, max-age=60"),
     );
     Ok((headers, Json(response)))
+}
+
+fn map_season_data_status(error: SeasonDataError) -> StatusCode {
+    match error {
+        SeasonDataError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        SeasonDataError::BadRequest => StatusCode::BAD_REQUEST,
+        SeasonDataError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {

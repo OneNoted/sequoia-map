@@ -6,6 +6,9 @@ use serde::Serialize;
 use sequoia_shared::{SeasonScalarSample, passive_sr_per_hour};
 
 use crate::config;
+use crate::services::season_components::{self, ProjectedSeasonComponents};
+use crate::services::season_data::{self, SeasonDataError};
+use crate::services::season_scalar_forecast::{self, ScalarProjection};
 use crate::state::AppState;
 
 type LatestGuildRow = (String, String, String, i16, i32, DateTime<Utc>);
@@ -21,6 +24,8 @@ pub enum SeasonRaceError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForecastSource {
+    RaidAwareProjection,
+    ScalarProjection,
     ObservedTrend,
     PassiveFallback,
     FlatFallback,
@@ -47,6 +52,16 @@ pub struct SeasonRaceEntry {
     pub observed_rate_per_hour: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub passive_rate_per_hour: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projected_passive_sr_gain: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projected_excess_sr_gain: Option<i64>,
+    pub current_raid_sr: i64,
+    pub current_passive_hold_sr: i64,
+    pub current_conquest_sr: i64,
+    pub projected_raid_sr: i64,
+    pub projected_passive_hold_sr: i64,
+    pub projected_conquest_sr: i64,
     pub forecast_rate_per_hour: f64,
     pub forecast_source: ForecastSource,
     pub series: Vec<SeasonRacePoint>,
@@ -57,7 +72,18 @@ pub struct SeasonRaceAssumptions {
     pub lookback_hours: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub passive_scalar_weighted: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_scalar_weighted: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub momentum_half_life_hours: Option<f64>,
     pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SeasonRaceScalarPoint {
+    pub sampled_at: String,
+    pub scalar_weighted: f64,
+    pub source: season_scalar_forecast::ScalarPointSource,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,6 +95,8 @@ pub struct SeasonRaceResponse {
     pub end_at: String,
     pub generated_at: String,
     pub remaining_hours: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scalar_points: Vec<SeasonRaceScalarPoint>,
     pub entries: Vec<SeasonRaceEntry>,
     pub assumptions: SeasonRaceAssumptions,
 }
@@ -86,18 +114,38 @@ pub async fn build_race_response(
     let Some(pool) = state.db.as_ref() else {
         return Err(SeasonRaceError::Unavailable);
     };
-    let active = config::active_season_race_config()
-        .map_err(|_| SeasonRaceError::Internal)?
+    let season_windows = season_data::list_resolved_windows(state)
+        .await
+        .map_err(map_season_data_error)?;
+    let window = season_data::resolve_requested_window(state, requested_season_id)
+        .await
+        .map_err(map_season_data_error)?
         .ok_or(SeasonRaceError::Unavailable)?;
-    if requested_season_id.is_some_and(|season_id| season_id != active.season_id) {
-        return Err(SeasonRaceError::BadRequest);
-    }
+    let scalar_override_points =
+        config::season_scalar_override_points().map_err(|_| SeasonRaceError::Internal)?;
+    let lookback_hours = config::season_race_lookback_hours();
+    let top_guilds = config::season_race_top_guilds();
 
     let generated_at = Utc::now();
-    let range_end = generated_at.min(active.end_at);
-    let remaining_hours = ((active.end_at - generated_at).num_seconds().max(0) as f64) / 3600.0;
+    let range_end = generated_at.min(window.end_at);
+    let remaining_hours = ((window.end_at - generated_at).num_seconds().max(0) as f64) / 3600.0;
     let recent_query_start =
-        recent_observation_query_start(active.start_at, range_end, active.lookback_hours);
+        recent_observation_query_start(window.start_at, range_end, lookback_hours);
+    let season_complete = generated_at >= window.end_at;
+    let scalar_projection = season_scalar_forecast::build_scalar_projection(
+        pool,
+        &season_windows,
+        &window,
+        generated_at,
+        &scalar_override_points,
+    )
+    .await
+    .map_err(|_| SeasonRaceError::Internal)?;
+    let fallback_scalar = latest_scalar_weighted_for_season(state, window.season_id).await;
+    let current_scalar_assumption = scalar_projection
+        .as_ref()
+        .map(ScalarProjection::current_scalar_weighted)
+        .or(fallback_scalar);
 
     let latest_rows: Vec<LatestGuildRow> = sqlx::query_as(
         "SELECT guild_name, COALESCE(guild_uuid, ''), COALESCE(guild_prefix, ''), territory_count, season_rating, observed_at \
@@ -112,29 +160,34 @@ pub async fn build_race_response(
          ORDER BY season_rating DESC, territory_count DESC, guild_name ASC \
          LIMIT $4",
     )
-    .bind(active.season_id)
-    .bind(active.start_at)
+    .bind(window.season_id)
+    .bind(window.start_at)
     .bind(range_end)
-    .bind(i64::try_from(active.top_guilds).unwrap_or(i64::MAX))
+    .bind(i64::try_from(top_guilds).unwrap_or(i64::MAX))
     .fetch_all(pool)
     .await
     .map_err(|_| SeasonRaceError::Internal)?;
 
     if latest_rows.is_empty() {
         return Ok(SeasonRaceResponse {
-            season_id: active.season_id,
-            label: active.label,
-            start_at: active.start_at.to_rfc3339(),
-            end_at: active.end_at.to_rfc3339(),
+            season_id: window.season_id,
+            label: window.label.clone(),
+            start_at: window.start_at.to_rfc3339(),
+            end_at: window.end_at.to_rfc3339(),
             generated_at: generated_at.to_rfc3339(),
             remaining_hours,
+            scalar_points: scalar_points(&scalar_projection),
             entries: Vec::new(),
             assumptions: SeasonRaceAssumptions {
-                lookback_hours: active.lookback_hours,
-                passive_scalar_weighted: latest_scalar_weighted_for_season(state, active.season_id)
-                    .await,
-                note: "Projection assumes the current pace continues from recent observed season rating snapshots."
-                    .to_string(),
+                lookback_hours,
+                passive_scalar_weighted: current_scalar_assumption,
+                current_scalar_weighted: scalar_projection
+                    .as_ref()
+                    .map(ScalarProjection::current_scalar_weighted),
+                momentum_half_life_hours: scalar_projection
+                    .as_ref()
+                    .map(|_| season_scalar_forecast::momentum_half_life_hours()),
+                note: assumptions_note(season_complete, scalar_projection.as_ref()).to_string(),
             },
         });
     }
@@ -149,7 +202,7 @@ pub async fn build_race_response(
            AND observed_at <= $4 \
          ORDER BY guild_name ASC, observed_at ASC",
     )
-    .bind(active.season_id)
+    .bind(window.season_id)
     .bind(&guild_names)
     .bind(recent_query_start)
     .bind(range_end)
@@ -171,9 +224,9 @@ pub async fn build_race_response(
          ) hourly \
          ORDER BY guild_name ASC, observed_at ASC",
     )
-    .bind(active.season_id)
+    .bind(window.season_id)
     .bind(&guild_names)
-    .bind(active.start_at)
+    .bind(window.start_at)
     .bind(range_end)
     .fetch_all(pool)
     .await
@@ -207,9 +260,21 @@ pub async fn build_race_response(
     }
 
     let live_territory_counts = live_territory_counts(state).await;
-    let passive_scalar = latest_scalar_sample_for_season(state, active.season_id)
+    let passive_scalar = latest_scalar_sample_for_season(state, window.season_id)
         .await
         .map(|sample| sample.scalar_weighted);
+    let current_scalar = scalar_projection
+        .as_ref()
+        .map(ScalarProjection::current_scalar_weighted)
+        .or(passive_scalar);
+    let actual_guild_names = latest_rows
+        .iter()
+        .map(|row| row.0.clone())
+        .collect::<Vec<_>>();
+    let components_by_name =
+        season_components::build_components(state, &window, &actual_guild_names, range_end)
+            .await
+            .map_err(|_| SeasonRaceError::Internal)?;
 
     let mut entries = Vec::with_capacity(latest_rows.len());
     for (
@@ -227,16 +292,125 @@ pub async fn build_race_response(
         let current_territory_count = live_count.max(fallback_count);
         let recent_observations = recent_by_guild.remove(&guild_name).unwrap_or_default();
         let chart_observations = series_by_guild.remove(&guild_name).unwrap_or_default();
+        let components = components_by_name.get(&guild_name.to_ascii_lowercase());
         let observed_rate = observed_rate_per_hour(
             &recent_observations,
-            active.start_at,
+            window.start_at,
             range_end,
-            active.lookback_hours,
+            lookback_hours,
         );
         let passive_rate =
-            passive_scalar.map(|scalar| passive_sr_per_hour(current_territory_count, scalar));
-        let (forecast_rate, forecast_source) = forecast_rate(observed_rate, passive_rate);
-        let projected_final_sr = project_final_sr(current_sr, forecast_rate, remaining_hours);
+            current_scalar.map(|scalar| passive_sr_per_hour(current_territory_count, scalar));
+        let current_raid_sr = components
+            .map(season_components::current_raid_sr)
+            .unwrap_or(0);
+        let current_passive_hold_sr = components
+            .map(season_components::current_passive_hold_sr)
+            .unwrap_or(0);
+        let current_conquest_sr = components
+            .map(season_components::current_conquest_sr)
+            .unwrap_or(current_sr.saturating_sub(current_raid_sr));
+        let projected_passive_sr_gain = if let Some(projection) = scalar_projection.as_ref() {
+            Some(projection.projected_passive_gain(
+                current_territory_count,
+                generated_at,
+                window.end_at,
+            ))
+        } else {
+            passive_rate.map(|rate| (rate * remaining_hours).round().max(0.0) as i64)
+        };
+
+        let (
+            projected_final_sr,
+            projected_excess_sr_gain,
+            forecast_rate,
+            forecast_source,
+            projected_components,
+        ) = if let Some(components) = components {
+            let projected_components = season_components::project_components(
+                components,
+                projected_passive_sr_gain,
+                remaining_hours,
+                season_scalar_forecast::momentum_half_life_hours(),
+            );
+            let projected_final_sr = projected_components
+                .projected_raid_sr
+                .saturating_add(projected_components.projected_passive_hold_sr)
+                .saturating_add(projected_components.projected_conquest_sr);
+            let projected_non_passive_gain = projected_components
+                .projected_raid_sr
+                .saturating_sub(current_raid_sr)
+                .saturating_add(
+                    projected_components
+                        .projected_conquest_sr
+                        .saturating_sub(current_conquest_sr),
+                );
+            let forecast_rate = if remaining_hours > 0.0 {
+                projected_final_sr.saturating_sub(current_sr) as f64 / remaining_hours
+            } else {
+                0.0
+            };
+            (
+                projected_final_sr,
+                Some(projected_non_passive_gain),
+                forecast_rate,
+                ForecastSource::RaidAwareProjection,
+                projected_components,
+            )
+        } else if let Some(projection) = scalar_projection.as_ref() {
+            let passive_gain = projected_passive_sr_gain.unwrap_or_else(|| {
+                projection.projected_passive_gain(
+                    current_territory_count,
+                    generated_at,
+                    window.end_at,
+                )
+            });
+            let excess_rate = observed_rate
+                .zip(passive_rate)
+                .map(|(observed, passive)| (observed - passive).max(0.0))
+                .unwrap_or(0.0);
+            let excess_gain =
+                season_scalar_forecast::project_momentum_gain(excess_rate, remaining_hours);
+            let projected_final_sr = current_sr
+                .saturating_add(passive_gain)
+                .saturating_add(excess_gain);
+            let forecast_rate = if remaining_hours > 0.0 {
+                (passive_gain + excess_gain) as f64 / remaining_hours
+            } else {
+                0.0
+            };
+            (
+                projected_final_sr,
+                Some(excess_gain),
+                forecast_rate,
+                ForecastSource::ScalarProjection,
+                ProjectedSeasonComponents {
+                    projected_raid_sr: current_raid_sr,
+                    projected_passive_hold_sr: current_passive_hold_sr.saturating_add(passive_gain),
+                    projected_conquest_sr: current_conquest_sr.saturating_add(excess_gain),
+                },
+            )
+        } else {
+            let (forecast_rate, forecast_source) = forecast_rate(observed_rate, passive_rate);
+            let projected_final_sr = project_final_sr(current_sr, forecast_rate, remaining_hours);
+            (
+                projected_final_sr,
+                None,
+                forecast_rate,
+                forecast_source,
+                ProjectedSeasonComponents {
+                    projected_raid_sr: current_raid_sr,
+                    projected_passive_hold_sr: current_passive_hold_sr
+                        .saturating_add(projected_passive_sr_gain.unwrap_or(0)),
+                    projected_conquest_sr: projected_final_sr
+                        .saturating_sub(current_raid_sr)
+                        .saturating_sub(
+                            current_passive_hold_sr
+                                .saturating_add(projected_passive_sr_gain.unwrap_or(0)),
+                        ),
+                },
+            )
+        };
 
         entries.push(SeasonRaceEntry {
             guild_name,
@@ -250,6 +424,14 @@ pub async fn build_race_response(
             last_sampled_at: observed_at.to_rfc3339(),
             observed_rate_per_hour: observed_rate,
             passive_rate_per_hour: passive_rate,
+            projected_passive_sr_gain,
+            projected_excess_sr_gain,
+            current_raid_sr,
+            current_passive_hold_sr,
+            current_conquest_sr,
+            projected_raid_sr: projected_components.projected_raid_sr,
+            projected_passive_hold_sr: projected_components.projected_passive_hold_sr,
+            projected_conquest_sr: projected_components.projected_conquest_sr,
             forecast_rate_per_hour: forecast_rate,
             forecast_source,
             series: downsample_series_hourly(chart_observations),
@@ -259,20 +441,70 @@ pub async fn build_race_response(
     apply_projected_ranks(&mut entries);
 
     Ok(SeasonRaceResponse {
-        season_id: active.season_id,
-        label: active.label,
-        start_at: active.start_at.to_rfc3339(),
-        end_at: active.end_at.to_rfc3339(),
+        season_id: window.season_id,
+        label: window.label,
+        start_at: window.start_at.to_rfc3339(),
+        end_at: window.end_at.to_rfc3339(),
         generated_at: generated_at.to_rfc3339(),
         remaining_hours,
+        scalar_points: scalar_points(&scalar_projection),
         entries,
         assumptions: SeasonRaceAssumptions {
-            lookback_hours: active.lookback_hours,
-            passive_scalar_weighted: passive_scalar,
-            note: "Projection assumes the current pace continues from recent observed season rating snapshots."
-                .to_string(),
+            lookback_hours,
+            passive_scalar_weighted: current_scalar,
+            current_scalar_weighted: scalar_projection
+                .as_ref()
+                .map(ScalarProjection::current_scalar_weighted),
+            momentum_half_life_hours: scalar_projection
+                .as_ref()
+                .map(|_| season_scalar_forecast::momentum_half_life_hours()),
+            note: assumptions_note(season_complete, scalar_projection.as_ref()).to_string(),
         },
     })
+}
+
+fn map_season_data_error(error: SeasonDataError) -> SeasonRaceError {
+    match error {
+        SeasonDataError::Unavailable => SeasonRaceError::Unavailable,
+        SeasonDataError::BadRequest => SeasonRaceError::BadRequest,
+        SeasonDataError::Internal => SeasonRaceError::Internal,
+    }
+}
+
+fn assumptions_note(
+    season_complete: bool,
+    scalar_projection: Option<&ScalarProjection>,
+) -> &'static str {
+    if season_complete {
+        "Season is complete; projected values equal the latest observed final season rating."
+    } else if let Some(projection) = scalar_projection {
+        if projection.uses_manual_override_points() {
+            "Projection uses manual scalar overrides when provided, keeps territory count flat, projects raid SR from recent guild raid activity, and damps conquest pace over 72 hours."
+        } else if projection.uses_estimated_points() {
+            "Projection estimates future scalar growth from observed season samples, keeps territory count flat, projects raid SR from recent guild raid activity, and damps conquest pace over 72 hours."
+        } else {
+            "Projection uses the current observed scalar and flat territory count, projects raid SR from recent guild raid activity, and damps conquest pace over 72 hours."
+        }
+    } else {
+        "Projection uses current passive hold assumptions, projects raid SR from recent guild raid activity, and damps conquest pace over 72 hours."
+    }
+}
+
+fn scalar_points(projection: &Option<ScalarProjection>) -> Vec<SeasonRaceScalarPoint> {
+    projection
+        .as_ref()
+        .map(|projection| {
+            projection
+                .api_points()
+                .into_iter()
+                .map(|point| SeasonRaceScalarPoint {
+                    sampled_at: point.sampled_at,
+                    scalar_weighted: point.scalar_weighted,
+                    source: point.source,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn live_territory_counts(state: &AppState) -> HashMap<String, usize> {
@@ -542,6 +774,14 @@ mod tests {
                 last_sampled_at: "2026-03-01T00:00:00Z".to_string(),
                 observed_rate_per_hour: None,
                 passive_rate_per_hour: None,
+                projected_passive_sr_gain: None,
+                projected_excess_sr_gain: None,
+                current_raid_sr: 0,
+                current_passive_hold_sr: 0,
+                current_conquest_sr: 0,
+                projected_raid_sr: 0,
+                projected_passive_hold_sr: 0,
+                projected_conquest_sr: 200,
                 forecast_rate_per_hour: 0.0,
                 forecast_source: ForecastSource::FlatFallback,
                 series: Vec::new(),
@@ -558,6 +798,14 @@ mod tests {
                 last_sampled_at: "2026-03-01T00:00:00Z".to_string(),
                 observed_rate_per_hour: None,
                 passive_rate_per_hour: None,
+                projected_passive_sr_gain: None,
+                projected_excess_sr_gain: None,
+                current_raid_sr: 0,
+                current_passive_hold_sr: 0,
+                current_conquest_sr: 0,
+                projected_raid_sr: 0,
+                projected_passive_hold_sr: 0,
+                projected_conquest_sr: 200,
                 forecast_rate_per_hour: 0.0,
                 forecast_source: ForecastSource::FlatFallback,
                 series: Vec::new(),
