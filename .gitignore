@@ -13,3 +13,4 @@ services/sequoia-ingest/*.db-journal
 services/sequoia-ingest/*.db-wal
 services/sequoia-ingest/*.db-shm
 mods/wynn-iris/run/mods/ares-probe*.jar
+.omx/
