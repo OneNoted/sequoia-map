@@ -7,7 +7,7 @@ release = true
 tailwindcss = "4.2.0"
 
 [serve]
-addresses = ["0.0.0.0"]
+addresses = ["127.0.0.1"]
 port = 8081
 
 [watch]
