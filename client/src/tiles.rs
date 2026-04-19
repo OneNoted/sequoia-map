@@ -12,7 +12,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::HtmlImageElement;
 
-use crate::assets::app_asset_url;
+use crate::assets::versioned_app_asset_url;
 use crate::viewport::Viewport;
 
 const HQ_CONCURRENCY: usize = 6;
@@ -570,8 +570,8 @@ fn clear_image_handlers(img: &HtmlImageElement) {
 
 fn tile_src(filename: &str, quality: TileQuality) -> String {
     match quality {
-        TileQuality::Low => app_asset_url(&format!("tiles/lq/{filename}")),
-        TileQuality::High => app_asset_url(&format!("tiles/{filename}")),
+        TileQuality::Low => versioned_app_asset_url(&format!("tiles/lq/{filename}")),
+        TileQuality::High => versioned_app_asset_url(&format!("tiles/{filename}")),
     }
 }
 
