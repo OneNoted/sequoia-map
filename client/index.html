@@ -39,7 +39,7 @@
       const assetQuery = assetVersion ? `?v=${assetVersion}` : "";
       const fontUrl = (filename) => `/fonts/${filename}${assetQuery}`;
 
-      window.__SEQUOIA_ASSET_VERSION__ = rawAssetVersion;
+      window.SEQUOIA_ASSET_VERSION = rawAssetVersion;
 
       const preload = document.createElement("link");
       preload.rel = "preload";
