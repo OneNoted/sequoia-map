@@ -19,6 +19,7 @@
         const fontUrl = (filename) => `${assetBase}/fonts/${filename}`;
 
         window.__SEQUOIA_ASSET_BASE__ = assetBase;
+        window.__SEQUOIA_ASSET_VERSION__ = "__SEQUOIA_ASSET_VERSION__";
 
         const preload = document.createElement("link");
         preload.rel = "preload";

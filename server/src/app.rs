@@ -18,6 +18,7 @@ use crate::state::AppState;
 const X_ROBOTS_TAG: &str = "x-robots-tag";
 const CANONICAL_URL_TOKEN: &str = "__SEQUOIA_CANONICAL_URL__";
 const OG_IMAGE_URL_TOKEN: &str = "__SEQUOIA_OG_IMAGE_URL__";
+const ASSET_VERSION_TOKEN: &str = "__SEQUOIA_ASSET_VERSION__";
 const DEFAULT_OG_IMAGE_PATH: &str = "/tiles/main-3-2.webp";
 
 #[derive(Clone, Debug, Default)]
@@ -277,6 +278,9 @@ fn apply_html_body_substitutions(body: Vec<u8>, options: &HtmlResponseOptions) -
         Ok(html) => html,
         Err(err) => return err.into_bytes(),
     };
+    let asset_version = public_asset_version();
+
+    html = html.replace(ASSET_VERSION_TOKEN, asset_version.as_deref().unwrap_or(""));
 
     if let Some(canonical) = options.canonical.as_deref() {
         html = html.replace(CANONICAL_URL_TOKEN, canonical);
@@ -285,12 +289,28 @@ fn apply_html_body_substitutions(body: Vec<u8>, options: &HtmlResponseOptions) -
             &format!(
                 "{}{}",
                 crate::config::map_public_base_url(),
-                DEFAULT_OG_IMAGE_PATH
+                versioned_asset_path(DEFAULT_OG_IMAGE_PATH, asset_version.as_deref())
             ),
         );
     }
 
     html.into_bytes()
+}
+
+fn public_asset_version() -> Option<String> {
+    std::env::var("SOURCE_COMMIT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn versioned_asset_path(path: &str, asset_version: Option<&str>) -> String {
+    match asset_version {
+        Some(asset_version) if !asset_version.trim().is_empty() => {
+            format!("{path}?v={asset_version}")
+        }
+        _ => path.to_string(),
+    }
 }
 
 fn apply_html_response_options(headers: &mut HeaderMap, options: &HtmlResponseOptions) {
@@ -493,6 +513,22 @@ mod tests {
         assert!(is_claims_editor_path("/claims/s/example"));
         assert!(!is_claims_editor_path("/claims"));
         assert!(!is_claims_editor_path("/claims/unknown"));
+    }
+
+    #[test]
+    fn versioned_asset_path_appends_query_when_version_present() {
+        assert_eq!(
+            versioned_asset_path("/tiles/main-5-2.webp", Some("b7c99ee31b46")),
+            "/tiles/main-5-2.webp?v=b7c99ee31b46"
+        );
+        assert_eq!(
+            versioned_asset_path("/tiles/main-5-2.webp", Some("")),
+            "/tiles/main-5-2.webp"
+        );
+        assert_eq!(
+            versioned_asset_path("/tiles/main-5-2.webp", None),
+            "/tiles/main-5-2.webp"
+        );
     }
 
     #[tokio::test]
