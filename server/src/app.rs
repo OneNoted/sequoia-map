@@ -572,6 +572,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn html_asset_version_substitution_does_not_corrupt_runtime_property_names() {
+        let html = br#"<script>const rawAssetVersion="__SEQUOIA_ASSET_VERSION__".trim(); window.SEQUOIA_ASSET_VERSION = rawAssetVersion;</script>"#.to_vec();
+        unsafe {
+            std::env::set_var("SOURCE_COMMIT", "abc123");
+        }
+        let body = apply_html_body_substitutions(
+            html,
+            &HtmlResponseOptions {
+                canonical: None,
+                robots: None,
+            },
+        );
+        unsafe {
+            std::env::remove_var("SOURCE_COMMIT");
+        }
+
+        let body = String::from_utf8(body).expect("utf8 body");
+        assert!(body.contains(r#"const rawAssetVersion="abc123".trim();"#));
+        assert!(body.contains("window.SEQUOIA_ASSET_VERSION = rawAssetVersion;"));
+        assert!(!body.contains("window.abc123"));
+    }
+
     #[tokio::test]
     async fn root_route_serves_seo_metadata_and_semantic_shell() {
         let app = build_app(AppState::new(None));

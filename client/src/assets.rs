@@ -4,7 +4,7 @@ use js_sys::Reflect;
 use wasm_bindgen::JsValue;
 
 pub(crate) const ASSET_BASE_KEY: &str = "__SEQUOIA_ASSET_BASE__";
-pub(crate) const ASSET_VERSION_KEY: &str = "__SEQUOIA_ASSET_VERSION__";
+pub(crate) const ASSET_VERSION_KEY: &str = "SEQUOIA_ASSET_VERSION";
 
 fn normalize_asset_base(base: &str) -> String {
     let trimmed = base.trim();
