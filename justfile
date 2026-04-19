@@ -9,25 +9,30 @@ check-native:
     @command -v trunk >/dev/null 2>&1 || { echo "trunk is required. Install it with: cargo install trunk --locked" >&2; exit 1; }
     @cargo watch --version >/dev/null 2>&1 || { echo "cargo-watch is required. Install it with: cargo install cargo-watch" >&2; exit 1; }
 
-require-database-url:
+native-env:
+    @./scripts/local-postgres.sh env
+
+pg-url:
+    @./scripts/local-postgres.sh url
+
+pg-start:
+    @./scripts/local-postgres.sh start
+
+pg-stop:
+    @./scripts/local-postgres.sh stop
+
+pg-status:
+    @./scripts/local-postgres.sh status
+
+pg-reset:
+    @./scripts/local-postgres.sh reset
+
+server: check-native
     #!/usr/bin/env bash
     if [[ -z "${DATABASE_URL:-}" ]]; then
-      printf '%s\n' \
-        'DATABASE_URL is required for native dev.' \
-        '' \
-        'Example:' \
-        '  DATABASE_URL=postgres://sequoia:sequoia@127.0.0.1:5432/sequoia just dev' >&2
-      exit 1
+      ./scripts/local-postgres.sh start >/dev/null
+      export DATABASE_URL="$(./scripts/local-postgres.sh url)"
     fi
-
-native-env:
-    @printf '%s\n' \
-      'DATABASE_URL=postgres://sequoia:sequoia@127.0.0.1:5432/sequoia' \
-      'INTERNAL_INGEST_TOKEN=local-sequoia-internal-token-1234567890'
-
-server: check-native require-database-url
-    #!/usr/bin/env bash
-    export DATABASE_URL
     export INTERNAL_INGEST_TOKEN="${INTERNAL_INGEST_TOKEN:-local-sequoia-internal-token-1234567890}"
     export RUST_LOG="${RUST_LOG:-info}"
     export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/dev-native}"
@@ -82,8 +87,12 @@ ingest: check-native
     cd services/sequoia-ingest
     cargo watch -w src -w Cargo.toml -w ../../shared -x run
 
-dev: check-native require-database-url
+dev: check-native
     #!/usr/bin/env bash
+    if [[ -z "${DATABASE_URL:-}" ]]; then
+      ./scripts/local-postgres.sh start >/dev/null
+      export DATABASE_URL="$(./scripts/local-postgres.sh url)"
+    fi
     pids=()
     cleanup() {
       trap - EXIT INT TERM
@@ -103,13 +112,18 @@ dev: check-native require-database-url
       'Native minimal dev is up:' \
       '  map:    http://127.0.0.1:8081' \
       '  server: http://127.0.0.1:3000' \
+      "  db:     ${DATABASE_URL}" \
       '' \
       'Stop with Ctrl+C.'
 
     wait -n "${pids[@]}"
 
-dev-full: check-native require-database-url
+dev-full: check-native
     #!/usr/bin/env bash
+    if [[ -z "${DATABASE_URL:-}" ]]; then
+      ./scripts/local-postgres.sh start >/dev/null
+      export DATABASE_URL="$(./scripts/local-postgres.sh url)"
+    fi
     pids=()
     cleanup() {
       trap - EXIT INT TERM
@@ -135,6 +149,7 @@ dev-full: check-native require-database-url
       '  claims:       http://127.0.0.1:8082/claims-app/' \
       '  server:       http://127.0.0.1:3000' \
       '  ingest:       http://127.0.0.1:3010' \
+      "  db:           ${DATABASE_URL}" \
       '' \
       'Stop with Ctrl+C.'
 

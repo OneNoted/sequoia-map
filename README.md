@@ -40,17 +40,20 @@ The comments in combination with the README.md should be enough for anyone to pi
 
 ### Development
 
-If you want the smallest local setup without Docker, use the root `justfile` and point it at an existing local PostgreSQL instance:
+If you want the smallest local setup without Docker, use the root `justfile`:
 
 ```bash
-DATABASE_URL=postgres://sequoia:sequoia@127.0.0.1:5432/sequoia just dev
+just dev
 ```
 
 - Map client: `http://127.0.0.1:8081`
 - Server: `http://127.0.0.1:3000`
+- Repo-local Postgres: `postgres://sequoia:sequoia@127.0.0.1:55432/sequoia`
 - `just dev-full` also starts the claims client and ingest service without Docker
-- `just native-env` prints example environment variables
+- `just pg-start`, `just pg-stop`, `just pg-status`, and `just pg-reset` manage the repo-local Postgres cluster under `.data/postgres`
+- `just native-env` prints the default local environment variables
 - `just server`, `just client`, `just claims-client`, and `just ingest` run the pieces individually
+- If you prefer an external database, set `DATABASE_URL` before running the recipes and the local Postgres bootstrap will be skipped
 
 Manual equivalent:
 
