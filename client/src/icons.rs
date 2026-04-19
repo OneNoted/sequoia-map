@@ -4,7 +4,7 @@ use futures::future::join3;
 use leptos::prelude::*;
 use web_sys::HtmlImageElement;
 
-use crate::assets::app_asset_url;
+use crate::assets::versioned_app_asset_url;
 
 #[derive(Clone)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -16,10 +16,10 @@ pub struct ResourceAtlas {
 }
 
 pub const ICON_COUNT: u32 = 6;
-const ATLAS_PATH: &str = "icons/territory-resources-atlas.png";
-const HQ_CROWN_PATH: &str = "icons/crown_icon.png";
-const TERRITORY_ORNAMENT_PATH: &str = "icons/territory-ornament.png";
-const SEQUOIA_TERRITORY_ORNAMENT_PATH: &str = "icons/seq-border-v1.png";
+const ATLAS_PATH: &str = "icons/territory-resources-atlas.webp";
+const HQ_CROWN_PATH: &str = "icons/crown_icon.webp";
+const TERRITORY_ORNAMENT_PATH: &str = "icons/territory-ornament.webp";
+const SEQUOIA_TERRITORY_ORNAMENT_PATH: &str = "icons/seq-border-v1.webp";
 const TRANSPARENT_PLACEHOLDER_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==";
 
 static ATLAS_WARNED: AtomicBool = AtomicBool::new(false);
@@ -49,7 +49,7 @@ pub fn icon_uv(index: u32) -> [f32; 4] {
 
 pub fn sprite_style(name: &str, size_px: u32) -> Option<String> {
     let idx = icon_index(name)?;
-    let atlas_src = app_asset_url(ATLAS_PATH);
+    let atlas_src = versioned_app_asset_url(ATLAS_PATH);
     Some(format!(
         "display:inline-block;width:{size_px}px;height:{size_px}px;flex-shrink:0;vertical-align:middle;background-image:url('{atlas_src}');background-repeat:no-repeat;background-size:{}px {}px;background-position:-{}px 0px;",
         ICON_COUNT * size_px,
@@ -100,10 +100,11 @@ async fn load_optional_image(
 
 pub fn load_resource_atlas(signal: RwSignal<Option<ResourceAtlas>>) {
     wasm_bindgen_futures::spawn_local(async move {
-        let atlas_src = app_asset_url(ATLAS_PATH);
-        let hq_crown_src = app_asset_url(HQ_CROWN_PATH);
-        let territory_ornament_src = app_asset_url(TERRITORY_ORNAMENT_PATH);
-        let sequoia_territory_ornament_src = app_asset_url(SEQUOIA_TERRITORY_ORNAMENT_PATH);
+        let atlas_src = versioned_app_asset_url(ATLAS_PATH);
+        let hq_crown_src = versioned_app_asset_url(HQ_CROWN_PATH);
+        let territory_ornament_src = versioned_app_asset_url(TERRITORY_ORNAMENT_PATH);
+        let sequoia_territory_ornament_src =
+            versioned_app_asset_url(SEQUOIA_TERRITORY_ORNAMENT_PATH);
 
         let Ok(resource_image) = HtmlImageElement::new() else {
             signal.set(None);

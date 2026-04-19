@@ -16,10 +16,16 @@
         const assetBase = pathname
           ? pathname.replace(/\/[^/]*$/, "").replace(/\/$/, "")
           : "";
-        const fontUrl = (filename) => `${assetBase}/fonts/${filename}`;
+        const rawAssetVersion = "__SEQUOIA_ASSET_VERSION__".trim();
+        const assetVersion =
+          rawAssetVersion && !rawAssetVersion.includes("__SEQUOIA_")
+            ? rawAssetVersion
+            : "";
+        const assetQuery = assetVersion ? `?v=${assetVersion}` : "";
+        const fontUrl = (filename) => `${assetBase}/fonts/${filename}${assetQuery}`;
 
         window.__SEQUOIA_ASSET_BASE__ = assetBase;
-        window.__SEQUOIA_ASSET_VERSION__ = "__SEQUOIA_ASSET_VERSION__";
+        window.__SEQUOIA_ASSET_VERSION__ = rawAssetVersion;
 
         const preload = document.createElement("link");
         preload.rel = "preload";

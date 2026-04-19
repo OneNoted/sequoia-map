@@ -89,12 +89,12 @@ mod tests {
     #[test]
     fn join_asset_url_respects_optional_base_prefix() {
         assert_eq!(
-            join_asset_url("", "icons/crown_icon.png"),
-            "/icons/crown_icon.png"
+            join_asset_url("", "icons/crown_icon.webp"),
+            "/icons/crown_icon.webp"
         );
         assert_eq!(
-            join_asset_url("/claims-app/", "/icons/crown_icon.png"),
-            "/claims-app/icons/crown_icon.png"
+            join_asset_url("/claims-app/", "/icons/crown_icon.webp"),
+            "/claims-app/icons/crown_icon.webp"
         );
     }
 
