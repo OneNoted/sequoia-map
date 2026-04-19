@@ -101,8 +101,8 @@ dev: check-native
       while true; do
         for pid in "${pids[@]}"; do
           if ! kill -0 "${pid}" 2>/dev/null; then
-            wait "${pid}"
-            return $?
+            wait "${pid}" || return $?
+            return 0
           fi
         done
         sleep 1
@@ -144,8 +144,8 @@ dev-full: check-native
       while true; do
         for pid in "${pids[@]}"; do
           if ! kill -0 "${pid}" 2>/dev/null; then
-            wait "${pid}"
-            return $?
+            wait "${pid}" || return $?
+            return 0
           fi
         done
         sleep 1
