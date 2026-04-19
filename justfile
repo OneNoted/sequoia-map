@@ -29,6 +29,8 @@ pg-reset:
 
 server: check-native
     #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/require-free-port.sh 3000 server
     if [[ -z "${DATABASE_URL:-}" ]]; then
       ./scripts/local-postgres.sh start >/dev/null
       export DATABASE_URL="$(./scripts/local-postgres.sh url)"
@@ -44,34 +46,34 @@ server: check-native
 
 client: check-native
     #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/require-free-port.sh 8081 client
     cd client
     export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-../target/dev-wasm}"
     export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}"
     export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
     export RUSTFLAGS="${RUSTFLAGS_WASM_DEV:-${RUSTFLAGS:--C debuginfo=0}}"
-    export NO_COLOR="${NO_COLOR:-true}"
-    trunk serve \
-      --config Trunk.dev.toml \
-      --proxy-backend "${SEQUOIA_CLIENT_PROXY_BACKEND:-http://127.0.0.1:3000/api/}" \
-      --proxy-rewrite /api/
+    export NO_COLOR=true
+    trunk serve --config Trunk.native.toml
 
 claims-client: check-native
     #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/require-free-port.sh 8082 claims-client
     cd claims-client
     export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-../target/dev-wasm}"
     export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-16}"
     export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
     export RUSTFLAGS="${RUSTFLAGS_WASM_DEV:-${RUSTFLAGS:--C debuginfo=0}}"
-    export NO_COLOR="${NO_COLOR:-true}"
-    trunk serve \
-      --config Trunk.dev.toml \
-      --proxy-backend "${SEQUOIA_CLAIMS_PROXY_BACKEND:-http://127.0.0.1:3000/api/}" \
-      --proxy-rewrite /api/
+    export NO_COLOR=true
+    trunk serve --config Trunk.native.toml
 
 ingest: check-native
     #!/usr/bin/env bash
+    set -euo pipefail
+    ./scripts/require-free-port.sh 3010 ingest
     mkdir -p .data
     export INTERNAL_INGEST_TOKEN="${INTERNAL_INGEST_TOKEN:-local-sequoia-internal-token-1234567890}"
     export SEQUOIA_INTERNAL_INGEST_TOKEN="${SEQUOIA_INTERNAL_INGEST_TOKEN:-$INTERNAL_INGEST_TOKEN}"
@@ -89,6 +91,7 @@ ingest: check-native
 
 dev: check-native
     #!/usr/bin/env bash
+    set -euo pipefail
     if [[ -z "${DATABASE_URL:-}" ]]; then
       ./scripts/local-postgres.sh start >/dev/null
       export DATABASE_URL="$(./scripts/local-postgres.sh url)"
@@ -120,6 +123,7 @@ dev: check-native
 
 dev-full: check-native
     #!/usr/bin/env bash
+    set -euo pipefail
     if [[ -z "${DATABASE_URL:-}" ]]; then
       ./scripts/local-postgres.sh start >/dev/null
       export DATABASE_URL="$(./scripts/local-postgres.sh url)"
