@@ -273,6 +273,8 @@ pub(crate) struct HistoryBoundsSignal(pub RwSignal<Option<(i64, i64)>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryAvailable(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct HistoryLegacyGeometryActive(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct HistoryFetchNonce(pub RwSignal<u64>);
 #[derive(Clone, Copy)]
 pub(crate) struct LastLiveSeq(pub RwSignal<Option<u64>>);
@@ -830,6 +832,7 @@ pub fn MapPage() -> impl IntoView {
     let playback_speed: RwSignal<f64> = RwSignal::new(10.0);
     let history_bounds: RwSignal<Option<(i64, i64)>> = RwSignal::new(None);
     let history_available: RwSignal<bool> = RwSignal::new(false);
+    let history_legacy_geometry_active: RwSignal<bool> = RwSignal::new(false);
     let history_probe_nonce: RwSignal<u64> = RwSignal::new(0);
     let history_fetch_nonce: RwSignal<u64> = RwSignal::new(0);
     let last_live_seq: RwSignal<Option<u64>> = RwSignal::new(None);
@@ -902,6 +905,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(PlaybackSpeed(playback_speed));
     provide_context(HistoryBoundsSignal(history_bounds));
     provide_context(HistoryAvailable(history_available));
+    provide_context(HistoryLegacyGeometryActive(history_legacy_geometry_active));
     provide_context(HistoryFetchNonce(history_fetch_nonce));
     provide_context(LastLiveSeq(last_live_seq));
     provide_context(HistoryBufferedUpdates(history_buffered_updates));
@@ -1050,6 +1054,7 @@ pub fn MapPage() -> impl IntoView {
                         history_timestamp,
                         history_bounds,
                         history_fetch_nonce,
+                        history_legacy_geometry_active,
                         history_buffered_updates,
                         history_buffer_mode_active,
                         needs_live_resync,
@@ -1067,6 +1072,7 @@ pub fn MapPage() -> impl IntoView {
                         playback_active,
                         history_fetch_nonce,
                         history_timestamp,
+                        history_legacy_geometry_active,
                         history_buffered_updates,
                         history_buffer_mode_active,
                         last_live_seq,
@@ -1752,6 +1758,7 @@ pub fn MapPage() -> impl IntoView {
                                         history_timestamp,
                                         history_bounds,
                                         history_fetch_nonce,
+                                        history_legacy_geometry_active,
                                         history_buffered_updates,
                                         history_buffer_mode_active,
                                         needs_live_resync,
@@ -1769,6 +1776,7 @@ pub fn MapPage() -> impl IntoView {
                                     playback_active,
                                     history_fetch_nonce,
                                     history_timestamp,
+                                    history_legacy_geometry_active,
                                     history_buffered_updates,
                                     history_buffer_mode_active,
                                     last_live_seq,
@@ -1794,6 +1802,7 @@ pub fn MapPage() -> impl IntoView {
                                 fetch: history::HistoryFetchContext {
                                     mode: map_mode,
                                     history_fetch_nonce,
+                                    history_legacy_geometry_active,
                                     history_scalar_sample: history_season_scalar_sample,
                                     history_sr_leaderboard: history_season_leaderboard,
                                     geo_store: territory_geometry,
@@ -1811,6 +1820,7 @@ pub fn MapPage() -> impl IntoView {
                                 fetch: history::HistoryFetchContext {
                                     mode: map_mode,
                                     history_fetch_nonce,
+                                    history_legacy_geometry_active,
                                     history_scalar_sample: history_season_scalar_sample,
                                     history_sr_leaderboard: history_season_leaderboard,
                                     geo_store: territory_geometry,
@@ -2237,6 +2247,7 @@ fn MobileHistoryToggle() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let CurrentMode(map_mode) = expect_context();
     let HistoryAvailable(history_available) = expect_context();
+    let HistoryLegacyGeometryActive(history_legacy_geometry_active) = expect_context();
     let HistoryTimestamp(history_timestamp) = expect_context();
     let HistoryBoundsSignal(history_bounds) = expect_context();
     let HistoryFetchNonce(history_fetch_nonce) = expect_context();
@@ -2282,6 +2293,7 @@ fn MobileHistoryToggle() -> impl IntoView {
                         playback_active,
                         history_fetch_nonce,
                         history_timestamp,
+                        history_legacy_geometry_active,
                         history_buffered_updates,
                         history_buffer_mode_active,
                         last_live_seq,
@@ -2296,6 +2308,7 @@ fn MobileHistoryToggle() -> impl IntoView {
                         history_timestamp,
                         history_bounds,
                         history_fetch_nonce,
+                        history_legacy_geometry_active,
                         history_buffered_updates,
                         history_buffer_mode_active,
                         needs_live_resync,
