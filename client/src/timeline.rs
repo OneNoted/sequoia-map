@@ -5,13 +5,20 @@ use wasm_bindgen::JsCast;
 
 use crate::app::{
     CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryBufferModeActive,
-    HistoryBufferedUpdates, HistoryFetchNonce, HistorySeasonLeaderboard, HistorySeasonScalarSample,
-    HistoryTimestamp, IsMobile, LastLiveSeq, LiveHandoffResyncCount, MapMode, NeedsLiveResync,
-    PlaybackActive, PlaybackSpeed, SidebarOpen, SidebarWidth, TerritoryGeometryStore,
+    HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive,
+    HistorySeasonLeaderboard, HistorySeasonScalarSample, HistoryTimestamp, IsMobile, LastLiveSeq,
+    LiveHandoffResyncCount, MapMode, NeedsLiveResync, PlaybackActive, PlaybackSpeed, SidebarOpen,
+    SidebarWidth, TerritoryGeometryStore,
 };
 use crate::history;
 use crate::territory::ClientTerritoryMap;
 use gloo_timers::callback::Timeout;
+
+fn format_history_timestamp(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}
 
 /// Timeline scrubber bar, visible only in history mode.
 #[component]
@@ -22,6 +29,7 @@ pub fn Timeline() -> impl IntoView {
     let PlaybackSpeed(speed) = expect_context();
     let HistoryBoundsSignal(bounds) = expect_context();
     let HistoryFetchNonce(history_fetch_nonce) = expect_context();
+    let HistoryLegacyGeometryActive(history_legacy_geometry_active) = expect_context();
     let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
     let HistorySeasonLeaderboard(history_sr_leaderboard) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
@@ -41,6 +49,7 @@ pub fn Timeline() -> impl IntoView {
     let fetch_ctx = history::HistoryFetchContext {
         mode,
         history_fetch_nonce,
+        history_legacy_geometry_active,
         history_scalar_sample,
         history_sr_leaderboard,
         geo_store,
@@ -142,12 +151,6 @@ pub fn Timeline() -> impl IntoView {
         }
     };
 
-    let format_timestamp = move |ts: i64| -> String {
-        chrono::DateTime::from_timestamp(ts, 0)
-            .map(|dt| dt.format("%b %d %H:%M").to_string())
-            .unwrap_or_default()
-    };
-
     let speed_options: &[f64] = &[1.0, 10.0, 60.0, 360.0];
 
     // SVG icon constants
@@ -169,6 +172,36 @@ pub fn Timeline() -> impl IntoView {
     };
 
     view! {
+        <>
+        <div
+            style:display=move || {
+                if !is_visible()
+                    || !history_legacy_geometry_active.get()
+                    || (is_mobile.get() && sidebar_open.get())
+                {
+                    "none"
+                } else {
+                    "flex"
+                }
+            }
+            style:right=move || {
+                if !is_mobile.get() && sidebar_open.get() {
+                    format!("{:.0}px", sidebar_width.get())
+                } else {
+                    "0".to_string()
+                }
+            }
+            style:bottom=move || if is_mobile.get() { "94px" } else { "56px" }
+            style="position: absolute; left: 0; z-index: 26; margin: 0 12px; padding: 8px 12px; border: 1px solid rgba(245,197,66,0.32); border-radius: 8px; background: rgba(19,22,31,0.96); color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,0.35);"
+        >
+            {move || {
+                let cutoff = history::rekindled_world_release_secs();
+                let cutoff_label = format_history_timestamp(cutoff);
+                format!(
+                    "Selected time predates Rekindled World ({cutoff_label} UTC). Sequoia only has current territory geometry, so older history can render with misplaced or missing territories."
+                )
+            }}
+        </div>
         <div
             class="timeline-bar hud-enter"
             style:display=move || {
@@ -236,6 +269,7 @@ pub fn Timeline() -> impl IntoView {
                             fetch: history::HistoryFetchContext {
                                 mode,
                                 history_fetch_nonce,
+                                history_legacy_geometry_active,
                                 history_scalar_sample,
                                 history_sr_leaderboard,
                                 geo_store,
@@ -276,6 +310,7 @@ pub fn Timeline() -> impl IntoView {
                             fetch: history::HistoryFetchContext {
                                 mode,
                                 history_fetch_nonce,
+                                history_legacy_geometry_active,
                                 history_scalar_sample,
                                 history_sr_leaderboard,
                                 geo_store,
@@ -361,7 +396,7 @@ pub fn Timeline() -> impl IntoView {
                     style="margin-left: auto; align-items: center; gap: 8px; flex-shrink: 0;"
                 >
                     <span style="color: #e2e0d8; font-size: 0.7rem; text-align: center; font-variant-numeric: tabular-nums;">
-                        {move || timestamp.get().map(&format_timestamp).unwrap_or_default()}
+                        {move || timestamp.get().map(format_history_timestamp).unwrap_or_default()}
                     </span>
                     // Desktop: "History" badge
                     <span
@@ -381,6 +416,7 @@ pub fn Timeline() -> impl IntoView {
                                 playback_active: playing,
                                 history_fetch_nonce,
                                 history_timestamp: timestamp,
+                                history_legacy_geometry_active,
                                 history_buffered_updates,
                                 history_buffer_mode_active,
                                 last_live_seq,
@@ -412,7 +448,7 @@ pub fn Timeline() -> impl IntoView {
 
                 // Left timestamp label
                 <span style="color: #5a5860; flex-shrink: 0; font-size: 0.65rem;">
-                    {move || bounds.get().map(|(earliest, _)| format_timestamp(earliest)).unwrap_or_default()}
+                    {move || bounds.get().map(|(earliest, _)| format_history_timestamp(earliest)).unwrap_or_default()}
                 </span>
 
                 // Timeline range slider
@@ -431,7 +467,7 @@ pub fn Timeline() -> impl IntoView {
 
                 // Right timestamp label
                 <span style="color: #5a5860; flex-shrink: 0; font-size: 0.65rem;">
-                    {move || bounds.get().map(|(_, latest)| format_timestamp(latest)).unwrap_or_default()}
+                    {move || bounds.get().map(|(_, latest)| format_history_timestamp(latest)).unwrap_or_default()}
                 </span>
 
                 // Desktop-only: dividers + current time + mode indicator (moved to row 1 on mobile)
@@ -440,8 +476,8 @@ pub fn Timeline() -> impl IntoView {
                     style="align-items: center; gap: 0; flex-shrink: 0;"
                 >
                     <div style="width: 1px; height: 24px; background: #282c3e; margin: 0 10px; flex-shrink: 0;" />
-                    <span style="color: #e2e0d8; flex-shrink: 0; min-width: 100px; text-align: center; font-size: 0.7rem;">
-                        {move || timestamp.get().map(&format_timestamp).unwrap_or_default()}
+                    <span style="color: #e2e0d8; flex-shrink: 0; min-width: 140px; text-align: center; font-size: 0.7rem;">
+                        {move || timestamp.get().map(format_history_timestamp).unwrap_or_default()}
                     </span>
                     <div style="width: 1px; height: 24px; background: #282c3e; margin: 0 10px; flex-shrink: 0;" />
                     <span
@@ -453,5 +489,16 @@ pub fn Timeline() -> impl IntoView {
             </div>
 
         </div>
+        </>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_history_timestamp_includes_year() {
+        assert_eq!(format_history_timestamp(0), "1970-01-01 00:00");
     }
 }

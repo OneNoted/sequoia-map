@@ -7,9 +7,9 @@ use wasm_bindgen_futures::spawn_local;
 use sequoia_shared::history::{HistoryEvents, HistorySrSamples, HistorySrSnapshot};
 
 use crate::app::{
-    CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryFetchNonce, HistorySeasonLeaderboard,
-    HistorySeasonScalarSample, HistoryTimestamp, MapMode, PlaybackActive, PlaybackSpeed,
-    TerritoryGeometryStore,
+    CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryFetchNonce,
+    HistoryLegacyGeometryActive, HistorySeasonLeaderboard, HistorySeasonScalarSample,
+    HistoryTimestamp, MapMode, PlaybackActive, PlaybackSpeed, TerritoryGeometryStore,
 };
 use crate::territory::{ClientTerritoryMap, apply_changes};
 
@@ -117,6 +117,7 @@ pub fn start_playback_engine() {
     let PlaybackSpeed(speed) = expect_context();
     let HistoryBoundsSignal(bounds) = expect_context();
     let HistoryFetchNonce(fetch_nonce) = expect_context();
+    let HistoryLegacyGeometryActive(history_legacy_geometry_active) = expect_context();
     let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
     let HistorySeasonLeaderboard(history_sr_leaderboard) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
@@ -171,6 +172,7 @@ pub fn start_playback_engine() {
                             crate::history::HistoryFetchContext {
                                 mode,
                                 history_fetch_nonce: fetch_nonce,
+                                history_legacy_geometry_active,
                                 history_scalar_sample,
                                 history_sr_leaderboard,
                                 geo_store,

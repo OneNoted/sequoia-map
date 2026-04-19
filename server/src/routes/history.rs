@@ -14,7 +14,7 @@ use sequoia_shared::history::{
 };
 use serde::Deserialize;
 
-use crate::config::RETENTION_DAYS;
+use crate::config::territory_history_retention_days;
 use crate::state::{AppState, build_guild_color_lookup, lookup_guild_color};
 
 type HistoryEventRow = (
@@ -749,7 +749,7 @@ pub async fn history_heat_meta(
         latest_season_id,
         seasons,
         all_time_earliest,
-        retention_days: RETENTION_DAYS,
+        retention_days: territory_history_retention_days(),
         season_fallback_days: HEAT_SEASON_FALLBACK_DAYS,
     };
 
@@ -894,7 +894,7 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
 
     use super::HEAT_SEASON_FALLBACK_DAYS;
-    use crate::config::RETENTION_DAYS;
+    use crate::config::territory_history_retention_days;
     use crate::state::AppState;
 
     const REAL_DB_TEST_LOCK: i64 = 73_019_001;
@@ -1167,7 +1167,7 @@ mod tests {
         assert!(!heat_meta.seasons.is_empty());
         assert_eq!(heat_meta.seasons[0].season_id, 29);
         assert!(heat_meta.seasons[0].is_current);
-        assert_eq!(heat_meta.retention_days, RETENTION_DAYS);
+        assert_eq!(heat_meta.retention_days, territory_history_retention_days());
         assert_eq!(heat_meta.season_fallback_days, HEAT_SEASON_FALLBACK_DAYS);
 
         let heat_season_url = {
