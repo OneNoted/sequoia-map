@@ -8,6 +8,7 @@ claims-client/dist
 *.d
 .DS_Store
 .trunk/
+.data/
 services/sequoia-ingest/*.db
 services/sequoia-ingest/*.db-journal
 services/sequoia-ingest/*.db-wal
