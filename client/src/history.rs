@@ -10,6 +10,7 @@ use crate::app::{BufferedUpdate, GuildColorMap, MapMode, TerritoryGeometryMap};
 use crate::territory::{ClientTerritoryMap, apply_changes, from_snapshot};
 
 const MAX_BUFFERED_UPDATES: usize = 20_000;
+const REKINDLED_WORLD_RELEASE_SECS: i64 = 1_723_248_000; // 2024-08-10T00:00:00Z
 
 thread_local! {
     static ACTIVE_HISTORY_FETCH: RefCell<Option<(u64, web_sys::AbortController)>> = const { RefCell::new(None) };
@@ -19,6 +20,7 @@ thread_local! {
 pub struct HistoryFetchContext {
     pub mode: RwSignal<MapMode>,
     pub history_fetch_nonce: RwSignal<u64>,
+    pub history_legacy_geometry_active: RwSignal<bool>,
     pub history_scalar_sample: RwSignal<Option<SeasonScalarSample>>,
     pub history_sr_leaderboard: RwSignal<Option<Vec<HistoryGuildSrEntry>>>,
     pub geo_store: StoredValue<TerritoryGeometryMap>,
@@ -217,6 +219,7 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
     let HistoryFetchContext {
         mode,
         history_fetch_nonce: fetch_nonce,
+        history_legacy_geometry_active,
         history_scalar_sample,
         history_sr_leaderboard,
         geo_store,
@@ -226,6 +229,7 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
 
     let request_nonce = fetch_nonce.get_untracked().wrapping_add(1);
     fetch_nonce.set(request_nonce);
+    history_legacy_geometry_active.set(timestamp_uses_legacy_geometry(timestamp_secs));
     let abort_controller = web_sys::AbortController::new().ok();
     let abort_signal = abort_controller
         .as_ref()
@@ -348,6 +352,7 @@ pub struct EnterHistoryModeInput {
     pub history_timestamp: RwSignal<Option<i64>>,
     pub history_bounds: RwSignal<Option<(i64, i64)>>,
     pub history_fetch_nonce: RwSignal<u64>,
+    pub history_legacy_geometry_active: RwSignal<bool>,
     pub history_buffered_updates: RwSignal<Vec<BufferedUpdate>>,
     pub history_buffer_mode_active: RwSignal<bool>,
     pub needs_live_resync: RwSignal<bool>,
@@ -367,6 +372,7 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
         history_timestamp,
         history_bounds,
         history_fetch_nonce,
+        history_legacy_geometry_active,
         history_buffered_updates,
         history_buffer_mode_active,
         needs_live_resync,
@@ -387,9 +393,11 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
 
     let now = chrono::Utc::now().timestamp();
     history_timestamp.set(Some(now));
+    history_legacy_geometry_active.set(timestamp_uses_legacy_geometry(now));
     mode.set(MapMode::History);
 
-    // Capture live territory geometry as an immutable reference for the session
+    // History currently reuses the live geometry snapshot for the full session.
+    // Older pre-Rekindled timestamps still need dedicated geometry/assets.
     let live = territories.get_untracked();
     let geo: TerritoryGeometryMap = live
         .iter()
@@ -437,6 +445,7 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
                     HistoryFetchContext {
                         mode,
                         history_fetch_nonce,
+                        history_legacy_geometry_active,
                         history_scalar_sample,
                         history_sr_leaderboard,
                         geo_store,
@@ -449,6 +458,7 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
                 // Server doesn't support history — exit back to live mode
                 history_buffer_mode_active.set(false);
                 history_buffered_updates.set(Vec::new());
+                history_legacy_geometry_active.set(false);
                 mode.set(MapMode::Live);
                 history_timestamp.set(None);
             }
@@ -462,6 +472,7 @@ pub struct ExitHistoryModeInput {
     pub playback_active: RwSignal<bool>,
     pub history_fetch_nonce: RwSignal<u64>,
     pub history_timestamp: RwSignal<Option<i64>>,
+    pub history_legacy_geometry_active: RwSignal<bool>,
     pub history_buffered_updates: RwSignal<Vec<BufferedUpdate>>,
     pub history_buffer_mode_active: RwSignal<bool>,
     pub last_live_seq: RwSignal<Option<u64>>,
@@ -478,6 +489,7 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
         playback_active,
         history_fetch_nonce,
         history_timestamp,
+        history_legacy_geometry_active,
         history_buffered_updates,
         history_buffer_mode_active,
         last_live_seq,
@@ -533,6 +545,7 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
                 history_buffer_mode_active.set(false);
                 needs_live_resync.set(false);
                 history_timestamp.set(None);
+                history_legacy_geometry_active.set(false);
                 history_sr_leaderboard.set(None);
                 last_live_seq.set(Some(newest_seq));
                 mode.set(MapMode::Live);
@@ -555,6 +568,7 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
                 history_buffered_updates.set(Vec::new());
                 history_buffer_mode_active.set(false);
                 history_timestamp.set(None);
+                history_legacy_geometry_active.set(false);
                 history_sr_leaderboard.set(None);
                 last_live_seq.set(None);
                 needs_live_resync.set(true);
@@ -608,6 +622,14 @@ fn parse_history_time(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
+pub fn rekindled_world_release_secs() -> i64 {
+    REKINDLED_WORLD_RELEASE_SECS
+}
+
+pub fn timestamp_uses_legacy_geometry(timestamp_secs: i64) -> bool {
+    timestamp_secs < REKINDLED_WORLD_RELEASE_SECS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,5 +660,15 @@ mod tests {
         assert!(!has_seq_gap(Some(10), 11));
         assert!(has_seq_gap(Some(10), 12));
         assert!(!has_seq_gap(None, 7));
+    }
+
+    #[test]
+    fn flags_pre_rekindled_timestamps_as_legacy_geometry() {
+        assert!(timestamp_uses_legacy_geometry(
+            REKINDLED_WORLD_RELEASE_SECS - 1
+        ));
+        assert!(!timestamp_uses_legacy_geometry(
+            REKINDLED_WORLD_RELEASE_SECS
+        ));
     }
 }

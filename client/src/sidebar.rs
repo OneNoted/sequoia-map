@@ -17,19 +17,19 @@ use crate::app::{
     HeatEntriesByTerritory, HeatFallbackApplied, HeatHistoryBasis, HeatHistoryBasisSetting,
     HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId,
     HeatWindowLabel, HistoryAvailable, HistoryBoundsSignal, HistoryBufferModeActive,
-    HistoryBufferedUpdates, HistoryFetchNonce, HistorySeasonLeaderboard, HistorySeasonScalarSample,
-    HistoryTimestamp, IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN,
-    LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
-    LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
-    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapMode, NameColor,
-    NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont, ResetSettingsTrigger,
-    ResourceHighlight, Selected, SelectedGuild, ShowCompoundMapTime, ShowCountdown,
-    ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
-    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
-    ShowTerritoryOrnaments, SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient,
-    TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders, canvas_dimensions,
-    clamp_connection_opacity_scale, clamp_connection_thickness_scale, clamp_label_scale_group,
-    clamp_label_scale_master,
+    HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive,
+    HistorySeasonLeaderboard, HistorySeasonScalarSample, HistoryTimestamp, IsMobile,
+    LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN,
+    LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName,
+    LastLiveSeq, LeaderboardSortBySr, LiveHandoffResyncCount, LiveSeasonScalarSample,
+    ManualSrScalar, MapMode, NameColor, NameColorSetting, NeedsLiveResync, PlaybackActive,
+    ReadableFont, ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild,
+    ShowCompoundMapTime, ShowCountdown, ShowGranularMapTime, ShowLeaderboardOnline,
+    ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap,
+    ShowNames, ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarIndex, SidebarItems,
+    SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
+    canvas_dimensions, clamp_connection_opacity_scale, clamp_connection_thickness_scale,
+    clamp_label_scale_group, clamp_label_scale_master,
 };
 use crate::colors::rgba_css;
 use crate::history;
@@ -2538,6 +2538,7 @@ fn StatsBar() -> impl IntoView {
     let HistoryTimestamp(history_timestamp) = expect_context();
     let HistoryBoundsSignal(history_bounds) = expect_context();
     let HistoryFetchNonce(history_fetch_nonce) = expect_context();
+    let HistoryLegacyGeometryActive(history_legacy_geometry_active) = expect_context();
     let LastLiveSeq(last_live_seq) = expect_context();
     let HistoryBufferedUpdates(history_buffered_updates) = expect_context();
     let HistoryBufferModeActive(history_buffer_mode_active) = expect_context();
@@ -2598,6 +2599,7 @@ fn StatsBar() -> impl IntoView {
                             playback_active,
                             history_fetch_nonce,
                             history_timestamp,
+                            history_legacy_geometry_active,
                             history_buffered_updates,
                             history_buffer_mode_active,
                             last_live_seq,
@@ -2612,6 +2614,7 @@ fn StatsBar() -> impl IntoView {
                             history_timestamp,
                             history_bounds,
                             history_fetch_nonce,
+                            history_legacy_geometry_active,
                             history_buffered_updates,
                             history_buffer_mode_active,
                             needs_live_resync,
