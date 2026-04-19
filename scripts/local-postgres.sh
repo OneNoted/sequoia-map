@@ -38,16 +38,17 @@ require_bin() {
 urlencode() {
   local value="${1}"
   local encoded=""
-  local i char
+  local i byte
+  local LC_ALL=C
 
   for ((i = 0; i < ${#value}; i++)); do
-    char="${value:i:1}"
-    case "${char}" in
+    byte="${value:i:1}"
+    case "${byte}" in
       [a-zA-Z0-9.~_-])
-        encoded+="${char}"
+        encoded+="${byte}"
         ;;
       *)
-        printf -v encoded '%s%%%02X' "${encoded}" "'${char}"
+        printf -v encoded '%s%%%02X' "${encoded}" "'${byte}"
         ;;
     esac
   done
