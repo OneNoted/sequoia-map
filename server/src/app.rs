@@ -159,10 +159,11 @@ async fn api_not_found() -> impl IntoResponse {
 
 async fn set_static_cache_control(request: Request, next: Next) -> Response {
     let path = request.uri().path().to_owned();
+    let versioned = has_asset_version_query(request.uri().query());
     let mut response = next.run(request).await;
 
     if response.status().is_success()
-        && let Some(cache_control) = cache_control_for_path(&path)
+        && let Some(cache_control) = cache_control_for_path(&path, versioned)
     {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
@@ -173,7 +174,7 @@ async fn set_static_cache_control(request: Request, next: Next) -> Response {
     response
 }
 
-fn cache_control_for_path(path: &str) -> Option<&'static str> {
+fn cache_control_for_path(path: &str, versioned: bool) -> Option<&'static str> {
     let normalized_path = path.strip_prefix("/claims-app").unwrap_or(path);
 
     if is_hashed_bundle_asset(normalized_path) {
@@ -184,10 +185,25 @@ fn cache_control_for_path(path: &str) -> Option<&'static str> {
         || normalized_path.starts_with("/fonts/")
         || normalized_path.starts_with("/icons/")
     {
-        return Some("public, max-age=86400");
+        return Some(if versioned {
+            "public, max-age=31536000, immutable"
+        } else {
+            "public, max-age=86400"
+        });
     }
 
     None
+}
+
+fn has_asset_version_query(query: Option<&str>) -> bool {
+    query
+        .map(|query| {
+            query
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .any(|(key, value)| key == "v" && !value.trim().is_empty())
+        })
+        .unwrap_or(false)
 }
 
 fn is_hashed_bundle_asset(path: &str) -> bool {
@@ -453,11 +469,11 @@ mod tests {
     #[test]
     fn immutable_cache_for_hashed_bundle_assets() {
         assert_eq!(
-            cache_control_for_path("/sequoia-client-71578f6b278221f3_bg.wasm"),
+            cache_control_for_path("/sequoia-client-71578f6b278221f3_bg.wasm", false),
             Some("public, max-age=31536000, immutable")
         );
         assert_eq!(
-            cache_control_for_path("/input-a93762ff3bf6d63a.css"),
+            cache_control_for_path("/input-a93762ff3bf6d63a.css", false),
             Some("public, max-age=31536000, immutable")
         );
     }
@@ -465,27 +481,52 @@ mod tests {
     #[test]
     fn short_cache_for_unhashed_static_assets() {
         assert_eq!(
-            cache_control_for_path("/tiles/tile_0_0.webp"),
+            cache_control_for_path("/tiles/tile_0_0.webp", false),
             Some("public, max-age=86400")
         );
         assert_eq!(
-            cache_control_for_path("/fonts/minecraft-regular.otf"),
+            cache_control_for_path("/fonts/minecraft-regular.otf", false),
             Some("public, max-age=86400")
         );
         assert_eq!(
-            cache_control_for_path("/claims-app/icons/crown_icon.png"),
+            cache_control_for_path("/claims-app/icons/crown_icon.webp", false),
             Some("public, max-age=86400")
         );
         assert_eq!(
-            cache_control_for_path("/claims-app/tiles/tile_0_0.webp"),
+            cache_control_for_path("/claims-app/tiles/tile_0_0.webp", false),
             Some("public, max-age=86400")
         );
     }
 
     #[test]
     fn no_cache_header_override_for_html() {
-        assert_eq!(cache_control_for_path("/"), None);
-        assert_eq!(cache_control_for_path("/index.html"), None);
+        assert_eq!(cache_control_for_path("/", false), None);
+        assert_eq!(cache_control_for_path("/index.html", false), None);
+    }
+
+    #[test]
+    fn immutable_cache_for_versioned_static_assets() {
+        assert_eq!(
+            cache_control_for_path("/tiles/main-5-2.webp", true),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert_eq!(
+            cache_control_for_path("/icons/crown_icon.webp", true),
+            Some("public, max-age=31536000, immutable")
+        );
+        assert_eq!(
+            cache_control_for_path("/claims-app/fonts/minecraft-regular.otf", true),
+            Some("public, max-age=31536000, immutable")
+        );
+    }
+
+    #[test]
+    fn asset_version_query_detection_requires_non_empty_v_parameter() {
+        assert!(has_asset_version_query(Some("v=b7c99ee31b46")));
+        assert!(has_asset_version_query(Some("foo=bar&v=b7c99ee31b46")));
+        assert!(!has_asset_version_query(Some("foo=bar")));
+        assert!(!has_asset_version_query(Some("v=")));
+        assert!(!has_asset_version_query(None));
     }
 
     #[test]

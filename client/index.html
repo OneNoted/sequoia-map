@@ -31,13 +31,38 @@
     <meta name="twitter:image" content="__SEQUOIA_OG_IMAGE_URL__" />
     <link rel="canonical" href="__SEQUOIA_CANONICAL_URL__" />
     <script>
-      window.__SEQUOIA_ASSET_VERSION__ = "__SEQUOIA_ASSET_VERSION__";
+      const rawAssetVersion = "__SEQUOIA_ASSET_VERSION__".trim();
+      const assetVersion =
+        rawAssetVersion && !rawAssetVersion.includes("__SEQUOIA_")
+          ? rawAssetVersion
+          : "";
+      const assetQuery = assetVersion ? `?v=${assetVersion}` : "";
+      const fontUrl = (filename) => `/fonts/${filename}${assetQuery}`;
+
+      window.__SEQUOIA_ASSET_VERSION__ = rawAssetVersion;
+
+      const preload = document.createElement("link");
+      preload.rel = "preload";
+      preload.href = fontUrl("minecraft-regular.otf");
+      preload.as = "font";
+      preload.type = "font/otf";
+      preload.crossOrigin = "";
+      document.head.appendChild(preload);
+
+      const fontStyle = document.createElement("style");
+      fontStyle.textContent = [
+        '@font-face { font-family: "Silkscreen"; src: url("' + fontUrl("minecraft-regular.otf") + '") format("opentype"); font-style: normal; font-weight: 400; font-display: swap; }',
+        '@font-face { font-family: "Silkscreen"; src: url("' + fontUrl("minecraft-italic.otf") + '") format("opentype"); font-style: italic; font-weight: 400; font-display: swap; }',
+        '@font-face { font-family: "Silkscreen"; src: url("' + fontUrl("minecraft-bold.otf") + '") format("opentype"); font-style: normal; font-weight: 700; font-display: swap; }',
+        '@font-face { font-family: "Silkscreen"; src: url("' + fontUrl("minecraft-bold-italic.otf") + '") format("opentype"); font-style: italic; font-weight: 700; font-display: swap; }',
+        '@font-face { font-family: "SilkscreenLocal"; src: local("Minecraft"), url("' + fontUrl("minecraft-regular.otf") + '") format("opentype"); font-style: normal; font-weight: 400; font-display: swap; }',
+      ].join("\n");
+      document.head.appendChild(fontStyle);
     </script>
     <link data-trunk rel="tailwind-css" href="input.css" />
     <link data-trunk rel="copy-dir" href="public/tiles" />
     <link data-trunk rel="copy-dir" href="public/icons" />
     <link data-trunk rel="copy-dir" href="public/fonts" />
-    <link rel="preload" href="/fonts/minecraft-regular.otf" as="font" type="font/otf" crossorigin />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -61,42 +86,6 @@
       }
     </script>
     <style>
-      @font-face {
-        font-family: "Silkscreen";
-        src: url("/fonts/minecraft-regular.otf") format("opentype");
-        font-style: normal;
-        font-weight: 400;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "Silkscreen";
-        src: url("/fonts/minecraft-italic.otf") format("opentype");
-        font-style: italic;
-        font-weight: 400;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "Silkscreen";
-        src: url("/fonts/minecraft-bold.otf") format("opentype");
-        font-style: normal;
-        font-weight: 700;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "Silkscreen";
-        src: url("/fonts/minecraft-bold-italic.otf") format("opentype");
-        font-style: italic;
-        font-weight: 700;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "SilkscreenLocal";
-        src: local("Minecraft"),
-             url("/fonts/minecraft-regular.otf") format("opentype");
-        font-style: normal;
-        font-weight: 400;
-        font-display: swap;
-      }
       html, body, #app { width: 100%; height: 100%; margin: 0; }
       body {
         background: #0c0e17;

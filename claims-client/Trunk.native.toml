@@ -1,0 +1,16 @@
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/claims-app/"
+release = true
+
+[serve]
+addresses = ["0.0.0.0"]
+port = 8082
+
+[watch]
+watch = ["src", "../client/src", "../shared/src", "index.html", "input.css"]
+
+[[proxy]]
+backend = "http://127.0.0.1:3000/api/"
+rewrite = "/api/"
