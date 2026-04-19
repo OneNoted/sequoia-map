@@ -1,0 +1,18 @@
+[build]
+target = "index.html"
+dist = "dist"
+release = true
+
+[tools]
+tailwindcss = "4.2.0"
+
+[serve]
+addresses = ["0.0.0.0"]
+port = 8081
+
+[watch]
+watch = ["src", "index.html", "input.css"]
+
+[[proxy]]
+backend = "http://127.0.0.1:3000/api/"
+rewrite = "/api/"
