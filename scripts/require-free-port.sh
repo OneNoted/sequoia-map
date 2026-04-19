@@ -27,3 +27,7 @@ if command -v lsof >/dev/null 2>&1; then
     exit 1
   fi
 fi
+
+if ! command -v ss >/dev/null 2>&1 && ! command -v lsof >/dev/null 2>&1; then
+  echo "warning: neither 'ss' nor 'lsof' found; skipping port ${port} check for ${label}." >&2
+fi
