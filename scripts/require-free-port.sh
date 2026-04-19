@@ -26,8 +26,8 @@ if command -v lsof >/dev/null 2>&1; then
     lsof -iTCP:"${port}" -sTCP:LISTEN >&2 || true
     exit 1
   fi
+  exit 0
 fi
 
-if ! command -v ss >/dev/null 2>&1 && ! command -v lsof >/dev/null 2>&1; then
-  echo "warning: neither 'ss' nor 'lsof' found; skipping port ${port} check for ${label}." >&2
-fi
+echo "${label} cannot verify port ${port}: install 'ss' or 'lsof' for the local preflight check." >&2
+exit 1

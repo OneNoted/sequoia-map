@@ -97,6 +97,17 @@ dev: check-native
       export DATABASE_URL="$(./scripts/local-postgres.sh url)"
     fi
     pids=()
+    wait_for_first_exit() {
+      while true; do
+        for pid in "${pids[@]}"; do
+          if ! kill -0 "${pid}" 2>/dev/null; then
+            wait "${pid}" || return $?
+            return 0
+          fi
+        done
+        sleep 1
+      done
+    }
     cleanup() {
       trap - EXIT INT TERM
       for pid in "${pids[@]}"; do
@@ -119,7 +130,7 @@ dev: check-native
       '' \
       'Stop with Ctrl+C.'
 
-    wait -n "${pids[@]}"
+    wait_for_first_exit
 
 dev-full: check-native
     #!/usr/bin/env bash
@@ -129,6 +140,17 @@ dev-full: check-native
       export DATABASE_URL="$(./scripts/local-postgres.sh url)"
     fi
     pids=()
+    wait_for_first_exit() {
+      while true; do
+        for pid in "${pids[@]}"; do
+          if ! kill -0 "${pid}" 2>/dev/null; then
+            wait "${pid}" || return $?
+            return 0
+          fi
+        done
+        sleep 1
+      done
+    }
     cleanup() {
       trap - EXIT INT TERM
       for pid in "${pids[@]}"; do
@@ -157,4 +179,4 @@ dev-full: check-native
       '' \
       'Stop with Ctrl+C.'
 
-    wait -n "${pids[@]}"
+    wait_for_first_exit

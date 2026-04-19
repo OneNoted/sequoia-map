@@ -35,13 +35,34 @@ require_bin() {
   }
 }
 
+urlencode() {
+  local value="${1}"
+  local encoded=""
+  local i byte
+  local LC_ALL=C
+
+  for ((i = 0; i < ${#value}; i++)); do
+    byte="${value:i:1}"
+    case "${byte}" in
+      [a-zA-Z0-9.~_-])
+        encoded+="${byte}"
+        ;;
+      *)
+        printf -v encoded '%s%%%02X' "${encoded}" "'${byte}"
+        ;;
+    esac
+  done
+
+  printf '%s' "${encoded}"
+}
+
 database_url() {
   printf 'postgres://%s:%s@%s:%s/%s\n' \
-    "${PGUSER}" \
-    "${PGPASSWORD}" \
+    "$(urlencode "${PGUSER}")" \
+    "$(urlencode "${PGPASSWORD}")" \
     "${PGHOST}" \
     "${PGPORT}" \
-    "${PGDATABASE}"
+    "$(urlencode "${PGDATABASE}")"
 }
 
 psql_super() {
