@@ -531,13 +531,21 @@ mod tests {
 
     #[test]
     fn history_retention_days_use_defaults_without_env() {
-        assert_eq!(
-            territory_history_retention_days(),
-            DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS
-        );
-        assert_eq!(
-            season_history_retention_days(),
-            DEFAULT_SEASON_HISTORY_RETENTION_DAYS
+        temp_env::with_vars_unset(
+            [
+                "TERRITORY_HISTORY_RETENTION_DAYS",
+                "SEASON_HISTORY_RETENTION_DAYS",
+            ],
+            || {
+                assert_eq!(
+                    territory_history_retention_days(),
+                    DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS
+                );
+                assert_eq!(
+                    season_history_retention_days(),
+                    DEFAULT_SEASON_HISTORY_RETENTION_DAYS
+                );
+            },
         );
     }
 }
