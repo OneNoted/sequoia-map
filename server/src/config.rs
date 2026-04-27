@@ -40,7 +40,8 @@ pub const MIN_INTERNAL_API_TOKEN_LEN: usize = 24;
 
 // History feature
 pub const SNAPSHOT_INTERVAL_SECS: u64 = 21600; // every 6 hours
-pub const RETENTION_DAYS: i64 = 365;
+pub const DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS: i64 = 365;
+pub const DEFAULT_SEASON_HISTORY_RETENTION_DAYS: i64 = 365;
 pub const RETENTION_CHECK_SECS: u64 = 86400; // daily
 
 const INTERNAL_INGEST_TOKEN_REJECTED_VALUES: &[&str] = &[
@@ -127,6 +128,23 @@ pub fn guilds_online_max_concurrency() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY)
+}
+
+fn positive_i64_env(name: &str) -> Option<i64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+}
+
+pub fn territory_history_retention_days() -> i64 {
+    positive_i64_env("TERRITORY_HISTORY_RETENTION_DAYS")
+        .unwrap_or(DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS)
+}
+
+pub fn season_history_retention_days() -> i64 {
+    positive_i64_env("SEASON_HISTORY_RETENTION_DAYS")
+        .unwrap_or(DEFAULT_SEASON_HISTORY_RETENTION_DAYS)
 }
 
 pub fn season_rating_contender_count() -> usize {
@@ -396,9 +414,11 @@ fn sanitize_internal_api_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES, normalize_public_base_url,
-        normalize_watchlist_key, parse_active_season_race_config,
+        ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES,
+        DEFAULT_SEASON_HISTORY_RETENTION_DAYS, DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS,
+        normalize_public_base_url, normalize_watchlist_key, parse_active_season_race_config,
         parse_season_scalar_override_points, sanitize_internal_ingest_token,
+        season_history_retention_days, territory_history_retention_days,
     };
     use chrono::{DateTime, Utc};
 
@@ -507,5 +527,25 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].scalar_weighted, 1.0);
         assert_eq!(parsed[1].scalar_weighted, 1.5);
+    }
+
+    #[test]
+    fn history_retention_days_use_defaults_without_env() {
+        temp_env::with_vars_unset(
+            [
+                "TERRITORY_HISTORY_RETENTION_DAYS",
+                "SEASON_HISTORY_RETENTION_DAYS",
+            ],
+            || {
+                assert_eq!(
+                    territory_history_retention_days(),
+                    DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS
+                );
+                assert_eq!(
+                    season_history_retention_days(),
+                    DEFAULT_SEASON_HISTORY_RETENTION_DAYS
+                );
+            },
+        );
     }
 }
