@@ -16,13 +16,13 @@ use gloo_timers::callback::Timeout;
 
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
-const HISTORY_FOCUS_SPANS: &[(Option<i64>, &str)] = &[
-    (Some(HOUR_SECS), "1h"),
-    (Some(6 * HOUR_SECS), "6h"),
-    (Some(DAY_SECS), "24h"),
-    (Some(7 * DAY_SECS), "7d"),
-    (Some(30 * DAY_SECS), "30d"),
-    (None, "All"),
+const HISTORY_FOCUS_SPANS: &[(Option<i64>, &str, bool)] = &[
+    (Some(HOUR_SECS), "1h", false),
+    (Some(6 * HOUR_SECS), "6h", false),
+    (Some(DAY_SECS), "24h", false),
+    (Some(7 * DAY_SECS), "7d", false),
+    (Some(30 * DAY_SECS), "30d", false),
+    (None, "All", true),
 ];
 const DEFAULT_HISTORY_FOCUS_SPAN: Option<i64> = Some(6 * HOUR_SECS);
 
@@ -726,7 +726,7 @@ pub fn Timeline() -> impl IntoView {
                     </span>
 
                     <div style="display: inline-flex; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; overflow: hidden; flex-shrink: 0;">
-                        {HISTORY_FOCUS_SPANS.iter().map(|&(span, label)| {
+                        {HISTORY_FOCUS_SPANS.iter().enumerate().map(|(idx, &(span, label, is_wide))| {
                             view! {
                                 <button
                                     type="button"
@@ -735,8 +735,8 @@ pub fn Timeline() -> impl IntoView {
                                         let active = focus_span.get() == span;
                                         format!(
                                             "min-width: {}; height: 22px; padding: 0 7px; border: none; border-left: 1px solid {}; background: {}; color: {}; font-family: 'JetBrains Mono', monospace; font-size: 0.61rem; cursor: pointer; touch-action: manipulation;",
-                                            if label == "All" { "34px" } else { "30px" },
-                                            if label == "1h" { "transparent" } else { "#282c3e" },
+                                            if is_wide { "34px" } else { "30px" },
+                                            if idx == 0 { "transparent" } else { "#282c3e" },
                                             if active { "rgba(245,197,66,0.14)" } else { "transparent" },
                                             if active { "#f5c542" } else { "#7c829e" },
                                         )
