@@ -2957,6 +2957,7 @@ dependencies = [
  "serde_json",
  "sqlx-core",
  "sqlx-postgres",
+ "temp-env",
  "tokio",
  "tokio-stream",
  "tower",
@@ -3534,6 +3535,15 @@ dependencies = [
  "throw_error 0.3.1",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "temp-env"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96374855068f47402c3121c6eed88d29cb1de8f3ab27090e273e420bdabcf050"
+dependencies = [
+ "parking_lot",
 ]
 
 [[package]]
