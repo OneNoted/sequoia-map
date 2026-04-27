@@ -240,6 +240,8 @@ Notes:
 | `MAX_INGEST_UPDATES_PER_REQUEST` | Max canonical territory updates accepted per internal ingest request | `1024` |
 | `MAX_HISTORY_REPLAY_EVENTS` | Max historical events replayed in `/api/history/at` reconstruction | `20000` |
 | `MAX_HISTORY_SR_SAMPLE_ROWS` | Max raw rows loaded for `/api/history/sr-samples` | `20000` |
+| `TERRITORY_HISTORY_RETENTION_DAYS` | Days the server keeps `territory_events` and `territory_snapshots` before retention cleanup | `365` *(prod compose default)*, `36500` *(coolify compose default to preserve long-lived imports)* |
+| `SEASON_HISTORY_RETENTION_DAYS` | Days the server keeps `season_scalar_samples` and `season_guild_observations` before retention cleanup | `365` |
 | `SEQ_LIVE_HANDOFF_V1` | Enable sequence-aware live-state handoff | `true` |
 | `GUILDS_ONLINE_CACHE_TTL_SECS` | Cache freshness threshold used by `/api/guilds/online` | `120` |
 | `GUILDS_ONLINE_MAX_CONCURRENCY` | Max concurrent upstream guild fetches in `/api/guilds/online` | `8` |

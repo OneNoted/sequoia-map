@@ -27,4 +27,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
 
 [dev-dependencies]
+temp-env = "0.3"
 tower = { version = "0.5", features = ["util"] }
