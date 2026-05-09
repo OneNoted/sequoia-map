@@ -1,3 +1,4 @@
+use std::env::VarError;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -115,18 +116,21 @@ pub fn upstream_connect_timeout() -> Duration {
 }
 
 pub fn territory_extra_url() -> Option<String> {
-    std::env::var("TERRITORY_EXTRA_URL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .and_then(|value| {
-            let normalized = value.to_ascii_lowercase();
-            if value.is_empty() || matches!(normalized.as_str(), "0" | "false" | "none" | "off") {
-                None
-            } else {
-                Some(value)
-            }
-        })
-        .or_else(|| Some(LEGACY_TERREXTRA_URL.to_string()))
+    match std::env::var("TERRITORY_EXTRA_URL") {
+        Ok(value) => parse_territory_extra_url(&value),
+        Err(VarError::NotPresent) => Some(LEGACY_TERREXTRA_URL.to_string()),
+        Err(VarError::NotUnicode(_)) => None,
+    }
+}
+
+fn parse_territory_extra_url(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let normalized = value.to_ascii_lowercase();
+    if value.is_empty() || matches!(normalized.as_str(), "0" | "false" | "none" | "off") {
+        None
+    } else {
+        Some(value.to_string())
+    }
 }
 
 pub fn guilds_online_cache_ttl_secs() -> i64 {
@@ -431,9 +435,10 @@ mod tests {
     use super::{
         ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES,
         DEFAULT_SEASON_HISTORY_RETENTION_DAYS, DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS,
-        normalize_public_base_url, normalize_watchlist_key, parse_active_season_race_config,
-        parse_season_scalar_override_points, sanitize_internal_ingest_token,
-        season_history_retention_days, territory_history_retention_days,
+        LEGACY_TERREXTRA_URL, normalize_public_base_url, normalize_watchlist_key,
+        parse_active_season_race_config, parse_season_scalar_override_points,
+        sanitize_internal_ingest_token, season_history_retention_days, territory_extra_url,
+        territory_history_retention_days,
     };
     use chrono::{DateTime, Utc};
 
@@ -488,6 +493,39 @@ mod tests {
         assert_eq!(
             normalize_watchlist_key("  Titans   Valor "),
             "titans valor".to_string()
+        );
+    }
+
+    #[test]
+    fn territory_extra_url_uses_legacy_default_when_unset() {
+        temp_env::with_var_unset("TERRITORY_EXTRA_URL", || {
+            assert_eq!(
+                territory_extra_url(),
+                Some(LEGACY_TERREXTRA_URL.to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn territory_extra_url_preserves_explicit_opt_out() {
+        for value in ["", "  ", "0", "false", "none", "off", " OFF "] {
+            temp_env::with_var("TERRITORY_EXTRA_URL", Some(value), || {
+                assert_eq!(territory_extra_url(), None);
+            });
+        }
+    }
+
+    #[test]
+    fn territory_extra_url_accepts_override_url() {
+        temp_env::with_var(
+            "TERRITORY_EXTRA_URL",
+            Some(" https://example.com/extra.json "),
+            || {
+                assert_eq!(
+                    territory_extra_url(),
+                    Some("https://example.com/extra.json".to_string())
+                );
+            },
         );
     }
 

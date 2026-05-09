@@ -15,28 +15,35 @@ pub async fn run(state: AppState) {
     loop {
         interval.tick().await;
 
-        let data = load_extra_data(&state.http_client).await;
-        let count = data.len();
-        *state.extra_terr.write().await = data;
-        state.extra_data_dirty.store(true, Ordering::Release);
-        info!("loaded extra territory data for {count} territories");
+        match load_extra_data(&state.http_client).await {
+            Ok(data) => {
+                let count = data.len();
+                *state.extra_terr.write().await = data;
+                state.extra_data_dirty.store(true, Ordering::Release);
+                info!("loaded extra territory data for {count} territories");
+            }
+            Err(e) => {
+                let mut data = state.extra_terr.write().await;
+                merge_extra_data(&mut data, bundled_extra_data());
+                state.extra_data_dirty.store(true, Ordering::Release);
+                warn!(
+                    "failed to fetch supplemental territory data; preserved cached data and refreshed bundled defaults: {e}"
+                );
+            }
+        }
     }
 }
 
-async fn load_extra_data(client: &reqwest::Client) -> HashMap<String, ExtraTerrInfo> {
+async fn load_extra_data(
+    client: &reqwest::Client,
+) -> Result<HashMap<String, ExtraTerrInfo>, reqwest::Error> {
     let mut data = match territory_extra_url() {
-        Some(url) => match fetch_extra_data(client, &url).await {
-            Ok(remote) => remote,
-            Err(e) => {
-                warn!("failed to fetch supplemental territory data from {url}: {e}");
-                HashMap::new()
-            }
-        },
+        Some(url) => fetch_extra_data(client, &url).await?,
         None => HashMap::new(),
     };
 
     merge_extra_data(&mut data, bundled_extra_data());
-    data
+    Ok(data)
 }
 
 async fn fetch_extra_data(
@@ -53,7 +60,7 @@ fn merge_extra_data(
 ) {
     for (name, info) in source {
         let entry = target.entry(name).or_default();
-        if !info.resources.is_empty() {
+        if entry.resources.is_empty() && !info.resources.is_empty() {
             entry.resources = info.resources;
         }
         if !info.connections.is_empty() {
@@ -154,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_extra_data_prefers_bundled_resources_and_keeps_connections() {
+    fn merge_extra_data_fills_missing_resources_and_keeps_connections() {
         let mut target = HashMap::from([(
             "Forts in Fall".to_string(),
             ExtraTerrInfo {
@@ -174,6 +181,31 @@ mod tests {
 
         let merged = &target["Forts in Fall"];
         assert_eq!(merged.resources.wood, 3_600);
+        assert_eq!(merged.connections, ["Royal Dam"]);
+    }
+
+    #[test]
+    fn merge_extra_data_preserves_existing_remote_resources() {
+        let mut target = HashMap::from([(
+            "Forts in Fall".to_string(),
+            ExtraTerrInfo {
+                resources: single_resource("ore"),
+                connections: vec!["Royal Dam".to_string()],
+            },
+        )]);
+        let source = HashMap::from([(
+            "Forts in Fall".to_string(),
+            ExtraTerrInfo {
+                resources: single_resource("wood"),
+                connections: Vec::new(),
+            },
+        )]);
+
+        merge_extra_data(&mut target, source);
+
+        let merged = &target["Forts in Fall"];
+        assert_eq!(merged.resources.ore, 3_600);
+        assert_eq!(merged.resources.wood, 0);
         assert_eq!(merged.connections, ["Royal Dam"]);
     }
 }
