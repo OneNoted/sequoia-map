@@ -7,7 +7,7 @@ pub const WYNNCRAFT_TERRITORY_URL: &str = "https://api.wynncraft.com/v3/guild/li
 pub const WYNNCRAFT_GUILD_URL: &str = "https://api.wynncraft.com/v3/guild";
 pub const WYNNCRAFT_GUILD_LIST_URL: &str = "https://api.wynncraft.com/v3/guild/list/guild";
 
-pub const TERREXTRA_URL: &str = "https://gist.githubusercontent.com/Zatzou/14c82f2df0eb4093dfa1d543b78a73a8/raw/d03273fce33c031498c07e21b94f17644c8aae98/terrextra.json";
+pub const LEGACY_TERREXTRA_URL: &str = "https://gist.githubusercontent.com/Zatzou/14c82f2df0eb4093dfa1d543b78a73a8/raw/d03273fce33c031498c07e21b94f17644c8aae98/terrextra.json";
 pub const TERREXTRA_REFRESH_SECS: u64 = 3600; // re-fetch hourly
 
 pub const ATHENA_TERRITORY_URL: &str = "https://athena.wynntils.com/cache/get/territoryList";
@@ -112,6 +112,21 @@ pub fn upstream_connect_timeout() -> Duration {
         .filter(|value| *value > 0)
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS))
+}
+
+pub fn territory_extra_url() -> Option<String> {
+    std::env::var("TERRITORY_EXTRA_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .and_then(|value| {
+            let normalized = value.to_ascii_lowercase();
+            if value.is_empty() || matches!(normalized.as_str(), "0" | "false" | "none" | "off") {
+                None
+            } else {
+                Some(value)
+            }
+        })
+        .or_else(|| Some(LEGACY_TERREXTRA_URL.to_string()))
 }
 
 pub fn guilds_online_cache_ttl_secs() -> i64 {

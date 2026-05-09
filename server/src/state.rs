@@ -144,7 +144,7 @@ impl Default for LiveSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ExtraTerrInfo {
     #[serde(default)]
     pub resources: Resources,
@@ -160,7 +160,7 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<PreSerializedEvent>,
     pub guild_cache: Arc<DashMap<String, CachedGuild>>,
     pub guild_catalog_cache: Arc<RwLock<Option<CachedGuildCatalog>>>,
-    /// Extra territory data (resources, connections) from supplemental gist.
+    /// Extra territory data (resources, connections) from bundled and supplemental sources.
     pub extra_terr: Arc<RwLock<HashMap<String, ExtraTerrInfo>>>,
     pub extra_data_dirty: Arc<AtomicBool>,
     /// Guild name -> RGB color from Athena/Wynntils.
