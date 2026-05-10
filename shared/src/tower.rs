@@ -19,7 +19,7 @@ pub const DAMAGES: [Range<f64>; 12] = [
 
 /// Attack speed multiplier per tower attack upgrade level (0–11).
 pub const ATTACK_RATES: [f64; 12] = [
-    0.5, 0.75, 1.0, 1.25, 1.61, 2.0, 2.5, 3.0, 3.1, 4.2, 4.35, 4.7,
+    0.5, 0.75, 1.0, 1.25, 1.61, 2.0, 2.5, 3.0, 4.2, 4.2, 4.35, 4.7,
 ];
 
 /// Tower HP per health upgrade level (0–11).
@@ -303,8 +303,8 @@ pub fn format_stat(val: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DefenseRating, calc_defense_index, calc_dps, calc_ehp, calc_stat, count_guild_connections,
-        find_externals, format_stat,
+        ATTACK_RATES, DefenseRating, calc_defense_index, calc_dps, calc_ehp, calc_stat,
+        count_guild_connections, find_externals, format_stat,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -482,6 +482,11 @@ mod tests {
     fn calc_dps_base_case() {
         let dps = calc_dps(0, 0, false, 0, 0);
         assert_close(dps, 625.0);
+    }
+
+    #[test]
+    fn attack_rate_level_eight_matches_expected_speed() {
+        assert_close(ATTACK_RATES[8], 4.2);
     }
 
     #[test]
