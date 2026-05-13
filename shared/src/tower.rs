@@ -19,7 +19,7 @@ pub const DAMAGES: [Range<f64>; 12] = [
 
 /// Attack speed multiplier per tower attack upgrade level (0–11).
 pub const ATTACK_RATES: [f64; 12] = [
-    0.5, 0.75, 1.0, 1.25, 1.61, 2.0, 2.5, 3.0, 4.2, 4.2, 4.35, 4.7,
+    0.5, 0.75, 1.0, 1.25, 1.61, 2.0, 2.5, 3.0, 3.6, 3.8, 4.35, 4.7,
 ];
 
 /// Tower HP per health upgrade level (0–11).
@@ -485,8 +485,9 @@ mod tests {
     }
 
     #[test]
-    fn attack_rate_level_eight_matches_expected_speed() {
-        assert_close(ATTACK_RATES[8], 4.2);
+    fn attack_rate_mid_levels_match_expected_speeds() {
+        assert_close(ATTACK_RATES[8], 3.6);
+        assert_close(ATTACK_RATES[9], 3.8);
     }
 
     #[test]
