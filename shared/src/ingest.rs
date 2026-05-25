@@ -55,11 +55,15 @@ pub struct TerritoryRuntimeData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headquarters: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headquarters_territory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_resources: Option<Resources>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production_rates: Option<Resources>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage_capacity: Option<Resources>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub treasury: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defense_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

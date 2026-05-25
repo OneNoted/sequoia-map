@@ -185,6 +185,8 @@ pub(crate) struct DetailReturnGuild(pub RwSignal<Option<String>>);
 pub(crate) struct GuildOnlineInfo {
     pub online: u32,
     pub season_rating: Option<i64>,
+    pub season_rank: Option<u32>,
+    pub season_id: Option<i32>,
     pub season_rating_source: Option<String>,
     pub season_rating_sampled_at: Option<String>,
 }
@@ -1325,6 +1327,14 @@ pub fn MapPage() -> impl IntoView {
                         GuildOnlineInfo {
                             online: obj.get("online").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                             season_rating: obj.get("season_rating").and_then(|v| v.as_i64()),
+                            season_rank: obj
+                                .get("season_rank")
+                                .and_then(|v| v.as_u64())
+                                .and_then(|v| u32::try_from(v).ok()),
+                            season_id: obj
+                                .get("season_id")
+                                .and_then(|v| v.as_i64())
+                                .and_then(|v| i32::try_from(v).ok()),
                             season_rating_source: obj
                                 .get("season_rating_source")
                                 .and_then(|v| v.as_str())
@@ -1339,6 +1349,8 @@ pub fn MapPage() -> impl IntoView {
                         GuildOnlineInfo {
                             online: n as u32,
                             season_rating: None,
+                            season_rank: None,
+                            season_id: None,
                             season_rating_source: None,
                             season_rating_sampled_at: None,
                         }
@@ -2370,33 +2382,22 @@ fn Tooltip() -> impl IntoView {
         let name = hovered.get()?;
         let map = territories.get();
         let ct = map.get(&name)?;
+        let runtime = ct.territory.runtime.as_ref();
         let base_resources = ct.territory.resources.clone();
-        let live_held_resources = ct
-            .territory
-            .runtime
-            .as_ref()
+        let live_held_resources = runtime
             .and_then(|runtime| runtime.held_resources.clone())
             .filter(|value| !value.is_empty());
-        let live_production_rates = ct
-            .territory
-            .runtime
-            .as_ref()
+        let live_production_rates = runtime
             .and_then(|runtime| runtime.production_rates.clone())
             .filter(|value| !value.is_empty());
-        let live_storage_capacity = ct
-            .territory
-            .runtime
-            .as_ref()
+        let live_storage_capacity = runtime
             .and_then(|runtime| runtime.storage_capacity.clone())
             .filter(|value| !value.is_empty());
         let resources = live_held_resources
             .clone()
             .unwrap_or_else(|| base_resources.clone());
         let resources_from_live = live_held_resources.is_some();
-        let provenance_source = ct
-            .territory
-            .runtime
-            .as_ref()
+        let provenance_source = runtime
             .and_then(|rt| rt.provenance.as_ref())
             .map(|p| p.source.clone())
             .filter(|s| !s.trim().is_empty());
@@ -2412,6 +2413,10 @@ fn Tooltip() -> impl IntoView {
             None
         };
         let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
+        let treasury = runtime
+            .and_then(|runtime| runtime.treasury.as_deref())
+            .and_then(TreasuryLevel::from_api_tier)
+            .unwrap_or_else(|| TreasuryLevel::from_held_seconds(secs));
         let cooldown = if secs < 600 {
             let remaining = 600 - secs;
             let frac = remaining as f64 / 600.0;
@@ -2427,7 +2432,7 @@ fn Tooltip() -> impl IntoView {
             held: format_hms(secs),
             guild_color: ct.guild_color,
             cooldown,
-            treasury: TreasuryLevel::from_held_seconds(secs),
+            treasury,
             base_resources,
             resources,
             resources_from_live,
@@ -2712,7 +2717,13 @@ fn TerritoryPeekCard() -> impl IntoView {
             .map(|dt| (reference_secs - dt.timestamp()).max(0))
             .unwrap_or(0);
         let held = format_hms(secs);
-        let treasury = TreasuryLevel::from_held_seconds(secs);
+        let treasury = ct
+            .territory
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.treasury.as_deref())
+            .and_then(TreasuryLevel::from_api_tier)
+            .unwrap_or_else(|| TreasuryLevel::from_held_seconds(secs));
         Some((
             name,
             ct.territory.guild.name.clone(),

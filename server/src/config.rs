@@ -7,6 +7,14 @@ use serde::Deserialize;
 pub const WYNNCRAFT_TERRITORY_URL: &str = "https://api.wynncraft.com/v3/guild/list/territory";
 pub const WYNNCRAFT_GUILD_URL: &str = "https://api.wynncraft.com/v3/guild";
 pub const WYNNCRAFT_GUILD_LIST_URL: &str = "https://api.wynncraft.com/v3/guild/list/guild";
+pub const WYNNCRAFT_GUILD_SEASONS_URL: &str = "https://api.wynncraft.com/v3/guild/seasons";
+pub const WYNNCRAFT_LEADERBOARD_TYPES_URL: &str = "https://api.wynncraft.com/v3/leaderboards/types";
+pub const WYNNCRAFT_LEADERBOARDS_URL: &str = "https://api.wynncraft.com/v3/leaderboards";
+pub const WYNNCRAFT_MAP_RAIDS_URL: &str = "https://api.wynncraft.com/v3/map/raids";
+pub const WYNNCRAFT_MAP_CAMPS_URL: &str = "https://api.wynncraft.com/v3/map/camps";
+pub const WYNNCRAFT_MAP_WORLD_EVENTS_URL: &str = "https://api.wynncraft.com/v3/map/world-events";
+pub const WYNNCRAFT_MAP_GATHERING_NODES_URL: &str =
+    "https://api.wynncraft.com/v3/map/gathering-nodes";
 
 pub const LEGACY_TERREXTRA_URL: &str = "https://gist.githubusercontent.com/Zatzou/14c82f2df0eb4093dfa1d543b78a73a8/raw/d03273fce33c031498c07e21b94f17644c8aae98/terrextra.json";
 pub const TERREXTRA_REFRESH_SECS: u64 = 3600; // re-fetch hourly
@@ -16,6 +24,8 @@ pub const ATHENA_REFRESH_SECS: u64 = 600; // 10 minutes
 
 pub const POLL_INTERVAL_SECS: u64 = 10;
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
+pub const SEASON_LEADERBOARD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
+pub const MAP_INTEL_CACHE_TTL_SECS: i64 = 60; // shortest public map endpoint cache
 pub const DEFAULT_GUILDS_ONLINE_CACHE_TTL_SECS: i64 = 120; // 2 minutes
 pub const DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY: usize = 8;
 pub const DEFAULT_SEASON_RATING_CONTENDER_COUNT: usize = 10;

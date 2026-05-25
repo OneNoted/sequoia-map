@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -6,8 +6,11 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use bytes::Bytes;
-use chrono::Utc;
-use sequoia_shared::{GuildRef, Territory, TerritoryChange, TerritoryMap};
+use chrono::{DateTime, Utc};
+use sequoia_shared::{
+    DataProvenance, GuildRef, Resources, Territory, TerritoryChange, TerritoryMap,
+    TerritoryRuntimeChange, TerritoryRuntimeData, VisibilityClass,
+};
 use sqlx::{Postgres, QueryBuilder};
 use tracing::{info, warn};
 
@@ -83,8 +86,12 @@ fn merge_supplemental_data(
 
     for (name, terr) in new_map.iter_mut() {
         if let Some(info) = cached_extra.get(name) {
-            terr.resources = info.resources.clone();
-            terr.connections = info.connections.clone();
+            if terr.resources.is_empty() && !info.resources.is_empty() {
+                terr.resources = info.resources.clone();
+            }
+            if terr.connections.is_empty() && !info.connections.is_empty() {
+                terr.connections = info.connections.clone();
+            }
         }
         if let Some(override_info) = cached_ingest_overrides.get(name)
             && now.signed_duration_since(override_info.observed_at) <= ttl
@@ -124,59 +131,72 @@ async fn process_polled_map_with<F>(
 ) where
     F: for<'a> FnOnce(&'a sqlx::PgPool, SequencedUpdates) -> PersistResultFuture<'a>,
 {
-    // 1. Read lock: compute diff, then release
-    let (changes, has_removals, mut live_seq, mut live_timestamp) = {
+    // 1. Read lock: compute ownership/runtime/static diffs, then release.
+    let (
+        changes,
+        runtime_updates,
+        has_static_field_changes,
+        has_removals,
+        mut live_seq,
+        mut live_timestamp,
+    ) = {
         let current = state.live_snapshot.read().await;
+        let changes = compute_diff(&current.territories, &new_map);
+        let changed_territories = changes
+            .iter()
+            .map(|change| change.territory.clone())
+            .collect::<HashSet<_>>();
+        let runtime_updates =
+            compute_runtime_updates(&current.territories, &new_map, &changed_territories);
         (
-            compute_diff(&current.territories, &new_map),
+            changes,
+            runtime_updates,
+            has_static_field_changes(&current.territories, &new_map),
             has_removed_territories(&current.territories, &new_map),
             current.seq,
             current.timestamp.clone(),
         )
     };
+    let emit_snapshot_event = has_removals || supplemental_changed || has_static_field_changes;
 
-    if changes.is_empty() && !has_removals && !supplemental_changed {
+    if changes.is_empty() && runtime_updates.is_empty() && !emit_snapshot_event {
         return;
     }
 
-    let reserved_count = if has_removals {
-        1_u64
-    } else {
-        match u64::try_from(changes.len()) {
-            Ok(count) => count,
-            Err(_) => {
-                warn!("too many territory changes to reserve sequence range");
-                return;
-            }
+    let mut reserved_count = match u64::try_from(changes.len()) {
+        Ok(count) => count,
+        Err(_) => {
+            warn!("too many territory changes to reserve sequence range");
+            return;
         }
     };
-    let mut seq_cursor = if reserved_count > 0 {
-        match reserve_next_seq_block(state, reserved_count) {
-            Some(base) => base,
+    if !runtime_updates.is_empty() {
+        reserved_count = match reserved_count.checked_add(1) {
+            Some(count) => count,
             None => {
-                warn!("sequence counter overflow while reserving sequence range");
+                warn!("sequence counter overflow while reserving runtime update event");
                 return;
             }
-        }
-    } else {
-        live_seq
+        };
+    }
+    if emit_snapshot_event {
+        reserved_count = match reserved_count.checked_add(1) {
+            Some(count) => count,
+            None => {
+                warn!("sequence counter overflow while reserving snapshot event");
+                return;
+            }
+        };
+    }
+    let Some(mut seq_cursor) = reserve_next_seq_block(state, reserved_count) else {
+        warn!("sequence counter overflow while reserving sequence range");
+        return;
     };
     let mut outgoing = Vec::new();
     let mut sequenced_updates: SequencedUpdates = Vec::new();
-    let emit_snapshot_event = has_removals || supplemental_changed;
+    let timestamp = Utc::now().to_rfc3339();
 
-    if has_removals {
-        let Some(seq) = seq_cursor.checked_add(1) else {
-            warn!("Sequence counter overflow while preparing snapshot event");
-            return;
-        };
-        seq_cursor = seq;
-        let timestamp = Utc::now().to_rfc3339();
-        info!("territory set changed (removals detected), broadcasting snapshot");
-        live_seq = seq;
-        live_timestamp = timestamp;
-    } else if !changes.is_empty() {
-        let timestamp = Utc::now().to_rfc3339();
+    if !changes.is_empty() {
         info!("{} territory changes detected", changes.len());
         let mut update_build_failed = false;
 
@@ -211,6 +231,44 @@ async fn process_polled_map_with<F>(
         if update_build_failed {
             return;
         }
+    }
+
+    if !runtime_updates.is_empty() {
+        let Some(seq) = seq_cursor.checked_add(1) else {
+            warn!("Sequence counter overflow while preparing runtime update event");
+            return;
+        };
+        seq_cursor = seq;
+        let update_json = match serialize_runtime_update_event(
+            seq,
+            &runtime_updates,
+            &timestamp,
+            "runtime update broadcast event",
+        ) {
+            Some(json) => json,
+            None => return,
+        };
+        live_seq = seq;
+        live_timestamp = timestamp.clone();
+        outgoing.push(PreSerializedEvent::RuntimeUpdate {
+            seq,
+            json: update_json,
+        });
+    }
+
+    if emit_snapshot_event {
+        let Some(seq) = seq_cursor.checked_add(1) else {
+            warn!("Sequence counter overflow while preparing snapshot event");
+            return;
+        };
+        seq_cursor = seq;
+        if has_removals {
+            info!("territory set changed (removals detected), broadcasting snapshot");
+        } else if has_static_field_changes {
+            info!("territory metadata changed, broadcasting snapshot");
+        }
+        live_seq = seq;
+        live_timestamp = timestamp.clone();
     }
 
     if !sequenced_updates.is_empty() {
@@ -286,6 +344,11 @@ enum SerializedUpdateEvent<'a> {
         changes: &'a [TerritoryChange],
         timestamp: &'a str,
     },
+    RuntimeUpdate {
+        seq: u64,
+        updates: &'a [TerritoryRuntimeChange],
+        timestamp: &'a str,
+    },
 }
 
 fn serialize_update_event(
@@ -297,6 +360,25 @@ fn serialize_update_event(
     match serde_json::to_vec(&SerializedUpdateEvent::Update {
         seq,
         changes,
+        timestamp,
+    }) {
+        Ok(json) => Some(Arc::new(Bytes::from(json))),
+        Err(e) => {
+            warn!("failed to serialize {context}: {e}");
+            None
+        }
+    }
+}
+
+fn serialize_runtime_update_event(
+    seq: u64,
+    updates: &[TerritoryRuntimeChange],
+    timestamp: &str,
+    context: &str,
+) -> Option<Arc<Bytes>> {
+    match serde_json::to_vec(&SerializedUpdateEvent::RuntimeUpdate {
+        seq,
+        updates,
         timestamp,
     }) {
         Ok(json) => Some(Arc::new(Bytes::from(json))),
@@ -578,6 +660,31 @@ struct RawGuildRef {
     name: Option<String>,
     #[serde(default)]
     prefix: Option<String>,
+    #[serde(default)]
+    hq: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(untagged)]
+enum RawResourcePayload {
+    List(Vec<RawTerritoryResource>),
+    Legacy(Resources),
+    #[default]
+    Empty,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RawTerritoryResource {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default, rename = "generation")]
+    generation: i64,
+    #[serde(default, rename = "baseGeneration")]
+    base_generation: i64,
+    #[serde(default)]
+    stored: i64,
+    #[serde(default)]
+    limit: i64,
 }
 
 #[derive(serde::Deserialize)]
@@ -587,17 +694,27 @@ struct RawTerritory {
     acquired: chrono::DateTime<chrono::Utc>,
     location: sequoia_shared::Region,
     #[serde(default)]
-    resources: sequoia_shared::Resources,
+    resources: RawResourcePayload,
+    #[serde(default)]
+    links: Vec<String>,
     #[serde(default)]
     connections: Vec<String>,
+    #[serde(default)]
+    hq: Option<bool>,
+    #[serde(default)]
+    treasury: Option<String>,
+    #[serde(default)]
+    defences: Option<String>,
 }
 
-impl From<RawTerritory> for Territory {
-    fn from(value: RawTerritory) -> Self {
+impl RawTerritory {
+    fn into_territory(self, observed_at: DateTime<Utc>) -> Territory {
+        let value = self;
         let guild = value.guild.unwrap_or(RawGuildRef {
             uuid: None,
             name: None,
             prefix: None,
+            hq: None,
         });
         let guild_name = guild
             .name
@@ -620,8 +737,25 @@ impl From<RawTerritory> for Territory {
             .filter(|uuid| !uuid.is_empty())
             .unwrap_or(UNCLAIMED_GUILD_UUID)
             .to_string();
+        let (resources, held_resources, production_rates, storage_capacity) =
+            split_resource_payload(value.resources);
+        let connections = if value.links.is_empty() {
+            value.connections
+        } else {
+            value.links
+        };
+        let runtime = build_api_runtime(ApiRuntimeParts {
+            hq: value.hq,
+            headquarters_territory: guild.hq,
+            treasury: value.treasury,
+            defences: value.defences,
+            held_resources,
+            production_rates,
+            storage_capacity,
+            observed_at,
+        });
 
-        Self {
+        Territory {
             guild: GuildRef {
                 uuid: guild_uuid,
                 name: guild_name,
@@ -630,19 +764,123 @@ impl From<RawTerritory> for Territory {
             },
             acquired: value.acquired,
             location: value.location,
-            resources: value.resources,
-            connections: value.connections,
-            runtime: None,
+            resources,
+            connections,
+            runtime,
         }
     }
 }
 
 fn parse_wynncraft_territory_payload(bytes: &[u8]) -> Result<TerritoryMap, serde_json::Error> {
     let raw_map: HashMap<String, RawTerritory> = serde_json::from_slice(bytes)?;
+    let observed_at = Utc::now();
     Ok(raw_map
         .into_iter()
-        .map(|(territory, raw)| (territory, Territory::from(raw)))
+        .map(|(territory, raw)| (territory, raw.into_territory(observed_at)))
         .collect())
+}
+
+fn split_resource_payload(
+    payload: RawResourcePayload,
+) -> (
+    Resources,
+    Option<Resources>,
+    Option<Resources>,
+    Option<Resources>,
+) {
+    match payload {
+        RawResourcePayload::Legacy(resources) => (resources, None, None, None),
+        RawResourcePayload::List(entries) => {
+            let mut base = Resources::default();
+            let mut held = Resources::default();
+            let mut production = Resources::default();
+            let mut capacity = Resources::default();
+            for entry in entries {
+                set_resource_value(&mut base, &entry.kind, entry.base_generation);
+                set_resource_value(&mut held, &entry.kind, entry.stored);
+                set_resource_value(&mut production, &entry.kind, entry.generation);
+                set_resource_value(&mut capacity, &entry.kind, entry.limit);
+            }
+            (
+                base,
+                (!held.is_empty()).then_some(held),
+                (!production.is_empty()).then_some(production),
+                (!capacity.is_empty()).then_some(capacity),
+            )
+        }
+        RawResourcePayload::Empty => (Resources::default(), None, None, None),
+    }
+}
+
+fn set_resource_value(resources: &mut Resources, kind: &str, value: i64) {
+    let value = i32::try_from(value.max(0)).unwrap_or(i32::MAX);
+    match kind.trim().to_ascii_uppercase().as_str() {
+        "EMERALD" | "EMERALDS" => resources.emeralds = value,
+        "ORE" => resources.ore = value,
+        "CROP" | "CROPS" => resources.crops = value,
+        "FISH" => resources.fish = value,
+        "WOOD" => resources.wood = value,
+        _ => {}
+    }
+}
+
+fn clean_api_tier(raw: Option<String>) -> Option<String> {
+    raw.map(|value| value.trim().replace('_', " "))
+        .filter(|value| !value.is_empty())
+}
+
+struct ApiRuntimeParts {
+    hq: Option<bool>,
+    headquarters_territory: Option<String>,
+    treasury: Option<String>,
+    defences: Option<String>,
+    held_resources: Option<Resources>,
+    production_rates: Option<Resources>,
+    storage_capacity: Option<Resources>,
+    observed_at: DateTime<Utc>,
+}
+
+fn build_api_runtime(parts: ApiRuntimeParts) -> Option<TerritoryRuntimeData> {
+    let headquarters_territory = parts
+        .headquarters_territory
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let treasury = clean_api_tier(parts.treasury);
+    let defense_tier = clean_api_tier(parts.defences);
+    if parts.hq.is_none()
+        && headquarters_territory.is_none()
+        && treasury.is_none()
+        && defense_tier.is_none()
+        && parts.held_resources.is_none()
+        && parts.production_rates.is_none()
+        && parts.storage_capacity.is_none()
+    {
+        return None;
+    }
+
+    Some(TerritoryRuntimeData {
+        headquarters: parts.hq,
+        headquarters_territory,
+        held_resources: parts.held_resources,
+        production_rates: parts.production_rates,
+        storage_capacity: parts.storage_capacity,
+        treasury,
+        defense_tier,
+        contested: None,
+        active_war: None,
+        extra_scrapes: None,
+        provenance: Some(DataProvenance {
+            source: "wynncraft_api".to_string(),
+            visibility: VisibilityClass::Public,
+            confidence: 1.0,
+            reporter_count: 1,
+            observed_at: parts.observed_at.to_rfc3339(),
+            menu_season_id: None,
+            menu_captured_territories: None,
+            menu_sr_per_hour: None,
+            menu_observed_at: None,
+        }),
+    })
 }
 
 fn compute_diff(old: &TerritoryMap, new: &TerritoryMap) -> Vec<TerritoryChange> {
@@ -655,7 +893,6 @@ fn compute_diff(old: &TerritoryMap, new: &TerritoryMap) -> Vec<TerritoryChange> 
                     || old_territory.guild.name != new_territory.guild.name
                     || old_territory.guild.prefix != new_territory.guild.prefix
                     || old_territory.acquired != new_territory.acquired
-                    || old_territory.runtime != new_territory.runtime
             }
             None => true, // new territory
         };
@@ -689,13 +926,46 @@ fn compute_diff(old: &TerritoryMap, new: &TerritoryMap) -> Vec<TerritoryChange> 
     changes
 }
 
+fn compute_runtime_updates(
+    old: &TerritoryMap,
+    new: &TerritoryMap,
+    ownership_changes: &HashSet<String>,
+) -> Vec<TerritoryRuntimeChange> {
+    new.iter()
+        .filter(|(name, _)| !ownership_changes.contains(*name))
+        .filter_map(|(name, new_territory)| {
+            let old_runtime = old
+                .get(name)
+                .and_then(|territory| territory.runtime.as_ref());
+            if old_runtime == new_territory.runtime.as_ref() {
+                return None;
+            }
+            Some(TerritoryRuntimeChange {
+                territory: name.clone(),
+                runtime: new_territory.runtime.clone(),
+            })
+        })
+        .collect()
+}
+
+fn has_static_field_changes(old: &TerritoryMap, new: &TerritoryMap) -> bool {
+    new.iter().any(|(name, new_territory)| {
+        old.get(name).is_some_and(|old_territory| {
+            old_territory.location != new_territory.location
+                || old_territory.resources != new_territory.resources
+                || old_territory.connections != new_territory.connections
+                || old_territory.guild.color != new_territory.guild.color
+        })
+    })
+}
+
 fn has_removed_territories(old: &TerritoryMap, new: &TerritoryMap) -> bool {
     old.keys().any(|name| !new.contains_key(name))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -703,8 +973,8 @@ mod tests {
 
     use super::{
         UNCLAIMED_GUILD_NAME, UNCLAIMED_GUILD_PREFIX, UNCLAIMED_GUILD_UUID, compute_diff,
-        has_removed_territories, merge_supplemental_data, parse_wynncraft_territory_payload,
-        process_polled_map_with,
+        compute_runtime_updates, has_removed_territories, merge_supplemental_data,
+        parse_wynncraft_territory_payload, process_polled_map_with,
     };
     use axum::Router;
     use chrono::{DateTime, Utc};
@@ -851,7 +1121,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_diff_detects_runtime_changes_without_owner_changes() {
+    fn runtime_changes_are_emitted_separately_from_ownership_changes() {
         let mut old = TerritoryMap::new();
         old.insert("Alpha".to_string(), territory("g1", "GuildOne", "G1"));
 
@@ -862,9 +1132,18 @@ mod tests {
         });
 
         let diff = compute_diff(&old, &new);
-        assert_eq!(diff.len(), 1);
-        assert_eq!(diff[0].territory, "Alpha");
-        assert_eq!(diff[0].guild.uuid, "g1");
+        assert!(diff.is_empty());
+
+        let runtime_updates = compute_runtime_updates(&old, &new, &HashSet::new());
+        assert_eq!(runtime_updates.len(), 1);
+        assert_eq!(runtime_updates[0].territory, "Alpha");
+        assert_eq!(
+            runtime_updates[0]
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.contested),
+            Some(true)
+        );
     }
 
     #[test]
@@ -909,6 +1188,78 @@ mod tests {
         assert_eq!(ragni.guild.uuid, "abc");
         assert_eq!(ragni.guild.name, "Aequitas");
         assert_eq!(ragni.guild.prefix, "Aeq");
+    }
+
+    #[test]
+    fn parse_wynncraft_payload_uses_direct_api_runtime_fields() {
+        let payload = r#"{
+            "Forts in Fall": {
+                "guild": {
+                    "uuid": "ee860b7c-9a1d-49cf-9f19-ab673ba0f23b",
+                    "name": "Sequoia",
+                    "prefix": "SEQ",
+                    "hq": "Forts in Fall"
+                },
+                "acquired": "2026-05-24T04:06:09.888000Z",
+                "location": {"start":[-2039,-1500],"end":[-1780,-1134]},
+                "hq": true,
+                "resources": [
+                    {"type":"EMERALD","generation":86400,"baseGeneration":9000,"stored":381631,"limit":400000},
+                    {"type":"WOOD","generation":43200,"baseGeneration":3600,"stored":119989,"limit":120000},
+                    {"type":"CROP","generation":0,"baseGeneration":0,"stored":72834,"limit":120000}
+                ],
+                "links": ["Fort Torann", "Royal Dam"],
+                "treasury": "MEDIUM",
+                "defences": "VERY_HIGH"
+            }
+        }"#;
+
+        let parsed = parse_wynncraft_territory_payload(payload.as_bytes())
+            .expect("new territory payload should parse");
+        let territory = parsed
+            .get("Forts in Fall")
+            .expect("territory should be present");
+
+        assert_eq!(territory.resources.emeralds, 9000);
+        assert_eq!(territory.resources.wood, 3600);
+        assert_eq!(territory.connections, ["Fort Torann", "Royal Dam"]);
+
+        let runtime = territory
+            .runtime
+            .as_ref()
+            .expect("runtime should be present");
+        assert_eq!(runtime.headquarters, Some(true));
+        assert_eq!(
+            runtime.headquarters_territory.as_deref(),
+            Some("Forts in Fall")
+        );
+        assert_eq!(runtime.treasury.as_deref(), Some("MEDIUM"));
+        assert_eq!(runtime.defense_tier.as_deref(), Some("VERY HIGH"));
+        assert_eq!(
+            runtime
+                .held_resources
+                .as_ref()
+                .map(|resources| resources.emeralds),
+            Some(381631)
+        );
+        assert_eq!(
+            runtime
+                .production_rates
+                .as_ref()
+                .map(|resources| resources.wood),
+            Some(43200)
+        );
+        assert_eq!(
+            runtime
+                .storage_capacity
+                .as_ref()
+                .map(|resources| resources.crops),
+            Some(120000)
+        );
+        assert_eq!(
+            runtime.provenance.as_ref().map(|p| p.source.as_str()),
+            Some("wynncraft_api")
+        );
     }
 
     #[tokio::test]
@@ -957,7 +1308,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supplemental_only_tick_updates_snapshot_without_advancing_sequence() {
+    async fn supplemental_only_tick_updates_snapshot_with_fresh_sequence() {
         let state = AppState::new(Some(lazy_test_pool()));
         {
             let mut current = state.live_snapshot.write().await;
@@ -985,13 +1336,13 @@ mod tests {
         .await;
 
         match rx.try_recv() {
-            Ok(PreSerializedEvent::Snapshot { seq, .. }) => assert_eq!(seq, 31),
+            Ok(PreSerializedEvent::Snapshot { seq, .. }) => assert_eq!(seq, 32),
             other => panic!("expected supplemental tick to emit snapshot event, got {other:?}"),
         }
         {
             let current = state.live_snapshot.read().await;
-            assert_eq!(current.seq, 31);
-            assert_eq!(current.timestamp, "2026-01-01T00:00:00Z");
+            assert_eq!(current.seq, 32);
+            assert_ne!(current.timestamp, "2026-01-01T00:00:00Z");
             let alpha = current
                 .territories
                 .get("Alpha")
@@ -1009,7 +1360,7 @@ mod tests {
         }
         assert_eq!(
             state.next_seq.load(std::sync::atomic::Ordering::Relaxed),
-            31
+            32
         );
     }
 
