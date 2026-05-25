@@ -12,7 +12,9 @@ use tracing::{info, warn};
 use sequoia_shared::{SeasonScalarCurrent, SeasonScalarSample};
 
 use crate::config::{WYNNCRAFT_GUILD_URL, season_rating_contender_count, season_rating_watchlist};
+use crate::services::wynncraft_api;
 use crate::state::AppState;
+use crate::state::CachedSeasonLeaderboard;
 
 const OBSERVATION_INTERVAL_SECS: u64 = 300;
 const AUTHORITATIVE_CONFIDENCE_MIN: f64 = 0.99;
@@ -93,6 +95,13 @@ pub async fn warm_cache(state: &AppState) {
 }
 
 async fn sample_once(state: &AppState, pool: &sqlx::PgPool) -> Result<(), String> {
+    if let Some(leaderboard) = wynncraft_api::cached_latest_guild_season_leaderboard(state).await? {
+        let snapshots = snapshots_from_leaderboard(state, &leaderboard).await;
+        if !snapshots.is_empty() {
+            return persist_guild_observations(pool, &snapshots).await;
+        }
+    }
+
     let sampled_candidates = top_candidate_guilds(
         state,
         pool,
@@ -115,6 +124,41 @@ async fn sample_once(state: &AppState, pool: &sqlx::PgPool) -> Result<(), String
     }
 
     persist_guild_observations(pool, &snapshots).await
+}
+
+async fn snapshots_from_leaderboard(
+    state: &AppState,
+    leaderboard: &CachedSeasonLeaderboard,
+) -> Vec<GuildSeasonSnapshot> {
+    let observed_at = Utc::now();
+    let territory_counts = {
+        let snapshot = state.live_snapshot.read().await;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for territory in snapshot.territories.values() {
+            *counts
+                .entry(territory.guild.name.to_ascii_lowercase())
+                .or_default() += 1;
+        }
+        counts
+    };
+
+    leaderboard
+        .entries
+        .iter()
+        .filter(|entry| entry.score >= 0)
+        .map(|entry| GuildSeasonSnapshot {
+            guild_name: entry.name.clone(),
+            guild_uuid: entry.uuid.clone(),
+            guild_prefix: entry.prefix.clone(),
+            observed_at,
+            season_id: leaderboard.season_id,
+            rating: entry.score,
+            territory_count: territory_counts
+                .get(&entry.name.to_ascii_lowercase())
+                .copied()
+                .unwrap_or(0),
+        })
+        .collect()
 }
 
 async fn persist_guild_observations(

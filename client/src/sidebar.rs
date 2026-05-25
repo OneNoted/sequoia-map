@@ -4,9 +4,11 @@ use wasm_bindgen::JsCast;
 
 use sequoia_shared::history::HistoryHeatMeta;
 use sequoia_shared::{
-    DataProvenance, Resources, TreasuryLevel, passive_sr_per_5s, passive_sr_per_hour,
+    DataProvenance, MapIntelSummary, NamedCount, Resources, TreasuryLevel, passive_sr_per_5s,
+    passive_sr_per_hour,
 };
 
+use crate::SEQUOIA_WEBSITE_URL;
 use crate::app::{
     AbbreviateNames, AutoSrScalarEnabled, BoldConnections, CONNECTION_OPACITY_SCALE_MAX,
     CONNECTION_OPACITY_SCALE_MIN, CONNECTION_THICKNESS_SCALE_MAX, CONNECTION_THICKNESS_SCALE_MIN,
@@ -39,7 +41,6 @@ use crate::sse::ConnectionStatus;
 use crate::territory::ClientTerritoryMap;
 use crate::tower::TowerCalculator;
 use crate::viewport::Viewport;
-use crate::{IRIS_RELEASES_URL, SEQUOIA_WEBSITE_URL};
 
 /// Build list of (label, formatted_value, icon_name) for non-zero resources.
 fn build_resource_items(res: &Resources) -> Vec<(&'static str, String, &'static str)> {
@@ -149,8 +150,11 @@ fn visibility_label(provenance: &DataProvenance) -> &'static str {
     }
 }
 
-fn iris_source_display_label(source: &str) -> Option<&'static str> {
-    if source.eq_ignore_ascii_case("iris") || source.eq_ignore_ascii_case("fabric_reporter") {
+fn live_source_display_label(source: &str) -> Option<&'static str> {
+    if source.eq_ignore_ascii_case("wynncraft_api") {
+        Some("Wynncraft API")
+    } else if source.eq_ignore_ascii_case("iris") || source.eq_ignore_ascii_case("fabric_reporter")
+    {
         Some("iris")
     } else {
         None
@@ -234,7 +238,12 @@ pub fn Sidebar() -> impl IntoView {
                     } else {
                         let query = search_query.get();
                         if query.is_empty() {
-                            view! { <LeaderboardPanel /> }.into_any()
+                            view! {
+                                <>
+                                    <MapIntelPanel />
+                                    <LeaderboardPanel />
+                                </>
+                            }.into_any()
                         } else {
                             view! { <SearchResults /> }.into_any()
                         }
@@ -253,7 +262,7 @@ fn SidebarHeader() -> impl IntoView {
     let tick: RwSignal<i64> = expect_context();
 
     #[derive(Clone, PartialEq)]
-    struct IrisBadgeStatus {
+    struct LiveDataBadgeStatus {
         is_working: bool,
         status_label: String,
         status_reason: String,
@@ -266,7 +275,7 @@ fn SidebarHeader() -> impl IntoView {
         tooltip: String,
     }
 
-    let iris_status = Memo::new(move |_| {
+    let live_data_status = Memo::new(move |_| {
         let now = tick.get();
         let map = territories.get();
         let mut latest_status: Option<(i64, String, String, u16, String, String)> = None;
@@ -279,7 +288,7 @@ fn SidebarHeader() -> impl IntoView {
                 continue;
             };
             let source = provenance.source.trim();
-            let Some(source_label) = iris_source_display_label(source) else {
+            let Some(source_label) = live_source_display_label(source) else {
                 continue;
             };
 
@@ -305,7 +314,7 @@ fn SidebarHeader() -> impl IntoView {
             Some((observed_ts, source, observed_at, reporter_count, visibility, confidence)) => {
                 let age_secs = (now - observed_ts).max(0);
                 let is_active = age_secs <= 120;
-                let is_working = is_active && reporter_count > 0;
+                let is_working = is_active && (reporter_count > 0 || source == "Wynncraft API");
                 let status_label = if is_working {
                     "Working".to_string()
                 } else {
@@ -314,13 +323,13 @@ fn SidebarHeader() -> impl IntoView {
                 let observed_label = format_relative_time(&observed_at, now);
                 let age_label = format_age_seconds(age_secs);
                 let status_reason = if is_working {
-                    "recent Iris telemetry is arriving".to_string()
+                    "recent Wynncraft API territory data is arriving".to_string()
                 } else if !is_active {
-                    format!("latest Iris telemetry is stale ({age_label} old)")
+                    format!("latest Wynncraft API data is stale ({age_label} old)")
                 } else {
-                    "no active Iris reporters".to_string()
+                    "no active live data source".to_string()
                 };
-                IrisBadgeStatus {
+                LiveDataBadgeStatus {
                     is_working,
                     status_label: status_label.clone(),
                     status_reason: status_reason.clone(),
@@ -331,14 +340,14 @@ fn SidebarHeader() -> impl IntoView {
                     visibility: visibility.clone(),
                     confidence: confidence.clone(),
                     tooltip: format!(
-                        "Iris: {status_label}\nReason: {status_reason}\nSource: {source}\nObserved: {observed_label}\nAge: {age_label}\nReporters: {reporter_count}\nVisibility: {visibility}\nConfidence: {confidence}\nFreshness window: 120s"
+                        "Live data: {status_label}\nReason: {status_reason}\nSource: {source}\nObserved: {observed_label}\nAge: {age_label}\nSamples: {reporter_count}\nVisibility: {visibility}\nConfidence: {confidence}\nFreshness window: 120s"
                     ),
                 }
             }
             None => {
                 let status_label = "Not Working".to_string();
-                let status_reason = "no Iris telemetry received yet".to_string();
-                IrisBadgeStatus {
+                let status_reason = "no live API data received yet".to_string();
+                LiveDataBadgeStatus {
                     is_working: false,
                     status_label: status_label.clone(),
                     status_reason: status_reason.clone(),
@@ -349,13 +358,13 @@ fn SidebarHeader() -> impl IntoView {
                     visibility: "n/a".to_string(),
                     confidence: "n/a".to_string(),
                     tooltip: format!(
-                        "Iris: {status_label}\nReason: {status_reason}\nSource: none\nObserved: no observations yet"
+                        "Live data: {status_label}\nReason: {status_reason}\nSource: none\nObserved: no observations yet"
                     ),
                 }
             }
         }
     });
-    let iris_tooltip_visible = RwSignal::new(false);
+    let live_data_tooltip_visible = RwSignal::new(false);
 
     let padding = move || {
         if is_mobile.get() {
@@ -387,12 +396,12 @@ fn SidebarHeader() -> impl IntoView {
                 </a>
                 <div style="position: relative; flex-shrink: 0;">
                     <a
-                        href=IRIS_RELEASES_URL
+                        href="https://docs.wynncraft.com/"
                         target="_blank"
                         rel="noopener noreferrer"
-                        title="Open Iris releases"
+                        title="Open Wynncraft API documentation"
                         style=move || {
-                            let status = iris_status.get();
+                            let status = live_data_status.get();
                             let (border, bg, fg) = if status.is_working {
                                 (
                                     "rgba(var(--accent-live-rgb),0.42)",
@@ -410,12 +419,12 @@ fn SidebarHeader() -> impl IntoView {
                                 "display: inline-flex; align-items: center; gap: 6px; font-family: 'Silkscreen', monospace; font-size: 0.66rem; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 999px; border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; text-decoration: none;"
                             )
                         }
-                        aria-label=move || iris_status.get().tooltip
-                        on:mouseenter=move |_| iris_tooltip_visible.set(true)
-                        on:mouseleave=move |_| iris_tooltip_visible.set(false)
+                        aria-label=move || live_data_status.get().tooltip
+                        on:mouseenter=move |_| live_data_tooltip_visible.set(true)
+                        on:mouseleave=move |_| live_data_tooltip_visible.set(false)
                     >
                         <span style=move || {
-                            let status = iris_status.get();
+                            let status = live_data_status.get();
                             let (dot_bg, dot_glow) = if status.is_working {
                                 ("var(--accent-live)", "0 0 6px var(--accent-live)")
                             } else {
@@ -425,17 +434,17 @@ fn SidebarHeader() -> impl IntoView {
                                 "width: 7px; height: 7px; border-radius: 50%; background: {dot_bg}; box-shadow: {dot_glow};"
                             )
                         } />
-                        <span>"Iris"</span>
+                        <span>"API"</span>
                     </a>
                     <div
                         style=move || {
-                            let status = iris_status.get();
+                            let status = live_data_status.get();
                             let border = if status.is_working {
                                 "rgba(var(--accent-live-rgb),0.42)"
                             } else {
                                 "rgba(154,149,144,0.45)"
                             };
-                            let display = if iris_tooltip_visible.get() {
+                            let display = if live_data_tooltip_visible.get() {
                                 "block"
                             } else {
                                 "none"
@@ -446,7 +455,7 @@ fn SidebarHeader() -> impl IntoView {
                         }
                     >
                         <div style=move || {
-                            let color = if iris_status.get().is_working {
+                            let color = if live_data_status.get().is_working {
                                 "var(--accent-live)"
                             } else {
                                 "#d5d2ce"
@@ -455,18 +464,18 @@ fn SidebarHeader() -> impl IntoView {
                                 "font-family: 'Silkscreen', monospace; font-size: 0.62rem; letter-spacing: 0.09em; text-transform: uppercase; color: {color};"
                             )
                         }>
-                            {move || format!("Iris {}", iris_status.get().status_label)}
+                            {move || format!("API {}", live_data_status.get().status_label)}
                         </div>
                         <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.67rem; color: #c5c2bc; margin-top: 4px;">
-                            {move || iris_status.get().status_reason}
+                            {move || live_data_status.get().status_reason}
                         </div>
                         <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.645rem; color: #9a9590; margin-top: 8px; line-height: 1.45;">
-                            <div>{move || format!("Observed: {}", iris_status.get().observed_label)}</div>
-                            <div>{move || format!("Age: {}", iris_status.get().age_label)}</div>
-                            <div>{move || format!("Source: {}", iris_status.get().source)}</div>
-                            <div>{move || format!("Reporters: {}", iris_status.get().reporter_count)}</div>
-                            <div>{move || format!("Visibility: {}", iris_status.get().visibility)}</div>
-                            <div>{move || format!("Confidence: {}", iris_status.get().confidence)}</div>
+                            <div>{move || format!("Observed: {}", live_data_status.get().observed_label)}</div>
+                            <div>{move || format!("Age: {}", live_data_status.get().age_label)}</div>
+                            <div>{move || format!("Source: {}", live_data_status.get().source)}</div>
+                            <div>{move || format!("Samples: {}", live_data_status.get().reporter_count)}</div>
+                            <div>{move || format!("Visibility: {}", live_data_status.get().visibility)}</div>
+                            <div>{move || format!("Confidence: {}", live_data_status.get().confidence)}</div>
                             <div>"Freshness window: 120s"</div>
                         </div>
                     </div>
@@ -541,6 +550,162 @@ fn SearchBar() -> impl IntoView {
                     style:display=move || if is_mobile.get() { "none" } else { "block" }
                 >"/"</div>
             </div>
+        </div>
+    }
+}
+
+fn format_level_range(min: Option<i32>, max: Option<i32>) -> String {
+    match (min, max) {
+        (Some(min), Some(max)) if min == max => format!("{min}"),
+        (Some(min), Some(max)) => format!("{min}-{max}"),
+        _ => "--".to_string(),
+    }
+}
+
+fn format_future_time(rfc3339: &str, reference_secs: i64) -> String {
+    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
+        return rfc3339.to_string();
+    };
+    let secs = dt.timestamp() - reference_secs;
+    if secs <= 0 {
+        return "now".to_string();
+    }
+    if secs < 60 {
+        return "<1m".to_string();
+    }
+    let mins = secs / 60;
+    if mins < 60 {
+        return format!("{mins}m");
+    }
+    let hours = mins / 60;
+    let rem_mins = mins % 60;
+    if rem_mins == 0 {
+        format!("{hours}h")
+    } else {
+        format!("{hours}h {rem_mins}m")
+    }
+}
+
+fn top_count_labels(counts: &[NamedCount], limit: usize) -> String {
+    let labels = counts
+        .iter()
+        .take(limit)
+        .map(|entry| format!("{} {}", entry.name, entry.count))
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        "--".to_string()
+    } else {
+        labels.join(" / ")
+    }
+}
+
+#[component]
+fn MapIntelPanel() -> impl IntoView {
+    let tick: RwSignal<i64> = expect_context();
+    let intel: RwSignal<Option<MapIntelSummary>> = RwSignal::new(None);
+    let load_error: RwSignal<Option<String>> = RwSignal::new(None);
+
+    Effect::new(move |_| {
+        wasm_bindgen_futures::spawn_local(async move {
+            match gloo_net::http::Request::get("/api/map/intel").send().await {
+                Ok(response) if response.ok() => match response.json::<MapIntelSummary>().await {
+                    Ok(summary) => {
+                        intel.set(Some(summary));
+                        load_error.set(None);
+                    }
+                    Err(error) => {
+                        load_error.set(Some(format!("Parse {}", error)));
+                    }
+                },
+                Ok(response) => {
+                    load_error.set(Some(format!("HTTP {}", response.status())));
+                }
+                Err(error) => {
+                    load_error.set(Some(format!("Fetch {}", error)));
+                }
+            }
+        });
+    });
+
+    view! {
+        <div style="border-bottom: 1px solid #282c3e; padding: 12px 14px 10px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 10px 8px;">
+                <div style="font-family: 'Silkscreen', monospace; font-size: 0.812rem; text-transform: uppercase; letter-spacing: 0.13em; color: #5a5860;">
+                    <span style="color: var(--accent-live); margin-right: 6px; font-size: 0.72rem;">{"\u{25C6}"}</span>"API Intel"
+                </div>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.696rem; color: #6f748f; border: 1px solid rgba(var(--accent-live-rgb),0.18); background: rgba(var(--accent-live-rgb),0.06); border-radius: 3px; padding: 1px 5px;">"Wynncraft"</span>
+            </div>
+            {move || {
+                if let Some(summary) = intel.get() {
+                    let next_label = summary
+                        .world_events
+                        .next_schedule
+                        .as_deref()
+                        .map(|schedule| format_future_time(schedule, tick.get()))
+                        .unwrap_or_else(|| "--".to_string());
+                    let raid_levels = format_level_range(summary.raids.min_level, summary.raids.max_level);
+                    let camp_levels = format_level_range(summary.camps.min_level, summary.camps.max_level);
+                    let node_resources = top_count_labels(&summary.gathering_nodes.resources, 3);
+                    let scheduled_text = summary
+                        .world_events
+                        .scheduled
+                        .iter()
+                        .take(2)
+                        .map(|event| {
+                            let when = event
+                                .schedule
+                                .as_deref()
+                                .map(|schedule| format_future_time(schedule, tick.get()))
+                                .unwrap_or_else(|| "--".to_string());
+                            let level = event
+                                .level
+                                .map_or_else(|| "--".to_string(), |level| level.to_string());
+                            format!("{} Lv {} {}", event.name, level, when)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" / ");
+                    let has_scheduled = !scheduled_text.is_empty();
+                    let scheduled_display = scheduled_text.clone();
+                    view! {
+                        <div>
+                            <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;">
+                                <MapIntelStat label="Raids" value=summary.raids.count.to_string() detail=raid_levels />
+                                <MapIntelStat label="Camps" value=summary.camps.count.to_string() detail=camp_levels />
+                                <MapIntelStat label="Events" value=format!("{}/{}", summary.world_events.scheduled_count, summary.world_events.count) detail=next_label />
+                                <MapIntelStat label="Nodes" value=summary.gathering_nodes.count.to_string() detail=format_level_range(summary.gathering_nodes.min_level, summary.gathering_nodes.max_level) />
+                            </div>
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.696rem; color: #6f748f; margin: 7px 10px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                {node_resources}
+                            </div>
+                            <div
+                                style="margin-top: 8px; padding: 5px 9px; border: 1px solid rgba(80,200,120,0.12); background: rgba(80,200,120,0.035); border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.696rem; color: #c5c2bc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                                style:display=move || if has_scheduled { "block" } else { "none" }
+                            >
+                                <span style="color: var(--accent-live); margin-right: 6px;">{"\u{25CF}"}</span>
+                                {scheduled_display}
+                            </div>
+                        </div>
+                    }.into_any()
+                } else {
+                    let message = load_error.get().unwrap_or_else(|| "Loading".to_string());
+                    view! {
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.766rem; color: #6f748f; padding: 8px 10px;">
+                            {message}
+                        </div>
+                    }.into_any()
+                }
+            }}
+        </div>
+    }
+}
+
+#[component]
+fn MapIntelStat(label: &'static str, value: String, detail: String) -> impl IntoView {
+    view! {
+        <div style="min-width: 0; border: 1px solid rgba(40,44,62,0.9); background: rgba(26,29,42,0.62); border-radius: 5px; padding: 6px 7px;">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.638rem; color: #6f748f; text-transform: uppercase; letter-spacing: 0.08em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{label}</div>
+            <div style="font-family: 'Silkscreen', monospace; font-size: 0.951rem; color: #f5c542; margin-top: 2px; line-height: 1;">{value}</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.638rem; color: #9a9590; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{detail}</div>
         </div>
     }
 }
@@ -2104,11 +2269,19 @@ fn DetailPanel() -> impl IntoView {
                 }
             })
             .count();
-        let treasury = chrono::DateTime::parse_from_rfc3339(&acquired_rfc)
-            .ok()
-            .map(|dt| {
-                let secs = (reference_secs - dt.timestamp()).max(0);
-                TreasuryLevel::from_held_seconds(secs)
+        let treasury = ct
+            .territory
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.treasury.as_deref())
+            .and_then(TreasuryLevel::from_api_tier)
+            .or_else(|| {
+                chrono::DateTime::parse_from_rfc3339(&acquired_rfc)
+                    .ok()
+                    .map(|dt| {
+                        let secs = (reference_secs - dt.timestamp()).max(0);
+                        TreasuryLevel::from_held_seconds(secs)
+                    })
             })
             .unwrap_or(TreasuryLevel::VeryLow);
         Some((
