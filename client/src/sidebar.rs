@@ -26,7 +26,7 @@ use crate::app::{
     LastLiveSeq, LeaderboardSortBySr, LiveHandoffResyncCount, LiveSeasonScalarSample,
     ManualSrScalar, MapMode, NameColor, NameColorSetting, NeedsLiveResync, PlaybackActive,
     ReadableFont, ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild,
-    ShowCompoundMapTime, ShowCountdown, ShowGranularMapTime, ShowLeaderboardOnline,
+    ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowGranularMapTime, ShowLeaderboardOnline,
     ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap,
     ShowNames, ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarIndex, SidebarItems,
     SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
@@ -260,6 +260,7 @@ fn SidebarHeader() -> impl IntoView {
     let IsMobile(is_mobile) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let tick: RwSignal<i64> = expect_context();
+    let ShowDebugInfo(show_debug_info) = expect_context();
 
     #[derive(Clone, PartialEq)]
     struct LiveDataBadgeStatus {
@@ -394,7 +395,10 @@ fn SidebarHeader() -> impl IntoView {
                     <div class="text-gold-gradient" style="font-family: 'Silkscreen', monospace; font-size: 1.35rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; text-shadow: 0 0 16px rgba(245,197,66,0.08);">"SEQUOIA"</div>
                     <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.673rem; color: #3a3f5c; background: #1a1d2a; padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(245,197,66,0.15); letter-spacing: 0.04em;">"v0.1"</div>
                 </a>
-                <div style="position: relative; flex-shrink: 0;">
+                <div
+                    style="position: relative; flex-shrink: 0;"
+                    style:display=move || if show_debug_info.get() { "block" } else { "none" }
+                >
                     <a
                         href="https://docs.wynncraft.com/"
                         target="_blank"
@@ -752,6 +756,7 @@ fn SettingsPanel() -> impl IntoView {
     let LabelScaleStaticName(label_scale_static_name) = expect_context();
     let LabelScaleDynamic(label_scale_dynamic) = expect_context();
     let LabelScaleIcons(label_scale_icons) = expect_context();
+    let ShowDebugInfo(show_debug_info) = expect_context();
     let territory_count = Memo::new(move |_| territories.get().len());
 
     view! {
@@ -915,6 +920,9 @@ fn SettingsPanel() -> impl IntoView {
                 <SettingsToggleRow label="Online Count" shortcut="" active=show_leaderboard_online />
                 <SettingsToggleRow label="SR Gain" shortcut="" active=show_leaderboard_sr_gain />
                 <SettingsToggleRow label="SR Value" shortcut="" active=show_leaderboard_sr_value />
+
+                <SettingsSectionHeader title="Advanced" />
+                <SettingsToggleRow label="Debug Mode" shortcut="" active=show_debug_info />
             </div>
         </div>
     }
@@ -2197,6 +2205,7 @@ fn DetailPanel() -> impl IntoView {
     let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
+    let ShowDebugInfo(show_debug_info) = expect_context();
 
     let tower_state: crate::tower::TowerState = expect_context();
 
@@ -2391,35 +2400,40 @@ fn DetailPanel() -> impl IntoView {
                             format_sr_rate(passive_sr_h),
                             format_sr_rate(passive_sr_5s)
                         );
-                        let scalar_note = match (scalar_details.source, scalar_details.sample.as_ref()) {
-                            (ScalarSource::Manual, _) => {
-                                format!("Manual scalar {:.2} in use", scalar_details.value)
-                            }
-                            (ScalarSource::LiveEstimate, Some(sample)) => {
-                                let sampled = format_relative_time(&sample.sampled_at, reference_secs);
-                                format!(
-                                    "Live estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
-                                    sample.season_id,
-                                    sample.scalar_weighted,
-                                    sample.scalar_raw,
-                                    sample.confidence * 100.0,
-                                    sampled
-                                )
-                            }
-                            (ScalarSource::HistoryEstimate, Some(sample)) => {
-                                let sampled = format_relative_time(&sample.sampled_at, reference_secs);
-                                format!(
-                                    "History estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
-                                    sample.season_id,
-                                    sample.scalar_weighted,
-                                    sample.scalar_raw,
-                                    sample.confidence * 100.0,
-                                    sampled
-                                )
-                            }
-                            (_, None) => {
-                                format!("Manual fallback scalar {:.2} (estimate unavailable)", scalar_details.value)
-                            }
+                        let show_debug_details = show_debug_info.get();
+                        let scalar_note = if show_debug_details {
+                            Some(match (scalar_details.source, scalar_details.sample.as_ref()) {
+                                (ScalarSource::Manual, _) => {
+                                    format!("Manual scalar {:.2} in use", scalar_details.value)
+                                }
+                                (ScalarSource::LiveEstimate, Some(sample)) => {
+                                    let sampled = format_relative_time(&sample.sampled_at, reference_secs);
+                                    format!(
+                                        "Live estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
+                                        sample.season_id,
+                                        sample.scalar_weighted,
+                                        sample.scalar_raw,
+                                        sample.confidence * 100.0,
+                                        sampled
+                                    )
+                                }
+                                (ScalarSource::HistoryEstimate, Some(sample)) => {
+                                    let sampled = format_relative_time(&sample.sampled_at, reference_secs);
+                                    format!(
+                                        "History estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
+                                        sample.season_id,
+                                        sample.scalar_weighted,
+                                        sample.scalar_raw,
+                                        sample.confidence * 100.0,
+                                        sampled
+                                    )
+                                }
+                                (_, None) => {
+                                    format!("Manual fallback scalar {:.2} (estimate unavailable)", scalar_details.value)
+                                }
+                            })
+                        } else {
+                            None
                         };
 
                         let runtime_hq = runtime.as_ref().and_then(|runtime| runtime.headquarters);
@@ -2438,33 +2452,37 @@ fn DetailPanel() -> impl IntoView {
                             .as_ref()
                             .and_then(|runtime| runtime.storage_capacity.clone())
                             .filter(|value| !value.is_empty());
-                        let runtime_provenance = runtime
-                            .as_ref()
-                            .and_then(|runtime| runtime.provenance.clone())
-                            .map(|provenance| {
-                                let source = if provenance.source.trim().is_empty() {
-                                    "unknown".to_string()
-                                } else {
-                                    provenance.source.clone()
-                                };
-                                let observed_label = format_relative_time(
-                                    &provenance.observed_at,
-                                    reference_secs,
-                                );
-                                let visibility = visibility_label(&provenance);
-                                let confidence = format_confidence(provenance.confidence);
-                                let reporter_count = provenance.reporter_count;
-                                (
-                                    format!(
-                                        "{} source \u{00b7} {} \u{00b7} conf {}",
-                                        visibility, source, confidence
-                                    ),
-                                    format!(
-                                        "Observed {} \u{00b7} reporters {}",
-                                        observed_label, reporter_count
-                                    ),
-                                )
-                            });
+                        let runtime_provenance = if show_debug_details {
+                            runtime
+                                .as_ref()
+                                .and_then(|runtime| runtime.provenance.clone())
+                                .map(|provenance| {
+                                    let source = if provenance.source.trim().is_empty() {
+                                        "unknown".to_string()
+                                    } else {
+                                        provenance.source.clone()
+                                    };
+                                    let observed_label = format_relative_time(
+                                        &provenance.observed_at,
+                                        reference_secs,
+                                    );
+                                    let visibility = visibility_label(&provenance);
+                                    let confidence = format_confidence(provenance.confidence);
+                                    let reporter_count = provenance.reporter_count;
+                                    (
+                                        format!(
+                                            "{} source \u{00b7} {} \u{00b7} conf {}",
+                                            visibility, source, confidence
+                                        ),
+                                        format!(
+                                            "Observed {} \u{00b7} reporters {}",
+                                            observed_label, reporter_count
+                                        ),
+                                    )
+                                })
+                        } else {
+                            None
+                        };
 
                         // Cooldown: territory can be queued again after 10 minutes
                         let cooldown = chrono::DateTime::parse_from_rfc3339(&acquired).ok().and_then(|dt| {
@@ -2534,11 +2552,13 @@ fn DetailPanel() -> impl IntoView {
                                         <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem; font-variant-numeric: tabular-nums;">{count}</span>
                                     </div>
                                 })}
-                                <div style="padding: 6px 0 8px; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="font-size: 0.789rem; color: #7c829e; font-family: 'JetBrains Mono', monospace;">
-                                        {scalar_note}
-                                    </span>
-                                </div>
+                                {scalar_note.map(|scalar_note| view! {
+                                    <div style="padding: 6px 0 8px; border-bottom: 1px solid rgba(40,44,62,0.6);">
+                                        <span style="font-size: 0.789rem; color: #7c829e; font-family: 'JetBrains Mono', monospace;">
+                                            {scalar_note}
+                                        </span>
+                                    </div>
+                                })}
                                 {runtime_hq.map(|is_hq| view! {
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
                                         <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Headquarters"</span>
