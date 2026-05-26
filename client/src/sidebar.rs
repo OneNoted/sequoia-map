@@ -395,10 +395,10 @@ fn SidebarHeader() -> impl IntoView {
                     <div class="text-gold-gradient" style="font-family: 'Silkscreen', monospace; font-size: 1.35rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; text-shadow: 0 0 16px rgba(245,197,66,0.08);">"SEQUOIA"</div>
                     <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.673rem; color: #3a3f5c; background: #1a1d2a; padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(245,197,66,0.15); letter-spacing: 0.04em;">"v0.1"</div>
                 </a>
-                <div
-                    style="position: relative; flex-shrink: 0;"
-                    style:display=move || if show_debug_info.get() { "block" } else { "none" }
-                >
+                <div style=move || {
+                    let display = if show_debug_info.get() { "block" } else { "none" };
+                    format!("position: relative; flex-shrink: 0; display: {display};")
+                }>
                     <a
                         href="https://docs.wynncraft.com/"
                         target="_blank"
