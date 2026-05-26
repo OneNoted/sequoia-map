@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
@@ -124,14 +125,18 @@ pub async fn fetch_guild_seasons(
 pub async fn cached_latest_guild_season_leaderboard(
     state: &AppState,
 ) -> Result<Option<CachedSeasonLeaderboard>, String> {
-    let now = Utc::now();
     {
         let cached = state.season_leaderboard_cache.read().await;
-        if let Some(cached) = cached.as_ref() {
-            let age = now.signed_duration_since(cached.fetched_at).num_seconds();
-            if age < SEASON_LEADERBOARD_CACHE_TTL_SECS {
-                return Ok(Some(cached.clone()));
-            }
+        if let Some(cached) = fresh_season_leaderboard(cached.as_ref(), Utc::now()) {
+            return Ok(Some(cached));
+        }
+    }
+
+    let _refresh_guard = state.season_leaderboard_fetch_lock.lock().await;
+    {
+        let cached = state.season_leaderboard_cache.read().await;
+        if let Some(cached) = fresh_season_leaderboard(cached.as_ref(), Utc::now()) {
+            return Ok(Some(cached));
         }
     }
 
@@ -145,14 +150,18 @@ pub async fn cached_latest_guild_season_leaderboard(
 }
 
 pub async fn cached_map_intel_summary(state: &AppState) -> Result<MapIntelSummary, String> {
-    let now = Utc::now();
     {
         let cached = state.map_intel_cache.read().await;
-        if let Some(cached) = cached.as_ref() {
-            let age = now.signed_duration_since(cached.fetched_at).num_seconds();
-            if age < MAP_INTEL_CACHE_TTL_SECS {
-                return Ok(cached.summary.clone());
-            }
+        if let Some(summary) = fresh_map_intel_summary(cached.as_ref(), Utc::now()) {
+            return Ok(summary);
+        }
+    }
+
+    let _refresh_guard = state.map_intel_fetch_lock.lock().await;
+    {
+        let cached = state.map_intel_cache.read().await;
+        if let Some(summary) = fresh_map_intel_summary(cached.as_ref(), Utc::now()) {
+            return Ok(summary);
         }
     }
 
@@ -163,6 +172,24 @@ pub async fn cached_map_intel_summary(state: &AppState) -> Result<MapIntelSummar
         fetched_at: Utc::now(),
     });
     Ok(summary)
+}
+
+fn fresh_season_leaderboard(
+    cached: Option<&CachedSeasonLeaderboard>,
+    now: DateTime<Utc>,
+) -> Option<CachedSeasonLeaderboard> {
+    let cached = cached?;
+    let age = now.signed_duration_since(cached.fetched_at).num_seconds();
+    (age < SEASON_LEADERBOARD_CACHE_TTL_SECS).then(|| cached.clone())
+}
+
+fn fresh_map_intel_summary(
+    cached: Option<&CachedMapIntel>,
+    now: DateTime<Utc>,
+) -> Option<MapIntelSummary> {
+    let cached = cached?;
+    let age = now.signed_duration_since(cached.fetched_at).num_seconds();
+    (age < MAP_INTEL_CACHE_TTL_SECS).then(|| cached.summary.clone())
 }
 
 async fn fetch_map_intel_summary(client: &reqwest::Client) -> Result<MapIntelSummary, String> {
@@ -283,6 +310,8 @@ fn summarize_world_events(entries: Vec<RawWorldEvent>) -> WorldEventCollectionSu
     let mut max_level = None;
     let mut scheduled = Vec::new();
     let mut next_schedule = None::<String>;
+    let mut next_schedule_at = None::<DateTime<Utc>>;
+    let mut fallback_next_schedule = None::<String>;
 
     for entry in entries.iter() {
         count_label(&mut difficulties, entry.difficulty.as_deref());
@@ -292,44 +321,73 @@ fn summarize_world_events(entries: Vec<RawWorldEvent>) -> WorldEventCollectionSu
         let Some(schedule) = clean_optional_label(entry.schedule.clone()) else {
             continue;
         };
-        if next_schedule
+        let schedule_at = parse_schedule_utc(&schedule);
+        if let Some(parsed) = schedule_at {
+            if next_schedule_at.is_none_or(|current| parsed < current) {
+                next_schedule = Some(schedule.clone());
+                next_schedule_at = Some(parsed);
+            }
+        } else if fallback_next_schedule
             .as_ref()
             .is_none_or(|current| schedule < *current)
         {
-            next_schedule = Some(schedule.clone());
+            fallback_next_schedule = Some(schedule.clone());
         }
-        scheduled.push(WorldEventSummary {
-            name: entry.name.clone(),
-            internal_name: entry.internal_name.clone(),
-            difficulty: clean_optional_label(entry.difficulty.clone()),
-            level: entry.level,
-            length: clean_optional_label(entry.length.clone()),
-            schedule: Some(schedule),
-            location_count: entry.location.len(),
-            first_location: entry.location.iter().find_map(|location| location.event),
-        });
+        scheduled.push((
+            WorldEventSummary {
+                name: entry.name.clone(),
+                internal_name: entry.internal_name.clone(),
+                difficulty: clean_optional_label(entry.difficulty.clone()),
+                level: entry.level,
+                length: clean_optional_label(entry.length.clone()),
+                schedule: Some(schedule),
+                location_count: entry.location.len(),
+                first_location: entry.location.iter().find_map(|location| location.event),
+            },
+            schedule_at,
+        ));
     }
 
     scheduled.sort_by(|left, right| {
-        left.schedule
-            .cmp(&right.schedule)
+        compare_schedule_times(left.1, right.1)
+            .then_with(|| left.0.schedule.cmp(&right.0.schedule))
             .then_with(|| {
-                left.level
+                left.0
+                    .level
                     .unwrap_or(i32::MAX)
-                    .cmp(&right.level.unwrap_or(i32::MAX))
+                    .cmp(&right.0.level.unwrap_or(i32::MAX))
             })
-            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.0.name.cmp(&right.0.name))
     });
+    let scheduled = scheduled
+        .into_iter()
+        .map(|(summary, _)| summary)
+        .collect::<Vec<_>>();
 
     WorldEventCollectionSummary {
         count: entries.len(),
         scheduled_count: scheduled.len(),
-        next_schedule,
+        next_schedule: next_schedule.or(fallback_next_schedule),
         min_level,
         max_level,
         difficulties: sorted_counts(difficulties),
         lengths: sorted_counts(lengths),
         scheduled,
+    }
+}
+
+fn parse_schedule_utc(schedule: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(schedule)
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn compare_schedule_times(left: Option<DateTime<Utc>>, right: Option<DateTime<Utc>>) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
     }
 }
 
@@ -535,7 +593,7 @@ mod tests {
                         z: 3.0,
                     }),
                 }],
-                schedule: Some("2026-05-25T12:15:00+00:00".to_string()),
+                schedule: Some("2026-05-25T11:00:00Z".to_string()),
             },
             RawWorldEvent {
                 name: "Hidden".to_string(),
@@ -553,7 +611,7 @@ mod tests {
                 level: Some(30),
                 length: Some("MEDIUM".to_string()),
                 location: Vec::new(),
-                schedule: Some("2026-05-25T12:00:00+00:00".to_string()),
+                schedule: Some("2026-05-25T12:30:00+02:00".to_string()),
             },
         ]);
 
@@ -561,7 +619,7 @@ mod tests {
         assert_eq!(summary.scheduled_count, 2);
         assert_eq!(
             summary.next_schedule.as_deref(),
-            Some("2026-05-25T12:00:00+00:00")
+            Some("2026-05-25T12:30:00+02:00")
         );
         assert_eq!(summary.scheduled[0].name, "Sooner");
         assert_eq!(summary.scheduled[1].name, "Later");

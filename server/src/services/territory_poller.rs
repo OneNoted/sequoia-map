@@ -937,7 +937,7 @@ fn compute_runtime_updates(
             let old_runtime = old
                 .get(name)
                 .and_then(|territory| territory.runtime.as_ref());
-            if old_runtime == new_territory.runtime.as_ref() {
+            if runtime_payload_eq(old_runtime, new_territory.runtime.as_ref()) {
                 return None;
             }
             Some(TerritoryRuntimeChange {
@@ -946,6 +946,46 @@ fn compute_runtime_updates(
             })
         })
         .collect()
+}
+
+fn runtime_payload_eq(
+    left: Option<&TerritoryRuntimeData>,
+    right: Option<&TerritoryRuntimeData>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.headquarters == right.headquarters
+                && left.headquarters_territory == right.headquarters_territory
+                && left.held_resources == right.held_resources
+                && left.production_rates == right.production_rates
+                && left.storage_capacity == right.storage_capacity
+                && left.treasury == right.treasury
+                && left.defense_tier == right.defense_tier
+                && left.contested == right.contested
+                && left.active_war == right.active_war
+                && left.extra_scrapes == right.extra_scrapes
+                && runtime_provenance_eq(left.provenance.as_ref(), right.provenance.as_ref())
+        }
+        _ => false,
+    }
+}
+
+fn runtime_provenance_eq(left: Option<&DataProvenance>, right: Option<&DataProvenance>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.source == right.source
+                && left.visibility == right.visibility
+                && left.confidence == right.confidence
+                && left.reporter_count == right.reporter_count
+                && left.menu_season_id == right.menu_season_id
+                && left.menu_captured_territories == right.menu_captured_territories
+                && left.menu_sr_per_hour == right.menu_sr_per_hour
+                && left.menu_observed_at == right.menu_observed_at
+        }
+        _ => false,
+    }
 }
 
 fn has_static_field_changes(old: &TerritoryMap, new: &TerritoryMap) -> bool {
@@ -979,7 +1019,9 @@ mod tests {
     use axum::Router;
     use chrono::{DateTime, Utc};
     use sequoia_shared::history::{HistoryBounds, HistoryEvents, HistorySnapshot};
-    use sequoia_shared::{GuildRef, Region, Territory, TerritoryMap, TerritoryRuntimeData};
+    use sequoia_shared::{
+        DataProvenance, GuildRef, Region, Territory, TerritoryMap, TerritoryRuntimeData,
+    };
     use sqlx::postgres::PgPoolOptions;
     use tokio::sync::oneshot;
 
@@ -1144,6 +1186,41 @@ mod tests {
                 .and_then(|runtime| runtime.contested),
             Some(true)
         );
+    }
+
+    #[test]
+    fn runtime_updates_ignore_volatile_provenance_observed_at() {
+        let mut old = TerritoryMap::new();
+        old.insert("Alpha".to_string(), territory("g1", "GuildOne", "G1"));
+        old.get_mut("Alpha").expect("alpha should exist").runtime = Some(TerritoryRuntimeData {
+            treasury: Some("low".to_string()),
+            provenance: Some(DataProvenance {
+                source: "wynncraft_api".to_string(),
+                observed_at: "2026-05-25T12:00:00Z".to_string(),
+                confidence: 1.0,
+                ..DataProvenance::default()
+            }),
+            ..TerritoryRuntimeData::default()
+        });
+
+        let mut new = old.clone();
+        new.get_mut("Alpha")
+            .and_then(|territory| territory.runtime.as_mut())
+            .and_then(|runtime| runtime.provenance.as_mut())
+            .expect("runtime provenance should exist")
+            .observed_at = "2026-05-25T12:00:10Z".to_string();
+
+        let runtime_updates = compute_runtime_updates(&old, &new, &HashSet::new());
+        assert!(runtime_updates.is_empty());
+
+        new.get_mut("Alpha")
+            .and_then(|territory| territory.runtime.as_mut())
+            .expect("runtime should exist")
+            .treasury = Some("high".to_string());
+
+        let runtime_updates = compute_runtime_updates(&old, &new, &HashSet::new());
+        assert_eq!(runtime_updates.len(), 1);
+        assert_eq!(runtime_updates[0].territory, "Alpha");
     }
 
     #[test]
