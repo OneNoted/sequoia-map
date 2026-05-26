@@ -370,27 +370,42 @@ fn merge_windows(
         if end_at <= start_at {
             continue;
         }
-        merged.insert(
+        let mut window = ResolvedSeasonWindow {
             season_id,
-            ResolvedSeasonWindow {
-                season_id,
-                label,
-                start_at,
-                end_at,
-                source: SeasonWindowSource::Configured,
-                territory_holding_sr_per_hour: None,
-                sr_per_war: None,
-            },
-        );
+            label,
+            start_at,
+            end_at,
+            source: SeasonWindowSource::Configured,
+            territory_holding_sr_per_hour: None,
+            sr_per_war: None,
+        };
+        inherit_missing_sr_rates(&mut window, &merged);
+        merged.insert(season_id, window);
     }
 
-    if let Some(active) = active {
+    if let Some(mut active) = active {
+        inherit_missing_sr_rates(&mut active, &merged);
         merged.insert(active.season_id, active);
     }
 
     let mut windows: Vec<ResolvedSeasonWindow> = merged.into_values().collect();
     windows.sort_by_key(|window| std::cmp::Reverse(window.season_id));
     windows
+}
+
+fn inherit_missing_sr_rates(
+    window: &mut ResolvedSeasonWindow,
+    merged: &HashMap<i32, ResolvedSeasonWindow>,
+) {
+    let Some(existing) = merged.get(&window.season_id) else {
+        return;
+    };
+    if window.territory_holding_sr_per_hour.is_none() {
+        window.territory_holding_sr_per_hour = existing.territory_holding_sr_per_hour;
+    }
+    if window.sr_per_war.is_none() {
+        window.sr_per_war = existing.sr_per_war;
+    }
 }
 
 fn api_season_windows(
@@ -592,6 +607,82 @@ mod tests {
         );
 
         assert_eq!(windows, vec![api_window]);
+    }
+
+    #[test]
+    fn merge_windows_preserves_api_rates_when_metadata_overlays_window() {
+        let windows = merge_windows(
+            vec![(
+                30,
+                Some("Season Thirty".to_string()),
+                ts("2026-03-27T00:00:00Z"),
+                ts("2026-04-23T00:00:00Z"),
+                "configured".to_string(),
+            )],
+            Vec::new(),
+            None,
+            vec![ResolvedSeasonWindow {
+                season_id: 30,
+                label: Some("Season 30".to_string()),
+                start_at: ts("2026-03-26T03:53:21Z"),
+                end_at: ts("2026-04-22T06:49:05Z"),
+                source: SeasonWindowSource::WynncraftApi,
+                territory_holding_sr_per_hour: Some(120),
+                sr_per_war: Some(380),
+            }],
+        );
+
+        assert_eq!(
+            windows,
+            vec![ResolvedSeasonWindow {
+                season_id: 30,
+                label: Some("Season Thirty".to_string()),
+                start_at: ts("2026-03-27T00:00:00Z"),
+                end_at: ts("2026-04-23T00:00:00Z"),
+                source: SeasonWindowSource::Configured,
+                territory_holding_sr_per_hour: Some(120),
+                sr_per_war: Some(380),
+            }]
+        );
+    }
+
+    #[test]
+    fn merge_windows_preserves_api_rates_when_active_window_overlays_api() {
+        let windows = merge_windows(
+            Vec::new(),
+            Vec::new(),
+            Some(ResolvedSeasonWindow {
+                season_id: 30,
+                label: Some("Active Season".to_string()),
+                start_at: ts("2026-03-27T00:00:00Z"),
+                end_at: ts("2026-04-23T00:00:00Z"),
+                source: SeasonWindowSource::Configured,
+                territory_holding_sr_per_hour: None,
+                sr_per_war: None,
+            }),
+            vec![ResolvedSeasonWindow {
+                season_id: 30,
+                label: Some("Season 30".to_string()),
+                start_at: ts("2026-03-26T03:53:21Z"),
+                end_at: ts("2026-04-22T06:49:05Z"),
+                source: SeasonWindowSource::WynncraftApi,
+                territory_holding_sr_per_hour: Some(120),
+                sr_per_war: Some(380),
+            }],
+        );
+
+        assert_eq!(
+            windows,
+            vec![ResolvedSeasonWindow {
+                season_id: 30,
+                label: Some("Active Season".to_string()),
+                start_at: ts("2026-03-27T00:00:00Z"),
+                end_at: ts("2026-04-23T00:00:00Z"),
+                source: SeasonWindowSource::Configured,
+                territory_holding_sr_per_hour: Some(120),
+                sr_per_war: Some(380),
+            }]
+        );
     }
 
     #[test]
