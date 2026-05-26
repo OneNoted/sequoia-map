@@ -7,8 +7,8 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sequoia_shared::{
-    ClaimDocumentV1, GuildRef, LiveState, MapIntelSummary, Resources, SeasonScalarSample,
-    TerritoryMap, TerritoryRuntimeData,
+    ClaimDocumentV1, GuildRef, LiveState, MapIntelOverlay, MapIntelSummary, Resources,
+    SeasonScalarSample, TerritoryMap, TerritoryRuntimeData,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -225,6 +225,7 @@ pub struct CachedSeasonLeaderboard {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedMapIntel {
     pub summary: MapIntelSummary,
+    pub overlay: MapIntelOverlay,
     pub fetched_at: DateTime<Utc>,
 }
 

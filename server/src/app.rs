@@ -85,6 +85,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             axum::routing::get(routes::api::get_map_intel),
         )
         .route(
+            "/api/map/intel/overlay",
+            axum::routing::get(routes::api::get_map_intel_overlay),
+        )
+        .route(
             "/api/claims",
             axum::routing::post(routes::claims::create_claim_layout),
         )
