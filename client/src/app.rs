@@ -131,6 +131,8 @@ pub(crate) struct ResourceHighlight(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct DefenseHighlight(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct MapIntelModeEnabled(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct ShowResourceIcons(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
@@ -363,6 +365,8 @@ struct SettingsV2 {
     resource_highlight: bool,
     #[serde(default)]
     defense_highlight: bool,
+    #[serde(default)]
+    map_intel_enabled: bool,
     show_resource_icons: bool,
     #[serde(default = "default_true")]
     show_territory_ornaments: bool,
@@ -512,6 +516,7 @@ impl Default for SettingsV2 {
             sidebar_open: false,
             resource_highlight: false,
             defense_highlight: false,
+            map_intel_enabled: false,
             show_resource_icons: false,
             show_territory_ornaments: false,
             manual_sr_scalar: default_manual_sr_scalar(),
@@ -565,6 +570,8 @@ struct LegacySettings {
     resource_highlight: bool,
     #[serde(default)]
     defense_highlight: bool,
+    #[serde(default)]
+    map_intel_enabled: bool,
     show_resource_icons: bool,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
@@ -595,6 +602,7 @@ impl Default for LegacySettings {
             sidebar_open: false,
             resource_highlight: false,
             defense_highlight: false,
+            map_intel_enabled: false,
             show_resource_icons: false,
             manual_sr_scalar: default_manual_sr_scalar(),
             auto_sr_scalar_enabled: true,
@@ -619,6 +627,7 @@ impl From<LegacySettings> for SettingsV2 {
             sidebar_open: value.sidebar_open,
             resource_highlight: value.resource_highlight,
             defense_highlight: value.defense_highlight,
+            map_intel_enabled: value.map_intel_enabled,
             show_resource_icons: value.show_resource_icons,
             show_territory_ornaments: false,
             manual_sr_scalar: value.manual_sr_scalar,
@@ -663,6 +672,7 @@ use crate::defense::{DEFENSE_TIERS, defense_tier_display};
 use crate::heat::{self, HeatFetchInput};
 use crate::history;
 use crate::icons::{self, ResourceAtlas};
+use crate::map_intel::MapIntelOverlay;
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::sse::{self, ConnectionStatus};
@@ -780,6 +790,7 @@ pub fn MapPage() -> impl IntoView {
     );
     let resource_highlight: RwSignal<bool> = RwSignal::new(saved.resource_highlight);
     let defense_highlight: RwSignal<bool> = RwSignal::new(saved.defense_highlight);
+    let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
     let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
     let manual_sr_scalar: RwSignal<f64> =
@@ -900,6 +911,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(FillAlphaBoost(RwSignal::new(0.0)));
     provide_context(ResourceHighlight(resource_highlight));
     provide_context(DefenseHighlight(defense_highlight));
+    provide_context(MapIntelModeEnabled(map_intel_enabled));
     provide_context(ShowResourceIcons(show_resource_icons));
     provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
     provide_context(ManualSrScalar(manual_sr_scalar));
@@ -987,6 +999,7 @@ pub fn MapPage() -> impl IntoView {
         ));
         resource_highlight.set(defaults.resource_highlight);
         defense_highlight.set(defaults.defense_highlight);
+        map_intel_enabled.set(defaults.map_intel_enabled);
         show_resource_icons.set(defaults.show_resource_icons);
         show_territory_ornaments.set(defaults.show_territory_ornaments);
         manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
@@ -1022,10 +1035,24 @@ pub fn MapPage() -> impl IntoView {
         if resource_highlight.get() && defense_highlight.get_untracked() {
             defense_highlight.set(false);
         }
+        if resource_highlight.get() && map_intel_enabled.get_untracked() {
+            map_intel_enabled.set(false);
+        }
     });
     Effect::new(move || {
         if defense_highlight.get() && resource_highlight.get_untracked() {
             resource_highlight.set(false);
+        }
+        if defense_highlight.get() && map_intel_enabled.get_untracked() {
+            map_intel_enabled.set(false);
+        }
+    });
+    Effect::new(move || {
+        if map_intel_enabled.get() && resource_highlight.get_untracked() {
+            resource_highlight.set(false);
+        }
+        if map_intel_enabled.get() && defense_highlight.get_untracked() {
+            defense_highlight.set(false);
         }
     });
 
@@ -1462,6 +1489,7 @@ pub fn MapPage() -> impl IntoView {
             sidebar_open: sidebar_open.get(),
             resource_highlight: resource_highlight.get(),
             defense_highlight: defense_highlight.get(),
+            map_intel_enabled: map_intel_enabled.get(),
             show_resource_icons: show_resource_icons.get(),
             show_territory_ornaments: show_territory_ornaments.get(),
             manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
@@ -1799,6 +1827,15 @@ pub fn MapPage() -> impl IntoView {
                         defense_highlight.set(next);
                         if next {
                             resource_highlight.set(false);
+                            map_intel_enabled.set(false);
+                        }
+                    }
+                    "i" => {
+                        let next = !map_intel_enabled.get_untracked();
+                        map_intel_enabled.set(next);
+                        if next {
+                            resource_highlight.set(false);
+                            defense_highlight.set(false);
                         }
                     }
                     "m" => {
@@ -2043,6 +2080,7 @@ pub fn MapPage() -> impl IntoView {
                     <div style="position: absolute; bottom: 0; right: 0; width: 1px; height: 8px; background: rgba(245,197,66,0.3);" />
                 </div>
                 <DefenseLegend />
+                <MapIntelOverlay />
                 // Mobile HUD buttons — bottom-right stack
                 <MobileHistoryToggle />
                 // Mobile FAB — opens sidebar
@@ -2885,6 +2923,7 @@ mod tests {
         assert_eq!(parsed.sidebar_width, DEFAULT_SIDEBAR_WIDTH);
         assert!(parsed.auto_sr_scalar_enabled);
         assert!(!parsed.defense_highlight);
+        assert!(!parsed.map_intel_enabled);
         assert!(!parsed.show_debug_info);
     }
 

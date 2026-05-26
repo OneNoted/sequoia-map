@@ -11,6 +11,7 @@ mod heat;
 mod history;
 mod icons;
 mod label_layout;
+mod map_intel;
 mod overlay_sizing;
 mod playback;
 mod render_loop;
