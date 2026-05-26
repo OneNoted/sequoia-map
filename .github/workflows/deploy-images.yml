@@ -32,48 +32,66 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Detect Deploy-Relevant Changes
         id: filter
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
-        with:
-          filters: |
-            server:
-              - '.github/workflows/deploy-images.yml'
-              - '.ci/**'
-              - 'docker-compose.coolify.yml'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'Dockerfile'
-              - 'shared/**'
-              - 'client/**'
-              - 'claims-client/**'
-              - 'server/**'
-            ingest:
-              - '.github/workflows/deploy-images.yml'
-              - 'docker-compose.coolify.yml'
-              - 'Cargo.toml'
-              - 'shared/**'
-              - 'services/sequoia-ingest/**'
-            edge:
-              - '.github/workflows/deploy-images.yml'
-              - 'docker-compose.coolify.yml'
-              - 'ops/caddy/**'
-            deploy:
-              - '.github/workflows/deploy-images.yml'
-              - '.ci/**'
-              - 'docker-compose.coolify.yml'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'Dockerfile'
-              - 'shared/**'
-              - 'client/**'
-              - 'claims-client/**'
-              - 'server/**'
-              - 'services/sequoia-ingest/**'
-              - 'ops/caddy/**'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emit_all() {
+            {
+              echo "server=true"
+              echo "ingest=true"
+              echo "edge=true"
+              echo "deploy=true"
+            } >> "${GITHUB_OUTPUT}"
+          }
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            emit_all
+            exit 0
+          fi
+
+          before="${{ github.event.before }}"
+          after="${{ github.sha }}"
+          if [ -z "${before}" ] || [[ "${before}" =~ ^0+$ ]]; then
+            changed_files="$(git ls-tree -r --name-only "${after}")"
+          else
+            changed_files="$(git diff --name-only "${before}" "${after}")"
+          fi
+
+          matches() {
+            local pattern="$1"
+            printf '%s\n' "${changed_files}" | grep -Eq "${pattern}"
+          }
+
+          server=false
+          ingest=false
+          edge=false
+          if matches '^(\.github/workflows/deploy-images\.yml|\.ci/|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|Dockerfile|shared/|client/|claims-client/|server/)'; then
+            server=true
+          fi
+          if matches '^(\.github/workflows/deploy-images\.yml|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|shared/|services/sequoia-ingest/)'; then
+            ingest=true
+          fi
+          if matches '^(\.github/workflows/deploy-images\.yml|docker-compose\.coolify\.yml|ops/caddy/)'; then
+            edge=true
+          fi
+          if [ "${server}" = "true" ] || [ "${ingest}" = "true" ] || [ "${edge}" = "true" ]; then
+            deploy=true
+          else
+            deploy=false
+          fi
+
+          {
+            echo "server=${server}"
+            echo "ingest=${ingest}"
+            echo "edge=${edge}"
+            echo "deploy=${deploy}"
+          } >> "${GITHUB_OUTPUT}"
 
   publish-and-deploy:
     name: Publish Images And Trigger Coolify
