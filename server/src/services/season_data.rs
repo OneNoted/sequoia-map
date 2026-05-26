@@ -340,10 +340,6 @@ fn merge_windows(
 ) -> Vec<ResolvedSeasonWindow> {
     let mut merged: HashMap<i32, ResolvedSeasonWindow> = HashMap::new();
 
-    for window in api_windows {
-        merged.insert(window.season_id, window);
-    }
-
     for (idx, (season_id, start_at, observed_last_at)) in inferred_rows.iter().enumerate() {
         let inferred_end = inferred_rows
             .get(idx + 1)
@@ -364,6 +360,10 @@ fn merge_windows(
                 sr_per_war: None,
             },
         );
+    }
+
+    for window in api_windows {
+        merged.insert(window.season_id, window);
     }
 
     for (season_id, label, start_at, end_at, _source) in metadata_rows {
@@ -571,6 +571,27 @@ mod tests {
                 sr_per_war: None,
             }]
         );
+    }
+
+    #[test]
+    fn merge_windows_prefers_api_window_over_inferred() {
+        let api_window = ResolvedSeasonWindow {
+            season_id: 30,
+            label: Some("Season 30".to_string()),
+            start_at: ts("2026-03-26T03:53:21Z"),
+            end_at: ts("2026-04-22T06:49:05Z"),
+            source: SeasonWindowSource::WynncraftApi,
+            territory_holding_sr_per_hour: Some(120),
+            sr_per_war: Some(380),
+        };
+        let windows = merge_windows(
+            Vec::new(),
+            vec![(30, ts("2026-03-26T00:00:00Z"), ts("2026-03-27T00:00:00Z"))],
+            None,
+            vec![api_window.clone()],
+        );
+
+        assert_eq!(windows, vec![api_window]);
     }
 
     #[test]
