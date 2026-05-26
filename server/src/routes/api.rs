@@ -196,6 +196,24 @@ pub async fn get_map_intel(State(state): State<AppState>) -> Result<impl IntoRes
     Ok((headers, Json(response)))
 }
 
+pub async fn get_map_intel_overlay(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let response = wynncraft_api::cached_map_intel_overlay(&state)
+        .await
+        .map_err(|error| {
+            warn!(error = %error, "failed to load Wynncraft map intel overlay");
+            StatusCode::BAD_GATEWAY
+        })?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=60"),
+    );
+    Ok((headers, Json(response)))
+}
+
 fn map_season_data_status(error: SeasonDataError) -> StatusCode {
     match error {
         SeasonDataError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,

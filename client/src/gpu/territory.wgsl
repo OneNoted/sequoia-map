@@ -75,6 +75,16 @@ fn resource_color_lut(idx: i32) -> vec3<f32> {
     return vec3<f32>(0.651, 0.890, 0.631);                  // fallback
 }
 
+fn defense_color_lut(idx: i32) -> vec3<f32> {
+    if idx == 0 { return vec3<f32>(1.000, 1.000, 1.000); } // none
+    if idx == 1 { return vec3<f32>(0.000, 0.667, 0.000); } // very low #00aa00
+    if idx == 2 { return vec3<f32>(0.333, 1.000, 0.333); } // low      #55ff55
+    if idx == 3 { return vec3<f32>(1.000, 1.000, 0.333); } // medium   #ffff55
+    if idx == 4 { return vec3<f32>(1.000, 0.333, 0.333); } // high     #ff5555
+    if idx == 5 { return vec3<f32>(0.667, 0.000, 0.000); } // very high #aa0000
+    return vec3<f32>(0.886, 0.878, 0.847);
+}
+
 // Green checker overlay for double-emerald territories
 fn emerald_checker(uv: vec2<f32>, size_px: vec2<f32>, base: vec3<f32>) -> vec3<f32> {
     let px = uv * size_px;
@@ -138,7 +148,10 @@ fn compute_resource_fill(rd: vec4<f32>, uv: vec2<f32>, size_px: vec2<f32>, guild
 
     var result: vec3<f32>;
 
-    if mode == 1 {
+    if mode == 4 {
+        let idx = i32(rd.y + 0.5);
+        result = defense_color_lut(idx);
+    } else if mode == 1 {
         // Solid single resource
         let idx = i32(rd.y + 0.5);
         result = resource_color_lut(idx);

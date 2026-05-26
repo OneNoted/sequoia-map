@@ -1513,6 +1513,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         RwSignal::new(canvas_dimensions().0 < crate::app::MOBILE_BREAKPOINT);
     let tile_fetch_scheduled: RwSignal<bool> = RwSignal::new(false);
     let resource_highlight: RwSignal<bool> = RwSignal::new(false);
+    let defense_highlight: RwSignal<bool> = RwSignal::new(false);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(false);
     let show_territory_ornaments: RwSignal<bool> = RwSignal::new(false);
 
@@ -1564,6 +1565,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     provide_context(SuppressCooldownVisuals(RwSignal::new(true)));
     provide_context(FillAlphaBoost(RwSignal::new(0.12)));
     provide_context(ResourceHighlight(resource_highlight));
+    provide_context(crate::app::DefenseHighlight(defense_highlight));
     provide_context(crate::app::ShowResourceIcons(show_resource_icons));
     provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
     provide_context(ReadableFont(RwSignal::new(false)));

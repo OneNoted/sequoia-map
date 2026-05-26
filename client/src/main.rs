@@ -4,12 +4,14 @@ mod assets;
 mod canvas;
 mod claim_labels;
 mod colors;
+mod defense;
 #[cfg(target_arch = "wasm32")]
 mod gpu;
 mod heat;
 mod history;
 mod icons;
 mod label_layout;
+mod map_intel;
 mod overlay_sizing;
 mod playback;
 mod render_loop;
@@ -36,6 +38,7 @@ mod gpu {
     pub struct GpuRenderer {
         pub thick_cooldown_borders: bool,
         pub resource_highlight: bool,
+        pub defense_highlight: bool,
         pub use_static_gpu_labels: bool,
         pub use_full_gpu_text: bool,
         pub static_show_names: bool,

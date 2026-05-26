@@ -11,6 +11,8 @@ mod claim_labels;
 mod claims;
 #[path = "../../client/src/colors.rs"]
 mod colors;
+#[path = "../../client/src/defense.rs"]
+mod defense;
 #[cfg(target_arch = "wasm32")]
 #[path = "../../client/src/gpu/mod.rs"]
 mod gpu;
@@ -51,6 +53,7 @@ mod gpu {
     pub struct GpuRenderer {
         pub thick_cooldown_borders: bool,
         pub resource_highlight: bool,
+        pub defense_highlight: bool,
         pub use_static_gpu_labels: bool,
         pub use_full_gpu_text: bool,
         pub static_show_names: bool,
