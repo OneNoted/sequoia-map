@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
 use sequoia_shared::{
-    GatheringNodeCollectionSummary, MapActivityCollectionSummary, MapActivitySummary,
-    MapIntelSummary, MapPoint, MapRewardSummary, NamedCount, WorldEventCollectionSummary,
-    WorldEventSummary,
+    GatheringNodeCollectionSummary, GatheringNodeMarker, MapActivityCollectionSummary,
+    MapActivityMarker, MapActivitySummary, MapIntelOverlay, MapIntelSummary, MapPoint,
+    MapRewardSummary, NamedCount, WorldEventCollectionSummary, WorldEventMarker, WorldEventSummary,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -18,6 +18,12 @@ use crate::config::{
 use crate::state::{
     AppState, CachedMapIntel, CachedSeasonLeaderboard, CachedSeasonLeaderboardEntry,
 };
+
+#[derive(Debug, Clone)]
+struct MapIntelPayload {
+    summary: MapIntelSummary,
+    overlay: MapIntelOverlay,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GuildSeasonDefinition {
@@ -43,7 +49,7 @@ struct RawLeaderboardEntry {
     score: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawMapActivity {
     #[serde(default)]
     name: String,
@@ -65,7 +71,7 @@ struct RawMapActivity {
     rewards: Vec<RawMapReward>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawMapReward {
     #[serde(default)]
     always: Option<bool>,
@@ -73,7 +79,7 @@ struct RawMapReward {
     tier: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawWorldEvent {
     #[serde(default)]
     name: String,
@@ -91,14 +97,22 @@ struct RawWorldEvent {
     schedule: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawWorldEventLocation {
     #[serde(default)]
     event: Option<MapPoint>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RawGatheringNode {
+    #[serde(default)]
+    x: Option<f64>,
+    #[serde(default)]
+    y: Option<f64>,
+    #[serde(default)]
+    z: Option<f64>,
+    #[serde(default)]
+    angle: Option<f64>,
     #[serde(default, rename = "type")]
     node_type: String,
     #[serde(default)]
@@ -150,28 +164,41 @@ pub async fn cached_latest_guild_season_leaderboard(
 }
 
 pub async fn cached_map_intel_summary(state: &AppState) -> Result<MapIntelSummary, String> {
+    cached_map_intel_payload(state)
+        .await
+        .map(|payload| payload.summary)
+}
+
+pub async fn cached_map_intel_overlay(state: &AppState) -> Result<MapIntelOverlay, String> {
+    cached_map_intel_payload(state)
+        .await
+        .map(|payload| payload.overlay)
+}
+
+async fn cached_map_intel_payload(state: &AppState) -> Result<MapIntelPayload, String> {
     {
         let cached = state.map_intel_cache.read().await;
-        if let Some(summary) = fresh_map_intel_summary(cached.as_ref(), Utc::now()) {
-            return Ok(summary);
+        if let Some(payload) = fresh_map_intel_payload(cached.as_ref(), Utc::now()) {
+            return Ok(payload);
         }
     }
 
     let _refresh_guard = state.map_intel_fetch_lock.lock().await;
     {
         let cached = state.map_intel_cache.read().await;
-        if let Some(summary) = fresh_map_intel_summary(cached.as_ref(), Utc::now()) {
-            return Ok(summary);
+        if let Some(payload) = fresh_map_intel_payload(cached.as_ref(), Utc::now()) {
+            return Ok(payload);
         }
     }
 
-    let summary = fetch_map_intel_summary(&state.http_client).await?;
+    let payload = fetch_map_intel_payload(&state.http_client).await?;
     let mut cached = state.map_intel_cache.write().await;
     *cached = Some(CachedMapIntel {
-        summary: summary.clone(),
+        summary: payload.summary.clone(),
+        overlay: payload.overlay.clone(),
         fetched_at: Utc::now(),
     });
-    Ok(summary)
+    Ok(payload)
 }
 
 fn fresh_season_leaderboard(
@@ -183,16 +210,19 @@ fn fresh_season_leaderboard(
     (age < SEASON_LEADERBOARD_CACHE_TTL_SECS).then(|| cached.clone())
 }
 
-fn fresh_map_intel_summary(
+fn fresh_map_intel_payload(
     cached: Option<&CachedMapIntel>,
     now: DateTime<Utc>,
-) -> Option<MapIntelSummary> {
+) -> Option<MapIntelPayload> {
     let cached = cached?;
     let age = now.signed_duration_since(cached.fetched_at).num_seconds();
-    (age < MAP_INTEL_CACHE_TTL_SECS).then(|| cached.summary.clone())
+    (age < MAP_INTEL_CACHE_TTL_SECS).then(|| MapIntelPayload {
+        summary: cached.summary.clone(),
+        overlay: cached.overlay.clone(),
+    })
 }
 
-async fn fetch_map_intel_summary(client: &reqwest::Client) -> Result<MapIntelSummary, String> {
+async fn fetch_map_intel_payload(client: &reqwest::Client) -> Result<MapIntelPayload, String> {
     let (raids, camps, world_events, gathering_nodes) = tokio::try_join!(
         fetch_json_vec::<RawMapActivity>(client, WYNNCRAFT_MAP_RAIDS_URL, "map raids"),
         fetch_json_vec::<RawMapActivity>(client, WYNNCRAFT_MAP_CAMPS_URL, "map camps"),
@@ -204,13 +234,32 @@ async fn fetch_map_intel_summary(client: &reqwest::Client) -> Result<MapIntelSum
         ),
     )?;
 
-    Ok(MapIntelSummary {
-        generated_at: Utc::now().to_rfc3339(),
-        source: "wynncraft_api".to_string(),
-        raids: summarize_activities(raids),
-        camps: summarize_activities(camps),
-        world_events: summarize_world_events(world_events),
-        gathering_nodes: summarize_gathering_nodes(gathering_nodes),
+    let generated_at = Utc::now().to_rfc3339();
+    let source = "wynncraft_api".to_string();
+    let raids_summary = summarize_activities(&raids);
+    let camps_summary = summarize_activities(&camps);
+    let world_events_summary = summarize_world_events(&world_events);
+    let gathering_nodes_summary = summarize_gathering_nodes(&gathering_nodes);
+
+    Ok(MapIntelPayload {
+        summary: MapIntelSummary {
+            generated_at: generated_at.clone(),
+            source: source.clone(),
+            raids: raids_summary,
+            camps: camps_summary,
+            world_events: world_events_summary,
+            gathering_nodes: gathering_nodes_summary.clone(),
+        },
+        overlay: MapIntelOverlay {
+            generated_at,
+            source,
+            raids: activity_markers(&raids),
+            camps: activity_markers(&camps),
+            world_events: world_event_markers(&world_events),
+            gathering_nodes: gathering_node_markers(&gathering_nodes),
+            gathering_resources: gathering_nodes_summary.resources,
+            gathering_node_types: gathering_nodes_summary.node_types,
+        },
     })
 }
 
@@ -234,7 +283,7 @@ where
         .map_err(|e| format!("{label} decode failed: {e}"))
 }
 
-fn summarize_activities(entries: Vec<RawMapActivity>) -> MapActivityCollectionSummary {
+fn summarize_activities(entries: &[RawMapActivity]) -> MapActivityCollectionSummary {
     let mut difficulties = BTreeMap::new();
     let mut lengths = BTreeMap::new();
     let mut min_level = None;
@@ -247,12 +296,12 @@ fn summarize_activities(entries: Vec<RawMapActivity>) -> MapActivityCollectionSu
         update_level_bounds(&mut min_level, &mut max_level, entry.level);
 
         summaries.push(MapActivitySummary {
-            name: entry.name,
-            internal_name: entry.internal_name,
-            kind: entry.kind,
-            difficulty: clean_optional_label(entry.difficulty),
+            name: entry.name.clone(),
+            internal_name: entry.internal_name.clone(),
+            kind: entry.kind.clone(),
+            difficulty: clean_optional_label(entry.difficulty.clone()),
             level: entry.level,
-            length: clean_optional_label(entry.length),
+            length: clean_optional_label(entry.length.clone()),
             location: entry.location,
             requirement_count: entry.requirements.as_ref().map_or(0, Vec::len),
             rewards: summarize_rewards(&entry.rewards),
@@ -274,6 +323,30 @@ fn summarize_activities(entries: Vec<RawMapActivity>) -> MapActivityCollectionSu
         lengths: sorted_counts(lengths),
         entries: summaries,
     }
+}
+
+fn activity_markers(entries: &[RawMapActivity]) -> Vec<MapActivityMarker> {
+    let mut markers = entries
+        .iter()
+        .filter_map(|entry| {
+            Some(MapActivityMarker {
+                name: entry.name.clone(),
+                internal_name: entry.internal_name.clone(),
+                kind: entry.kind.clone(),
+                difficulty: clean_optional_label(entry.difficulty.clone()),
+                level: entry.level,
+                length: clean_optional_label(entry.length.clone()),
+                location: entry.location?,
+            })
+        })
+        .collect::<Vec<_>>();
+    markers.sort_by(|left, right| {
+        left.level
+            .unwrap_or(i32::MAX)
+            .cmp(&right.level.unwrap_or(i32::MAX))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    markers
 }
 
 fn summarize_rewards(rewards: &[RawMapReward]) -> MapRewardSummary {
@@ -303,7 +376,7 @@ fn summarize_rewards(rewards: &[RawMapReward]) -> MapRewardSummary {
     summary
 }
 
-fn summarize_world_events(entries: Vec<RawWorldEvent>) -> WorldEventCollectionSummary {
+fn summarize_world_events(entries: &[RawWorldEvent]) -> WorldEventCollectionSummary {
     let mut difficulties = BTreeMap::new();
     let mut lengths = BTreeMap::new();
     let mut min_level = None;
@@ -376,6 +449,41 @@ fn summarize_world_events(entries: Vec<RawWorldEvent>) -> WorldEventCollectionSu
     }
 }
 
+fn world_event_markers(entries: &[RawWorldEvent]) -> Vec<WorldEventMarker> {
+    let mut markers = entries
+        .iter()
+        .filter_map(|entry| {
+            let locations = entry
+                .location
+                .iter()
+                .filter_map(|location| location.event)
+                .collect::<Vec<_>>();
+            (!locations.is_empty()).then(|| WorldEventMarker {
+                name: entry.name.clone(),
+                internal_name: entry.internal_name.clone(),
+                difficulty: clean_optional_label(entry.difficulty.clone()),
+                level: entry.level,
+                length: clean_optional_label(entry.length.clone()),
+                schedule: clean_optional_label(entry.schedule.clone()),
+                locations,
+            })
+        })
+        .collect::<Vec<_>>();
+    markers.sort_by(|left, right| {
+        compare_schedule_times(
+            left.schedule.as_deref().and_then(parse_schedule_utc),
+            right.schedule.as_deref().and_then(parse_schedule_utc),
+        )
+        .then_with(|| {
+            left.level
+                .unwrap_or(i32::MAX)
+                .cmp(&right.level.unwrap_or(i32::MAX))
+        })
+        .then_with(|| left.name.cmp(&right.name))
+    });
+    markers
+}
+
 fn parse_schedule_utc(schedule: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(schedule)
         .ok()
@@ -391,7 +499,7 @@ fn compare_schedule_times(left: Option<DateTime<Utc>>, right: Option<DateTime<Ut
     }
 }
 
-fn summarize_gathering_nodes(entries: Vec<RawGatheringNode>) -> GatheringNodeCollectionSummary {
+fn summarize_gathering_nodes(entries: &[RawGatheringNode]) -> GatheringNodeCollectionSummary {
     let mut resources = BTreeMap::new();
     let mut node_types = BTreeMap::new();
     let mut min_level = None;
@@ -410,6 +518,25 @@ fn summarize_gathering_nodes(entries: Vec<RawGatheringNode>) -> GatheringNodeCol
         resources: sorted_counts(resources),
         node_types: sorted_counts(node_types),
     }
+}
+
+fn gathering_node_markers(entries: &[RawGatheringNode]) -> Vec<GatheringNodeMarker> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            Some(GatheringNodeMarker {
+                location: MapPoint {
+                    x: entry.x?,
+                    y: entry.y?,
+                    z: entry.z?,
+                },
+                node_type: clean_label(entry.node_type.as_str()),
+                resource: clean_label(entry.resource.as_str()),
+                level: entry.level,
+                angle: entry.angle,
+            })
+        })
+        .collect()
 }
 
 fn update_level_bounds(
@@ -433,8 +560,12 @@ fn count_label(counts: &mut BTreeMap<String, usize>, label: Option<&str>) {
 
 fn clean_optional_label(label: Option<String>) -> Option<String> {
     label
-        .map(|value| value.trim().replace('_', " "))
+        .map(|value| clean_label(value.as_str()))
         .filter(|value| !value.is_empty())
+}
+
+fn clean_label(label: &str) -> String {
+    label.trim().replace('_', " ")
 }
 
 fn sorted_counts(counts: BTreeMap<String, usize>) -> Vec<NamedCount> {
@@ -540,7 +671,7 @@ mod tests {
 
     #[test]
     fn activity_summary_counts_levels_and_reward_tiers() {
-        let summary = summarize_activities(vec![
+        let entries = vec![
             activity(
                 "Beta Raid",
                 80,
@@ -563,7 +694,8 @@ mod tests {
                     tier: Some("LEGENDARY".to_string()),
                 }],
             ),
-        ]);
+        ];
+        let summary = summarize_activities(&entries);
 
         assert_eq!(summary.count, 2);
         assert_eq!(summary.min_level, Some(60));
@@ -579,7 +711,7 @@ mod tests {
 
     #[test]
     fn world_event_summary_orders_visible_schedules() {
-        let summary = summarize_world_events(vec![
+        let entries = vec![
             RawWorldEvent {
                 name: "Later".to_string(),
                 internal_name: "later".to_string(),
@@ -613,7 +745,8 @@ mod tests {
                 location: Vec::new(),
                 schedule: Some("2026-05-25T12:30:00+02:00".to_string()),
             },
-        ]);
+        ];
+        let summary = summarize_world_events(&entries);
 
         assert_eq!(summary.count, 3);
         assert_eq!(summary.scheduled_count, 2);
@@ -627,23 +760,36 @@ mod tests {
 
     #[test]
     fn gathering_summary_counts_resources_and_node_types() {
-        let summary = summarize_gathering_nodes(vec![
+        let entries = vec![
             RawGatheringNode {
+                x: Some(1.0),
+                y: Some(2.0),
+                z: Some(3.0),
+                angle: Some(0.0),
                 node_type: "NODE".to_string(),
                 resource: "COPPER".to_string(),
                 level: Some(1),
             },
             RawGatheringNode {
+                x: Some(4.0),
+                y: Some(5.0),
+                z: Some(6.0),
+                angle: Some(90.0),
                 node_type: "WALL".to_string(),
                 resource: "COPPER".to_string(),
                 level: Some(5),
             },
             RawGatheringNode {
+                x: Some(7.0),
+                y: Some(8.0),
+                z: Some(9.0),
+                angle: None,
                 node_type: "NODE".to_string(),
                 resource: "OAK".to_string(),
                 level: Some(3),
             },
-        ]);
+        ];
+        let summary = summarize_gathering_nodes(&entries);
 
         assert_eq!(summary.count, 3);
         assert_eq!(summary.min_level, Some(1));
@@ -652,5 +798,34 @@ mod tests {
         assert_eq!(summary.resources[0].count, 2);
         assert_eq!(summary.node_types[0].name, "NODE");
         assert_eq!(summary.node_types[0].count, 2);
+    }
+
+    #[test]
+    fn gathering_node_markers_include_coordinates() {
+        let markers = gathering_node_markers(&[
+            RawGatheringNode {
+                x: Some(-1751.0),
+                y: Some(59.0),
+                z: Some(-4420.0),
+                angle: Some(180.0),
+                node_type: "CORNER".to_string(),
+                resource: "COPPER".to_string(),
+                level: Some(1),
+            },
+            RawGatheringNode {
+                x: None,
+                y: Some(59.0),
+                z: Some(-4420.0),
+                angle: None,
+                node_type: "NODE".to_string(),
+                resource: "OAK".to_string(),
+                level: Some(1),
+            },
+        ]);
+
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].location.x, -1751.0);
+        assert_eq!(markers[0].location.z, -4420.0);
+        assert_eq!(markers[0].resource, "COPPER");
     }
 }
