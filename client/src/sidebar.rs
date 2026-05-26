@@ -92,6 +92,25 @@ fn format_sr_value(val: i64) -> String {
     }
 }
 
+fn defense_tier_display(tier: &str) -> (String, &'static str) {
+    let normalized = tier
+        .trim()
+        .replace('_', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_uppercase();
+    match normalized.as_str() {
+        "NONE" => (normalized, "#ffffff"),
+        "VERY LOW" => (normalized, "#00aa00"),
+        "LOW" => (normalized, "#55ff55"),
+        "MEDIUM" => (normalized, "#ffff55"),
+        "HIGH" => (normalized, "#ff5555"),
+        "VERY HIGH" => (normalized, "#aa0000"),
+        _ => (tier.to_string(), "#e2e0d8"),
+    }
+}
+
 /// Format an RFC3339 timestamp into a human-readable relative time.
 fn format_relative_time(rfc3339: &str, reference_secs: i64) -> String {
     let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
@@ -2403,12 +2422,14 @@ fn DetailPanel() -> impl IntoView {
                                         </span>
                                     </div>
                                 })}
-                                {runtime_defense.map(|defense_tier| view! {
+                                {runtime_defense.map(|defense_tier| {
+                                    let (defense_label, defense_color) = defense_tier_display(&defense_tier);
+                                    view! {
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Defense Tier"</span>
-                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.835rem; color: #e2e0d8;">{defense_tier}</span>
+                                        <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Defense"</span>
+                                        <span style={format!("font-family: 'JetBrains Mono', monospace; font-size: 0.835rem; color: {defense_color};")}>{defense_label}</span>
                                     </div>
-                                })}
+                                }})}
                                 {runtime_provenance.map(|(primary, secondary)| view! {
                                     <div style="padding: 8px 0; border-bottom: 1px solid rgba(40,44,62,0.6); display: flex; flex-direction: column; gap: 2px;">
                                         <span style="font-size: 0.777rem; color: var(--accent-live); font-family: 'JetBrains Mono', monospace;">
@@ -2488,7 +2509,7 @@ fn DetailPanel() -> impl IntoView {
                                     view! {
                                         <div style="padding: 8px 0 4px;">
                                             <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Held Resources (Live)"
+                                                "Held Resources"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {held_items.into_iter().map(|(label, value, icon_name)| {
@@ -2510,7 +2531,7 @@ fn DetailPanel() -> impl IntoView {
                                     view! {
                                         <div style="padding: 8px 0 4px;">
                                             <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Production/Hr (Live)"
+                                                "Production/Hr"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {prod_items.into_iter().map(|(label, value, icon_name)| {
@@ -2532,7 +2553,7 @@ fn DetailPanel() -> impl IntoView {
                                     view! {
                                         <div style="padding: 8px 0 4px;">
                                             <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Storage Cap (Live)"
+                                                "Storage Cap"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {cap_items.into_iter().map(|(label, value, icon_name)| {

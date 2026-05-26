@@ -433,13 +433,7 @@ pub fn Timeline() -> impl IntoView {
             style:bottom=move || if is_mobile.get() { "142px" } else { "88px" }
             style="position: absolute; left: 0; z-index: 26; margin: 0 12px; padding: 8px 12px; border: 1px solid rgba(245,197,66,0.32); border-radius: 8px; background: rgba(19,22,31,0.96); color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,0.35);"
         >
-            {move || {
-                let cutoff = history::rekindled_world_release_secs();
-                let cutoff_label = format_history_timestamp(cutoff);
-                format!(
-                    "Selected time predates Rekindled World ({cutoff_label} UTC). Sequoia only has current territory geometry, so older history can render with misplaced or missing territories."
-                )
-            }}
+            "Pre-Sequoia scrape data may be inaccurate."
         </div>
         <div
             class="timeline-bar hud-enter"

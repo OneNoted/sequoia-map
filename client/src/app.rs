@@ -2367,7 +2367,6 @@ struct TooltipInfo {
     base_resources: Resources,
     resources: Resources,
     resources_from_live: bool,
-    provenance_source: Option<String>,
     live_production_rates: Option<Resources>,
     live_storage_capacity: Option<Resources>,
     takes_in_window: Option<u64>,
@@ -2409,10 +2408,6 @@ fn Tooltip() -> impl IntoView {
             .clone()
             .unwrap_or_else(|| base_resources.clone());
         let resources_from_live = live_held_resources.is_some();
-        let provenance_source = runtime
-            .and_then(|rt| rt.provenance.as_ref())
-            .map(|p| p.source.clone())
-            .filter(|s| !s.trim().is_empty());
         let takes_in_window = if heat_mode_enabled.get() {
             Some(
                 heat_entries_by_territory
@@ -2448,7 +2443,6 @@ fn Tooltip() -> impl IntoView {
             base_resources,
             resources,
             resources_from_live,
-            provenance_source,
             live_production_rates,
             live_storage_capacity,
             takes_in_window,
@@ -2465,16 +2459,6 @@ fn Tooltip() -> impl IntoView {
             let (tr, tg, tb) = info.treasury.color_rgb();
             let buff = info.treasury.buff_percent();
             let treasury_label = info.treasury.label();
-            let source_badge = if info.resources_from_live { "LIVE" } else { "MAP" };
-            let source_badge_style = if info.resources_from_live {
-                "background: rgba(var(--accent-live-rgb),0.14); border: 1px solid rgba(var(--accent-live-rgb),0.32); color: var(--accent-live);"
-            } else {
-                "background: rgba(154,149,144,0.12); border: 1px solid rgba(154,149,144,0.24); color: #9a9590;"
-            };
-            let is_iris = info
-                .provenance_source
-                .as_deref()
-                .is_some_and(|s| s.eq_ignore_ascii_case("iris"));
 
             let render_resource_section = |title: &str,
                                            title_color: &str,
@@ -2534,7 +2518,7 @@ fn Tooltip() -> impl IntoView {
                 )
             } else {
                 render_resource_section(
-                    "Resources (Map)",
+                    "Resources",
                     "#9a9590",
                     "rgba(154,149,144,0.25)",
                     "#e2e0d8",
@@ -2547,7 +2531,7 @@ fn Tooltip() -> impl IntoView {
                 .as_ref()
                 .map(|resources| {
                     render_resource_section(
-                        "Production/Hr (Live)",
+                        "Production/Hr",
                         "var(--accent-live)",
                         "rgba(var(--accent-live-rgb),0.25)",
                         "#d4e9ff",
@@ -2561,7 +2545,7 @@ fn Tooltip() -> impl IntoView {
                 .as_ref()
                 .map(|resources| {
                     render_resource_section(
-                        "Storage Capacity (Live)",
+                        "Storage Capacity",
                         "var(--accent-live)",
                         "rgba(var(--accent-live-rgb),0.25)",
                         "#dcf1ff",
@@ -2584,7 +2568,7 @@ fn Tooltip() -> impl IntoView {
                         rgba_css(r, g, b, 0.30),
                     )} />
                     <div style="padding: 12px 14px 10px; flex: 1; min-width: 0;">
-                        // Header: swatch + territory name + source badge
+                        // Header: swatch + territory name
                         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 3px;">
                             <div style={format!(
                                 "width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.10); background: {}; flex-shrink: 0; box-shadow: 0 0 4px {};",
@@ -2594,27 +2578,6 @@ fn Tooltip() -> impl IntoView {
                             <div style="font-size: 0.92rem; font-weight: 700; color: #e2e0d8; font-family: 'Silkscreen', monospace; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
                                 {info.name.clone()}
                             </div>
-                            <span style="display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;">
-                                {is_iris.then(|| view! {
-                                    <a
-                                        href=crate::IRIS_RELEASES_URL
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        title="Open Iris releases"
-                                        style="display: inline-flex; pointer-events: auto; text-decoration: none;"
-                                    >
-                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.60rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; background: rgba(168,85,247,0.14); border: 1px solid rgba(168,85,247,0.32); color: #a855f7; cursor: pointer;">
-                                            "IRIS"
-                                        </span>
-                                    </a>
-                                })}
-                                <span style={format!(
-                                    "font-family: 'JetBrains Mono', monospace; font-size: 0.60rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; {}",
-                                    source_badge_style
-                                )}>
-                                    {source_badge}
-                                </span>
-                            </span>
                         </div>
                         // Guild name + prefix
                         <div style="display: flex; align-items: baseline; gap: 4px; margin-left: 22px; margin-bottom: 8px;">
