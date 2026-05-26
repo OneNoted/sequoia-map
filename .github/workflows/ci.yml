@@ -37,7 +37,7 @@ jobs:
           else
             git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           fi
-          git fetch --no-tags --prune origin "+${GITHUB_REF}:${GITHUB_REF}"
+          git fetch --no-tags --prune origin "+${GITHUB_REF}:refs/remotes/origin/workflow-checkout"
           git checkout --force "${GITHUB_SHA}"
           git clean -ffdx
 
