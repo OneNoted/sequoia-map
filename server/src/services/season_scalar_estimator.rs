@@ -95,10 +95,19 @@ pub async fn warm_cache(state: &AppState) {
 }
 
 async fn sample_once(state: &AppState, pool: &sqlx::PgPool) -> Result<(), String> {
-    if let Some(leaderboard) = wynncraft_api::cached_latest_guild_season_leaderboard(state).await? {
-        let snapshots = snapshots_from_leaderboard(state, &leaderboard).await;
-        if !snapshots.is_empty() {
-            return persist_guild_observations(pool, &snapshots).await;
+    match wynncraft_api::cached_latest_guild_season_leaderboard(state).await {
+        Ok(Some(leaderboard)) => {
+            let snapshots = snapshots_from_leaderboard(state, &leaderboard).await;
+            if !snapshots.is_empty() {
+                return persist_guild_observations(pool, &snapshots).await;
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!(
+                error = %e,
+                "season leaderboard unavailable; falling back to per-guild season polling"
+            );
         }
     }
 

@@ -602,10 +602,12 @@ fn top_count_labels(counts: &[NamedCount], limit: usize) -> String {
 #[component]
 fn MapIntelPanel() -> impl IntoView {
     let tick: RwSignal<i64> = expect_context();
+    let refresh_minute = Memo::new(move |_| tick.get() / 60);
     let intel: RwSignal<Option<MapIntelSummary>> = RwSignal::new(None);
     let load_error: RwSignal<Option<String>> = RwSignal::new(None);
 
     Effect::new(move |_| {
+        let _ = refresh_minute.get();
         wasm_bindgen_futures::spawn_local(async move {
             match gloo_net::http::Request::get("/api/map/intel").send().await {
                 Ok(response) if response.ok() => match response.json::<MapIntelSummary>().await {

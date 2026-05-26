@@ -276,11 +276,7 @@ pub async fn resolve_requested_window(
         return Ok(window);
     }
 
-    if let Some(active) = active_window_from_config()? {
-        return Ok(Some(active));
-    }
-
-    Ok(windows.into_iter().max_by_key(|window| window.season_id))
+    Ok(select_default_window(windows, active_window_from_config()?))
 }
 
 pub async fn list_resolved_windows(
@@ -391,6 +387,20 @@ fn merge_windows(
     let mut windows: Vec<ResolvedSeasonWindow> = merged.into_values().collect();
     windows.sort_by_key(|window| std::cmp::Reverse(window.season_id));
     windows
+}
+
+fn select_default_window(
+    windows: Vec<ResolvedSeasonWindow>,
+    active: Option<ResolvedSeasonWindow>,
+) -> Option<ResolvedSeasonWindow> {
+    if let Some(active) = active {
+        return windows
+            .into_iter()
+            .find(|window| window.season_id == active.season_id)
+            .or(Some(active));
+    }
+
+    windows.into_iter().max_by_key(|window| window.season_id)
 }
 
 fn inherit_missing_sr_rates(
@@ -515,6 +525,7 @@ impl ResolvedSeasonWindow {
 mod tests {
     use super::{
         ResolvedSeasonWindow, SeasonWindowSource, merge_windows, normalize_requested_guild_names,
+        select_default_window,
     };
     use chrono::{DateTime, Utc};
 
@@ -682,6 +693,48 @@ mod tests {
                 territory_holding_sr_per_hour: Some(120),
                 sr_per_war: Some(380),
             }]
+        );
+    }
+
+    #[test]
+    fn select_default_window_uses_api_enriched_active_window() {
+        let active = ResolvedSeasonWindow {
+            season_id: 30,
+            label: Some("Active Season".to_string()),
+            start_at: ts("2026-03-27T00:00:00Z"),
+            end_at: ts("2026-04-23T00:00:00Z"),
+            source: SeasonWindowSource::Configured,
+            territory_holding_sr_per_hour: None,
+            sr_per_war: None,
+        };
+        let windows = vec![
+            ResolvedSeasonWindow {
+                season_id: 31,
+                label: Some("Future Season".to_string()),
+                start_at: ts("2026-04-23T00:00:00Z"),
+                end_at: ts("2026-05-20T00:00:00Z"),
+                source: SeasonWindowSource::WynncraftApi,
+                territory_holding_sr_per_hour: Some(110),
+                sr_per_war: Some(360),
+            },
+            ResolvedSeasonWindow {
+                territory_holding_sr_per_hour: Some(120),
+                sr_per_war: Some(380),
+                ..active.clone()
+            },
+        ];
+
+        assert_eq!(
+            select_default_window(windows, Some(active)),
+            Some(ResolvedSeasonWindow {
+                season_id: 30,
+                label: Some("Active Season".to_string()),
+                start_at: ts("2026-03-27T00:00:00Z"),
+                end_at: ts("2026-04-23T00:00:00Z"),
+                source: SeasonWindowSource::Configured,
+                territory_holding_sr_per_hour: Some(120),
+                sr_per_war: Some(380),
+            })
         );
     }
 
