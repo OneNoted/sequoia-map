@@ -113,8 +113,12 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
         <Show when=move || enabled.get()>
             <div
                 style:right=move || {
-                    if !is_mobile.get() && sidebar_open.get() {
-                        format!("{:.0}px", sidebar_width.get() + 16.0)
+                    if !is_mobile.get() {
+                        if sidebar_open.get() {
+                            format!("{:.0}px", sidebar_width.get() + 16.0)
+                        } else {
+                            "64px".to_string()
+                        }
                     } else {
                         "16px".to_string()
                     }
