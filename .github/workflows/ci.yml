@@ -75,7 +75,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends binaryen brotli gzip
-          cargo install trunk --locked
+          if command -v trunk >/dev/null 2>&1; then
+            trunk --version
+          else
+            cargo install trunk --locked
+          fi
 
       - name: Enforce Client WASM Size Budget
         working-directory: client
