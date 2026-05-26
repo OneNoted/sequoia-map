@@ -173,6 +173,8 @@ pub(crate) struct ResetSettingsTrigger(pub RwSignal<u64>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowSettings(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowDebugInfo(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct IsMobile(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct PeekTerritory(pub RwSignal<Option<String>>);
@@ -399,6 +401,8 @@ struct SettingsV2 {
     label_scale_icons: f64,
     #[serde(default = "default_sidebar_width")]
     sidebar_width: f64,
+    #[serde(default)]
+    show_debug_info: bool,
 }
 
 const fn default_name_color() -> NameColor {
@@ -525,6 +529,7 @@ impl Default for SettingsV2 {
             label_scale_dynamic: default_label_scale_group(),
             label_scale_icons: default_label_scale_group(),
             sidebar_width: default_sidebar_width(),
+            show_debug_info: false,
         }
     }
 }
@@ -626,6 +631,7 @@ impl From<LegacySettings> for SettingsV2 {
             label_scale_dynamic: default_label_scale_group(),
             label_scale_icons: default_label_scale_group(),
             sidebar_width: default_sidebar_width(),
+            show_debug_info: false,
         }
     }
 }
@@ -796,6 +802,7 @@ pub fn MapPage() -> impl IntoView {
     let sidebar_items: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
     let reset_settings_trigger: RwSignal<u64> = RwSignal::new(0);
     let show_settings: RwSignal<bool> = RwSignal::new(false);
+    let show_debug_info: RwSignal<bool> = RwSignal::new(saved.show_debug_info);
     // Live-first boot: defer non-essential work (tiles/history checks/icons)
     // until we have initial territory data and a short settle window.
     let deferred_boot_ready: RwSignal<bool> = RwSignal::new(false);
@@ -901,6 +908,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(SidebarItems(sidebar_items));
     provide_context(ResetSettingsTrigger(reset_settings_trigger));
     provide_context(ShowSettings(show_settings));
+    provide_context(ShowDebugInfo(show_debug_info));
     provide_context(CurrentMode(map_mode));
     provide_context(HistoryTimestamp(history_timestamp));
     provide_context(PlaybackActive(playback_active));
@@ -992,6 +1000,7 @@ pub fn MapPage() -> impl IntoView {
         ));
         label_scale_dynamic.set(clamp_label_scale_group(defaults.label_scale_dynamic));
         label_scale_icons.set(clamp_label_scale_group(defaults.label_scale_icons));
+        show_debug_info.set(defaults.show_debug_info);
     });
 
     // Mutual exclusion: SelectedGuild and Selected clear each other
@@ -1449,6 +1458,7 @@ pub fn MapPage() -> impl IntoView {
             label_scale_dynamic: clamp_label_scale_group(label_scale_dynamic.get()),
             label_scale_icons: clamp_label_scale_group(label_scale_icons.get()),
             sidebar_width: clamp_sidebar_width(sidebar_width.get()),
+            show_debug_info: show_debug_info.get(),
         };
         let _ = gloo_storage::LocalStorage::set("sequoia_settings_v2", &settings);
     });
@@ -2814,6 +2824,7 @@ mod tests {
     fn settings_v2_deserialization_defaults_sidebar_width() {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(parsed.sidebar_width, DEFAULT_SIDEBAR_WIDTH);
+        assert!(!parsed.show_debug_info);
     }
 
     #[test]
