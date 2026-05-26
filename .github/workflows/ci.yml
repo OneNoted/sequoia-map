@@ -28,15 +28,21 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --prune origin "+${GITHUB_REF}:${GITHUB_REF}"
+          git checkout --force "${GITHUB_SHA}"
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
 
       - name: Build And Test
         run: |
