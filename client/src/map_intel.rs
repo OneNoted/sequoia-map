@@ -14,6 +14,7 @@ use crate::viewport::Viewport;
 
 const NODE_MIN_RADIUS: f64 = 1.25;
 const NODE_MAX_RADIUS: f64 = 3.25;
+const FETCH_RETRY_DELAY_SECS: u64 = 10;
 const MAP_INTEL_ENDPOINT: &str = "/api/map/intel/overlay";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,10 +38,12 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
     let data: RwSignal<Option<MapIntelPayload>> = RwSignal::new(None);
     let loading: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
+    let retry_nonce: RwSignal<u64> = RwSignal::new(0);
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let cached_ctx: Rc<RefCell<Option<CanvasRenderingContext2d>>> = Rc::new(RefCell::new(None));
 
     Effect::new(move || {
+        retry_nonce.track();
         if !enabled.get() || data.with(|payload| payload.is_some()) || loading.get_untracked() {
             return;
         }
@@ -51,7 +54,18 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
             let result = fetch_map_intel_overlay().await;
             match result {
                 Ok(payload) => data.set(Some(payload)),
-                Err(message) => error.set(Some(message)),
+                Err(message) => {
+                    error.set(Some(message));
+                    loading.set(false);
+                    gloo_timers::future::sleep(std::time::Duration::from_secs(
+                        FETCH_RETRY_DELAY_SECS,
+                    ))
+                    .await;
+                    if enabled.get_untracked() && data.with_untracked(|payload| payload.is_none()) {
+                        retry_nonce.update(|nonce| *nonce = nonce.saturating_add(1));
+                    }
+                    return;
+                }
             }
             loading.set(false);
         });
@@ -649,7 +663,7 @@ fn map_intel_status(
         return "Loading".to_string();
     }
     if error.is_some() {
-        return "Error".to_string();
+        return "Retrying".to_string();
     }
     payload
         .as_ref()

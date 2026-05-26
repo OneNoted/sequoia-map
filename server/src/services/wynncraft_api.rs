@@ -164,41 +164,57 @@ pub async fn cached_latest_guild_season_leaderboard(
 }
 
 pub async fn cached_map_intel_summary(state: &AppState) -> Result<MapIntelSummary, String> {
-    cached_map_intel_payload(state)
-        .await
-        .map(|payload| payload.summary)
-}
-
-pub async fn cached_map_intel_overlay(state: &AppState) -> Result<MapIntelOverlay, String> {
-    cached_map_intel_payload(state)
-        .await
-        .map(|payload| payload.overlay)
-}
-
-async fn cached_map_intel_payload(state: &AppState) -> Result<MapIntelPayload, String> {
     {
         let cached = state.map_intel_cache.read().await;
-        if let Some(payload) = fresh_map_intel_payload(cached.as_ref(), Utc::now()) {
-            return Ok(payload);
+        if let Some(summary) = fresh_map_intel_summary(cached.as_ref(), Utc::now()) {
+            return Ok(summary);
         }
     }
 
     let _refresh_guard = state.map_intel_fetch_lock.lock().await;
     {
         let cached = state.map_intel_cache.read().await;
-        if let Some(payload) = fresh_map_intel_payload(cached.as_ref(), Utc::now()) {
-            return Ok(payload);
+        if let Some(summary) = fresh_map_intel_summary(cached.as_ref(), Utc::now()) {
+            return Ok(summary);
         }
     }
 
     let payload = fetch_map_intel_payload(&state.http_client).await?;
+    let summary = payload.summary.clone();
     let mut cached = state.map_intel_cache.write().await;
     *cached = Some(CachedMapIntel {
-        summary: payload.summary.clone(),
-        overlay: payload.overlay.clone(),
+        summary: payload.summary,
+        overlay: payload.overlay,
         fetched_at: Utc::now(),
     });
-    Ok(payload)
+    Ok(summary)
+}
+
+pub async fn cached_map_intel_overlay(state: &AppState) -> Result<MapIntelOverlay, String> {
+    {
+        let cached = state.map_intel_cache.read().await;
+        if let Some(overlay) = fresh_map_intel_overlay(cached.as_ref(), Utc::now()) {
+            return Ok(overlay);
+        }
+    }
+
+    let _refresh_guard = state.map_intel_fetch_lock.lock().await;
+    {
+        let cached = state.map_intel_cache.read().await;
+        if let Some(overlay) = fresh_map_intel_overlay(cached.as_ref(), Utc::now()) {
+            return Ok(overlay);
+        }
+    }
+
+    let payload = fetch_map_intel_payload(&state.http_client).await?;
+    let overlay = payload.overlay.clone();
+    let mut cached = state.map_intel_cache.write().await;
+    *cached = Some(CachedMapIntel {
+        summary: payload.summary,
+        overlay: payload.overlay,
+        fetched_at: Utc::now(),
+    });
+    Ok(overlay)
 }
 
 fn fresh_season_leaderboard(
@@ -210,16 +226,22 @@ fn fresh_season_leaderboard(
     (age < SEASON_LEADERBOARD_CACHE_TTL_SECS).then(|| cached.clone())
 }
 
-fn fresh_map_intel_payload(
+fn fresh_map_intel_summary(
     cached: Option<&CachedMapIntel>,
     now: DateTime<Utc>,
-) -> Option<MapIntelPayload> {
+) -> Option<MapIntelSummary> {
     let cached = cached?;
     let age = now.signed_duration_since(cached.fetched_at).num_seconds();
-    (age < MAP_INTEL_CACHE_TTL_SECS).then(|| MapIntelPayload {
-        summary: cached.summary.clone(),
-        overlay: cached.overlay.clone(),
-    })
+    (age < MAP_INTEL_CACHE_TTL_SECS).then(|| cached.summary.clone())
+}
+
+fn fresh_map_intel_overlay(
+    cached: Option<&CachedMapIntel>,
+    now: DateTime<Utc>,
+) -> Option<MapIntelOverlay> {
+    let cached = cached?;
+    let age = now.signed_duration_since(cached.fetched_at).num_seconds();
+    (age < MAP_INTEL_CACHE_TTL_SECS).then(|| cached.overlay.clone())
 }
 
 async fn fetch_map_intel_payload(client: &reqwest::Client) -> Result<MapIntelPayload, String> {
