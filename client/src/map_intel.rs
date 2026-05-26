@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use leptos::prelude::*;
 use sequoia_shared::{
@@ -181,12 +180,13 @@ struct NodeBucketSummary {
     x: f64,
     z: f64,
     profession: ProfessionKind,
+    count: usize,
 }
 
 fn build_node_bucket_summaries(
     buckets: &HashMap<NodeBucketKey, Vec<RenderNode>>,
 ) -> Vec<NodeBucketSummary> {
-    let mut summaries = Vec::with_capacity(buckets.len() * 2);
+    let mut summaries = Vec::with_capacity(buckets.len() * ProfessionKind::COUNT);
     for nodes in buckets.values() {
         let mut counts = [0usize; ProfessionKind::COUNT];
         let mut sum_x = [0.0; ProfessionKind::COUNT];
@@ -209,6 +209,7 @@ fn build_node_bucket_summaries(
                 x: sum_x[index] / count as f64,
                 z: sum_z[index] / count as f64,
                 profession,
+                count,
             });
         }
     }
@@ -290,7 +291,7 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarWidth(sidebar_width) = expect_context();
 
-    let data: RwSignal<Option<Arc<MapIntelModel>>> = RwSignal::new(None);
+    let data: RwSignal<Option<Rc<MapIntelModel>>, LocalStorage> = RwSignal::new_local(None);
     let loading: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let retry_nonce: RwSignal<u64> = RwSignal::new(0);
@@ -308,7 +309,7 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
         wasm_bindgen_futures::spawn_local(async move {
             let result = fetch_map_intel_overlay().await;
             match result {
-                Ok(payload) => data.set(Some(Arc::new(MapIntelModel::from_payload(payload)))),
+                Ok(payload) => data.set(Some(Rc::new(MapIntelModel::from_payload(payload)))),
                 Err(message) => {
                     error.set(Some(message));
                     loading.set(false);
@@ -865,6 +866,10 @@ fn closest_node(
     sx: f64,
     sy: f64,
 ) -> Option<(f64, IntelHover)> {
+    if viewport.scale < NODE_CLUSTER_SCALE {
+        return closest_node_summary(nodes, viewport, sx, sy);
+    }
+
     let threshold = (node_radius(viewport.scale) + 4.5).max(6.5);
     let threshold_sq = threshold * threshold;
     let mut best = None;
@@ -893,6 +898,41 @@ fn closest_node(
             }
         },
     );
+    best
+}
+
+fn closest_node_summary(
+    nodes: &NodeIndex,
+    viewport: &Viewport,
+    sx: f64,
+    sy: f64,
+) -> Option<(f64, IntelHover)> {
+    let threshold = 8.0;
+    let threshold_sq = threshold * threshold;
+    let mut best = None;
+
+    for summary in &nodes.summaries {
+        let (mx, my) = viewport.world_to_screen(summary.x, summary.z);
+        let dist = distance_sq(sx, sy, mx, my);
+        if dist <= threshold_sq && best.as_ref().is_none_or(|(current, _)| dist < *current) {
+            let style = summary.profession.style();
+            best = Some((
+                dist,
+                IntelHover {
+                    screen_x: mx,
+                    screen_y: my,
+                    title: format!("{} Nodes", style.label),
+                    meta: format!(
+                        "{} grouped {}",
+                        summary.count,
+                        node_count_label(summary.count)
+                    ),
+                    color: style.color,
+                },
+            ));
+        }
+    }
+
     best
 }
 
@@ -995,7 +1035,7 @@ fn title_label(value: &str) -> String {
 }
 
 fn map_intel_status(
-    payload: &Option<Arc<MapIntelModel>>,
+    payload: &Option<Rc<MapIntelModel>>,
     loading: bool,
     error: Option<&str>,
 ) -> String {
@@ -1017,6 +1057,10 @@ fn format_count(value: usize) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn node_count_label(count: usize) -> &'static str {
+    if count == 1 { "node" } else { "nodes" }
 }
 
 #[derive(Clone, Copy)]
@@ -1150,7 +1194,9 @@ const FISHING_RESOURCES: &[&str] = &[
 mod tests {
     use sequoia_shared::{GatheringNodeMarker, MapPoint};
 
-    use super::{NodeIndex, format_count, resource_profession, title_label};
+    use crate::viewport::Viewport;
+
+    use super::{NodeIndex, closest_node, format_count, resource_profession, title_label};
 
     fn node_marker(x: f64, z: f64, resource: &str) -> GatheringNodeMarker {
         GatheringNodeMarker {
@@ -1207,9 +1253,27 @@ mod tests {
         let labels = index
             .summaries
             .iter()
-            .map(|summary| summary.profession.style().label)
+            .map(|summary| (summary.profession.style().label, summary.count))
             .collect::<Vec<_>>();
 
-        assert_eq!(labels, ["Mining", "Woodcutting"]);
+        assert_eq!(labels, [("Mining", 2), ("Woodcutting", 1)]);
+    }
+
+    #[test]
+    fn clustered_node_hover_uses_summary_marker() {
+        let index = NodeIndex::from_markers(vec![
+            node_marker(0.0, 0.0, "COPPER"),
+            node_marker(200.0, 0.0, "GRANITE"),
+        ]);
+        let viewport = Viewport {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale: 0.1,
+        };
+
+        let (_, hover) = closest_node(&index, &viewport, 10.0, 0.0).expect("summary hover");
+
+        assert_eq!(hover.title, "Mining Nodes");
+        assert_eq!(hover.meta, "2 grouped nodes");
     }
 }
