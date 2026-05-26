@@ -129,6 +129,10 @@ pub(crate) struct FillAlphaBoost(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceHighlight(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct DefenseHighlight(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct MapIntelModeEnabled(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct ShowResourceIcons(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
@@ -359,6 +363,10 @@ struct SettingsV2 {
     connection_thickness_scale: f64,
     sidebar_open: bool,
     resource_highlight: bool,
+    #[serde(default)]
+    defense_highlight: bool,
+    #[serde(default)]
+    map_intel_enabled: bool,
     show_resource_icons: bool,
     #[serde(default = "default_true")]
     show_territory_ornaments: bool,
@@ -507,6 +515,8 @@ impl Default for SettingsV2 {
             connection_thickness_scale: default_connection_thickness_scale(),
             sidebar_open: false,
             resource_highlight: false,
+            defense_highlight: false,
+            map_intel_enabled: false,
             show_resource_icons: false,
             show_territory_ornaments: false,
             manual_sr_scalar: default_manual_sr_scalar(),
@@ -558,6 +568,10 @@ struct LegacySettings {
     name_color: NameColor,
     sidebar_open: bool,
     resource_highlight: bool,
+    #[serde(default)]
+    defense_highlight: bool,
+    #[serde(default)]
+    map_intel_enabled: bool,
     show_resource_icons: bool,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
@@ -587,6 +601,8 @@ impl Default for LegacySettings {
             name_color: NameColor::White,
             sidebar_open: false,
             resource_highlight: false,
+            defense_highlight: false,
+            map_intel_enabled: false,
             show_resource_icons: false,
             manual_sr_scalar: default_manual_sr_scalar(),
             auto_sr_scalar_enabled: true,
@@ -610,6 +626,8 @@ impl From<LegacySettings> for SettingsV2 {
             connection_thickness_scale: default_connection_thickness_scale(),
             sidebar_open: value.sidebar_open,
             resource_highlight: value.resource_highlight,
+            defense_highlight: value.defense_highlight,
+            map_intel_enabled: value.map_intel_enabled,
             show_resource_icons: value.show_resource_icons,
             show_territory_ornaments: false,
             manual_sr_scalar: value.manual_sr_scalar,
@@ -650,9 +668,11 @@ fn load_settings_v2() -> SettingsV2 {
 
 use crate::canvas::MapCanvas;
 use crate::colors::rgba_css;
+use crate::defense::{DEFENSE_TIERS, defense_tier_display};
 use crate::heat::{self, HeatFetchInput};
 use crate::history;
 use crate::icons::{self, ResourceAtlas};
+use crate::map_intel::MapIntelOverlay;
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::sse::{self, ConnectionStatus};
@@ -769,6 +789,8 @@ pub fn MapPage() -> impl IntoView {
         clamp_connection_thickness_scale(saved.connection_thickness_scale),
     );
     let resource_highlight: RwSignal<bool> = RwSignal::new(saved.resource_highlight);
+    let defense_highlight: RwSignal<bool> = RwSignal::new(saved.defense_highlight);
+    let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
     let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
     let manual_sr_scalar: RwSignal<f64> =
@@ -888,6 +910,8 @@ pub fn MapPage() -> impl IntoView {
     provide_context(SuppressCooldownVisuals(RwSignal::new(false)));
     provide_context(FillAlphaBoost(RwSignal::new(0.0)));
     provide_context(ResourceHighlight(resource_highlight));
+    provide_context(DefenseHighlight(defense_highlight));
+    provide_context(MapIntelModeEnabled(map_intel_enabled));
     provide_context(ShowResourceIcons(show_resource_icons));
     provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
     provide_context(ManualSrScalar(manual_sr_scalar));
@@ -974,6 +998,8 @@ pub fn MapPage() -> impl IntoView {
             defaults.connection_thickness_scale,
         ));
         resource_highlight.set(defaults.resource_highlight);
+        defense_highlight.set(defaults.defense_highlight);
+        map_intel_enabled.set(defaults.map_intel_enabled);
         show_resource_icons.set(defaults.show_resource_icons);
         show_territory_ornaments.set(defaults.show_territory_ornaments);
         manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
@@ -1003,6 +1029,31 @@ pub fn MapPage() -> impl IntoView {
         label_scale_dynamic.set(clamp_label_scale_group(defaults.label_scale_dynamic));
         label_scale_icons.set(clamp_label_scale_group(defaults.label_scale_icons));
         show_debug_info.set(defaults.show_debug_info);
+    });
+
+    Effect::new(move || {
+        if resource_highlight.get() && defense_highlight.get_untracked() {
+            defense_highlight.set(false);
+        }
+        if resource_highlight.get() && map_intel_enabled.get_untracked() {
+            map_intel_enabled.set(false);
+        }
+    });
+    Effect::new(move || {
+        if defense_highlight.get() && resource_highlight.get_untracked() {
+            resource_highlight.set(false);
+        }
+        if defense_highlight.get() && map_intel_enabled.get_untracked() {
+            map_intel_enabled.set(false);
+        }
+    });
+    Effect::new(move || {
+        if map_intel_enabled.get() && resource_highlight.get_untracked() {
+            resource_highlight.set(false);
+        }
+        if map_intel_enabled.get() && defense_highlight.get_untracked() {
+            defense_highlight.set(false);
+        }
     });
 
     // Mutual exclusion: SelectedGuild and Selected clear each other
@@ -1437,6 +1488,8 @@ pub fn MapPage() -> impl IntoView {
             ),
             sidebar_open: sidebar_open.get(),
             resource_highlight: resource_highlight.get(),
+            defense_highlight: defense_highlight.get(),
+            map_intel_enabled: map_intel_enabled.get(),
             show_resource_icons: show_resource_icons.get(),
             show_territory_ornaments: show_territory_ornaments.get(),
             manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
@@ -1763,7 +1816,27 @@ pub fn MapPage() -> impl IntoView {
                         readable_font.update(|v| *v = !*v);
                     }
                     "p" => {
-                        resource_highlight.update(|v| *v = !*v);
+                        let next = !resource_highlight.get_untracked();
+                        resource_highlight.set(next);
+                        if next {
+                            defense_highlight.set(false);
+                        }
+                    }
+                    "d" => {
+                        let next = !defense_highlight.get_untracked();
+                        defense_highlight.set(next);
+                        if next {
+                            resource_highlight.set(false);
+                            map_intel_enabled.set(false);
+                        }
+                    }
+                    "i" => {
+                        let next = !map_intel_enabled.get_untracked();
+                        map_intel_enabled.set(next);
+                        if next {
+                            resource_highlight.set(false);
+                            defense_highlight.set(false);
+                        }
                     }
                     "m" => {
                         show_minimap.update(|v| *v = !*v);
@@ -2006,6 +2079,8 @@ pub fn MapPage() -> impl IntoView {
                     <div style="position: absolute; bottom: 0; right: 0; width: 8px; height: 1px; background: rgba(245,197,66,0.3);" />
                     <div style="position: absolute; bottom: 0; right: 0; width: 1px; height: 8px; background: rgba(245,197,66,0.3);" />
                 </div>
+                <DefenseLegend />
+                <MapIntelOverlay />
                 // Mobile HUD buttons — bottom-right stack
                 <MobileHistoryToggle />
                 // Mobile FAB — opens sidebar
@@ -2367,10 +2442,49 @@ struct TooltipInfo {
     base_resources: Resources,
     resources: Resources,
     resources_from_live: bool,
-    provenance_source: Option<String>,
+    defense_tier: Option<String>,
+    is_headquarters: bool,
     live_production_rates: Option<Resources>,
     live_storage_capacity: Option<Resources>,
     takes_in_window: Option<u64>,
+}
+
+#[component]
+fn DefenseLegend() -> impl IntoView {
+    let DefenseHighlight(defense_highlight) = expect_context();
+    let IsMobile(is_mobile) = expect_context();
+    let SidebarOpen(sidebar_open) = expect_context();
+    let SidebarWidth(sidebar_width) = expect_context();
+
+    view! {
+        <div
+            style:display=move || if defense_highlight.get() { "block" } else { "none" }
+            style:right=move || {
+                if !is_mobile.get() {
+                    if sidebar_open.get() {
+                        format!("{:.0}px", sidebar_width.get() + 16.0)
+                    } else {
+                        "64px".to_string()
+                    }
+                } else {
+                    "16px".to_string()
+                }
+            }
+            style="position: absolute; top: 16px; z-index: 8; pointer-events: none; padding: 8px 9px; border: 1px solid rgba(58,63,92,0.78); border-radius: 4px; background: rgba(19,22,31,0.92); box-shadow: 0 8px 24px rgba(0,0,0,0.34);"
+        >
+            <div style="font-family: 'Silkscreen', monospace; font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: #9a9590; margin-bottom: 6px;">
+                "Defense"
+            </div>
+            <div style="display: grid; grid-template-columns: auto auto; gap: 4px 8px; align-items: center;">
+                {DEFENSE_TIERS.iter().map(|(label, color)| view! {
+                    <span style={format!("width: 10px; height: 10px; border-radius: 2px; background: {color}; border: 1px solid rgba(255,255,255,0.18);")} />
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.64rem; color: #d8d5cb; white-space: nowrap;">
+                        {*label}
+                    </span>
+                }).collect_view()}
+            </div>
+        </div>
+    }
 }
 
 /// Tooltip that follows the mouse cursor when hovering a territory.
@@ -2409,10 +2523,10 @@ fn Tooltip() -> impl IntoView {
             .clone()
             .unwrap_or_else(|| base_resources.clone());
         let resources_from_live = live_held_resources.is_some();
-        let provenance_source = runtime
-            .and_then(|rt| rt.provenance.as_ref())
-            .map(|p| p.source.clone())
-            .filter(|s| !s.trim().is_empty());
+        let defense_tier = runtime.and_then(|runtime| runtime.defense_tier.clone());
+        let is_headquarters = runtime
+            .and_then(|runtime| runtime.headquarters)
+            .unwrap_or(false);
         let takes_in_window = if heat_mode_enabled.get() {
             Some(
                 heat_entries_by_territory
@@ -2448,7 +2562,8 @@ fn Tooltip() -> impl IntoView {
             base_resources,
             resources,
             resources_from_live,
-            provenance_source,
+            defense_tier,
+            is_headquarters,
             live_production_rates,
             live_storage_capacity,
             takes_in_window,
@@ -2465,16 +2580,15 @@ fn Tooltip() -> impl IntoView {
             let (tr, tg, tb) = info.treasury.color_rgb();
             let buff = info.treasury.buff_percent();
             let treasury_label = info.treasury.label();
-            let source_badge = if info.resources_from_live { "LIVE" } else { "MAP" };
-            let source_badge_style = if info.resources_from_live {
-                "background: rgba(var(--accent-live-rgb),0.14); border: 1px solid rgba(var(--accent-live-rgb),0.32); color: var(--accent-live);"
-            } else {
-                "background: rgba(154,149,144,0.12); border: 1px solid rgba(154,149,144,0.24); color: #9a9590;"
-            };
-            let is_iris = info
-                .provenance_source
-                .as_deref()
-                .is_some_and(|s| s.eq_ignore_ascii_case("iris"));
+            let defense_row = info.defense_tier.as_ref().map(|tier| {
+                let (label, color) = defense_tier_display(tier);
+                view! {
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
+                        <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Defense"</span>
+                        <span style={format!("color: {color}; font-size: 0.78rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;")}>{label}</span>
+                    </div>
+                }
+            });
 
             let render_resource_section = |title: &str,
                                            title_color: &str,
@@ -2534,7 +2648,7 @@ fn Tooltip() -> impl IntoView {
                 )
             } else {
                 render_resource_section(
-                    "Resources (Map)",
+                    "Resources",
                     "#9a9590",
                     "rgba(154,149,144,0.25)",
                     "#e2e0d8",
@@ -2547,7 +2661,7 @@ fn Tooltip() -> impl IntoView {
                 .as_ref()
                 .map(|resources| {
                     render_resource_section(
-                        "Production/Hr (Live)",
+                        "Production/Hr",
                         "var(--accent-live)",
                         "rgba(var(--accent-live-rgb),0.25)",
                         "#d4e9ff",
@@ -2561,7 +2675,7 @@ fn Tooltip() -> impl IntoView {
                 .as_ref()
                 .map(|resources| {
                     render_resource_section(
-                        "Storage Capacity (Live)",
+                        "Storage Capacity",
                         "var(--accent-live)",
                         "rgba(var(--accent-live-rgb),0.25)",
                         "#dcf1ff",
@@ -2584,7 +2698,7 @@ fn Tooltip() -> impl IntoView {
                         rgba_css(r, g, b, 0.30),
                     )} />
                     <div style="padding: 12px 14px 10px; flex: 1; min-width: 0;">
-                        // Header: swatch + territory name + source badge
+                        // Header: swatch + territory name
                         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 3px;">
                             <div style={format!(
                                 "width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.10); background: {}; flex-shrink: 0; box-shadow: 0 0 4px {};",
@@ -2594,27 +2708,11 @@ fn Tooltip() -> impl IntoView {
                             <div style="font-size: 0.92rem; font-weight: 700; color: #e2e0d8; font-family: 'Silkscreen', monospace; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
                                 {info.name.clone()}
                             </div>
-                            <span style="display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;">
-                                {is_iris.then(|| view! {
-                                    <a
-                                        href=crate::IRIS_RELEASES_URL
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        title="Open Iris releases"
-                                        style="display: inline-flex; pointer-events: auto; text-decoration: none;"
-                                    >
-                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.60rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; background: rgba(168,85,247,0.14); border: 1px solid rgba(168,85,247,0.32); color: #a855f7; cursor: pointer;">
-                                            "IRIS"
-                                        </span>
-                                    </a>
-                                })}
-                                <span style={format!(
-                                    "font-family: 'JetBrains Mono', monospace; font-size: 0.60rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; {}",
-                                    source_badge_style
-                                )}>
-                                    {source_badge}
+                            {info.is_headquarters.then(|| view! {
+                                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 3px; text-transform: uppercase; color: #f5c542; border: 1px solid rgba(245,197,66,0.36); background: rgba(245,197,66,0.10); flex-shrink: 0;">
+                                    "[HQ]"
                                 </span>
-                            </span>
+                            })}
                         </div>
                         // Guild name + prefix
                         <div style="display: flex; align-items: baseline; gap: 4px; margin-left: 22px; margin-bottom: 8px;">
@@ -2671,6 +2769,7 @@ fn Tooltip() -> impl IntoView {
                                     })}
                                 </span>
                             </div>
+                            {defense_row}
                             {info.takes_in_window.map(|count| view! {
                                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
                                     <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Takes in window"</span>
@@ -2827,6 +2926,8 @@ mod tests {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(parsed.sidebar_width, DEFAULT_SIDEBAR_WIDTH);
         assert!(parsed.auto_sr_scalar_enabled);
+        assert!(!parsed.defense_highlight);
+        assert!(!parsed.map_intel_enabled);
         assert!(!parsed.show_debug_info);
     }
 

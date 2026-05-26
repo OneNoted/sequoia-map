@@ -14,18 +14,19 @@ use crate::app::{
     ConnectionOpacityScale, ConnectionThicknessScale, CurrentMode,
     DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_THICKNESS_SCALE,
     DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER, DEFAULT_LABEL_SCALE_STATIC_NAME,
-    DEFAULT_LABEL_SCALE_STATIC_TAG, DetailReturnGuild, GuildColorStore, GuildOnlineData,
-    HeatEntriesByTerritory, HeatFallbackApplied, HeatHistoryBasis, HeatHistoryBasisSetting,
-    HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId,
-    HeatWindowLabel, HistoryAvailable, HistoryBoundsSignal, HistoryBufferModeActive,
-    HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive,
-    HistorySeasonLeaderboard, HistorySeasonScalarSample, HistoryTimestamp, IsMobile,
-    LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN,
-    LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName,
-    LastLiveSeq, LeaderboardSortBySr, LiveHandoffResyncCount, LiveSeasonScalarSample,
-    ManualSrScalar, MapMode, NameColor, NameColorSetting, NeedsLiveResync, PlaybackActive,
-    ReadableFont, ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild,
-    ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowGranularMapTime, ShowLeaderboardOnline,
+    DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight, DetailReturnGuild, GuildColorStore,
+    GuildOnlineData, HeatEntriesByTerritory, HeatFallbackApplied, HeatHistoryBasis,
+    HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled,
+    HeatSelectedSeasonId, HeatWindowLabel, HistoryAvailable, HistoryBoundsSignal,
+    HistoryBufferModeActive, HistoryBufferedUpdates, HistoryFetchNonce,
+    HistoryLegacyGeometryActive, HistorySeasonLeaderboard, HistorySeasonScalarSample,
+    HistoryTimestamp, IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN,
+    LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
+    LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
+    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapIntelModeEnabled, MapMode,
+    NameColor, NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont,
+    ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild, ShowCompoundMapTime,
+    ShowCountdown, ShowDebugInfo, ShowGranularMapTime, ShowLeaderboardOnline,
     ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap,
     ShowNames, ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarIndex, SidebarItems,
     SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
@@ -33,6 +34,7 @@ use crate::app::{
     clamp_label_scale_group, clamp_label_scale_master,
 };
 use crate::colors::rgba_css;
+use crate::defense::defense_tier_display;
 use crate::history;
 use crate::icons;
 use crate::season_scalar::{ScalarSource, effective_scalar};
@@ -567,6 +569,8 @@ fn SettingsPanel() -> impl IntoView {
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
     let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
+    let DefenseHighlight(defense_highlight) = expect_context();
+    let MapIntelModeEnabled(map_intel_enabled) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
     let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
     let ManualSrScalar(manual_sr_scalar) = expect_context();
@@ -710,6 +714,8 @@ fn SettingsPanel() -> impl IntoView {
                     thickness=connection_thickness_scale
                 />
                 <SettingsToggleRow label="Resource Highlight" shortcut="P" active=resource_highlight />
+                <SettingsToggleRow label="Defense Highlight" shortcut="D" active=defense_highlight />
+                <SettingsToggleRow label="Map Intel" shortcut="I" active=map_intel_enabled />
                 <SettingsToggleRow label="Resource Icons" shortcut="" active=show_resource_icons />
                 <SettingsToggleRow label="Territory Ornaments" shortcut="" active=show_territory_ornaments />
                 <SettingsToggleRow label="Minimap" shortcut="M" active=show_minimap />
@@ -2403,12 +2409,14 @@ fn DetailPanel() -> impl IntoView {
                                         </span>
                                     </div>
                                 })}
-                                {runtime_defense.map(|defense_tier| view! {
+                                {runtime_defense.map(|defense_tier| {
+                                    let (defense_label, defense_color) = defense_tier_display(&defense_tier);
+                                    view! {
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Defense Tier"</span>
-                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.835rem; color: #e2e0d8;">{defense_tier}</span>
+                                        <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Defense"</span>
+                                        <span style={format!("font-family: 'JetBrains Mono', monospace; font-size: 0.835rem; color: {defense_color};")}>{defense_label}</span>
                                     </div>
-                                })}
+                                }})}
                                 {runtime_provenance.map(|(primary, secondary)| view! {
                                     <div style="padding: 8px 0; border-bottom: 1px solid rgba(40,44,62,0.6); display: flex; flex-direction: column; gap: 2px;">
                                         <span style="font-size: 0.777rem; color: var(--accent-live); font-family: 'JetBrains Mono', monospace;">
@@ -2488,7 +2496,7 @@ fn DetailPanel() -> impl IntoView {
                                     view! {
                                         <div style="padding: 8px 0 4px;">
                                             <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Held Resources (Live)"
+                                                "Held Resources"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {held_items.into_iter().map(|(label, value, icon_name)| {
@@ -2510,7 +2518,7 @@ fn DetailPanel() -> impl IntoView {
                                     view! {
                                         <div style="padding: 8px 0 4px;">
                                             <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Production/Hr (Live)"
+                                                "Production/Hr"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {prod_items.into_iter().map(|(label, value, icon_name)| {
@@ -2532,7 +2540,7 @@ fn DetailPanel() -> impl IntoView {
                                     view! {
                                         <div style="padding: 8px 0 4px;">
                                             <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Storage Cap (Live)"
+                                                "Storage Cap"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {cap_items.into_iter().map(|(label, value, icon_name)| {
