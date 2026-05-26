@@ -186,7 +186,7 @@ struct NodeBucketSummary {
 fn build_node_bucket_summaries(
     buckets: &HashMap<NodeBucketKey, Vec<RenderNode>>,
 ) -> Vec<NodeBucketSummary> {
-    let mut summaries = Vec::with_capacity(buckets.len() * ProfessionKind::COUNT);
+    let mut summaries = Vec::with_capacity(buckets.len());
     for nodes in buckets.values() {
         let mut counts = [0usize; ProfessionKind::COUNT];
         let mut sum_x = [0.0; ProfessionKind::COUNT];
@@ -643,9 +643,6 @@ fn draw_node_summaries(
         }
 
         let (sx, sy) = viewport.world_to_screen(summary.x, summary.z);
-        if !in_screen_bounds(sx, sy, width, height, 24.0) {
-            continue;
-        }
 
         let color = summary.profession.style().color;
         if current_color != color {
@@ -1124,11 +1121,6 @@ impl ProfessionKind {
     }
 }
 
-#[cfg(test)]
-fn resource_profession(resource: &str) -> ProfessionStyle {
-    resource_profession_kind(resource).style()
-}
-
 fn resource_profession_kind(resource: &str) -> ProfessionKind {
     let resource = resource.trim().to_ascii_uppercase();
     if MINING_RESOURCES.contains(&resource.as_str()) {
@@ -1196,7 +1188,7 @@ mod tests {
 
     use crate::viewport::Viewport;
 
-    use super::{NodeIndex, closest_node, format_count, resource_profession, title_label};
+    use super::{NodeIndex, closest_node, format_count, resource_profession_kind, title_label};
 
     fn node_marker(x: f64, z: f64, resource: &str) -> GatheringNodeMarker {
         GatheringNodeMarker {
@@ -1216,10 +1208,10 @@ mod tests {
 
     #[test]
     fn classifies_common_profession_resources() {
-        assert_eq!(resource_profession("COPPER").label, "Mining");
-        assert_eq!(resource_profession("OAK").label, "Woodcutting");
-        assert_eq!(resource_profession("WHEAT").label, "Farming");
-        assert_eq!(resource_profession("BASS").label, "Fishing");
+        assert_eq!(resource_profession_kind("COPPER").style().label, "Mining");
+        assert_eq!(resource_profession_kind("OAK").style().label, "Woodcutting");
+        assert_eq!(resource_profession_kind("WHEAT").style().label, "Farming");
+        assert_eq!(resource_profession_kind("BASS").style().label, "Fishing");
     }
 
     #[test]
