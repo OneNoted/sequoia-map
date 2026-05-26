@@ -7,12 +7,12 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sequoia_shared::{
-    ClaimDocumentV1, GuildRef, LiveState, Resources, SeasonScalarSample, TerritoryMap,
-    TerritoryRuntimeData,
+    ClaimDocumentV1, GuildRef, LiveState, MapIntelSummary, Resources, SeasonScalarSample,
+    TerritoryMap, TerritoryRuntimeData,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::warn;
 
 use crate::config::{
@@ -160,6 +160,10 @@ pub struct AppState {
     pub event_tx: broadcast::Sender<PreSerializedEvent>,
     pub guild_cache: Arc<DashMap<String, CachedGuild>>,
     pub guild_catalog_cache: Arc<RwLock<Option<CachedGuildCatalog>>>,
+    pub season_leaderboard_cache: Arc<RwLock<Option<CachedSeasonLeaderboard>>>,
+    pub season_leaderboard_fetch_lock: Arc<Mutex<()>>,
+    pub map_intel_cache: Arc<RwLock<Option<CachedMapIntel>>>,
+    pub map_intel_fetch_lock: Arc<Mutex<()>>,
     /// Extra territory data (resources, connections) from bundled and supplemental sources.
     pub extra_terr: Arc<RwLock<HashMap<String, ExtraTerrInfo>>>,
     pub extra_data_dirty: Arc<AtomicBool>,
@@ -199,6 +203,28 @@ pub struct CachedGuildCatalogEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedGuildCatalog {
     pub entries: Vec<CachedGuildCatalogEntry>,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CachedSeasonLeaderboardEntry {
+    pub rank: u32,
+    pub name: String,
+    pub uuid: String,
+    pub prefix: String,
+    pub score: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedSeasonLeaderboard {
+    pub season_id: i32,
+    pub entries: Vec<CachedSeasonLeaderboardEntry>,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedMapIntel {
+    pub summary: MapIntelSummary,
     pub fetched_at: DateTime<Utc>,
 }
 
@@ -372,6 +398,10 @@ impl AppState {
             event_tx,
             guild_cache: Arc::new(DashMap::new()),
             guild_catalog_cache: Arc::new(RwLock::new(None)),
+            season_leaderboard_cache: Arc::new(RwLock::new(None)),
+            season_leaderboard_fetch_lock: Arc::new(Mutex::new(())),
+            map_intel_cache: Arc::new(RwLock::new(None)),
+            map_intel_fetch_lock: Arc::new(Mutex::new(())),
             extra_terr: Arc::new(RwLock::new(HashMap::new())),
             extra_data_dirty: Arc::new(AtomicBool::new(true)),
             guild_colors: Arc::new(RwLock::new(HashMap::new())),

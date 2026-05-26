@@ -526,6 +526,8 @@ mod tests {
             start_at: ts(start),
             end_at: ts(end),
             source: SeasonWindowSource::Configured,
+            territory_holding_sr_per_hour: None,
+            sr_per_war: None,
         }
     }
 

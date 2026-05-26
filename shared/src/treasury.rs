@@ -9,6 +9,19 @@ pub enum TreasuryLevel {
 }
 
 impl TreasuryLevel {
+    /// Parse the tier labels returned by Wynncraft's guild territory API.
+    pub fn from_api_tier(raw: &str) -> Option<Self> {
+        let normalized = raw.trim().replace([' ', '-'], "_").to_ascii_uppercase();
+        match normalized.as_str() {
+            "VERY_LOW" => Some(Self::VeryLow),
+            "LOW" => Some(Self::Low),
+            "MEDIUM" => Some(Self::Medium),
+            "HIGH" => Some(Self::High),
+            "VERY_HIGH" => Some(Self::VeryHigh),
+            _ => None,
+        }
+    }
+
     /// Determine treasury level from hold duration in seconds.
     pub fn from_held_seconds(secs: i64) -> Self {
         const HOUR: i64 = 3600;

@@ -81,6 +81,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             axum::routing::get(routes::api::get_season_race),
         )
         .route(
+            "/api/map/intel",
+            axum::routing::get(routes::api::get_map_intel),
+        )
+        .route(
             "/api/claims",
             axum::routing::post(routes::claims::create_claim_layout),
         )
