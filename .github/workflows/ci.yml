@@ -32,9 +32,14 @@ jobs:
         run: |
           set -euo pipefail
           git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
           git fetch --no-tags --prune origin "+${GITHUB_REF}:${GITHUB_REF}"
           git checkout --force "${GITHUB_SHA}"
+          git clean -ffdx
 
       - name: Install Rust Toolchain
         shell: bash
