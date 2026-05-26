@@ -364,6 +364,7 @@ struct SettingsV2 {
     show_territory_ornaments: bool,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
+    #[serde(default = "default_true")]
     auto_sr_scalar_enabled: bool,
     show_leaderboard_sr_gain: bool,
     #[serde(default)]
@@ -509,7 +510,7 @@ impl Default for SettingsV2 {
             show_resource_icons: false,
             show_territory_ornaments: false,
             manual_sr_scalar: default_manual_sr_scalar(),
-            auto_sr_scalar_enabled: false,
+            auto_sr_scalar_enabled: true,
             show_leaderboard_sr_gain: false,
             show_leaderboard_sr_value: false,
             show_leaderboard_territory_count: true,
@@ -560,6 +561,7 @@ struct LegacySettings {
     show_resource_icons: bool,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
+    #[serde(default = "default_true")]
     auto_sr_scalar_enabled: bool,
     show_leaderboard_sr_gain: bool,
 }
@@ -587,7 +589,7 @@ impl Default for LegacySettings {
             resource_highlight: false,
             show_resource_icons: false,
             manual_sr_scalar: default_manual_sr_scalar(),
-            auto_sr_scalar_enabled: false,
+            auto_sr_scalar_enabled: true,
             show_leaderboard_sr_gain: false,
         }
     }
@@ -2824,6 +2826,7 @@ mod tests {
     fn settings_v2_deserialization_defaults_sidebar_width() {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(parsed.sidebar_width, DEFAULT_SIDEBAR_WIDTH);
+        assert!(parsed.auto_sr_scalar_enabled);
         assert!(!parsed.show_debug_info);
     }
 

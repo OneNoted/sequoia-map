@@ -4,8 +4,7 @@ use wasm_bindgen::JsCast;
 
 use sequoia_shared::history::HistoryHeatMeta;
 use sequoia_shared::{
-    DataProvenance, MapIntelSummary, NamedCount, Resources, TreasuryLevel, passive_sr_per_5s,
-    passive_sr_per_hour,
+    DataProvenance, Resources, TreasuryLevel, passive_sr_per_5s, passive_sr_per_hour,
 };
 
 use crate::SEQUOIA_WEBSITE_URL;
@@ -238,12 +237,7 @@ pub fn Sidebar() -> impl IntoView {
                     } else {
                         let query = search_query.get();
                         if query.is_empty() {
-                            view! {
-                                <>
-                                    <MapIntelPanel />
-                                    <LeaderboardPanel />
-                                </>
-                            }.into_any()
+                            view! { <LeaderboardPanel /> }.into_any()
                         } else {
                             view! { <SearchResults /> }.into_any()
                         }
@@ -530,7 +524,7 @@ fn SearchBar() -> impl IntoView {
                 <input
                     data-search-input=""
                     class="focus-ring"
-                    style="width: 100%; padding: 10px 14px 10px 34px; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 6px; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif; font-size: 1.044rem; outline: none; transition: border-color 0.2s ease, box-shadow 0.3s ease;"
+                    style="width: 100%; padding: 10px 14px 10px 34px; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 6px; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif; font-size: 0.9rem; outline: none; transition: border-color 0.2s ease, box-shadow 0.3s ease;"
                     type="text"
                     placeholder="Search territories or guilds..."
                     prop:value=move || search_query.get()
@@ -550,168 +544,10 @@ fn SearchBar() -> impl IntoView {
                 />
                 // Keyboard hint — hidden on mobile (irrelevant on touch)
                 <div
-                    style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-family: 'JetBrains Mono', monospace; font-size: 0.719rem; color: #3a3f5c; background: #13161f; padding: 1px 5px; border-radius: 3px; border: 1px solid #282c3e; pointer-events: none;"
+                    style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: #3a3f5c; background: #13161f; padding: 1px 5px; border-radius: 3px; border: 1px solid #282c3e; pointer-events: none;"
                     style:display=move || if is_mobile.get() { "none" } else { "block" }
                 >"/"</div>
             </div>
-        </div>
-    }
-}
-
-fn format_level_range(min: Option<i32>, max: Option<i32>) -> String {
-    match (min, max) {
-        (Some(min), Some(max)) if min == max => format!("{min}"),
-        (Some(min), Some(max)) => format!("{min}-{max}"),
-        _ => "--".to_string(),
-    }
-}
-
-fn format_future_time(rfc3339: &str, reference_secs: i64) -> String {
-    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
-        return rfc3339.to_string();
-    };
-    let secs = dt.timestamp() - reference_secs;
-    if secs <= 0 {
-        return "now".to_string();
-    }
-    if secs < 60 {
-        return "<1m".to_string();
-    }
-    let mins = secs / 60;
-    if mins < 60 {
-        return format!("{mins}m");
-    }
-    let hours = mins / 60;
-    let rem_mins = mins % 60;
-    if rem_mins == 0 {
-        format!("{hours}h")
-    } else {
-        format!("{hours}h {rem_mins}m")
-    }
-}
-
-fn top_count_labels(counts: &[NamedCount], limit: usize) -> String {
-    let labels = counts
-        .iter()
-        .take(limit)
-        .map(|entry| format!("{} {}", entry.name, entry.count))
-        .collect::<Vec<_>>();
-    if labels.is_empty() {
-        "--".to_string()
-    } else {
-        labels.join(" / ")
-    }
-}
-
-#[component]
-fn MapIntelPanel() -> impl IntoView {
-    let tick: RwSignal<i64> = expect_context();
-    let refresh_minute = Memo::new(move |_| tick.get() / 60);
-    let intel: RwSignal<Option<MapIntelSummary>> = RwSignal::new(None);
-    let load_error: RwSignal<Option<String>> = RwSignal::new(None);
-
-    Effect::new(move |_| {
-        let _ = refresh_minute.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            match gloo_net::http::Request::get("/api/map/intel").send().await {
-                Ok(response) if response.ok() => match response.json::<MapIntelSummary>().await {
-                    Ok(summary) => {
-                        intel.set(Some(summary));
-                        load_error.set(None);
-                    }
-                    Err(error) => {
-                        load_error.set(Some(format!("Parse {}", error)));
-                    }
-                },
-                Ok(response) => {
-                    load_error.set(Some(format!("HTTP {}", response.status())));
-                }
-                Err(error) => {
-                    load_error.set(Some(format!("Fetch {}", error)));
-                }
-            }
-        });
-    });
-
-    view! {
-        <div style="border-bottom: 1px solid #282c3e; padding: 12px 14px 10px;">
-            <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 10px 8px;">
-                <div style="font-family: 'Silkscreen', monospace; font-size: 0.812rem; text-transform: uppercase; letter-spacing: 0.13em; color: #5a5860;">
-                    <span style="color: var(--accent-live); margin-right: 6px; font-size: 0.72rem;">{"\u{25C6}"}</span>"API Intel"
-                </div>
-                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.696rem; color: #6f748f; border: 1px solid rgba(var(--accent-live-rgb),0.18); background: rgba(var(--accent-live-rgb),0.06); border-radius: 3px; padding: 1px 5px;">"Wynncraft"</span>
-            </div>
-            {move || {
-                if let Some(summary) = intel.get() {
-                    let next_label = summary
-                        .world_events
-                        .next_schedule
-                        .as_deref()
-                        .map(|schedule| format_future_time(schedule, tick.get()))
-                        .unwrap_or_else(|| "--".to_string());
-                    let raid_levels = format_level_range(summary.raids.min_level, summary.raids.max_level);
-                    let camp_levels = format_level_range(summary.camps.min_level, summary.camps.max_level);
-                    let node_resources = top_count_labels(&summary.gathering_nodes.resources, 3);
-                    let scheduled_text = summary
-                        .world_events
-                        .scheduled
-                        .iter()
-                        .take(2)
-                        .map(|event| {
-                            let when = event
-                                .schedule
-                                .as_deref()
-                                .map(|schedule| format_future_time(schedule, tick.get()))
-                                .unwrap_or_else(|| "--".to_string());
-                            let level = event
-                                .level
-                                .map_or_else(|| "--".to_string(), |level| level.to_string());
-                            format!("{} Lv {} {}", event.name, level, when)
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" / ");
-                    let has_scheduled = !scheduled_text.is_empty();
-                    let scheduled_display = scheduled_text.clone();
-                    view! {
-                        <div>
-                            <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;">
-                                <MapIntelStat label="Raids" value=summary.raids.count.to_string() detail=raid_levels />
-                                <MapIntelStat label="Camps" value=summary.camps.count.to_string() detail=camp_levels />
-                                <MapIntelStat label="Events" value=format!("{}/{}", summary.world_events.scheduled_count, summary.world_events.count) detail=next_label />
-                                <MapIntelStat label="Nodes" value=summary.gathering_nodes.count.to_string() detail=format_level_range(summary.gathering_nodes.min_level, summary.gathering_nodes.max_level) />
-                            </div>
-                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.696rem; color: #6f748f; margin: 7px 10px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                                {node_resources}
-                            </div>
-                            <div
-                                style="margin-top: 8px; padding: 5px 9px; border: 1px solid rgba(80,200,120,0.12); background: rgba(80,200,120,0.035); border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.696rem; color: #c5c2bc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                style:display=move || if has_scheduled { "block" } else { "none" }
-                            >
-                                <span style="color: var(--accent-live); margin-right: 6px;">{"\u{25CF}"}</span>
-                                {scheduled_display}
-                            </div>
-                        </div>
-                    }.into_any()
-                } else {
-                    let message = load_error.get().unwrap_or_else(|| "Loading".to_string());
-                    view! {
-                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.766rem; color: #6f748f; padding: 8px 10px;">
-                            {message}
-                        </div>
-                    }.into_any()
-                }
-            }}
-        </div>
-    }
-}
-
-#[component]
-fn MapIntelStat(label: &'static str, value: String, detail: String) -> impl IntoView {
-    view! {
-        <div style="min-width: 0; border: 1px solid rgba(40,44,62,0.9); background: rgba(26,29,42,0.62); border-radius: 5px; padding: 6px 7px;">
-            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.638rem; color: #6f748f; text-transform: uppercase; letter-spacing: 0.08em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{label}</div>
-            <div style="font-family: 'Silkscreen', monospace; font-size: 0.951rem; color: #f5c542; margin-top: 2px; line-height: 1;">{value}</div>
-            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.638rem; color: #9a9590; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{detail}</div>
         </div>
     }
 }
