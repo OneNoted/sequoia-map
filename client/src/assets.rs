@@ -76,7 +76,9 @@ pub(crate) fn versioned_app_asset_url(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_asset_version, join_asset_url, normalize_asset_base, normalize_asset_version};
+    use super::{
+        append_asset_version, join_asset_url, normalize_asset_base, normalize_asset_version,
+    };
 
     #[test]
     fn normalize_asset_base_collapses_root_and_slashes() {
@@ -102,7 +104,10 @@ mod tests {
     fn normalize_asset_version_ignores_empty_and_unsubstituted_tokens() {
         assert_eq!(normalize_asset_version(""), None);
         assert_eq!(normalize_asset_version(" __SEQUOIA_ASSET_VERSION__ "), None);
-        assert_eq!(normalize_asset_version("b7c99ee31b46"), Some("b7c99ee31b46".to_string()));
+        assert_eq!(
+            normalize_asset_version("b7c99ee31b46"),
+            Some("b7c99ee31b46".to_string())
+        );
     }
 
     #[test]

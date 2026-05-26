@@ -19,6 +19,7 @@ use crate::config::{
 };
 use crate::services::season_data::{self, SeasonDataError};
 use crate::services::season_race::{self, SeasonRaceError};
+use crate::services::wynncraft_api;
 use crate::state::{AppState, CachedGuild, ObservabilitySnapshot};
 
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -169,6 +170,22 @@ pub async fn get_season_race(
             SeasonRaceError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             SeasonRaceError::BadRequest => StatusCode::BAD_REQUEST,
             SeasonRaceError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        })?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=60"),
+    );
+    Ok((headers, Json(response)))
+}
+
+pub async fn get_map_intel(State(state): State<AppState>) -> Result<impl IntoResponse, StatusCode> {
+    let response = wynncraft_api::cached_map_intel_summary(&state)
+        .await
+        .map_err(|error| {
+            warn!(error = %error, "failed to load Wynncraft map intel");
+            StatusCode::BAD_GATEWAY
         })?;
 
     let mut headers = HeaderMap::new();
@@ -454,6 +471,7 @@ pub struct GuildsOnlineQuery {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GuildSeasonRatingSource {
+    Leaderboard,
     Live,
     SnapshotFallback,
 }
@@ -463,6 +481,10 @@ pub struct GuildOnlineEntry {
     pub online: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_rating: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_rank: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_id: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_rating_source: Option<GuildSeasonRatingSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -567,6 +589,14 @@ pub async fn get_guilds_online(
         }
     }
 
+    match wynncraft_api::cached_latest_guild_season_leaderboard(&state).await {
+        Ok(Some(leaderboard)) => apply_leaderboard_ratings(&mut result, &leaderboard),
+        Ok(None) => {}
+        Err(error) => {
+            warn!(error = %error, "failed to load guild season leaderboard ratings");
+        }
+    }
+
     if let Some(pool) = state.db.as_ref() {
         let missing_rating_names: Vec<String> = result
             .iter()
@@ -620,9 +650,32 @@ fn parse_guild_online_entry(json_str: &str) -> Option<GuildOnlineEntry> {
     Some(GuildOnlineEntry {
         online,
         season_rating,
+        season_rank: None,
+        season_id: None,
         season_rating_source: season_rating.map(|_| GuildSeasonRatingSource::Live),
         season_rating_sampled_at: None,
     })
+}
+
+fn apply_leaderboard_ratings(
+    result: &mut HashMap<String, GuildOnlineEntry>,
+    leaderboard: &crate::state::CachedSeasonLeaderboard,
+) {
+    let by_name = leaderboard
+        .entries
+        .iter()
+        .map(|entry| (entry.name.to_ascii_lowercase(), entry))
+        .collect::<HashMap<_, _>>();
+    for (guild_name, entry) in result.iter_mut() {
+        let Some(leaderboard_entry) = by_name.get(&guild_name.to_ascii_lowercase()) else {
+            continue;
+        };
+        entry.season_rating = Some(leaderboard_entry.score);
+        entry.season_rank = Some(leaderboard_entry.rank);
+        entry.season_id = Some(leaderboard.season_id);
+        entry.season_rating_source = Some(GuildSeasonRatingSource::Leaderboard);
+        entry.season_rating_sampled_at = Some(leaderboard.fetched_at.to_rfc3339());
+    }
 }
 
 async fn load_latest_observed_season_ratings(
@@ -668,6 +721,8 @@ fn apply_snapshot_fallback(
             continue;
         }
         entry.season_rating = Some(season_rating);
+        entry.season_rank = None;
+        entry.season_id = None;
         entry.season_rating_source = Some(GuildSeasonRatingSource::SnapshotFallback);
         entry.season_rating_sampled_at = Some(observed_at.to_rfc3339());
     }
@@ -866,6 +921,8 @@ mod tests {
                 GuildOnlineEntry {
                     online: 12,
                     season_rating: None,
+                    season_rank: None,
+                    season_id: None,
                     season_rating_source: None,
                     season_rating_sampled_at: None,
                 },
@@ -875,6 +932,8 @@ mod tests {
                 GuildOnlineEntry {
                     online: 8,
                     season_rating: Some(345_000),
+                    season_rank: None,
+                    season_id: None,
                     season_rating_source: Some(GuildSeasonRatingSource::Live),
                     season_rating_sampled_at: None,
                 },
