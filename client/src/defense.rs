@@ -1,9 +1,9 @@
 pub(crate) const DEFENSE_TIERS: &[(&str, &str)] = &[
-    ("VERY LOW", "#00aa00"),
-    ("LOW", "#55ff55"),
-    ("MEDIUM", "#ffff55"),
-    ("HIGH", "#ff5555"),
-    ("VERY HIGH", "#aa0000"),
+    ("Very Low", "#00aa00"),
+    ("Low", "#55ff55"),
+    ("Medium", "#ffff55"),
+    ("High", "#ff5555"),
+    ("Very High", "#aa0000"),
 ];
 
 pub(crate) fn normalize_defense_tier(tier: &str) -> String {
@@ -18,12 +18,12 @@ pub(crate) fn normalize_defense_tier(tier: &str) -> String {
 pub(crate) fn defense_tier_display(tier: &str) -> (String, &'static str) {
     let normalized = normalize_defense_tier(tier);
     match normalized.as_str() {
-        "NONE" => (normalized, "#ffffff"),
-        "VERY LOW" => (normalized, "#00aa00"),
-        "LOW" => (normalized, "#55ff55"),
-        "MEDIUM" => (normalized, "#ffff55"),
-        "HIGH" => (normalized, "#ff5555"),
-        "VERY HIGH" => (normalized, "#aa0000"),
+        "NONE" => ("None".to_string(), "#ffffff"),
+        "VERY LOW" => ("Very Low".to_string(), "#00aa00"),
+        "LOW" => ("Low".to_string(), "#55ff55"),
+        "MEDIUM" => ("Medium".to_string(), "#ffff55"),
+        "HIGH" => ("High".to_string(), "#ff5555"),
+        "VERY HIGH" => ("Very High".to_string(), "#aa0000"),
         _ => (tier.to_string(), "#e2e0d8"),
     }
 }
@@ -52,11 +52,11 @@ mod tests {
     fn defense_tiers_normalize_api_values() {
         assert_eq!(
             defense_tier_display("VERY_HIGH"),
-            ("VERY HIGH".into(), "#aa0000")
+            ("Very High".into(), "#aa0000")
         );
         assert_eq!(
             defense_tier_display("very-low"),
-            ("VERY LOW".into(), "#00aa00")
+            ("Very Low".into(), "#00aa00")
         );
         assert_eq!(
             defense_tier_overlay_data(Some("medium")),
