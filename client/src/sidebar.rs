@@ -14,25 +14,27 @@ use crate::app::{
     ConnectionOpacityScale, ConnectionThicknessScale, CurrentMode,
     DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_THICKNESS_SCALE,
     DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER, DEFAULT_LABEL_SCALE_STATIC_NAME,
-    DEFAULT_LABEL_SCALE_STATIC_TAG, DetailReturnGuild, GuildColorStore, GuildOnlineData,
-    HeatEntriesByTerritory, HeatFallbackApplied, HeatHistoryBasis, HeatHistoryBasisSetting,
-    HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId,
-    HeatWindowLabel, HistoryAvailable, HistoryBoundsSignal, HistoryBufferModeActive,
-    HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive,
-    HistorySeasonLeaderboard, HistorySeasonScalarSample, HistoryTimestamp, IsMobile,
-    LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN,
-    LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName,
-    LastLiveSeq, LeaderboardSortBySr, LiveHandoffResyncCount, LiveSeasonScalarSample,
-    ManualSrScalar, MapMode, NameColor, NameColorSetting, NeedsLiveResync, PlaybackActive,
-    ReadableFont, ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild,
-    ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowGranularMapTime, ShowLeaderboardOnline,
-    ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap,
-    ShowNames, ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarIndex, SidebarItems,
-    SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
-    canvas_dimensions, clamp_connection_opacity_scale, clamp_connection_thickness_scale,
-    clamp_label_scale_group, clamp_label_scale_master,
+    DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight, DetailReturnGuild, GuildColorStore,
+    GuildOnlineData, HeatEntriesByTerritory, HeatFallbackApplied, HeatHistoryBasis,
+    HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled,
+    HeatSelectedSeasonId, HeatWindowLabel, HistoryAvailable, HistoryBoundsSignal,
+    HistoryBufferModeActive, HistoryBufferedUpdates, HistoryFetchNonce,
+    HistoryLegacyGeometryActive, HistorySeasonLeaderboard, HistorySeasonScalarSample,
+    HistoryTimestamp, IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN,
+    LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
+    LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
+    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapMode, NameColor,
+    NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont, ResetSettingsTrigger,
+    ResourceHighlight, Selected, SelectedGuild, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo,
+    ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
+    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
+    ShowTerritoryOrnaments, SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient,
+    TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders, canvas_dimensions,
+    clamp_connection_opacity_scale, clamp_connection_thickness_scale, clamp_label_scale_group,
+    clamp_label_scale_master,
 };
 use crate::colors::rgba_css;
+use crate::defense::defense_tier_display;
 use crate::history;
 use crate::icons;
 use crate::season_scalar::{ScalarSource, effective_scalar};
@@ -89,25 +91,6 @@ fn format_sr_value(val: i64) -> String {
         format!("{:.1}k", val as f64 / 1_000.0)
     } else {
         format!("{val}")
-    }
-}
-
-fn defense_tier_display(tier: &str) -> (String, &'static str) {
-    let normalized = tier
-        .trim()
-        .replace('_', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_uppercase();
-    match normalized.as_str() {
-        "NONE" => (normalized, "#ffffff"),
-        "VERY LOW" => (normalized, "#00aa00"),
-        "LOW" => (normalized, "#55ff55"),
-        "MEDIUM" => (normalized, "#ffff55"),
-        "HIGH" => (normalized, "#ff5555"),
-        "VERY HIGH" => (normalized, "#aa0000"),
-        _ => (tier.to_string(), "#e2e0d8"),
     }
 }
 
@@ -586,6 +569,7 @@ fn SettingsPanel() -> impl IntoView {
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
     let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
+    let DefenseHighlight(defense_highlight) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
     let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
     let ManualSrScalar(manual_sr_scalar) = expect_context();
@@ -729,6 +713,7 @@ fn SettingsPanel() -> impl IntoView {
                     thickness=connection_thickness_scale
                 />
                 <SettingsToggleRow label="Resource Highlight" shortcut="P" active=resource_highlight />
+                <SettingsToggleRow label="Defense Highlight" shortcut="D" active=defense_highlight />
                 <SettingsToggleRow label="Resource Icons" shortcut="" active=show_resource_icons />
                 <SettingsToggleRow label="Territory Ornaments" shortcut="" active=show_territory_ornaments />
                 <SettingsToggleRow label="Minimap" shortcut="M" active=show_minimap />

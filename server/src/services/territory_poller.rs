@@ -796,7 +796,11 @@ fn split_resource_payload(
             let mut production = Resources::default();
             let mut capacity = Resources::default();
             for entry in entries {
-                set_resource_value(&mut base, &entry.kind, entry.base_generation);
+                // v3.7.2 currently returns baseGeneration for every resource slot.
+                // generation > 0 is the reliable signal that the territory produces it.
+                if entry.generation > 0 {
+                    set_resource_value(&mut base, &entry.kind, entry.base_generation);
+                }
                 set_resource_value(&mut held, &entry.kind, entry.stored);
                 set_resource_value(&mut production, &entry.kind, entry.generation);
                 set_resource_value(&mut capacity, &entry.kind, entry.limit);
@@ -1283,7 +1287,7 @@ mod tests {
                 "resources": [
                     {"type":"EMERALD","generation":86400,"baseGeneration":9000,"stored":381631,"limit":400000},
                     {"type":"WOOD","generation":43200,"baseGeneration":3600,"stored":119989,"limit":120000},
-                    {"type":"CROP","generation":0,"baseGeneration":0,"stored":72834,"limit":120000}
+                    {"type":"CROP","generation":0,"baseGeneration":3600,"stored":72834,"limit":120000}
                 ],
                 "links": ["Fort Torann", "Royal Dam"],
                 "treasury": "MEDIUM",
@@ -1299,6 +1303,7 @@ mod tests {
 
         assert_eq!(territory.resources.emeralds, 9000);
         assert_eq!(territory.resources.wood, 3600);
+        assert_eq!(territory.resources.crops, 0);
         assert_eq!(territory.connections, ["Fort Torann", "Royal Dam"]);
 
         let runtime = territory

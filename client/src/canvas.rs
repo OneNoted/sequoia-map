@@ -9,13 +9,14 @@ use web_sys::{HtmlCanvasElement, MouseEvent, PointerEvent, WheelEvent};
 
 use crate::app::{
     AbbreviateNames, BoldConnections, ConnectionOpacityScale, ConnectionThicknessScale,
-    ConnectionZoomFadeEnd, ConnectionZoomFadeStart, CurrentMode, DetailReturnGuild, FillAlphaBoost,
-    HeatEntriesByTerritory, HeatMaxTakeCount, HeatModeEnabled, HeatWindowLabel, HistoryTimestamp,
-    Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
-    LabelScaleStaticName, MapMode, NameColorSetting, PeekTerritory, ReadableFont,
-    ResourceHighlight, Selected, ShowCompoundMapTime, ShowCountdown, ShowGranularMapTime,
-    ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarOpen,
-    SidebarTransient, SuppressCooldownVisuals, TagColorSetting, ThickCooldownBorders,
+    ConnectionZoomFadeEnd, ConnectionZoomFadeStart, CurrentMode, DefenseHighlight,
+    DetailReturnGuild, FillAlphaBoost, HeatEntriesByTerritory, HeatMaxTakeCount, HeatModeEnabled,
+    HeatWindowLabel, HistoryTimestamp, Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons,
+    LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, MapMode, NameColorSetting,
+    PeekTerritory, ReadableFont, ResourceHighlight, Selected, ShowCompoundMapTime, ShowCountdown,
+    ShowGranularMapTime, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
+    ShowTerritoryOrnaments, SidebarOpen, SidebarTransient, SuppressCooldownVisuals,
+    TagColorSetting, ThickCooldownBorders,
 };
 use crate::gpu::{GpuRenderer, RenderFrameInput};
 use crate::icons::{self, ResourceAtlas};
@@ -388,6 +389,7 @@ pub fn MapCanvas() -> impl IntoView {
     let SuppressCooldownVisuals(suppress_cooldown_visuals) = expect_context();
     let FillAlphaBoost(fill_alpha_boost) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
+    let DefenseHighlight(defense_highlight) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
     let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
     let ReadableFont(readable_font) = expect_context();
@@ -501,6 +503,7 @@ pub fn MapCanvas() -> impl IntoView {
             renderer.resize(pixel_w, pixel_h, scale as f32);
             renderer.thick_cooldown_borders = thick_cooldown_borders.get_untracked();
             renderer.resource_highlight = resource_highlight.get_untracked();
+            renderer.defense_highlight = defense_highlight.get_untracked();
             renderer.use_static_gpu_labels = true;
             renderer.use_full_gpu_text = true;
             renderer.static_show_names = show_names.get_untracked();
@@ -709,6 +712,7 @@ pub fn MapCanvas() -> impl IntoView {
             name_color.track();
             tag_color.track();
             resource_highlight.track();
+            defense_highlight.track();
             show_resource_icons.track();
             show_territory_ornaments.track();
             thick_cooldown_borders.track();

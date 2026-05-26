@@ -14,6 +14,7 @@ use crate::claim_labels::{
     select_claim_label_candidates,
 };
 use crate::colors::brighten;
+use crate::defense::defense_tier_overlay_data;
 use crate::heat::heat_color_for_count;
 use crate::icons::{ICON_COUNT, ResourceAtlas};
 use crate::label_layout::{
@@ -872,6 +873,7 @@ pub struct GpuRenderer {
     // Settings
     pub thick_cooldown_borders: bool,
     pub resource_highlight: bool,
+    pub defense_highlight: bool,
     pub use_static_gpu_labels: bool,
     pub use_full_gpu_text: bool,
     pub static_show_names: bool,
@@ -1590,6 +1592,7 @@ impl GpuRenderer {
             frame_metrics: FrameMetrics::default(),
             thick_cooldown_borders: false,
             resource_highlight: false,
+            defense_highlight: false,
             use_static_gpu_labels: false,
             use_full_gpu_text: false,
             static_show_names: false,
@@ -2738,15 +2741,22 @@ impl GpuRenderer {
                 let is_hovered = hovered.as_deref() == Some(name.as_str());
                 let is_selected = selected.as_deref() == Some(name.as_str());
 
-                let resource_data = if self.resource_highlight {
+                let resource_data = if self.defense_highlight {
+                    defense_tier_overlay_data(
+                        ct.territory
+                            .runtime
+                            .as_ref()
+                            .and_then(|runtime| runtime.defense_tier.as_deref()),
+                    )
+                } else if self.resource_highlight {
                     ct.territory.resources.highlight_data()
                 } else {
                     [0.0; 4]
                 };
-                let has_resource =
+                let has_overlay =
                     resource_data[0] > 0.5 || (resource_data[3] as u32 & (1 << 10)) != 0; // mode 0 + double emeralds
 
-                let fill_alpha = if has_resource {
+                let fill_alpha = if has_overlay {
                     if is_selected {
                         0.52
                     } else if is_hovered {
