@@ -46,6 +46,9 @@ jobs:
       - name: Detect Deploy-Relevant Changes
         id: filter
         shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -63,12 +66,18 @@ jobs:
             exit 0
           fi
 
-          before="${{ github.event.before }}"
-          after="${{ github.sha }}"
+          before="${BEFORE_SHA:-}"
+          after="${AFTER_SHA}"
           if [ -z "${before}" ] || [[ "${before}" =~ ^0+$ ]]; then
             changed_files="$(git ls-tree -r --name-only "${after}")"
           else
-            changed_files="$(git diff --name-only "${before}" "${after}")"
+            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "${before}" 2>/dev/null || true
+            fi
+            if ! changed_files="$(git diff --name-only "${before}" "${after}" 2>/dev/null)"; then
+              emit_all
+              exit 0
+            fi
           fi
 
           matches() {
