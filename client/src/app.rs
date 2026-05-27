@@ -333,21 +333,15 @@ pub(crate) enum NameColor {
     Muted,  // rgba(120, 116, 112, 0.78) — subtle/subdued
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum FontRendererMode {
-    #[default]
-    Auto,
-    Classic,
-    Dynamic,
-    ExperimentalGpu,
-}
-
 use gloo_storage::Storage;
+
+const SETTINGS_DEFAULTS_VERSION: u32 = 1;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct SettingsV2 {
+    #[serde(default = "stale_settings_defaults_version")]
+    defaults_version: u32,
     show_connections: bool,
     abbreviate_names: bool,
     show_countdown: bool,
@@ -367,6 +361,7 @@ struct SettingsV2 {
     defense_highlight: bool,
     #[serde(default)]
     map_intel_enabled: bool,
+    #[serde(default = "default_true")]
     show_resource_icons: bool,
     #[serde(default = "default_true")]
     show_territory_ornaments: bool,
@@ -420,6 +415,10 @@ const fn default_name_color() -> NameColor {
 
 const fn default_tag_color() -> NameColor {
     NameColor::Guild
+}
+
+const fn stale_settings_defaults_version() -> u32 {
+    0
 }
 
 const fn default_heat_live_source() -> HeatLiveSource {
@@ -503,6 +502,7 @@ pub(crate) fn clamp_label_scale_group(value: f64) -> f64 {
 impl Default for SettingsV2 {
     fn default() -> Self {
         Self {
+            defaults_version: SETTINGS_DEFAULTS_VERSION,
             show_connections: true,
             abbreviate_names: true,
             show_countdown: false,
@@ -517,7 +517,7 @@ impl Default for SettingsV2 {
             resource_highlight: false,
             defense_highlight: false,
             map_intel_enabled: false,
-            show_resource_icons: false,
+            show_resource_icons: true,
             show_territory_ornaments: false,
             manual_sr_scalar: default_manual_sr_scalar(),
             auto_sr_scalar_enabled: true,
@@ -545,123 +545,11 @@ impl Default for SettingsV2 {
     }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-struct LegacySettings {
-    show_connections: bool,
-    abbreviate_names: bool,
-    show_countdown: bool,
-    granular_map_time: bool,
-    #[serde(default = "default_true")]
-    compound_map_time: bool,
-    show_names: bool,
-    thick_cooldown_borders: bool,
-    bold_names: bool,
-    bold_tags: bool,
-    thick_tag_outline: bool,
-    thick_name_outline: bool,
-    readable_font: bool,
-    font_renderer_mode: Option<FontRendererMode>,
-    #[serde(default, rename = "experimental_gpu_labels")]
-    legacy_experimental_gpu_labels: Option<bool>,
-    bold_connections: bool,
-    name_color: NameColor,
-    sidebar_open: bool,
-    resource_highlight: bool,
-    #[serde(default)]
-    defense_highlight: bool,
-    #[serde(default)]
-    map_intel_enabled: bool,
-    show_resource_icons: bool,
-    #[serde(default = "default_manual_sr_scalar")]
-    manual_sr_scalar: f64,
-    #[serde(default = "default_true")]
-    auto_sr_scalar_enabled: bool,
-    show_leaderboard_sr_gain: bool,
-}
-
-impl Default for LegacySettings {
-    fn default() -> Self {
-        Self {
-            show_connections: true,
-            abbreviate_names: true,
-            show_countdown: false,
-            granular_map_time: false,
-            compound_map_time: true,
-            show_names: false,
-            thick_cooldown_borders: true,
-            bold_names: false,
-            bold_tags: false,
-            thick_tag_outline: false,
-            thick_name_outline: false,
-            readable_font: false,
-            font_renderer_mode: Some(FontRendererMode::Auto),
-            legacy_experimental_gpu_labels: None,
-            bold_connections: false,
-            name_color: NameColor::White,
-            sidebar_open: false,
-            resource_highlight: false,
-            defense_highlight: false,
-            map_intel_enabled: false,
-            show_resource_icons: false,
-            manual_sr_scalar: default_manual_sr_scalar(),
-            auto_sr_scalar_enabled: true,
-            show_leaderboard_sr_gain: false,
-        }
-    }
-}
-
-impl From<LegacySettings> for SettingsV2 {
-    fn from(value: LegacySettings) -> Self {
-        Self {
-            show_connections: value.show_connections,
-            abbreviate_names: value.abbreviate_names,
-            show_countdown: value.show_countdown,
-            granular_map_time: value.granular_map_time,
-            compound_map_time: value.compound_map_time,
-            show_names: value.show_names,
-            thick_cooldown_borders: value.thick_cooldown_borders,
-            bold_connections: value.bold_connections,
-            connection_opacity_scale: default_connection_opacity_scale(),
-            connection_thickness_scale: default_connection_thickness_scale(),
-            sidebar_open: value.sidebar_open,
-            resource_highlight: value.resource_highlight,
-            defense_highlight: value.defense_highlight,
-            map_intel_enabled: value.map_intel_enabled,
-            show_resource_icons: value.show_resource_icons,
-            show_territory_ornaments: false,
-            manual_sr_scalar: value.manual_sr_scalar,
-            auto_sr_scalar_enabled: value.auto_sr_scalar_enabled,
-            show_leaderboard_sr_gain: value.show_leaderboard_sr_gain,
-            show_leaderboard_sr_value: false,
-            show_leaderboard_territory_count: true,
-            show_leaderboard_online: true,
-            leaderboard_sort_by_sr: false,
-            heat_mode_enabled: false,
-            heat_live_source: default_heat_live_source(),
-            heat_history_basis: default_heat_history_basis(),
-            heat_selected_season_id: None,
-            readable_font: value.readable_font,
-            show_minimap: true,
-            name_color: value.name_color,
-            tag_color: default_tag_color(),
-            label_scale_master: default_label_scale_master(),
-            label_scale_static: default_label_scale_static_tag(),
-            label_scale_static_name: Some(default_label_scale_static_name()),
-            label_scale_dynamic: default_label_scale_group(),
-            label_scale_icons: default_label_scale_group(),
-            sidebar_width: default_sidebar_width(),
-            show_debug_info: false,
-        }
-    }
-}
-
 fn load_settings_v2() -> SettingsV2 {
     if let Ok(saved) = gloo_storage::LocalStorage::get::<SettingsV2>("sequoia_settings_v2") {
-        return saved;
-    }
-    if let Ok(legacy) = gloo_storage::LocalStorage::get::<LegacySettings>("sequoia_settings") {
-        return legacy.into();
+        if saved.defaults_version == SETTINGS_DEFAULTS_VERSION {
+            return saved;
+        }
     }
     SettingsV2::default()
 }
@@ -1472,6 +1360,7 @@ pub fn MapPage() -> impl IntoView {
     // Persist settings to localStorage on any change
     Effect::new(move || {
         let settings = SettingsV2 {
+            defaults_version: SETTINGS_DEFAULTS_VERSION,
             show_connections: show_connections.get(),
             abbreviate_names: abbreviate_names.get(),
             show_countdown: show_countdown.get(),
@@ -2592,7 +2481,7 @@ fn Tooltip() -> impl IntoView {
 
             let render_resource_section = |title: &str,
                                            title_color: &str,
-                                           chip_border: &str,
+                                           _chip_border: &str,
                                            _value_color: &str,
                                            resources: &Resources,
                                            double_source: &Resources| {
@@ -2617,7 +2506,7 @@ fn Tooltip() -> impl IntoView {
                                 let amount = format_resource_compact(val);
                                 view! {
                                     <div style={format!(
-                                        "display: flex; align-items: center; gap: 4px; background: #1a1d2a; padding: 3px 7px; border-radius: 4px; border: 1px solid {chip_border};"
+                                        "display: flex; align-items: center; gap: 4px; background: #111722; padding: 3px 7px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);"
                                     )}>
                                         <span style={icon_style} />
                                         {(is_double).then(|| view! { <span style={double_style} /> })}
@@ -2625,7 +2514,7 @@ fn Tooltip() -> impl IntoView {
                                             {amount}
                                         </span>
                                         <span style={format!(
-                                            "font-family: 'Inter', system-ui, sans-serif; font-size: 0.60rem; color: {title_color};"
+                                            "font-family: 'Inter', system-ui, sans-serif; font-size: 0.60rem; color: #aeb7c7;"
                                         )}>
                                             {label}
                                         </span>
@@ -2640,8 +2529,8 @@ fn Tooltip() -> impl IntoView {
             let held_section = if info.resources_from_live {
                 render_resource_section(
                     "Held Resources",
-                    "var(--accent-live)",
-                    "rgba(var(--accent-live-rgb),0.25)",
+                    "#b8c2d6",
+                    "rgba(129,140,160,0.34)",
                     "#dbe8ff",
                     &info.resources,
                     &info.base_resources,
@@ -2649,8 +2538,8 @@ fn Tooltip() -> impl IntoView {
             } else {
                 render_resource_section(
                     "Resources",
-                    "#9a9590",
-                    "rgba(154,149,144,0.25)",
+                    "#aeb7c7",
+                    "rgba(129,140,160,0.34)",
                     "#e2e0d8",
                     &info.resources,
                     &info.base_resources,
@@ -2662,8 +2551,8 @@ fn Tooltip() -> impl IntoView {
                 .map(|resources| {
                     render_resource_section(
                         "Production/Hr",
-                        "var(--accent-live)",
-                        "rgba(var(--accent-live-rgb),0.25)",
+                        "#b8c2d6",
+                        "rgba(129,140,160,0.34)",
                         "#d4e9ff",
                         resources,
                         &info.base_resources,
@@ -2676,8 +2565,8 @@ fn Tooltip() -> impl IntoView {
                 .map(|resources| {
                     render_resource_section(
                         "Storage Capacity",
-                        "var(--accent-live)",
-                        "rgba(var(--accent-live-rgb),0.25)",
+                        "#b8c2d6",
+                        "rgba(129,140,160,0.34)",
                         "#dcf1ff",
                         resources,
                         &info.base_resources,
@@ -2709,7 +2598,7 @@ fn Tooltip() -> impl IntoView {
                                 {info.name.clone()}
                             </div>
                             {info.is_headquarters.then(|| view! {
-                                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; letter-spacing: 0.08em; padding: 2px 7px; border-radius: 3px; text-transform: uppercase; color: #f5c542; border: 1px solid rgba(245,197,66,0.36); background: rgba(245,197,66,0.10); flex-shrink: 0;">
+                                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: #f5c542; flex-shrink: 0;">
                                     "[HQ]"
                                 </span>
                             })}
@@ -2908,9 +2797,9 @@ fn TerritoryPeekCard() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_SIDEBAR_WIDTH, MapMode, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, SettingsV2,
-        canonical_path_for_mode, clamp_sidebar_width, map_mode_from_path,
-        normalize_heat_selected_season_id, should_wait_for_history_probe,
+        DEFAULT_SIDEBAR_WIDTH, MapMode, SETTINGS_DEFAULTS_VERSION, SIDEBAR_WIDTH_MAX,
+        SIDEBAR_WIDTH_MIN, SettingsV2, canonical_path_for_mode, clamp_sidebar_width,
+        map_mode_from_path, normalize_heat_selected_season_id, should_wait_for_history_probe,
     };
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
 
@@ -2924,11 +2813,20 @@ mod tests {
     #[test]
     fn settings_v2_deserialization_defaults_sidebar_width() {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(parsed.defaults_version, 0);
         assert_eq!(parsed.sidebar_width, DEFAULT_SIDEBAR_WIDTH);
         assert!(parsed.auto_sr_scalar_enabled);
         assert!(!parsed.defense_highlight);
         assert!(!parsed.map_intel_enabled);
+        assert!(parsed.show_resource_icons);
         assert!(!parsed.show_debug_info);
+    }
+
+    #[test]
+    fn settings_v2_defaults_carry_current_defaults_version() {
+        let defaults = SettingsV2::default();
+        assert_eq!(defaults.defaults_version, SETTINGS_DEFAULTS_VERSION);
+        assert!(defaults.show_resource_icons);
     }
 
     #[test]

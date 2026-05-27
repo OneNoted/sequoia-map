@@ -12,6 +12,8 @@ const DYNAMIC_TIME_MIN_WIDTH_WORLD: f32 = 108.0;
 const DYNAMIC_COOLDOWN_MIN_WIDTH_WORLD: f32 = 132.0;
 const DYNAMIC_TIME_STALE_SCALE: f32 = 0.96;
 const RESOURCE_ICON_SIZE_WORLD: f32 = 29.0;
+const RESOURCE_ICON_LABEL_LIFT_BOX_FRACTION: f32 = 0.16;
+const RESOURCE_ICON_LABEL_LIFT_MAX_WORLD: f32 = 14.0;
 const ORNAMENT_INSET_WORLD: f32 = 3.0;
 const ORNAMENT_CORNER_SHORT_SIDE_WORLD: f32 = 42.0;
 const ORNAMENT_TINY_FIT_START_WORLD: f32 = 54.0;
@@ -112,6 +114,7 @@ pub(crate) fn static_name_bottom_bound(
     cy: f32,
     tag_scale: f32,
     name_scale: f32,
+    resource_icons_enabled: bool,
 ) -> Option<f32> {
     if !use_static_gpu_labels || !static_show_names {
         return None;
@@ -125,7 +128,9 @@ pub(crate) fn static_name_bottom_bound(
     let tag_size = sizing.tag_size * tag_scale.clamp(0.5, 4.0);
     let detail_size = sizing.detail_size * name_scale.clamp(0.5, 4.0);
 
-    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha);
+    let label_lift =
+        compute_resource_icon_label_lift_world(hh, detail_layout_alpha, resource_icons_enabled);
+    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha) - label_lift;
     let name_y = tag_y + tag_size * 0.5 + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
     Some(name_y + detail_size * 0.5)
 }
@@ -169,6 +174,25 @@ pub(crate) fn compute_dynamic_label_sizing(
 
 pub(crate) fn compute_resource_icon_size_world(icon_scale: f32) -> f32 {
     (RESOURCE_ICON_SIZE_WORLD * icon_scale.max(0.0)).max(1.0)
+}
+
+pub(crate) fn compute_resource_icon_label_lift_world(
+    territory_height: f32,
+    detail_layout_alpha: f32,
+    resource_icons_enabled: bool,
+) -> f32 {
+    if !resource_icons_enabled {
+        return 0.0;
+    }
+
+    let alpha = detail_layout_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.001 {
+        return 0.0;
+    }
+
+    (territory_height.max(0.0) * RESOURCE_ICON_LABEL_LIFT_BOX_FRACTION)
+        .min(RESOURCE_ICON_LABEL_LIFT_MAX_WORLD)
+        * alpha
 }
 
 pub(crate) fn compute_territory_ornament_sizing(
@@ -234,9 +258,9 @@ pub(crate) fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_dynamic_label_sizing, compute_resource_icon_size_world,
-        compute_static_label_sizing, compute_territory_ornament_sizing,
-        compute_territory_ornament_tint,
+        compute_dynamic_label_sizing, compute_resource_icon_label_lift_world,
+        compute_resource_icon_size_world, compute_static_label_sizing,
+        compute_territory_ornament_sizing, compute_territory_ornament_tint,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -300,6 +324,23 @@ mod tests {
     fn resource_icon_size_is_fixed_in_world_space() {
         let size = compute_resource_icon_size_world(1.0);
         assert_close(size, 29.0);
+    }
+
+    #[test]
+    fn resource_icon_label_lift_moves_labels_toward_upper_quadrant() {
+        let lift = compute_resource_icon_label_lift_world(80.0, 1.0, true);
+        assert_close(lift, 12.8);
+        assert_close(compute_resource_icon_label_lift_world(80.0, 0.5, true), 6.4);
+        assert_close(
+            compute_resource_icon_label_lift_world(80.0, 1.0, false),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn resource_icon_label_lift_is_capped_for_large_territories() {
+        let lift = compute_resource_icon_label_lift_world(220.0, 1.0, true);
+        assert_close(lift, 14.0);
     }
 
     #[test]

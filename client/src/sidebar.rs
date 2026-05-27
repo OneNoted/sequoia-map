@@ -2480,10 +2480,10 @@ fn DetailPanel() -> impl IntoView {
                                                 {res_items.into_iter().map(|(label, value, icon_name)| {
                                                     let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #1a1d2a; padding: 4px 8px; border-radius: 4px; border: 1px solid #282c3e;">
+                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
                                                             <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; color: #e2e0d8;">{value}</span>
-                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: #5a5860;">{label}</span>
+                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: #aeb7c7;">{label}</span>
                                                         </div>
                                                     }
                                                 }).collect::<Vec<_>>()}
@@ -2495,17 +2495,17 @@ fn DetailPanel() -> impl IntoView {
                                     let held_items = build_resource_items(&held);
                                     view! {
                                         <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
+                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
                                                 "Held Resources"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {held_items.into_iter().map(|(label, value, icon_name)| {
                                                     let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #1a1d2a; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--accent-live-rgb),0.25);">
+                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
                                                             <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; color: #e2e0d8;">{value}</span>
-                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: var(--accent-live);">{label}</span>
+                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: #aeb7c7;">{label}</span>
                                                         </div>
                                                     }
                                                 }).collect::<Vec<_>>()}
@@ -2517,17 +2517,17 @@ fn DetailPanel() -> impl IntoView {
                                     let prod_items = build_resource_items(&prod);
                                     view! {
                                         <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
+                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
                                                 "Production/Hr"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {prod_items.into_iter().map(|(label, value, icon_name)| {
                                                     let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #1a1d2a; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--accent-live-rgb),0.2);">
+                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
                                                             <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; color: #e2e0d8;">{value}</span>
-                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: var(--accent-live);">{label}</span>
+                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: #aeb7c7;">{label}</span>
                                                         </div>
                                                     }
                                                 }).collect::<Vec<_>>()}
@@ -2539,17 +2539,17 @@ fn DetailPanel() -> impl IntoView {
                                     let cap_items = build_resource_items(&cap);
                                     view! {
                                         <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
+                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
                                                 "Storage Cap"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {cap_items.into_iter().map(|(label, value, icon_name)| {
                                                     let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #1a1d2a; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--accent-live-rgb),0.2);">
+                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
                                                             <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; color: #e2e0d8;">{value}</span>
-                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: var(--accent-live);">{label}</span>
+                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: #aeb7c7;">{label}</span>
                                                         </div>
                                                     }
                                                 }).collect::<Vec<_>>()}
