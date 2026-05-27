@@ -4,7 +4,7 @@ use crate::territory::ClientTerritoryMap;
 use crate::viewport::Viewport;
 
 pub(crate) const CLAIM_LABEL_MIN_SCALE: f64 = 0.10;
-pub(crate) const CLAIM_LABEL_MAX_SCALE: f64 = 0.45;
+pub(crate) const CLAIM_LABEL_MAX_SCALE: f64 = 0.60;
 const CLAIM_LABEL_GUILD_AGGREGATE_MAX_SCALE: f64 = CLAIM_LABEL_MAX_SCALE;
 pub(crate) const CLAIM_LABEL_FULL_NAME_MIN_SCALE: f64 = 0.14;
 pub(crate) const CLAIM_LABEL_MIN_TERRITORIES: usize = 4;
@@ -895,7 +895,8 @@ mod tests {
     fn claim_label_zoom_band_reaches_mid_zoom_views() {
         assert!(claim_label_zoom_active(0.30));
         assert!(claim_label_zoom_active(0.40));
-        assert!(!claim_label_zoom_active(0.50));
+        assert!(claim_label_zoom_active(0.50));
+        assert!(!claim_label_zoom_active(0.70));
     }
 
     #[test]

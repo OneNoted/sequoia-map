@@ -24,10 +24,10 @@ use crate::label_layout::{
     resource_icons_drawable, write_age, write_age_compound,
 };
 use crate::overlay_sizing::{
-    STATIC_NAME_BASELINE_GAP_MULTIPLIER, compute_dynamic_label_sizing,
-    compute_resource_icon_label_lift_world, compute_resource_icon_size_world,
-    compute_static_label_sizing, compute_territory_ornament_sizing,
-    compute_territory_ornament_tint, static_name_bottom_bound,
+    STATIC_NAME_BASELINE_GAP_MULTIPLIER, STATIC_NAME_MIN_RENDERED_PX, compute_dynamic_label_sizing,
+    compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
+    compute_resource_icon_size_world, compute_static_label_sizing,
+    compute_territory_ornament_sizing, compute_territory_ornament_tint, static_name_bottom_bound,
 };
 use crate::renderer::{FrameMetrics, InvalidationReason, RenderCapabilities, SceneSnapshot};
 use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
@@ -214,8 +214,11 @@ const STATIC_TAG_LETTER_SPACING_EM: f32 = 0.07;
 const STATIC_NAME_LETTER_SPACING_EM: f32 = 0.057;
 const STATIC_TAG_MIN_WIDTH_WORLD: f32 = 88.0;
 const STATIC_NAME_MIN_WIDTH_WORLD: f32 = 176.0;
+const STATIC_TAG_MIN_RENDERED_PX: f32 = 13.5;
 const DYNAMIC_TIME_LETTER_SPACING_EM: f32 = 0.035;
 const DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN: f32 = 0.0035;
+const DYNAMIC_TIME_MIN_RENDERED_PX: f32 = 11.5;
+const DYNAMIC_COOLDOWN_MIN_RENDERED_PX: f32 = 12.0;
 /// Minimum viewport scale required before per-territory timer text (held/cooldown) is shown.
 /// Keeps the default world view uncluttered; timers appear when users zoom in.
 const DYNAMIC_TIMER_VISIBILITY_MIN_SCALE: f64 = 0.31;
@@ -223,10 +226,24 @@ const DYNAMIC_TIMER_VISIBILITY_MIN_SCALE: f64 = 0.31;
 /// Below this zoom level all text (static tags, dynamic time, icons) is hidden uniformly.
 const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.75;
-const HQ_CROWN_MAX_BOX_FRACTION: f32 = 0.48;
+const HQ_CROWN_FAR_BOX_FRACTION: f32 = 0.90;
+const HQ_CROWN_FAR_MAX_RENDERED_PX: f32 = 96.0;
+const HQ_CROWN_EXPANDED_MAX_SCALE: f32 = 1.15;
+const HQ_CROWN_NORMAL_TOP_PADDING_PX: f32 = 4.0;
+const HQ_CROWN_NORMAL_SIDE_PADDING_PX: f32 = 4.0;
+const HQ_CROWN_NORMAL_LABEL_GAP_PX: f32 = 3.0;
+const HQ_CROWN_NORMAL_MAX_HEIGHT_FRACTION: f32 = 0.24;
+const HQ_CROWN_NORMAL_MIN_RENDERED_PX: f32 = 12.0;
 const ORNAMENT_MIN_RENDERED_PX: f32 = 1.0;
 const ORNAMENT_UV_PADDING_PX: u32 = 2;
 const SEQUOIA_ORNAMENT_FALLBACK_GOLD: [u8; 3] = [245, 197, 66];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HqCrownLayout {
+    size_world: f32,
+    center_y: f32,
+    label_clear_y: f32,
+}
 
 #[inline]
 fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
@@ -246,6 +263,120 @@ fn resource_icons_visible_for_territory(
         && sh > 35.0
         && detail_layout_alpha > 0.001
         && resource_icons_drawable(resources)
+}
+
+#[inline]
+fn hq_crown_expanded_at_zoom(px_per_world: f32) -> bool {
+    px_per_world <= HQ_CROWN_EXPANDED_MAX_SCALE
+}
+
+#[inline]
+fn hq_label_max_width_world(territory_width: f32, padding_world: f32) -> f32 {
+    (territory_width - padding_world).max(1.0)
+}
+
+fn hq_normal_crown_layout(
+    territory_top: f32,
+    territory_width: f32,
+    territory_height: f32,
+    px_per_world: f32,
+    preferred_size_world: f32,
+) -> Option<HqCrownLayout> {
+    let px_per_world = px_per_world.max(0.0001);
+    let top_padding_world = HQ_CROWN_NORMAL_TOP_PADDING_PX / px_per_world;
+    let side_padding_world = HQ_CROWN_NORMAL_SIDE_PADDING_PX / px_per_world;
+    let label_gap_world = HQ_CROWN_NORMAL_LABEL_GAP_PX / px_per_world;
+    let max_width = (territory_width - side_padding_world * 2.0).max(0.0);
+    let max_height = (territory_height * HQ_CROWN_NORMAL_MAX_HEIGHT_FRACTION).max(0.0);
+    let max_size = max_width.min(max_height);
+    if max_size <= 0.0 {
+        return None;
+    }
+
+    let min_visible_world = HQ_CROWN_NORMAL_MIN_RENDERED_PX / px_per_world;
+    let min_size = min_visible_world.min(max_size);
+    let size_world = preferred_size_world.clamp(min_size, max_size);
+    let top_y = territory_top + top_padding_world;
+    let bottom_y = top_y + size_world;
+
+    Some(HqCrownLayout {
+        size_world,
+        center_y: top_y + size_world * 0.5,
+        label_clear_y: bottom_y + label_gap_world,
+    })
+}
+
+fn hq_normal_static_tag_y(
+    territory_top: f32,
+    territory_width: f32,
+    territory_height: f32,
+    center_y: f32,
+    px_per_world: f32,
+    tag_size: f32,
+    detail_size: f32,
+    detail_layout_alpha: f32,
+    label_lift: f32,
+) -> f32 {
+    let base_y = lerp_f32(
+        center_y,
+        center_y - (detail_size + 1.0) * 0.45,
+        detail_layout_alpha,
+    ) - label_lift;
+    let preferred_crown_size = tag_size * HQ_CROWN_SIZE_MULTIPLIER;
+    hq_normal_crown_layout(
+        territory_top,
+        territory_width,
+        territory_height,
+        px_per_world,
+        preferred_crown_size,
+    )
+    .map(|layout| base_y.max(layout.label_clear_y + tag_size * 0.5))
+    .unwrap_or(base_y)
+}
+
+fn hq_normal_static_label_bottom_bound(
+    territory_top: f32,
+    territory_width: f32,
+    territory_height: f32,
+    center_y: f32,
+    px_per_world: f32,
+    static_show_names: bool,
+    static_tag_scale: f32,
+    static_name_scale: f32,
+    resource_icons_visible: bool,
+) -> Option<f32> {
+    let sizing = compute_static_label_sizing(territory_width, territory_height)?;
+    let detail_layout_alpha = sizing.detail_layout_alpha;
+    let tag_size = sizing.tag_size * static_tag_scale;
+    let detail_size = sizing.detail_size * static_name_scale;
+    let label_lift = compute_resource_icon_label_lift_world(
+        territory_height,
+        detail_layout_alpha,
+        resource_icons_visible,
+    );
+    let tag_visible = tag_size * px_per_world >= STATIC_TAG_MIN_RENDERED_PX;
+    let name_visible = static_show_names
+        && detail_layout_alpha > 0.02
+        && detail_size * px_per_world >= STATIC_NAME_MIN_RENDERED_PX;
+    let tag_y = hq_normal_static_tag_y(
+        territory_top,
+        territory_width,
+        territory_height,
+        center_y,
+        px_per_world,
+        tag_size,
+        detail_size,
+        detail_layout_alpha,
+        label_lift,
+    );
+    let mut bottom_y = tag_visible.then_some(tag_y + tag_size * 0.5);
+    if name_visible {
+        let name_y = tag_y + tag_size * 0.5 + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
+        bottom_y = Some(bottom_y.map_or(name_y + detail_size * 0.5, |bottom| {
+            bottom.max(name_y + detail_size * 0.5)
+        }));
+    }
+    bottom_y
 }
 
 #[inline]
@@ -2060,9 +2191,9 @@ impl GpuRenderer {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("icon-atlas-sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
@@ -2083,7 +2214,7 @@ impl GpuRenderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
             ],
@@ -3061,6 +3192,15 @@ impl GpuRenderer {
                     let Some(sizing) = compute_static_label_sizing(ww, hh) else {
                         continue;
                     };
+                    let is_hq = ct
+                        .territory
+                        .runtime
+                        .as_ref()
+                        .and_then(|runtime| runtime.headquarters)
+                        .unwrap_or(false);
+                    if is_hq && hq_crown_expanded_at_zoom(scale) {
+                        continue;
+                    }
                     let cx = loc.midpoint_x() as f32;
                     let cy = loc.midpoint_y() as f32;
                     let detail_layout_alpha = sizing.detail_layout_alpha;
@@ -3074,7 +3214,11 @@ impl GpuRenderer {
                         (1.0 + (max_static_scale - 1.0).max(0.0) * 0.22).clamp(1.0, 1.35);
                     let overflow = overflow_scale;
                     let tag_padding = lerp_f32(3.0, 8.0, detail_layout_alpha);
-                    let tag_max_w = (ww * overflow - tag_padding).max(STATIC_TAG_MIN_WIDTH_WORLD);
+                    let tag_max_w = if is_hq {
+                        hq_label_max_width_world(ww, tag_padding)
+                    } else {
+                        (ww * overflow - tag_padding).max(STATIC_TAG_MIN_WIDTH_WORLD)
+                    };
                     let resource_icon_detail_layout_alpha =
                         compute_label_layout_metrics(sw as f64, sh as f64, false)
                             .detail_layout_alpha;
@@ -3090,33 +3234,51 @@ impl GpuRenderer {
                         detail_layout_alpha,
                         resource_icons_visible,
                     );
-                    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha)
-                        - label_lift;
-                    let tag = ct.territory.guild.prefix.as_str();
-                    let tag_color = {
-                        let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
-                        c[3] = 1.0;
-                        c
+                    let base_tag_y =
+                        lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha)
+                            - label_lift;
+                    let tag_y = if is_hq {
+                        hq_normal_static_tag_y(
+                            loc.top() as f32,
+                            ww,
+                            hh,
+                            cy,
+                            px_per_world,
+                            tag_size,
+                            detail_size,
+                            detail_layout_alpha,
+                            label_lift,
+                        )
+                    } else {
+                        base_tag_y
                     };
+                    let tag = ct.territory.guild.prefix.as_str();
                     let tag_px = tag_size * px_per_world;
-                    let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
-                    let tag_halo_alpha = (0.70 - tag_halo_boost * 0.10).clamp(0.54, 0.76);
+                    if tag_px >= STATIC_TAG_MIN_RENDERED_PX {
+                        let tag_color = {
+                            let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
+                            c[3] = 1.0;
+                            c
+                        };
+                        let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
+                        let tag_halo_alpha = (0.70 - tag_halo_boost * 0.22).clamp(0.42, 0.76);
 
-                    push_text_line_dual_with_tracking(
-                        &mut fill_instances,
-                        &mut halo_instances,
-                        glyphs,
-                        kerning,
-                        line_height,
-                        tag,
-                        cx,
-                        tag_y,
-                        tag_size,
-                        tag_max_w,
-                        tag_tracking_units,
-                        tag_color,
-                        [0.0, 0.0, 0.0, tag_halo_alpha],
-                    );
+                        push_text_line_dual_with_tracking(
+                            &mut fill_instances,
+                            &mut halo_instances,
+                            glyphs,
+                            kerning,
+                            line_height,
+                            tag,
+                            cx,
+                            tag_y,
+                            tag_size,
+                            tag_max_w,
+                            tag_tracking_units,
+                            tag_color,
+                            [0.0, 0.0, 0.0, tag_halo_alpha],
+                        );
+                    }
 
                     if self.static_show_names && detail_layout_alpha > 0.02 {
                         let fallback_abbrev;
@@ -3134,7 +3296,11 @@ impl GpuRenderer {
                         } else {
                             name.as_str()
                         };
-                        let name_max_w = (ww * overflow - 10.0).max(STATIC_NAME_MIN_WIDTH_WORLD);
+                        let name_max_w = if is_hq {
+                            hq_label_max_width_world(ww, 10.0)
+                        } else {
+                            (ww * overflow - 10.0).max(STATIC_NAME_MIN_WIDTH_WORLD)
+                        };
                         let units_per_world = line_height / detail_size.max(0.001);
                         let fitted = fit_text_to_units_with_tracking(
                             base_name,
@@ -3150,6 +3316,9 @@ impl GpuRenderer {
                         name_rgba[3] *=
                             STATIC_NAME_FILL_ALPHA_MULTIPLIER * detail_layout_alpha.clamp(0.0, 1.0);
                         let name_px = detail_size * px_per_world;
+                        if name_px < STATIC_NAME_MIN_RENDERED_PX {
+                            continue;
+                        }
                         let name_halo_boost = 1.0 - smoothstep_f32(8.4, 12.2, name_px);
                         let name_halo_alpha = ((0.68 - name_halo_boost * 0.12)
                             * STATIC_NAME_HALO_ALPHA_MULTIPLIER
@@ -3242,6 +3411,15 @@ impl GpuRenderer {
                 let hh = loc.height() as f32;
                 let sw = ww * scale;
                 let sh = hh * scale;
+                let is_hq = ct
+                    .territory
+                    .runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.headquarters)
+                    .unwrap_or(false);
+                if is_hq && hq_crown_expanded_at_zoom(scale) {
+                    continue;
+                }
                 let state =
                     dynamic_text_state(reference_time_secs, ct.territory.acquired.timestamp());
                 let next_age = dynamic_label_next_update_age(
@@ -3279,19 +3457,33 @@ impl GpuRenderer {
                         DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN,
                         small_timer_factor,
                     );
-                let time_max_width = sizing.time_max_width;
-                let cooldown_max_width = sizing.cooldown_max_width;
+                let time_max_width = if is_hq {
+                    hq_label_max_width_world(ww, 8.0)
+                } else {
+                    sizing.time_max_width
+                };
+                let cooldown_max_width = if is_hq {
+                    hq_label_max_width_world(ww, 8.0)
+                } else {
+                    sizing.cooldown_max_width
+                };
+                let time_px = time_size * px_per_world;
+                let cooldown_px = cooldown_size * px_per_world;
 
                 let cx = loc.midpoint_x() as f32;
                 let cy = loc.midpoint_y() as f32;
                 let timer_visible_at_zoom = vp.scale >= DYNAMIC_TIMER_VISIBILITY_MIN_SCALE;
-                let show_dynamic_cooldown =
-                    timer_visible_at_zoom && self.dynamic_show_countdown && state.is_fresh;
+                let show_dynamic_cooldown = timer_visible_at_zoom
+                    && self.dynamic_show_countdown
+                    && state.is_fresh
+                    && cooldown_px >= DYNAMIC_COOLDOWN_MIN_RENDERED_PX;
                 let any_time_format = self.dynamic_show_countdown
                     || self.dynamic_show_granular_map_time
                     || self.dynamic_show_compound_map_time;
-                let show_dynamic_time =
-                    timer_visible_at_zoom && any_time_format && !show_dynamic_cooldown;
+                let show_dynamic_time = timer_visible_at_zoom
+                    && any_time_format
+                    && !show_dynamic_cooldown
+                    && time_px >= DYNAMIC_TIME_MIN_RENDERED_PX;
                 let has_timer_line = show_dynamic_time || show_dynamic_cooldown;
                 let resource_icons_visible = resource_icons_visible_for_territory(
                     self.dynamic_show_resource_icons,
@@ -3305,16 +3497,35 @@ impl GpuRenderer {
                     detail_layout_alpha,
                     resource_icons_visible,
                 );
-                let static_name_bottom = static_name_bottom_bound(
+                let mut static_name_bottom = static_name_bottom_bound(
                     self.use_static_gpu_labels,
                     self.static_show_names,
                     ww,
                     hh,
                     cy,
+                    px_per_world,
                     static_tag_scale,
                     static_name_scale,
                     resource_icons_visible,
                 );
+                if is_hq
+                    && let Some(hq_label_bottom) = hq_normal_static_label_bottom_bound(
+                        loc.top() as f32,
+                        ww,
+                        hh,
+                        cy,
+                        px_per_world,
+                        self.static_show_names,
+                        static_tag_scale,
+                        static_name_scale,
+                        resource_icons_visible,
+                    )
+                {
+                    static_name_bottom = Some(
+                        static_name_bottom
+                            .map_or(hq_label_bottom, |bottom| bottom.max(hq_label_bottom)),
+                    );
+                }
                 let compact_bottom_y = cy + tag_size / 2.0 - label_lift;
                 let mut time_y = compact_bottom_y;
                 let mut content_bottom_y = compact_bottom_y;
@@ -3383,9 +3594,7 @@ impl GpuRenderer {
                             0.0,
                             0.0,
                             0.0,
-                            (0.68
-                                - (1.0 - smoothstep_f32(9.5, 14.8, time_size * px_per_world))
-                                    * 0.12)
+                            (0.68 - (1.0 - smoothstep_f32(9.5, 14.8, time_px)) * 0.12)
                                 .clamp(0.54, 0.76),
                         ],
                     );
@@ -3423,9 +3632,7 @@ impl GpuRenderer {
                             0.0,
                             0.0,
                             0.0,
-                            (0.70
-                                - (1.0 - smoothstep_f32(10.2, 15.8, cooldown_size * px_per_world))
-                                    * 0.12)
+                            (0.70 - (1.0 - smoothstep_f32(10.2, 15.8, cooldown_px)) * 0.12)
                                 .clamp(0.56, 0.78),
                         ],
                     );
@@ -3505,6 +3712,8 @@ impl GpuRenderer {
             let px_per_world = scale.max(0.0001);
             let cx = loc.midpoint_x() as f32;
             let cy = loc.midpoint_y() as f32;
+            let short_side_world = ww.min(hh).max(1.0);
+            let expanded_hq_crown = is_hq && hq_crown_expanded_at_zoom(scale);
             let resource_icon_detail_layout_alpha =
                 compute_label_layout_metrics(sw as f64, sh as f64, false).detail_layout_alpha;
             let resource_icons_visible = resource_icons_visible_for_territory(
@@ -3586,23 +3795,27 @@ impl GpuRenderer {
                 && let Some(static_sizing) = compute_static_label_sizing(ww, hh)
             {
                 let crown_tag_size = static_sizing.tag_size * static_tag_scale;
-                let crown_detail_size = static_sizing.detail_size * static_name_scale;
-                let crown_tag_y = lerp_f32(
-                    cy,
-                    cy - (crown_detail_size + 1.0) * 0.45,
-                    static_sizing.detail_layout_alpha,
-                ) - compute_resource_icon_label_lift_world(
-                    hh,
-                    static_sizing.detail_layout_alpha,
-                    resource_icons_visible,
-                );
                 let min_crown_world = 1.0;
-                let max_crown_world = (ww.min(hh) * HQ_CROWN_MAX_BOX_FRACTION).max(min_crown_world);
-                let crown_size_world = (crown_tag_size * HQ_CROWN_SIZE_MULTIPLIER)
-                    .clamp(min_crown_world, max_crown_world);
-                let crown_gap_world = (1.5 + crown_tag_size * 0.05).max(0.0);
-                let crown_center_y =
-                    crown_tag_y - crown_tag_size * 0.5 - crown_gap_world - crown_size_world * 0.35;
+                let normal_preferred_crown_size =
+                    (crown_tag_size * HQ_CROWN_SIZE_MULTIPLIER).max(min_crown_world);
+                let far_crown_size_world = (short_side_world * HQ_CROWN_FAR_BOX_FRACTION)
+                    .min(HQ_CROWN_FAR_MAX_RENDERED_PX / scale.max(0.0001))
+                    .max(min_crown_world);
+                let crown_layout = if expanded_hq_crown {
+                    Some((far_crown_size_world, cy))
+                } else {
+                    hq_normal_crown_layout(
+                        loc.top() as f32,
+                        ww,
+                        hh,
+                        scale,
+                        normal_preferred_crown_size,
+                    )
+                    .map(|layout| (layout.size_world, layout.center_y))
+                };
+                let Some((crown_size_world, crown_center_y)) = crown_layout else {
+                    continue;
+                };
                 renderer.instances_buf.push(IconInstance {
                     rect: [
                         cx - crown_size_world * 0.5,
@@ -3613,6 +3826,10 @@ impl GpuRenderer {
                     uv_rect: crown_uv,
                     tint: [1.0, 1.0, 1.0, 1.0],
                 });
+            }
+
+            if expanded_hq_crown {
+                continue;
             }
 
             if !resource_icons_visible {
@@ -3642,26 +3859,51 @@ impl GpuRenderer {
             let time_size = sizing.time_size;
             let cooldown_size = sizing.cooldown_size;
             let line_gap = sizing.line_gap;
+            let time_px = time_size * px_per_world;
+            let cooldown_px = cooldown_size * px_per_world;
             let timer_visible_at_zoom = vp.scale >= DYNAMIC_TIMER_VISIBILITY_MIN_SCALE;
-            let cooldown_timer_visible =
-                timer_visible_at_zoom && state.is_fresh && self.dynamic_show_countdown;
+            let cooldown_timer_visible = timer_visible_at_zoom
+                && state.is_fresh
+                && self.dynamic_show_countdown
+                && cooldown_px >= DYNAMIC_COOLDOWN_MIN_RENDERED_PX;
             let any_time_format = self.dynamic_show_countdown
                 || self.dynamic_show_granular_map_time
                 || self.dynamic_show_compound_map_time;
-            let show_dynamic_time =
-                timer_visible_at_zoom && any_time_format && !cooldown_timer_visible;
+            let show_dynamic_time = timer_visible_at_zoom
+                && any_time_format
+                && !cooldown_timer_visible
+                && time_px >= DYNAMIC_TIME_MIN_RENDERED_PX;
             let has_timer_line = cooldown_timer_visible || show_dynamic_time;
 
-            let static_name_bottom = static_name_bottom_bound(
+            let mut static_name_bottom = static_name_bottom_bound(
                 self.use_static_gpu_labels,
                 self.static_show_names,
                 ww,
                 hh,
                 cy,
+                px_per_world,
                 static_tag_scale,
                 static_name_scale,
                 resource_icons_visible,
             );
+            if is_hq
+                && let Some(hq_label_bottom) = hq_normal_static_label_bottom_bound(
+                    loc.top() as f32,
+                    ww,
+                    hh,
+                    cy,
+                    px_per_world,
+                    self.static_show_names,
+                    static_tag_scale,
+                    static_name_scale,
+                    resource_icons_visible,
+                )
+            {
+                static_name_bottom = Some(
+                    static_name_bottom
+                        .map_or(hq_label_bottom, |bottom| bottom.max(hq_label_bottom)),
+                );
+            }
             let compact_bottom_y = cy + tag_size / 2.0 - label_lift;
             let mut content_bottom_y = compact_bottom_y;
             if has_timer_line {
@@ -3687,10 +3929,19 @@ impl GpuRenderer {
             let icon_size_world = compute_resource_icon_size_world(icon_scale);
             let icon_gap_world = icon_size_world * 1.3;
             let icon_offset_world = lerp_f32(3.0, 4.0, detail_layout_alpha).max(0.0);
-            let icon_y = if cooldown_timer_visible {
+            let base_icon_y = if cooldown_timer_visible {
                 cooldown_anchor_y + cooldown_size / 2.0 + icon_size_world / 2.0 + icon_offset_world
             } else {
                 content_bottom_y + icon_size_world / 2.0 + icon_offset_world
+            };
+            let Some(icon_y) = compute_resource_icon_center_y_world(
+                loc.top() as f32,
+                hh,
+                detail_layout_alpha,
+                base_icon_y,
+                icon_size_world,
+            ) else {
+                continue;
             };
             let total_w = (icon_kinds.len() as f32 - 1.0) * icon_gap_world + icon_size_world;
             let mut dx = cx - total_w / 2.0;
@@ -4546,8 +4797,8 @@ impl GpuRenderer {
 #[cfg(test)]
 mod tests {
     use super::{
-        SEQUOIA_ORNAMENT_FALLBACK_GOLD, derive_sequoia_ornament_gold,
-        is_sequoia_ornament_neutral_highlight, ornament_mask_alpha,
+        SEQUOIA_ORNAMENT_FALLBACK_GOLD, derive_sequoia_ornament_gold, hq_normal_crown_layout,
+        hq_normal_static_tag_y, is_sequoia_ornament_neutral_highlight, ornament_mask_alpha,
     };
 
     #[test]
@@ -4587,5 +4838,25 @@ mod tests {
         assert!(!is_sequoia_ornament_neutral_highlight(
             236, 189, 74, gold_alpha
         ));
+    }
+
+    #[test]
+    fn hq_normal_crown_layout_fits_top_slot() {
+        let layout =
+            hq_normal_crown_layout(10.0, 64.0, 160.0, 2.0, 100.0).expect("crown should fit");
+
+        assert!((layout.size_world - 38.4).abs() < 0.001);
+        assert!((layout.center_y - 31.2).abs() < 0.001);
+        assert!((layout.label_clear_y - 51.9).abs() < 0.001);
+    }
+
+    #[test]
+    fn hq_normal_static_tag_clears_crown_slot() {
+        let tag_size = 24.0;
+        let layout = hq_normal_crown_layout(10.0, 64.0, 160.0, 2.0, tag_size * 1.75)
+            .expect("crown should fit");
+        let tag_y = hq_normal_static_tag_y(10.0, 64.0, 160.0, 45.0, 2.0, tag_size, 21.5, 1.0, 0.0);
+
+        assert!(tag_y - tag_size * 0.5 >= layout.label_clear_y - 0.001);
     }
 }

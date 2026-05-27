@@ -34,7 +34,8 @@ struct VertexOutput {
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     let world_pos = in.rect.xy + in.quad_pos * in.rect.zw;
-    let screen = world_pos * vp.scale + vp.offset;
+    let glyph_origin = in.rect.xy * vp.scale + vp.offset;
+    let screen = floor(glyph_origin + vec2<f32>(0.5, 0.5)) + (world_pos - in.rect.xy) * vp.scale;
     let ndc = screen / vp.resolution * 2.0 - 1.0;
     out.clip_position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
     out.uv = mix(in.uv_rect.xy, in.uv_rect.zw, in.quad_pos);
