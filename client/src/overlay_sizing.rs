@@ -1,5 +1,6 @@
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) const STATIC_NAME_BASELINE_GAP_MULTIPLIER: f32 = 1.0;
+pub(crate) const STATIC_NAME_MIN_RENDERED_PX: f32 = 12.0;
 
 const STATIC_TAG_SIZE_WORLD: f32 = 24.0;
 const STATIC_NAME_SIZE_WORLD: f32 = 21.5;
@@ -115,6 +116,7 @@ pub(crate) fn static_name_bottom_bound(
     ww: f32,
     hh: f32,
     cy: f32,
+    px_per_world: f32,
     tag_scale: f32,
     name_scale: f32,
     resource_icons_enabled: bool,
@@ -130,6 +132,9 @@ pub(crate) fn static_name_bottom_bound(
     }
     let tag_size = sizing.tag_size * tag_scale.clamp(0.5, 4.0);
     let detail_size = sizing.detail_size * name_scale.clamp(0.5, 4.0);
+    if detail_size * px_per_world < STATIC_NAME_MIN_RENDERED_PX {
+        return None;
+    }
 
     let label_lift =
         compute_resource_icon_label_lift_world(hh, detail_layout_alpha, resource_icons_enabled);

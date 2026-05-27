@@ -24,7 +24,7 @@ use crate::label_layout::{
     resource_icons_drawable, write_age, write_age_compound,
 };
 use crate::overlay_sizing::{
-    STATIC_NAME_BASELINE_GAP_MULTIPLIER, compute_dynamic_label_sizing,
+    STATIC_NAME_BASELINE_GAP_MULTIPLIER, STATIC_NAME_MIN_RENDERED_PX, compute_dynamic_label_sizing,
     compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
     compute_resource_icon_size_world, compute_static_label_sizing,
     compute_territory_ornament_sizing, compute_territory_ornament_tint, static_name_bottom_bound,
@@ -215,7 +215,6 @@ const STATIC_NAME_LETTER_SPACING_EM: f32 = 0.057;
 const STATIC_TAG_MIN_WIDTH_WORLD: f32 = 88.0;
 const STATIC_NAME_MIN_WIDTH_WORLD: f32 = 176.0;
 const STATIC_TAG_MIN_RENDERED_PX: f32 = 13.5;
-const STATIC_NAME_MIN_RENDERED_PX: f32 = 12.0;
 const DYNAMIC_TIME_LETTER_SPACING_EM: f32 = 0.035;
 const DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN: f32 = 0.0035;
 const DYNAMIC_TIME_MIN_RENDERED_PX: f32 = 11.5;
@@ -355,6 +354,10 @@ fn hq_normal_static_label_bottom_bound(
         detail_layout_alpha,
         resource_icons_visible,
     );
+    let tag_visible = tag_size * px_per_world >= STATIC_TAG_MIN_RENDERED_PX;
+    let name_visible = static_show_names
+        && detail_layout_alpha > 0.02
+        && detail_size * px_per_world >= STATIC_NAME_MIN_RENDERED_PX;
     let tag_y = hq_normal_static_tag_y(
         territory_top,
         territory_width,
@@ -366,12 +369,14 @@ fn hq_normal_static_label_bottom_bound(
         detail_layout_alpha,
         label_lift,
     );
-    let mut bottom_y = tag_y + tag_size * 0.5;
-    if static_show_names && detail_layout_alpha > 0.02 {
+    let mut bottom_y = tag_visible.then_some(tag_y + tag_size * 0.5);
+    if name_visible {
         let name_y = tag_y + tag_size * 0.5 + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
-        bottom_y = name_y + detail_size * 0.5;
+        bottom_y = Some(bottom_y.map_or(name_y + detail_size * 0.5, |bottom| {
+            bottom.max(name_y + detail_size * 0.5)
+        }));
     }
-    Some(bottom_y)
+    bottom_y
 }
 
 #[inline]
@@ -3498,6 +3503,7 @@ impl GpuRenderer {
                     ww,
                     hh,
                     cy,
+                    px_per_world,
                     static_tag_scale,
                     static_name_scale,
                     resource_icons_visible,
@@ -3875,6 +3881,7 @@ impl GpuRenderer {
                 ww,
                 hh,
                 cy,
+                px_per_world,
                 static_tag_scale,
                 static_name_scale,
                 resource_icons_visible,
