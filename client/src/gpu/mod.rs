@@ -3249,32 +3249,31 @@ impl GpuRenderer {
                     };
                     let tag = ct.territory.guild.prefix.as_str();
                     let tag_px = tag_size * px_per_world;
-                    if tag_px < STATIC_TAG_MIN_RENDERED_PX {
-                        continue;
-                    }
-                    let tag_color = {
-                        let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
-                        c[3] = 1.0;
-                        c
-                    };
-                    let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
-                    let tag_halo_alpha = (0.70 - tag_halo_boost * 0.22).clamp(0.42, 0.76);
+                    if tag_px >= STATIC_TAG_MIN_RENDERED_PX {
+                        let tag_color = {
+                            let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
+                            c[3] = 1.0;
+                            c
+                        };
+                        let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
+                        let tag_halo_alpha = (0.70 - tag_halo_boost * 0.22).clamp(0.42, 0.76);
 
-                    push_text_line_dual_with_tracking(
-                        &mut fill_instances,
-                        &mut halo_instances,
-                        glyphs,
-                        kerning,
-                        line_height,
-                        tag,
-                        cx,
-                        tag_y,
-                        tag_size,
-                        tag_max_w,
-                        tag_tracking_units,
-                        tag_color,
-                        [0.0, 0.0, 0.0, tag_halo_alpha],
-                    );
+                        push_text_line_dual_with_tracking(
+                            &mut fill_instances,
+                            &mut halo_instances,
+                            glyphs,
+                            kerning,
+                            line_height,
+                            tag,
+                            cx,
+                            tag_y,
+                            tag_size,
+                            tag_max_w,
+                            tag_tracking_units,
+                            tag_color,
+                            [0.0, 0.0, 0.0, tag_halo_alpha],
+                        );
+                    }
 
                     if self.static_show_names && detail_layout_alpha > 0.02 {
                         let fallback_abbrev;
