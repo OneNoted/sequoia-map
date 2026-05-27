@@ -7,6 +7,7 @@ use wgpu::util::DeviceExt;
 
 use sequoia_shared::TreasuryLevel;
 use sequoia_shared::colors::hsl_to_rgb;
+use sequoia_shared::territory::Resources;
 
 use crate::app::NameColor;
 use crate::claim_labels::{
@@ -19,13 +20,14 @@ use crate::heat::heat_color_for_count;
 use crate::icons::{ICON_COUNT, ResourceAtlas};
 use crate::label_layout::{
     IconKind, abbreviate_name, compute_label_layout_metrics, cooldown_color,
-    dynamic_label_next_update_age, dynamic_text_state, resource_icon_sequence, write_age,
-    write_age_compound,
+    dynamic_label_next_update_age, dynamic_text_state, resource_icon_sequence,
+    resource_icons_drawable, write_age, write_age_compound,
 };
 use crate::overlay_sizing::{
     STATIC_NAME_BASELINE_GAP_MULTIPLIER, compute_dynamic_label_sizing,
-    compute_resource_icon_size_world, compute_static_label_sizing,
-    compute_territory_ornament_sizing, compute_territory_ornament_tint, static_name_bottom_bound,
+    compute_resource_icon_label_lift_world, compute_resource_icon_size_world,
+    compute_static_label_sizing, compute_territory_ornament_sizing,
+    compute_territory_ornament_tint, static_name_bottom_bound,
 };
 use crate::renderer::{FrameMetrics, InvalidationReason, RenderCapabilities, SceneSnapshot};
 use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
@@ -229,6 +231,21 @@ const SEQUOIA_ORNAMENT_FALLBACK_GOLD: [u8; 3] = [245, 197, 66];
 #[inline]
 fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t.clamp(0.0, 1.0)
+}
+
+#[inline]
+fn resource_icons_visible_for_territory(
+    show_resource_icons: bool,
+    sw: f32,
+    sh: f32,
+    detail_layout_alpha: f32,
+    resources: &Resources,
+) -> bool {
+    show_resource_icons
+        && sw > 55.0
+        && sh > 35.0
+        && detail_layout_alpha > 0.001
+        && resource_icons_drawable(resources)
 }
 
 #[inline]
@@ -3039,6 +3056,8 @@ impl GpuRenderer {
                     let loc = &ct.territory.location;
                     let ww = loc.width() as f32;
                     let hh = loc.height() as f32;
+                    let sw = ww * scale;
+                    let sh = hh * scale;
                     let Some(sizing) = compute_static_label_sizing(ww, hh) else {
                         continue;
                     };
@@ -3056,7 +3075,23 @@ impl GpuRenderer {
                     let overflow = overflow_scale;
                     let tag_padding = lerp_f32(3.0, 8.0, detail_layout_alpha);
                     let tag_max_w = (ww * overflow - tag_padding).max(STATIC_TAG_MIN_WIDTH_WORLD);
-                    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha);
+                    let resource_icon_detail_layout_alpha =
+                        compute_label_layout_metrics(sw as f64, sh as f64, false)
+                            .detail_layout_alpha;
+                    let resource_icons_visible = resource_icons_visible_for_territory(
+                        self.dynamic_show_resource_icons,
+                        sw,
+                        sh,
+                        resource_icon_detail_layout_alpha,
+                        &ct.territory.resources,
+                    );
+                    let label_lift = compute_resource_icon_label_lift_world(
+                        hh,
+                        detail_layout_alpha,
+                        resource_icons_visible,
+                    );
+                    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha)
+                        - label_lift;
                     let tag = ct.territory.guild.prefix.as_str();
                     let tag_color = {
                         let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
@@ -3258,6 +3293,18 @@ impl GpuRenderer {
                 let show_dynamic_time =
                     timer_visible_at_zoom && any_time_format && !show_dynamic_cooldown;
                 let has_timer_line = show_dynamic_time || show_dynamic_cooldown;
+                let resource_icons_visible = resource_icons_visible_for_territory(
+                    self.dynamic_show_resource_icons,
+                    sw,
+                    sh,
+                    detail_layout_alpha,
+                    &ct.territory.resources,
+                );
+                let label_lift = compute_resource_icon_label_lift_world(
+                    hh,
+                    detail_layout_alpha,
+                    resource_icons_visible,
+                );
                 let static_name_bottom = static_name_bottom_bound(
                     self.use_static_gpu_labels,
                     self.static_show_names,
@@ -3266,13 +3313,14 @@ impl GpuRenderer {
                     cy,
                     static_tag_scale,
                     static_name_scale,
+                    resource_icons_visible,
                 );
-                let compact_bottom_y = cy + tag_size / 2.0;
+                let compact_bottom_y = cy + tag_size / 2.0 - label_lift;
                 let mut time_y = compact_bottom_y;
                 let mut content_bottom_y = compact_bottom_y;
                 if has_timer_line {
                     let stacked_total_h = tag_size + detail_size + time_size + line_gap * 2.0;
-                    let stacked_top_y = cy - stacked_total_h / 2.0;
+                    let stacked_top_y = cy - stacked_total_h / 2.0 - label_lift;
                     time_y = stacked_top_y
                         + tag_size
                         + line_gap
@@ -3457,6 +3505,15 @@ impl GpuRenderer {
             let px_per_world = scale.max(0.0001);
             let cx = loc.midpoint_x() as f32;
             let cy = loc.midpoint_y() as f32;
+            let resource_icon_detail_layout_alpha =
+                compute_label_layout_metrics(sw as f64, sh as f64, false).detail_layout_alpha;
+            let resource_icons_visible = resource_icons_visible_for_territory(
+                self.dynamic_show_resource_icons,
+                sw,
+                sh,
+                resource_icon_detail_layout_alpha,
+                &ct.territory.resources,
+            );
             if self.show_territory_ornaments {
                 let use_sequoia_ornament =
                     is_sequoia_guild(&ct.territory.guild.name, &ct.territory.guild.prefix);
@@ -3534,6 +3591,10 @@ impl GpuRenderer {
                     cy,
                     cy - (crown_detail_size + 1.0) * 0.45,
                     static_sizing.detail_layout_alpha,
+                ) - compute_resource_icon_label_lift_world(
+                    hh,
+                    static_sizing.detail_layout_alpha,
+                    resource_icons_visible,
                 );
                 let min_crown_world = 1.0;
                 let max_crown_world = (ww.min(hh) * HQ_CROWN_MAX_BOX_FRACTION).max(min_crown_world);
@@ -3550,15 +3611,11 @@ impl GpuRenderer {
                         crown_size_world,
                     ],
                     uv_rect: crown_uv,
-                    tint: [1.0, 0.90, 0.30, 1.0],
+                    tint: [1.0, 1.0, 1.0, 1.0],
                 });
             }
 
-            if !self.dynamic_show_resource_icons
-                || sw <= 55.0
-                || sh <= 35.0
-                || ct.territory.resources.is_empty()
-            {
+            if !resource_icons_visible {
                 continue;
             }
 
@@ -3568,11 +3625,12 @@ impl GpuRenderer {
             }
 
             let state = dynamic_text_state(reference_time_secs, ct.territory.acquired.timestamp());
-            let metrics = compute_label_layout_metrics(sw as f64, sh as f64, false);
-            let detail_layout_alpha = metrics.detail_layout_alpha;
-            if detail_layout_alpha <= 0.001 {
-                continue;
-            }
+            let detail_layout_alpha = resource_icon_detail_layout_alpha;
+            let label_lift = compute_resource_icon_label_lift_world(
+                hh,
+                detail_layout_alpha,
+                resource_icons_visible,
+            );
 
             let Some(sizing) =
                 compute_dynamic_label_sizing(ww, hh, scale, dynamic_label_scale, state.is_fresh)
@@ -3602,12 +3660,13 @@ impl GpuRenderer {
                 cy,
                 static_tag_scale,
                 static_name_scale,
+                resource_icons_visible,
             );
-            let compact_bottom_y = cy + tag_size / 2.0;
+            let compact_bottom_y = cy + tag_size / 2.0 - label_lift;
             let mut content_bottom_y = compact_bottom_y;
             if has_timer_line {
                 let stacked_total_h = tag_size + detail_size + time_size + line_gap * 2.0;
-                let stacked_top_y = cy - stacked_total_h / 2.0;
+                let stacked_top_y = cy - stacked_total_h / 2.0 - label_lift;
                 let mut time_y =
                     stacked_top_y + tag_size + line_gap + detail_size + line_gap + time_size / 2.0;
                 if let Some(name_bottom_y) = static_name_bottom {

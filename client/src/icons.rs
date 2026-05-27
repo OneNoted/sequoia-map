@@ -51,7 +51,7 @@ pub fn sprite_style(name: &str, size_px: u32) -> Option<String> {
     let idx = icon_index(name)?;
     let atlas_src = versioned_app_asset_url(ATLAS_PATH);
     Some(format!(
-        "display:inline-block;width:{size_px}px;height:{size_px}px;flex-shrink:0;vertical-align:middle;background-image:url('{atlas_src}');background-repeat:no-repeat;background-size:{}px {}px;background-position:-{}px 0px;",
+        "display:inline-block;width:{size_px}px;height:{size_px}px;flex-shrink:0;vertical-align:middle;background-image:url('{atlas_src}');background-repeat:no-repeat;background-size:{}px {}px;background-position:-{}px 0px;image-rendering:pixelated;",
         ICON_COUNT * size_px,
         size_px,
         idx * size_px,
