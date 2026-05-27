@@ -209,14 +209,14 @@ pub(crate) fn compute_resource_icon_center_y_world(
     detail_layout_alpha: f32,
     base_center_y: f32,
     icon_size_world: f32,
-) -> f32 {
+) -> Option<f32> {
     let territory_height = territory_height.max(0.0);
     let icon_half = icon_size_world.max(1.0) * 0.5;
     let top_limit = territory_top + icon_half + RESOURCE_ICON_EDGE_PADDING_WORLD;
     let bottom_limit =
         territory_top + territory_height - icon_half - RESOURCE_ICON_EDGE_PADDING_WORLD;
     if bottom_limit <= top_limit {
-        return territory_top + territory_height * 0.5;
+        return None;
     }
 
     let lower_anchor = territory_top
@@ -226,9 +226,11 @@ pub(crate) fn compute_resource_icon_center_y_world(
                 RESOURCE_ICON_LOWER_ANCHOR_END_RATIO,
                 detail_layout_alpha,
             );
-    base_center_y
-        .max(lower_anchor)
-        .clamp(top_limit, bottom_limit)
+    let desired_center_y = base_center_y.max(lower_anchor).max(top_limit);
+    if desired_center_y > bottom_limit {
+        return None;
+    }
+    Some(desired_center_y)
 }
 
 pub(crate) fn compute_territory_ornament_sizing(
@@ -382,14 +384,15 @@ mod tests {
 
     #[test]
     fn resource_icon_center_prefers_lower_territory_band() {
-        let center = compute_resource_icon_center_y_world(100.0, 120.0, 1.0, 145.0, 29.0);
+        let center = compute_resource_icon_center_y_world(100.0, 120.0, 1.0, 145.0, 29.0)
+            .expect("icon should fit");
         assert_close(center, 184.0);
     }
 
     #[test]
-    fn resource_icon_center_clamps_inside_territory() {
+    fn resource_icon_center_hides_when_vertical_space_would_overlap_labels() {
         let center = compute_resource_icon_center_y_world(100.0, 70.0, 1.0, 260.0, 29.0);
-        assert_close(center, 152.5);
+        assert!(center.is_none());
     }
 
     #[test]

@@ -3934,13 +3934,15 @@ impl GpuRenderer {
             } else {
                 content_bottom_y + icon_size_world / 2.0 + icon_offset_world
             };
-            let icon_y = compute_resource_icon_center_y_world(
+            let Some(icon_y) = compute_resource_icon_center_y_world(
                 loc.top() as f32,
                 hh,
                 detail_layout_alpha,
                 base_icon_y,
                 icon_size_world,
-            );
+            ) else {
+                continue;
+            };
             let total_w = (icon_kinds.len() as f32 - 1.0) * icon_gap_world + icon_size_world;
             let mut dx = cx - total_w / 2.0;
             for kind in icon_kinds {
