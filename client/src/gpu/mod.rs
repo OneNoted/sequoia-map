@@ -25,9 +25,9 @@ use crate::label_layout::{
 };
 use crate::overlay_sizing::{
     STATIC_NAME_BASELINE_GAP_MULTIPLIER, compute_dynamic_label_sizing,
-    compute_resource_icon_label_lift_world, compute_resource_icon_size_world,
-    compute_static_label_sizing, compute_territory_ornament_sizing,
-    compute_territory_ornament_tint, static_name_bottom_bound,
+    compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
+    compute_resource_icon_size_world, compute_static_label_sizing,
+    compute_territory_ornament_sizing, compute_territory_ornament_tint, static_name_bottom_bound,
 };
 use crate::renderer::{FrameMetrics, InvalidationReason, RenderCapabilities, SceneSnapshot};
 use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
@@ -214,8 +214,12 @@ const STATIC_TAG_LETTER_SPACING_EM: f32 = 0.07;
 const STATIC_NAME_LETTER_SPACING_EM: f32 = 0.057;
 const STATIC_TAG_MIN_WIDTH_WORLD: f32 = 88.0;
 const STATIC_NAME_MIN_WIDTH_WORLD: f32 = 176.0;
+const STATIC_TAG_MIN_RENDERED_PX: f32 = 13.5;
+const STATIC_NAME_MIN_RENDERED_PX: f32 = 12.0;
 const DYNAMIC_TIME_LETTER_SPACING_EM: f32 = 0.035;
 const DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN: f32 = 0.0035;
+const DYNAMIC_TIME_MIN_RENDERED_PX: f32 = 11.5;
+const DYNAMIC_COOLDOWN_MIN_RENDERED_PX: f32 = 12.0;
 /// Minimum viewport scale required before per-territory timer text (held/cooldown) is shown.
 /// Keeps the default world view uncluttered; timers appear when users zoom in.
 const DYNAMIC_TIMER_VISIBILITY_MIN_SCALE: f64 = 0.31;
@@ -224,6 +228,9 @@ const DYNAMIC_TIMER_VISIBILITY_MIN_SCALE: f64 = 0.31;
 const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.75;
 const HQ_CROWN_MAX_BOX_FRACTION: f32 = 0.48;
+const HQ_CROWN_FAR_BOX_FRACTION: f32 = 0.90;
+const HQ_CROWN_EXPAND_START_PX: f32 = 190.0;
+const HQ_CROWN_EXPAND_END_PX: f32 = 118.0;
 const ORNAMENT_MIN_RENDERED_PX: f32 = 1.0;
 const ORNAMENT_UV_PADDING_PX: u32 = 2;
 const SEQUOIA_ORNAMENT_FALLBACK_GOLD: [u8; 3] = [245, 197, 66];
@@ -2083,7 +2090,7 @@ impl GpuRenderer {
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
             ],
@@ -3093,14 +3100,17 @@ impl GpuRenderer {
                     let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha)
                         - label_lift;
                     let tag = ct.territory.guild.prefix.as_str();
+                    let tag_px = tag_size * px_per_world;
+                    if tag_px < STATIC_TAG_MIN_RENDERED_PX {
+                        continue;
+                    }
                     let tag_color = {
                         let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
                         c[3] = 1.0;
                         c
                     };
-                    let tag_px = tag_size * px_per_world;
                     let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
-                    let tag_halo_alpha = (0.70 - tag_halo_boost * 0.10).clamp(0.54, 0.76);
+                    let tag_halo_alpha = (0.70 - tag_halo_boost * 0.22).clamp(0.42, 0.76);
 
                     push_text_line_dual_with_tracking(
                         &mut fill_instances,
@@ -3150,6 +3160,9 @@ impl GpuRenderer {
                         name_rgba[3] *=
                             STATIC_NAME_FILL_ALPHA_MULTIPLIER * detail_layout_alpha.clamp(0.0, 1.0);
                         let name_px = detail_size * px_per_world;
+                        if name_px < STATIC_NAME_MIN_RENDERED_PX {
+                            continue;
+                        }
                         let name_halo_boost = 1.0 - smoothstep_f32(8.4, 12.2, name_px);
                         let name_halo_alpha = ((0.68 - name_halo_boost * 0.12)
                             * STATIC_NAME_HALO_ALPHA_MULTIPLIER
@@ -3281,17 +3294,23 @@ impl GpuRenderer {
                     );
                 let time_max_width = sizing.time_max_width;
                 let cooldown_max_width = sizing.cooldown_max_width;
+                let time_px = time_size * px_per_world;
+                let cooldown_px = cooldown_size * px_per_world;
 
                 let cx = loc.midpoint_x() as f32;
                 let cy = loc.midpoint_y() as f32;
                 let timer_visible_at_zoom = vp.scale >= DYNAMIC_TIMER_VISIBILITY_MIN_SCALE;
-                let show_dynamic_cooldown =
-                    timer_visible_at_zoom && self.dynamic_show_countdown && state.is_fresh;
+                let show_dynamic_cooldown = timer_visible_at_zoom
+                    && self.dynamic_show_countdown
+                    && state.is_fresh
+                    && cooldown_px >= DYNAMIC_COOLDOWN_MIN_RENDERED_PX;
                 let any_time_format = self.dynamic_show_countdown
                     || self.dynamic_show_granular_map_time
                     || self.dynamic_show_compound_map_time;
-                let show_dynamic_time =
-                    timer_visible_at_zoom && any_time_format && !show_dynamic_cooldown;
+                let show_dynamic_time = timer_visible_at_zoom
+                    && any_time_format
+                    && !show_dynamic_cooldown
+                    && time_px >= DYNAMIC_TIME_MIN_RENDERED_PX;
                 let has_timer_line = show_dynamic_time || show_dynamic_cooldown;
                 let resource_icons_visible = resource_icons_visible_for_territory(
                     self.dynamic_show_resource_icons,
@@ -3383,9 +3402,7 @@ impl GpuRenderer {
                             0.0,
                             0.0,
                             0.0,
-                            (0.68
-                                - (1.0 - smoothstep_f32(9.5, 14.8, time_size * px_per_world))
-                                    * 0.12)
+                            (0.68 - (1.0 - smoothstep_f32(9.5, 14.8, time_px)) * 0.12)
                                 .clamp(0.54, 0.76),
                         ],
                     );
@@ -3423,9 +3440,7 @@ impl GpuRenderer {
                             0.0,
                             0.0,
                             0.0,
-                            (0.70
-                                - (1.0 - smoothstep_f32(10.2, 15.8, cooldown_size * px_per_world))
-                                    * 0.12)
+                            (0.70 - (1.0 - smoothstep_f32(10.2, 15.8, cooldown_px)) * 0.12)
                                 .clamp(0.56, 0.78),
                         ],
                     );
@@ -3596,13 +3611,32 @@ impl GpuRenderer {
                     static_sizing.detail_layout_alpha,
                     resource_icons_visible,
                 );
+                let short_side_world = ww.min(hh).max(1.0);
+                let short_side_px = short_side_world * px_per_world;
+                let far_crown_factor = 1.0
+                    - smoothstep_f32(
+                        HQ_CROWN_EXPAND_END_PX,
+                        HQ_CROWN_EXPAND_START_PX,
+                        short_side_px,
+                    );
                 let min_crown_world = 1.0;
-                let max_crown_world = (ww.min(hh) * HQ_CROWN_MAX_BOX_FRACTION).max(min_crown_world);
-                let crown_size_world = (crown_tag_size * HQ_CROWN_SIZE_MULTIPLIER)
+                let max_crown_world =
+                    (short_side_world * HQ_CROWN_MAX_BOX_FRACTION).max(min_crown_world);
+                let normal_crown_size_world = (crown_tag_size * HQ_CROWN_SIZE_MULTIPLIER)
                     .clamp(min_crown_world, max_crown_world);
+                let far_crown_size_world =
+                    (short_side_world * HQ_CROWN_FAR_BOX_FRACTION).max(min_crown_world);
+                let crown_size_world = lerp_f32(
+                    normal_crown_size_world,
+                    far_crown_size_world,
+                    far_crown_factor,
+                );
                 let crown_gap_world = (1.5 + crown_tag_size * 0.05).max(0.0);
-                let crown_center_y =
-                    crown_tag_y - crown_tag_size * 0.5 - crown_gap_world - crown_size_world * 0.35;
+                let normal_crown_center_y = crown_tag_y
+                    - crown_tag_size * 0.5
+                    - crown_gap_world
+                    - normal_crown_size_world * 0.35;
+                let crown_center_y = lerp_f32(normal_crown_center_y, cy, far_crown_factor);
                 renderer.instances_buf.push(IconInstance {
                     rect: [
                         cx - crown_size_world * 0.5,
@@ -3642,14 +3676,20 @@ impl GpuRenderer {
             let time_size = sizing.time_size;
             let cooldown_size = sizing.cooldown_size;
             let line_gap = sizing.line_gap;
+            let time_px = time_size * px_per_world;
+            let cooldown_px = cooldown_size * px_per_world;
             let timer_visible_at_zoom = vp.scale >= DYNAMIC_TIMER_VISIBILITY_MIN_SCALE;
-            let cooldown_timer_visible =
-                timer_visible_at_zoom && state.is_fresh && self.dynamic_show_countdown;
+            let cooldown_timer_visible = timer_visible_at_zoom
+                && state.is_fresh
+                && self.dynamic_show_countdown
+                && cooldown_px >= DYNAMIC_COOLDOWN_MIN_RENDERED_PX;
             let any_time_format = self.dynamic_show_countdown
                 || self.dynamic_show_granular_map_time
                 || self.dynamic_show_compound_map_time;
-            let show_dynamic_time =
-                timer_visible_at_zoom && any_time_format && !cooldown_timer_visible;
+            let show_dynamic_time = timer_visible_at_zoom
+                && any_time_format
+                && !cooldown_timer_visible
+                && time_px >= DYNAMIC_TIME_MIN_RENDERED_PX;
             let has_timer_line = cooldown_timer_visible || show_dynamic_time;
 
             let static_name_bottom = static_name_bottom_bound(
@@ -3687,11 +3727,18 @@ impl GpuRenderer {
             let icon_size_world = compute_resource_icon_size_world(icon_scale);
             let icon_gap_world = icon_size_world * 1.3;
             let icon_offset_world = lerp_f32(3.0, 4.0, detail_layout_alpha).max(0.0);
-            let icon_y = if cooldown_timer_visible {
+            let base_icon_y = if cooldown_timer_visible {
                 cooldown_anchor_y + cooldown_size / 2.0 + icon_size_world / 2.0 + icon_offset_world
             } else {
                 content_bottom_y + icon_size_world / 2.0 + icon_offset_world
             };
+            let icon_y = compute_resource_icon_center_y_world(
+                loc.top() as f32,
+                hh,
+                detail_layout_alpha,
+                base_icon_y,
+                icon_size_world,
+            );
             let total_w = (icon_kinds.len() as f32 - 1.0) * icon_gap_world + icon_size_world;
             let mut dx = cx - total_w / 2.0;
             for kind in icon_kinds {

@@ -12,8 +12,11 @@ const DYNAMIC_TIME_MIN_WIDTH_WORLD: f32 = 108.0;
 const DYNAMIC_COOLDOWN_MIN_WIDTH_WORLD: f32 = 132.0;
 const DYNAMIC_TIME_STALE_SCALE: f32 = 0.96;
 const RESOURCE_ICON_SIZE_WORLD: f32 = 29.0;
-const RESOURCE_ICON_LABEL_LIFT_BOX_FRACTION: f32 = 0.16;
-const RESOURCE_ICON_LABEL_LIFT_MAX_WORLD: f32 = 14.0;
+const RESOURCE_ICON_LABEL_LIFT_BOX_FRACTION: f32 = 0.22;
+const RESOURCE_ICON_LABEL_LIFT_MAX_WORLD: f32 = 26.0;
+const RESOURCE_ICON_LOWER_ANCHOR_START_RATIO: f32 = 0.62;
+const RESOURCE_ICON_LOWER_ANCHOR_END_RATIO: f32 = 0.70;
+const RESOURCE_ICON_EDGE_PADDING_WORLD: f32 = 3.0;
 const ORNAMENT_INSET_WORLD: f32 = 3.0;
 const ORNAMENT_CORNER_SHORT_SIDE_WORLD: f32 = 42.0;
 const ORNAMENT_TINY_FIT_START_WORLD: f32 = 54.0;
@@ -195,6 +198,34 @@ pub(crate) fn compute_resource_icon_label_lift_world(
         * alpha
 }
 
+pub(crate) fn compute_resource_icon_center_y_world(
+    territory_top: f32,
+    territory_height: f32,
+    detail_layout_alpha: f32,
+    base_center_y: f32,
+    icon_size_world: f32,
+) -> f32 {
+    let territory_height = territory_height.max(0.0);
+    let icon_half = icon_size_world.max(1.0) * 0.5;
+    let top_limit = territory_top + icon_half + RESOURCE_ICON_EDGE_PADDING_WORLD;
+    let bottom_limit =
+        territory_top + territory_height - icon_half - RESOURCE_ICON_EDGE_PADDING_WORLD;
+    if bottom_limit <= top_limit {
+        return territory_top + territory_height * 0.5;
+    }
+
+    let lower_anchor = territory_top
+        + territory_height
+            * lerp_f32(
+                RESOURCE_ICON_LOWER_ANCHOR_START_RATIO,
+                RESOURCE_ICON_LOWER_ANCHOR_END_RATIO,
+                detail_layout_alpha,
+            );
+    base_center_y
+        .max(lower_anchor)
+        .clamp(top_limit, bottom_limit)
+}
+
 pub(crate) fn compute_territory_ornament_sizing(
     ww: f32,
     hh: f32,
@@ -258,9 +289,10 @@ pub(crate) fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_dynamic_label_sizing, compute_resource_icon_label_lift_world,
-        compute_resource_icon_size_world, compute_static_label_sizing,
-        compute_territory_ornament_sizing, compute_territory_ornament_tint,
+        compute_dynamic_label_sizing, compute_resource_icon_center_y_world,
+        compute_resource_icon_label_lift_world, compute_resource_icon_size_world,
+        compute_static_label_sizing, compute_territory_ornament_sizing,
+        compute_territory_ornament_tint,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -329,8 +361,8 @@ mod tests {
     #[test]
     fn resource_icon_label_lift_moves_labels_toward_upper_quadrant() {
         let lift = compute_resource_icon_label_lift_world(80.0, 1.0, true);
-        assert_close(lift, 12.8);
-        assert_close(compute_resource_icon_label_lift_world(80.0, 0.5, true), 6.4);
+        assert_close(lift, 17.6);
+        assert_close(compute_resource_icon_label_lift_world(80.0, 0.5, true), 8.8);
         assert_close(
             compute_resource_icon_label_lift_world(80.0, 1.0, false),
             0.0,
@@ -340,7 +372,19 @@ mod tests {
     #[test]
     fn resource_icon_label_lift_is_capped_for_large_territories() {
         let lift = compute_resource_icon_label_lift_world(220.0, 1.0, true);
-        assert_close(lift, 14.0);
+        assert_close(lift, 26.0);
+    }
+
+    #[test]
+    fn resource_icon_center_prefers_lower_territory_band() {
+        let center = compute_resource_icon_center_y_world(100.0, 120.0, 1.0, 145.0, 29.0);
+        assert_close(center, 184.0);
+    }
+
+    #[test]
+    fn resource_icon_center_clamps_inside_territory() {
+        let center = compute_resource_icon_center_y_world(100.0, 70.0, 1.0, 260.0, 29.0);
+        assert_close(center, 152.5);
     }
 
     #[test]
