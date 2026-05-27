@@ -560,9 +560,111 @@ impl SettingsV2 {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct LegacySettings {
+    show_connections: bool,
+    abbreviate_names: bool,
+    show_countdown: bool,
+    granular_map_time: bool,
+    #[serde(default = "default_true")]
+    compound_map_time: bool,
+    show_names: bool,
+    thick_cooldown_borders: bool,
+    readable_font: bool,
+    bold_connections: bool,
+    name_color: NameColor,
+    sidebar_open: bool,
+    resource_highlight: bool,
+    #[serde(default)]
+    defense_highlight: bool,
+    #[serde(default)]
+    map_intel_enabled: bool,
+    show_resource_icons: bool,
+    #[serde(default = "default_manual_sr_scalar")]
+    manual_sr_scalar: f64,
+    #[serde(default = "default_true")]
+    auto_sr_scalar_enabled: bool,
+    show_leaderboard_sr_gain: bool,
+}
+
+impl Default for LegacySettings {
+    fn default() -> Self {
+        Self {
+            show_connections: true,
+            abbreviate_names: true,
+            show_countdown: false,
+            granular_map_time: false,
+            compound_map_time: true,
+            show_names: false,
+            thick_cooldown_borders: true,
+            readable_font: false,
+            bold_connections: false,
+            name_color: NameColor::White,
+            sidebar_open: false,
+            resource_highlight: false,
+            defense_highlight: false,
+            map_intel_enabled: false,
+            show_resource_icons: false,
+            manual_sr_scalar: default_manual_sr_scalar(),
+            auto_sr_scalar_enabled: true,
+            show_leaderboard_sr_gain: false,
+        }
+    }
+}
+
+impl From<LegacySettings> for SettingsV2 {
+    fn from(value: LegacySettings) -> Self {
+        Self {
+            defaults_version: 0,
+            show_connections: value.show_connections,
+            abbreviate_names: value.abbreviate_names,
+            show_countdown: value.show_countdown,
+            granular_map_time: value.granular_map_time,
+            compound_map_time: value.compound_map_time,
+            show_names: value.show_names,
+            thick_cooldown_borders: value.thick_cooldown_borders,
+            bold_connections: value.bold_connections,
+            connection_opacity_scale: default_connection_opacity_scale(),
+            connection_thickness_scale: default_connection_thickness_scale(),
+            sidebar_open: value.sidebar_open,
+            resource_highlight: value.resource_highlight,
+            defense_highlight: value.defense_highlight,
+            map_intel_enabled: value.map_intel_enabled,
+            show_resource_icons: value.show_resource_icons,
+            show_territory_ornaments: false,
+            manual_sr_scalar: value.manual_sr_scalar,
+            auto_sr_scalar_enabled: value.auto_sr_scalar_enabled,
+            show_leaderboard_sr_gain: value.show_leaderboard_sr_gain,
+            show_leaderboard_sr_value: false,
+            show_leaderboard_territory_count: true,
+            show_leaderboard_online: true,
+            leaderboard_sort_by_sr: false,
+            heat_mode_enabled: false,
+            heat_live_source: default_heat_live_source(),
+            heat_history_basis: default_heat_history_basis(),
+            heat_selected_season_id: None,
+            readable_font: value.readable_font,
+            show_minimap: true,
+            name_color: value.name_color,
+            tag_color: default_tag_color(),
+            label_scale_master: default_label_scale_master(),
+            label_scale_static: default_label_scale_static_tag(),
+            label_scale_static_name: Some(default_label_scale_static_name()),
+            label_scale_dynamic: default_label_scale_group(),
+            label_scale_icons: default_label_scale_group(),
+            sidebar_width: default_sidebar_width(),
+            show_debug_info: false,
+        }
+    }
+}
+
 fn load_settings_v2() -> SettingsV2 {
     if let Ok(saved) = gloo_storage::LocalStorage::get::<SettingsV2>("sequoia_settings_v2") {
         return saved.with_current_defaults();
+    }
+    if let Ok(legacy) = gloo_storage::LocalStorage::get::<LegacySettings>("sequoia_settings") {
+        return SettingsV2::from(legacy).with_current_defaults();
     }
     SettingsV2::default()
 }
@@ -2800,9 +2902,10 @@ fn TerritoryPeekCard() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_SIDEBAR_WIDTH, MapMode, SETTINGS_DEFAULTS_VERSION, SIDEBAR_WIDTH_MAX,
-        SIDEBAR_WIDTH_MIN, SettingsV2, canonical_path_for_mode, clamp_sidebar_width,
-        map_mode_from_path, normalize_heat_selected_season_id, should_wait_for_history_probe,
+        DEFAULT_SIDEBAR_WIDTH, LegacySettings, MapMode, NameColor, SETTINGS_DEFAULTS_VERSION,
+        SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, SettingsV2, canonical_path_for_mode,
+        clamp_sidebar_width, map_mode_from_path, normalize_heat_selected_season_id,
+        should_wait_for_history_probe,
     };
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
 
@@ -2852,6 +2955,29 @@ mod tests {
         assert!(saved.show_resource_icons);
         assert!(!saved.show_territory_ornaments);
         assert!(!saved.show_debug_info);
+    }
+
+    #[test]
+    fn legacy_settings_migration_preserves_old_key_choices_and_applies_current_default_overrides() {
+        let legacy = LegacySettings {
+            show_connections: false,
+            sidebar_open: true,
+            resource_highlight: true,
+            show_resource_icons: false,
+            manual_sr_scalar: 2.0,
+            name_color: NameColor::Gold,
+            ..LegacySettings::default()
+        };
+
+        let migrated = SettingsV2::from(legacy).with_current_defaults();
+
+        assert_eq!(migrated.defaults_version, SETTINGS_DEFAULTS_VERSION);
+        assert!(!migrated.show_connections);
+        assert!(migrated.sidebar_open);
+        assert!(migrated.resource_highlight);
+        assert_eq!(migrated.manual_sr_scalar, 2.0);
+        assert!(migrated.name_color == NameColor::Gold);
+        assert!(migrated.show_resource_icons);
     }
 
     #[test]
