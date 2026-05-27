@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use leptos::prelude::*;
@@ -14,6 +15,9 @@ use crate::viewport::Viewport;
 
 const NODE_MIN_RADIUS: f64 = 1.25;
 const NODE_MAX_RADIUS: f64 = 3.25;
+const NODE_BUCKET_WORLD_SIZE: f64 = 256.0;
+const NODE_CLUSTER_SCALE: f64 = 0.18;
+const NODE_SIMPLE_SCALE: f64 = 0.34;
 const FETCH_RETRY_DELAY_SECS: u64 = 10;
 const MAP_INTEL_ENDPOINT: &str = "/api/map/intel/overlay";
 
@@ -26,6 +30,258 @@ struct IntelHover {
     color: &'static str,
 }
 
+#[derive(Debug)]
+struct MapIntelModel {
+    raids: Vec<RenderActivity>,
+    camps: Vec<RenderActivity>,
+    world_events: Vec<RenderWorldEvent>,
+    gathering_nodes: NodeIndex,
+}
+
+impl MapIntelModel {
+    fn from_payload(payload: MapIntelPayload) -> Self {
+        Self {
+            raids: payload
+                .raids
+                .into_iter()
+                .map(|entry| RenderActivity::from_marker(entry, "Raid"))
+                .collect(),
+            camps: payload
+                .camps
+                .into_iter()
+                .map(|entry| RenderActivity::from_marker(entry, "Camp"))
+                .collect(),
+            world_events: payload
+                .world_events
+                .into_iter()
+                .map(RenderWorldEvent::from_marker)
+                .collect(),
+            gathering_nodes: NodeIndex::from_markers(payload.gathering_nodes),
+        }
+    }
+
+    fn total_markers(&self) -> usize {
+        self.gathering_nodes.len() + self.world_events.len() + self.raids.len() + self.camps.len()
+    }
+}
+
+#[derive(Debug)]
+struct RenderActivity {
+    name: String,
+    meta: String,
+    x: f64,
+    z: f64,
+}
+
+impl RenderActivity {
+    fn from_marker(entry: MapActivityMarker, kind_label: &str) -> Self {
+        let meta = activity_meta(kind_label, &entry);
+        Self {
+            name: entry.name,
+            meta,
+            x: entry.location.x,
+            z: entry.location.z,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RenderWorldEvent {
+    name: String,
+    meta: String,
+    locations: Vec<(f64, f64)>,
+}
+
+impl RenderWorldEvent {
+    fn from_marker(event: WorldEventMarker) -> Self {
+        let meta = event_meta(&event);
+        Self {
+            name: event.name,
+            meta,
+            locations: event
+                .locations
+                .into_iter()
+                .map(|location| (location.x, location.z))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Default, Debug)]
+struct NodeIndex {
+    buckets: HashMap<NodeBucketKey, Vec<RenderNode>>,
+    summaries: Vec<NodeBucketSummary>,
+    count: usize,
+}
+
+impl NodeIndex {
+    fn from_markers(nodes: Vec<GatheringNodeMarker>) -> Self {
+        let mut index = Self {
+            buckets: HashMap::new(),
+            summaries: Vec::new(),
+            count: nodes.len(),
+        };
+
+        for node in nodes {
+            let node = RenderNode::from_marker(node);
+            index
+                .buckets
+                .entry(NodeBucketKey::for_world_point(node.x, node.z))
+                .or_default()
+                .push(node);
+        }
+
+        for bucket in index.buckets.values_mut() {
+            bucket.sort_by_key(|node| (node.profession, node.shape));
+        }
+        index.summaries = build_node_bucket_summaries(&index.buckets);
+
+        index
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    fn for_each_in_world_bounds(
+        &self,
+        min_x: f64,
+        min_z: f64,
+        max_x: f64,
+        max_z: f64,
+        mut visit: impl FnMut(&RenderNode),
+    ) {
+        let min_bucket_x = node_bucket_coord(min_x);
+        let max_bucket_x = node_bucket_coord(max_x);
+        let min_bucket_z = node_bucket_coord(min_z);
+        let max_bucket_z = node_bucket_coord(max_z);
+
+        for bucket_x in min_bucket_x..=max_bucket_x {
+            for bucket_z in min_bucket_z..=max_bucket_z {
+                let key = NodeBucketKey {
+                    x: bucket_x,
+                    z: bucket_z,
+                };
+                let Some(nodes) = self.buckets.get(&key) else {
+                    continue;
+                };
+                for node in nodes {
+                    if node.x >= min_x && node.x <= max_x && node.z >= min_z && node.z <= max_z {
+                        visit(node);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NodeBucketSummary {
+    x: f64,
+    z: f64,
+    profession: ProfessionKind,
+    count: usize,
+}
+
+fn build_node_bucket_summaries(
+    buckets: &HashMap<NodeBucketKey, Vec<RenderNode>>,
+) -> Vec<NodeBucketSummary> {
+    let mut summaries = Vec::with_capacity(buckets.len());
+    for nodes in buckets.values() {
+        let mut counts = [0usize; ProfessionKind::COUNT];
+        let mut sum_x = [0.0; ProfessionKind::COUNT];
+        let mut sum_z = [0.0; ProfessionKind::COUNT];
+
+        for node in nodes {
+            let index = node.profession.index();
+            counts[index] += 1;
+            sum_x[index] += node.x;
+            sum_z[index] += node.z;
+        }
+
+        for profession in ProfessionKind::ALL {
+            let index = profession.index();
+            let count = counts[index];
+            if count == 0 {
+                continue;
+            }
+            summaries.push(NodeBucketSummary {
+                x: sum_x[index] / count as f64,
+                z: sum_z[index] / count as f64,
+                profession,
+                count,
+            });
+        }
+    }
+    summaries
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct NodeBucketKey {
+    x: i32,
+    z: i32,
+}
+
+impl NodeBucketKey {
+    fn for_world_point(x: f64, z: f64) -> Self {
+        Self {
+            x: node_bucket_coord(x),
+            z: node_bucket_coord(z),
+        }
+    }
+}
+
+fn node_bucket_coord(value: f64) -> i32 {
+    (value / NODE_BUCKET_WORLD_SIZE).floor() as i32
+}
+
+#[derive(Debug)]
+struct RenderNode {
+    x: f64,
+    z: f64,
+    shape: NodeShape,
+    profession: ProfessionKind,
+    title: String,
+    meta: String,
+}
+
+impl RenderNode {
+    fn from_marker(node: GatheringNodeMarker) -> Self {
+        let profession = resource_profession_kind(&node.resource);
+        let node_type = title_label(&node.node_type);
+        Self {
+            x: node.location.x,
+            z: node.location.z,
+            shape: NodeShape::from_node_type(&node.node_type),
+            profession,
+            title: format!("{} Node", title_label(&node.resource)),
+            meta: format!(
+                "{} / {} / {}",
+                profession.style().label,
+                level_label(node.level),
+                node_type
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum NodeShape {
+    Dot,
+    Corner,
+    Wall,
+}
+
+impl NodeShape {
+    fn from_node_type(value: &str) -> Self {
+        match value {
+            "CORNER" => Self::Corner,
+            "WALL" => Self::Wall,
+            _ => Self::Dot,
+        }
+    }
+}
+
 #[component]
 pub(crate) fn MapIntelOverlay() -> impl IntoView {
     let MapIntelModeEnabled(enabled) = expect_context();
@@ -35,7 +291,7 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarWidth(sidebar_width) = expect_context();
 
-    let data: RwSignal<Option<MapIntelPayload>> = RwSignal::new(None);
+    let data: RwSignal<Option<Rc<MapIntelModel>>, LocalStorage> = RwSignal::new_local(None);
     let loading: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let retry_nonce: RwSignal<u64> = RwSignal::new(0);
@@ -53,7 +309,7 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
         wasm_bindgen_futures::spawn_local(async move {
             let result = fetch_map_intel_overlay().await;
             match result {
-                Ok(payload) => data.set(Some(payload)),
+                Ok(payload) => data.set(Some(Rc::new(MapIntelModel::from_payload(payload)))),
                 Err(message) => {
                     error.set(Some(message));
                     loading.set(false);
@@ -284,7 +540,7 @@ fn canvas_context(
 fn draw_payload(
     ctx: &CanvasRenderingContext2d,
     viewport: &Viewport,
-    payload: &MapIntelPayload,
+    payload: &MapIntelModel,
     width: f64,
     height: f64,
 ) {
@@ -311,44 +567,102 @@ fn draw_payload(
 fn draw_nodes(
     ctx: &CanvasRenderingContext2d,
     viewport: &Viewport,
-    nodes: &[GatheringNodeMarker],
+    nodes: &NodeIndex,
     width: f64,
     height: f64,
 ) {
+    if viewport.scale < NODE_CLUSTER_SCALE {
+        draw_node_summaries(ctx, viewport, nodes, width, height);
+        return;
+    }
+
     let radius = node_radius(viewport.scale);
-    for node in nodes {
-        let (sx, sy) = viewport.world_to_screen(node.location.x, node.location.z);
-        if !in_screen_bounds(sx, sy, width, height, 18.0) {
+    let simple_markers = viewport.scale < NODE_SIMPLE_SCALE;
+    let bounds = visible_world_bounds(viewport, width, height, 18.0);
+    let mut current_color = "";
+
+    nodes.for_each_in_world_bounds(
+        bounds.min_x,
+        bounds.min_z,
+        bounds.max_x,
+        bounds.max_z,
+        |node| {
+            let (sx, sy) = viewport.world_to_screen(node.x, node.z);
+            if !in_screen_bounds(sx, sy, width, height, 18.0) {
+                return;
+            }
+
+            let color = node.profession.style().color;
+            if current_color != color {
+                ctx.set_fill_style_str(color);
+                current_color = color;
+            }
+
+            if simple_markers {
+                let size = (radius * 1.65).max(2.0);
+                ctx.fill_rect(sx - size * 0.5, sy - size * 0.5, size, size);
+                return;
+            }
+
+            match node.shape {
+                NodeShape::Corner => {
+                    ctx.fill_rect(sx - radius, sy - radius, radius * 2.0, radius * 2.0)
+                }
+                NodeShape::Wall => {
+                    ctx.fill_rect(sx - radius, sy - radius * 0.45, radius * 2.0, radius * 0.9);
+                    ctx.fill_rect(sx - radius * 0.45, sy - radius, radius * 0.9, radius * 2.0);
+                }
+                NodeShape::Dot => {
+                    ctx.begin_path();
+                    ctx.arc(sx, sy, radius, 0.0, std::f64::consts::TAU).ok();
+                    ctx.fill();
+                }
+            }
+        },
+    );
+}
+
+fn draw_node_summaries(
+    ctx: &CanvasRenderingContext2d,
+    viewport: &Viewport,
+    nodes: &NodeIndex,
+    width: f64,
+    height: f64,
+) {
+    let bounds = visible_world_bounds(viewport, width, height, 24.0);
+    let size = 3.0;
+    let mut current_color = "";
+
+    for summary in &nodes.summaries {
+        if summary.x < bounds.min_x
+            || summary.x > bounds.max_x
+            || summary.z < bounds.min_z
+            || summary.z > bounds.max_z
+        {
             continue;
         }
 
-        let color = resource_color(&node.resource);
-        ctx.set_fill_style_str(color);
-        match node.node_type.as_str() {
-            "CORNER" => ctx.fill_rect(sx - radius, sy - radius, radius * 2.0, radius * 2.0),
-            "WALL" => {
-                ctx.fill_rect(sx - radius, sy - radius * 0.45, radius * 2.0, radius * 0.9);
-                ctx.fill_rect(sx - radius * 0.45, sy - radius, radius * 0.9, radius * 2.0);
-            }
-            _ => {
-                ctx.begin_path();
-                ctx.arc(sx, sy, radius, 0.0, std::f64::consts::TAU).ok();
-                ctx.fill();
-            }
+        let (sx, sy) = viewport.world_to_screen(summary.x, summary.z);
+
+        let color = summary.profession.style().color;
+        if current_color != color {
+            ctx.set_fill_style_str(color);
+            current_color = color;
         }
+        ctx.fill_rect(sx - size * 0.5, sy - size * 0.5, size, size);
     }
 }
 
 fn draw_world_events(
     ctx: &CanvasRenderingContext2d,
     viewport: &Viewport,
-    events: &[WorldEventMarker],
+    events: &[RenderWorldEvent],
     width: f64,
     height: f64,
 ) {
     for event in events {
-        for location in &event.locations {
-            let (sx, sy) = viewport.world_to_screen(location.x, location.z);
+        for (x, z) in &event.locations {
+            let (sx, sy) = viewport.world_to_screen(*x, *z);
             if !in_screen_bounds(sx, sy, width, height, 24.0) {
                 continue;
             }
@@ -369,13 +683,13 @@ enum MarkerKind {
 fn draw_activities(
     ctx: &CanvasRenderingContext2d,
     viewport: &Viewport,
-    entries: &[MapActivityMarker],
+    entries: &[RenderActivity],
     kind: MarkerKind,
     width: f64,
     height: f64,
 ) {
     for entry in entries {
-        let (sx, sy) = viewport.world_to_screen(entry.location.x, entry.location.z);
+        let (sx, sy) = viewport.world_to_screen(entry.x, entry.z);
         if !in_screen_bounds(sx, sy, width, height, 24.0) {
             continue;
         }
@@ -463,7 +777,7 @@ fn draw_label(ctx: &CanvasRenderingContext2d, x: f64, y: f64, label: &str, color
 }
 
 fn closest_hover(
-    payload: &MapIntelPayload,
+    payload: &MapIntelModel,
     viewport: &Viewport,
     sx: f64,
     sy: f64,
@@ -485,15 +799,15 @@ fn closest_hover(
 }
 
 fn closest_world_event(
-    events: &[WorldEventMarker],
+    events: &[RenderWorldEvent],
     viewport: &Viewport,
     sx: f64,
     sy: f64,
 ) -> Option<(f64, IntelHover)> {
     let mut best = None;
     for event in events {
-        for location in &event.locations {
-            let (mx, my) = viewport.world_to_screen(location.x, location.z);
+        for (x, z) in &event.locations {
+            let (mx, my) = viewport.world_to_screen(*x, *z);
             let dist = distance_sq(sx, sy, mx, my);
             if dist <= 14.0 * 14.0 && best.as_ref().is_none_or(|(current, _)| dist < *current) {
                 best = Some((
@@ -502,7 +816,7 @@ fn closest_world_event(
                         screen_x: mx,
                         screen_y: my,
                         title: event.name.clone(),
-                        meta: event_meta(event),
+                        meta: event.meta.clone(),
                         color: "#f5c542",
                     },
                 ));
@@ -513,7 +827,7 @@ fn closest_world_event(
 }
 
 fn closest_activity(
-    entries: &[MapActivityMarker],
+    entries: &[RenderActivity],
     kind: MarkerKind,
     viewport: &Viewport,
     sx: f64,
@@ -521,12 +835,12 @@ fn closest_activity(
 ) -> Option<(f64, IntelHover)> {
     let mut best = None;
     for entry in entries {
-        let (mx, my) = viewport.world_to_screen(entry.location.x, entry.location.z);
+        let (mx, my) = viewport.world_to_screen(entry.x, entry.z);
         let dist = distance_sq(sx, sy, mx, my);
         if dist <= 14.0 * 14.0 && best.as_ref().is_none_or(|(current, _)| dist < *current) {
-            let (kind_label, color) = match kind {
-                MarkerKind::Raid => ("Raid", "#b18cff"),
-                MarkerKind::Camp => ("Camp", "#5bd6c8"),
+            let color = match kind {
+                MarkerKind::Raid => "#b18cff",
+                MarkerKind::Camp => "#5bd6c8",
             };
             best = Some((
                 dist,
@@ -534,7 +848,7 @@ fn closest_activity(
                     screen_x: mx,
                     screen_y: my,
                     title: entry.name.clone(),
-                    meta: activity_meta(kind_label, entry),
+                    meta: entry.meta.clone(),
                     color,
                 },
             ));
@@ -544,31 +858,78 @@ fn closest_activity(
 }
 
 fn closest_node(
-    nodes: &[GatheringNodeMarker],
+    nodes: &NodeIndex,
     viewport: &Viewport,
     sx: f64,
     sy: f64,
 ) -> Option<(f64, IntelHover)> {
+    if viewport.scale < NODE_CLUSTER_SCALE {
+        return closest_node_summary(nodes, viewport, sx, sy);
+    }
+
     let threshold = (node_radius(viewport.scale) + 4.5).max(6.5);
     let threshold_sq = threshold * threshold;
     let mut best = None;
-    for node in nodes {
-        let (mx, my) = viewport.world_to_screen(node.location.x, node.location.z);
+    let (wx, wz) = viewport.screen_to_world(sx, sy);
+    let world_radius = threshold / viewport.scale.max(0.001);
+
+    nodes.for_each_in_world_bounds(
+        wx - world_radius,
+        wz - world_radius,
+        wx + world_radius,
+        wz + world_radius,
+        |node| {
+            let (mx, my) = viewport.world_to_screen(node.x, node.z);
+            let dist = distance_sq(sx, sy, mx, my);
+            if dist <= threshold_sq && best.as_ref().is_none_or(|(current, _)| dist < *current) {
+                best = Some((
+                    dist,
+                    IntelHover {
+                        screen_x: mx,
+                        screen_y: my,
+                        title: node.title.clone(),
+                        meta: node.meta.clone(),
+                        color: node.profession.style().color,
+                    },
+                ));
+            }
+        },
+    );
+    best
+}
+
+fn closest_node_summary(
+    nodes: &NodeIndex,
+    viewport: &Viewport,
+    sx: f64,
+    sy: f64,
+) -> Option<(f64, IntelHover)> {
+    let threshold = 8.0;
+    let threshold_sq = threshold * threshold;
+    let mut best = None;
+
+    for summary in &nodes.summaries {
+        let (mx, my) = viewport.world_to_screen(summary.x, summary.z);
         let dist = distance_sq(sx, sy, mx, my);
         if dist <= threshold_sq && best.as_ref().is_none_or(|(current, _)| dist < *current) {
-            let profession = resource_profession(&node.resource);
+            let style = summary.profession.style();
             best = Some((
                 dist,
                 IntelHover {
                     screen_x: mx,
                     screen_y: my,
-                    title: format!("{} Node", title_label(&node.resource)),
-                    meta: node_meta(profession.label, node),
-                    color: profession.color,
+                    title: format!("{} Nodes", style.label),
+                    meta: format!(
+                        "{} grouped {}",
+                        summary.count,
+                        node_count_label(summary.count)
+                    ),
+                    color: style.color,
                 },
             ));
         }
     }
+
     best
 }
 
@@ -588,6 +949,31 @@ fn distance_sq(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let dx = ax - bx;
     let dy = ay - by;
     dx * dx + dy * dy
+}
+
+struct WorldBounds {
+    min_x: f64,
+    min_z: f64,
+    max_x: f64,
+    max_z: f64,
+}
+
+fn visible_world_bounds(
+    viewport: &Viewport,
+    width: f64,
+    height: f64,
+    screen_margin: f64,
+) -> WorldBounds {
+    let (left_x, top_z) = viewport.screen_to_world(-screen_margin, -screen_margin);
+    let (right_x, bottom_z) =
+        viewport.screen_to_world(width + screen_margin, height + screen_margin);
+
+    WorldBounds {
+        min_x: left_x.min(right_x),
+        min_z: top_z.min(bottom_z),
+        max_x: left_x.max(right_x),
+        max_z: top_z.max(bottom_z),
+    }
 }
 
 fn node_radius(scale: f64) -> f64 {
@@ -615,15 +1001,6 @@ fn activity_meta(kind: &str, entry: &MapActivityMarker) -> String {
         kind,
         level_label(entry.level),
         clean_meta(entry.difficulty.as_deref())
-    )
-}
-
-fn node_meta(profession: &str, node: &GatheringNodeMarker) -> String {
-    format!(
-        "{} / {} / {}",
-        profession,
-        level_label(node.level),
-        title_label(&node.node_type)
     )
 }
 
@@ -655,7 +1032,7 @@ fn title_label(value: &str) -> String {
 }
 
 fn map_intel_status(
-    payload: &Option<MapIntelPayload>,
+    payload: &Option<Rc<MapIntelModel>>,
     loading: bool,
     error: Option<&str>,
 ) -> String {
@@ -667,15 +1044,8 @@ fn map_intel_status(
     }
     payload
         .as_ref()
-        .map(|payload| format_count(total_markers(payload)))
+        .map(|payload| format_count(payload.total_markers()))
         .unwrap_or_else(|| "-".to_string())
-}
-
-fn total_markers(payload: &MapIntelPayload) -> usize {
-    payload.gathering_nodes.len()
-        + payload.world_events.len()
-        + payload.raids.len()
-        + payload.camps.len()
 }
 
 fn format_count(value: usize) -> String {
@@ -686,8 +1056,8 @@ fn format_count(value: usize) -> String {
     }
 }
 
-fn resource_color(resource: &str) -> &'static str {
-    resource_profession(resource).color
+fn node_count_label(count: usize) -> &'static str {
+    if count == 1 { "node" } else { "nodes" }
 }
 
 #[derive(Clone, Copy)]
@@ -696,33 +1066,73 @@ struct ProfessionStyle {
     color: &'static str,
 }
 
-fn resource_profession(resource: &str) -> ProfessionStyle {
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum ProfessionKind {
+    Mining,
+    Woodcutting,
+    Farming,
+    Fishing,
+    Other,
+}
+
+impl ProfessionKind {
+    const ALL: [Self; Self::COUNT] = [
+        Self::Mining,
+        Self::Woodcutting,
+        Self::Farming,
+        Self::Fishing,
+        Self::Other,
+    ];
+    const COUNT: usize = 5;
+
+    fn index(self) -> usize {
+        match self {
+            Self::Mining => 0,
+            Self::Woodcutting => 1,
+            Self::Farming => 2,
+            Self::Fishing => 3,
+            Self::Other => 4,
+        }
+    }
+
+    fn style(self) -> ProfessionStyle {
+        match self {
+            Self::Mining => ProfessionStyle {
+                label: "Mining",
+                color: "#c9a27d",
+            },
+            Self::Woodcutting => ProfessionStyle {
+                label: "Woodcutting",
+                color: "#50c878",
+            },
+            Self::Farming => ProfessionStyle {
+                label: "Farming",
+                color: "#f5c542",
+            },
+            Self::Fishing => ProfessionStyle {
+                label: "Fishing",
+                color: "#66c7f4",
+            },
+            Self::Other => ProfessionStyle {
+                label: "Other",
+                color: "#c7a3ff",
+            },
+        }
+    }
+}
+
+fn resource_profession_kind(resource: &str) -> ProfessionKind {
     let resource = resource.trim().to_ascii_uppercase();
     if MINING_RESOURCES.contains(&resource.as_str()) {
-        ProfessionStyle {
-            label: "Mining",
-            color: "#c9a27d",
-        }
+        ProfessionKind::Mining
     } else if WOODCUTTING_RESOURCES.contains(&resource.as_str()) {
-        ProfessionStyle {
-            label: "Woodcutting",
-            color: "#50c878",
-        }
+        ProfessionKind::Woodcutting
     } else if FARMING_RESOURCES.contains(&resource.as_str()) {
-        ProfessionStyle {
-            label: "Farming",
-            color: "#f5c542",
-        }
+        ProfessionKind::Farming
     } else if FISHING_RESOURCES.contains(&resource.as_str()) {
-        ProfessionStyle {
-            label: "Fishing",
-            color: "#66c7f4",
-        }
+        ProfessionKind::Fishing
     } else {
-        ProfessionStyle {
-            label: "Other",
-            color: "#c7a3ff",
-        }
+        ProfessionKind::Other
     }
 }
 
@@ -774,7 +1184,21 @@ const FISHING_RESOURCES: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{format_count, resource_profession, title_label};
+    use sequoia_shared::{GatheringNodeMarker, MapPoint};
+
+    use crate::viewport::Viewport;
+
+    use super::{NodeIndex, closest_node, format_count, resource_profession_kind, title_label};
+
+    fn node_marker(x: f64, z: f64, resource: &str) -> GatheringNodeMarker {
+        GatheringNodeMarker {
+            location: MapPoint { x, y: 0.0, z },
+            node_type: "NODE".to_string(),
+            resource: resource.to_string(),
+            level: Some(1),
+            angle: None,
+        }
+    }
 
     #[test]
     fn formats_compact_counts() {
@@ -784,15 +1208,64 @@ mod tests {
 
     #[test]
     fn classifies_common_profession_resources() {
-        assert_eq!(resource_profession("COPPER").label, "Mining");
-        assert_eq!(resource_profession("OAK").label, "Woodcutting");
-        assert_eq!(resource_profession("WHEAT").label, "Farming");
-        assert_eq!(resource_profession("BASS").label, "Fishing");
+        assert_eq!(resource_profession_kind("COPPER").style().label, "Mining");
+        assert_eq!(resource_profession_kind("OAK").style().label, "Woodcutting");
+        assert_eq!(resource_profession_kind("WHEAT").style().label, "Farming");
+        assert_eq!(resource_profession_kind("BASS").style().label, "Fishing");
     }
 
     #[test]
     fn title_cases_api_labels() {
         assert_eq!(title_label("VERY HIGH"), "Very High");
         assert_eq!(title_label("node"), "Node");
+    }
+
+    #[test]
+    fn node_index_filters_by_world_bounds() {
+        let index = NodeIndex::from_markers(vec![
+            node_marker(0.0, 0.0, "COPPER"),
+            node_marker(600.0, 0.0, "OAK"),
+        ]);
+        let mut titles = Vec::new();
+
+        index.for_each_in_world_bounds(-10.0, -10.0, 10.0, 10.0, |node| {
+            titles.push(node.title.clone());
+        });
+
+        assert_eq!(titles, ["Copper Node"]);
+    }
+
+    #[test]
+    fn node_index_summarizes_each_profession_per_bucket() {
+        let index = NodeIndex::from_markers(vec![
+            node_marker(0.0, 0.0, "COPPER"),
+            node_marker(10.0, 0.0, "GRANITE"),
+            node_marker(12.0, 0.0, "OAK"),
+        ]);
+        let labels = index
+            .summaries
+            .iter()
+            .map(|summary| (summary.profession.style().label, summary.count))
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, [("Mining", 2), ("Woodcutting", 1)]);
+    }
+
+    #[test]
+    fn clustered_node_hover_uses_summary_marker() {
+        let index = NodeIndex::from_markers(vec![
+            node_marker(0.0, 0.0, "COPPER"),
+            node_marker(200.0, 0.0, "GRANITE"),
+        ]);
+        let viewport = Viewport {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale: 0.1,
+        };
+
+        let (_, hover) = closest_node(&index, &viewport, 10.0, 0.0).expect("summary hover");
+
+        assert_eq!(hover.title, "Mining Nodes");
+        assert_eq!(hover.meta, "2 grouped nodes");
     }
 }
