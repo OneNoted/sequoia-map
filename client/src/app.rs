@@ -545,11 +545,24 @@ impl Default for SettingsV2 {
     }
 }
 
+impl SettingsV2 {
+    fn with_current_defaults(mut self) -> Self {
+        if self.defaults_version == SETTINGS_DEFAULTS_VERSION {
+            return self;
+        }
+
+        let defaults = SettingsV2::default();
+        self.defaults_version = SETTINGS_DEFAULTS_VERSION;
+        self.show_resource_icons = defaults.show_resource_icons;
+        self.show_territory_ornaments = defaults.show_territory_ornaments;
+        self.show_debug_info = defaults.show_debug_info;
+        self
+    }
+}
+
 fn load_settings_v2() -> SettingsV2 {
     if let Ok(saved) = gloo_storage::LocalStorage::get::<SettingsV2>("sequoia_settings_v2") {
-        if saved.defaults_version == SETTINGS_DEFAULTS_VERSION {
-            return saved;
-        }
+        return saved.with_current_defaults();
     }
     SettingsV2::default()
 }
@@ -2481,8 +2494,6 @@ fn Tooltip() -> impl IntoView {
 
             let render_resource_section = |title: &str,
                                            title_color: &str,
-                                           _chip_border: &str,
-                                           _value_color: &str,
                                            resources: &Resources,
                                            double_source: &Resources| {
                 let chips = tooltip_resource_items(resources, double_source)
@@ -2530,8 +2541,6 @@ fn Tooltip() -> impl IntoView {
                 render_resource_section(
                     "Held Resources",
                     "#b8c2d6",
-                    "rgba(129,140,160,0.34)",
-                    "#dbe8ff",
                     &info.resources,
                     &info.base_resources,
                 )
@@ -2539,8 +2548,6 @@ fn Tooltip() -> impl IntoView {
                 render_resource_section(
                     "Resources",
                     "#aeb7c7",
-                    "rgba(129,140,160,0.34)",
-                    "#e2e0d8",
                     &info.resources,
                     &info.base_resources,
                 )
@@ -2552,8 +2559,6 @@ fn Tooltip() -> impl IntoView {
                     render_resource_section(
                         "Production/Hr",
                         "#b8c2d6",
-                        "rgba(129,140,160,0.34)",
-                        "#d4e9ff",
                         resources,
                         &info.base_resources,
                     )
@@ -2566,8 +2571,6 @@ fn Tooltip() -> impl IntoView {
                     render_resource_section(
                         "Storage Capacity",
                         "#b8c2d6",
-                        "rgba(129,140,160,0.34)",
-                        "#dcf1ff",
                         resources,
                         &info.base_resources,
                     )
@@ -2827,6 +2830,28 @@ mod tests {
         let defaults = SettingsV2::default();
         assert_eq!(defaults.defaults_version, SETTINGS_DEFAULTS_VERSION);
         assert!(defaults.show_resource_icons);
+    }
+
+    #[test]
+    fn stale_settings_preserve_user_choices_and_apply_current_default_overrides() {
+        let mut saved = SettingsV2 {
+            defaults_version: 0,
+            sidebar_width: 420.0,
+            show_minimap: false,
+            show_resource_icons: false,
+            show_territory_ornaments: true,
+            show_debug_info: true,
+            ..SettingsV2::default()
+        };
+
+        saved = saved.with_current_defaults();
+
+        assert_eq!(saved.defaults_version, SETTINGS_DEFAULTS_VERSION);
+        assert_eq!(saved.sidebar_width, 420.0);
+        assert!(!saved.show_minimap);
+        assert!(saved.show_resource_icons);
+        assert!(!saved.show_territory_ornaments);
+        assert!(!saved.show_debug_info);
     }
 
     #[test]
