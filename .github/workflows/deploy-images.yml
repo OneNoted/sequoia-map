@@ -213,6 +213,8 @@ jobs:
             --file ./Dockerfile \
             --tag "${SERVER_IMAGE}:main" \
             --tag "${SERVER_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${SERVER_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${SERVER_IMAGE}:buildcache,mode=max" \
             --provenance=false \
             --sbom=false \
             --push \
@@ -228,6 +230,8 @@ jobs:
             --file ./services/sequoia-ingest/Dockerfile \
             --tag "${INGEST_IMAGE}:main" \
             --tag "${INGEST_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${INGEST_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${INGEST_IMAGE}:buildcache,mode=max" \
             --provenance=false \
             --sbom=false \
             --push \
@@ -243,6 +247,8 @@ jobs:
             --file ./ops/caddy/Dockerfile.coolify \
             --tag "${EDGE_IMAGE}:main" \
             --tag "${EDGE_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${EDGE_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${EDGE_IMAGE}:buildcache,mode=max" \
             --provenance=false \
             --sbom=false \
             --push \
