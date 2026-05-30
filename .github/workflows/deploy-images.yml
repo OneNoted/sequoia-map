@@ -114,7 +114,9 @@ jobs:
     name: Publish Images And Trigger Coolify
     needs: changes
     if: github.repository == 'SequoiaWynncraft/sequoia-map' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true')
-    runs-on: apollo-sequoia-map
+    # Use a GitHub-hosted runner so fork-sync pushes can always publish images and call Coolify.
+    # The previous self-hosted label could leave deploys queued indefinitely when no runner was registered.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
@@ -211,6 +213,8 @@ jobs:
             --file ./Dockerfile \
             --tag "${SERVER_IMAGE}:main" \
             --tag "${SERVER_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${SERVER_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${SERVER_IMAGE}:buildcache,mode=max" \
             --provenance=false \
             --sbom=false \
             --push \
@@ -226,6 +230,8 @@ jobs:
             --file ./services/sequoia-ingest/Dockerfile \
             --tag "${INGEST_IMAGE}:main" \
             --tag "${INGEST_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${INGEST_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${INGEST_IMAGE}:buildcache,mode=max" \
             --provenance=false \
             --sbom=false \
             --push \
@@ -241,6 +247,8 @@ jobs:
             --file ./ops/caddy/Dockerfile.coolify \
             --tag "${EDGE_IMAGE}:main" \
             --tag "${EDGE_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${EDGE_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${EDGE_IMAGE}:buildcache,mode=max" \
             --provenance=false \
             --sbom=false \
             --push \
