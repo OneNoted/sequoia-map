@@ -31,11 +31,11 @@ pub const HEALTHS: [f64; 12] = [
     960_000.0,
     1_200_000.0,
     1_500_000.0,
-    1_800_000.0,
-    2_160_000.0,
-    2_280_000.0,
+    1_860_000.0,
+    2_220_000.0,
     2_580_000.0,
-    2_820_000.0,
+    2_940_000.0,
+    3_300_000.0,
 ];
 
 /// Damage reduction percentage per defense upgrade level (0–11).
@@ -303,7 +303,7 @@ pub fn format_stat(val: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ATTACK_RATES, DefenseRating, calc_defense_index, calc_dps, calc_ehp, calc_stat,
+        ATTACK_RATES, DefenseRating, HEALTHS, calc_defense_index, calc_dps, calc_ehp, calc_stat,
         count_guild_connections, find_externals, format_stat,
     };
     use std::collections::{HashMap, HashSet};
@@ -476,6 +476,50 @@ mod tests {
         let stat = calc_stat(5400.0, true, 4, 24);
         // 5400 * (1 + 0.3*4) * (1.5 + 0.25*24) = 89100
         assert_close(stat, 89_100.0);
+    }
+
+    #[test]
+    fn health_progression_matches_current_tower_values() {
+        assert_eq!(
+            HEALTHS,
+            [
+                300_000.0,
+                450_000.0,
+                600_000.0,
+                750_000.0,
+                960_000.0,
+                1_200_000.0,
+                1_500_000.0,
+                1_860_000.0,
+                2_220_000.0,
+                2_580_000.0,
+                2_940_000.0,
+                3_300_000.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn hq_health_matches_six_connection_twenty_eight_external_example() {
+        let expected = [
+            7_140_000.0,
+            10_710_000.0,
+            14_280_000.0,
+            17_850_000.0,
+            22_848_000.0,
+            28_560_000.0,
+            35_700_000.0,
+            44_268_000.0,
+            52_836_000.0,
+            61_404_000.0,
+            69_972_000.0,
+            78_540_000.0,
+        ];
+
+        for (level, expected_health) in expected.into_iter().enumerate() {
+            let actual_health = calc_stat(HEALTHS[level], true, 6, 28);
+            assert_eq!(actual_health.round() as i64, expected_health as i64);
+        }
     }
 
     #[test]
