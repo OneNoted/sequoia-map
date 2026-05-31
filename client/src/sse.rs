@@ -326,11 +326,12 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         {
             web_sys::console::info_1(
                 &format!(
-                    "sse_seq_reset_detected (last_seq={}, snapshot_seq={})",
+                    "stale_sse_snapshot_ignored (last_seq={}, snapshot_seq={})",
                     last_seq, seq
                 )
                 .into(),
             );
+            return;
         }
 
         terr.set(from_snapshot(map));
