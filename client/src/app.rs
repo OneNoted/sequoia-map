@@ -1,9 +1,8 @@
-use js_sys::{Function, Reflect, encode_uri_component};
+use js_sys::encode_uri_component;
 use leptos::prelude::*;
 use leptos_router::NavigateOptions;
 use leptos_router::hooks::{use_location, use_navigate};
 use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -679,7 +678,7 @@ use crate::map_intel::MapIntelOverlay;
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::sse::{self, ConnectionStatus};
-use crate::territory::ClientTerritoryMap;
+use crate::territory::{ClientTerritoryMap, from_snapshot};
 use crate::tiles::{self, LoadedTile};
 use crate::time_format::format_hms;
 use crate::timeline::Timeline;
@@ -831,9 +830,10 @@ pub fn MapPage() -> impl IntoView {
     let show_settings: RwSignal<bool> = RwSignal::new(false);
     let show_debug_info: RwSignal<bool> = RwSignal::new(saved.show_debug_info);
     // Live-first boot: defer non-essential work (tiles/history checks/icons)
-    // until we have initial territory data and a short settle window.
+    // until we have initial territory data and the first frame has had a chance to commit.
     let deferred_boot_ready: RwSignal<bool> = RwSignal::new(false);
     let deferred_boot_timer_set: RwSignal<bool> = RwSignal::new(false);
+    let live_bootstrap_started: RwSignal<bool> = RwSignal::new(false);
     let tile_fetch_scheduled: RwSignal<bool> = RwSignal::new(false);
     let icons_loaded: RwSignal<bool> = RwSignal::new(false);
     let loading_shell_removed: RwSignal<bool> = RwSignal::new(false);
@@ -1609,6 +1609,46 @@ pub fn MapPage() -> impl IntoView {
         }
     });
 
+    // Bootstrap live state over the compressed REST endpoint. EventSource snapshots are
+    // intentionally uncompressed streams, so waiting for the initial SSE snapshot makes
+    // cold loads sit behind a much larger transfer before the first map paint.
+    Effect::new(move || {
+        if live_bootstrap_started.get_untracked() {
+            return;
+        }
+        live_bootstrap_started.set(true);
+
+        wasm_bindgen_futures::spawn_local(async move {
+            match history::fetch_live_state().await {
+                Ok(live_state) => {
+                    if map_mode.get_untracked() != MapMode::Live {
+                        return;
+                    }
+                    if let Some(current_seq) = last_live_seq.get_untracked()
+                        && current_seq > live_state.seq
+                    {
+                        web_sys::console::info_1(
+                            &format!(
+                                "stale_live_bootstrap_ignored (current_seq={}, bootstrap_seq={})",
+                                current_seq, live_state.seq
+                            )
+                            .into(),
+                        );
+                        return;
+                    }
+                    territories.set(from_snapshot(live_state.territories));
+                    last_live_seq.set(Some(live_state.seq));
+                }
+                Err(error) => {
+                    web_sys::console::warn_1(
+                        &format!("live bootstrap fetch failed; waiting for SSE snapshot: {error}")
+                            .into(),
+                    );
+                }
+            }
+        });
+    });
+
     // Connect to SSE on mount
     Effect::new(move || {
         sse::connect(territories, connection);
@@ -1617,7 +1657,9 @@ pub fn MapPage() -> impl IntoView {
         });
     });
 
-    // Once initial territory data arrives, defer non-essential boot tasks slightly.
+    // Once initial territory data arrives, let one frame commit and then remove the
+    // static shell. The old fixed 800ms settle window made fast cached/API loads
+    // feel slow even when the map was already ready to render.
     Effect::new(move || {
         let has_territories = !territories.get().is_empty();
         if !has_territories
@@ -1632,10 +1674,7 @@ pub fn MapPage() -> impl IntoView {
             let cb = wasm_bindgen::closure::Closure::once(move || {
                 deferred_boot_ready.set(true);
             });
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                800,
-            );
+            let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
             cb.forget();
         } else {
             deferred_boot_ready.set(true);
@@ -1646,7 +1685,7 @@ pub fn MapPage() -> impl IntoView {
     Effect::new(move || {
         let has_territories = !territories.get().is_empty();
         if deferred_boot_ready.get() {
-            set_loading_shell_step("Starting renderer");
+            set_loading_shell_step("Rendering map");
         } else if has_territories {
             set_loading_shell_step("Syncing territory data");
         } else {
@@ -1660,56 +1699,21 @@ pub fn MapPage() -> impl IntoView {
             return;
         }
         loading_shell_removed.set(true);
-        if let Some(window) = web_sys::window() {
-            let cb = wasm_bindgen::closure::Closure::once(|| {
-                remove_loading_shell();
-            });
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                240,
-            );
-            cb.forget();
-        } else {
-            remove_loading_shell();
-        }
+        remove_loading_shell();
     });
 
-    // Schedule background tile loading only after first live paint and idle time.
+    // Start background tile loading as soon as the map shell is ready. The tile
+    // loader prioritizes visible tiles, so an extra idle wait delays first useful
+    // background paint without reducing startup work.
     Effect::new(move || {
         if !deferred_boot_ready.get() || tile_fetch_scheduled.get_untracked() {
             return;
         }
         tile_fetch_scheduled.set(true);
 
-        let Some(window) = web_sys::window() else {
-            let (canvas_w, canvas_h) = canvas_dimensions();
-            let context =
-                tiles::TileFetchContext::new(viewport.get_untracked(), canvas_w, canvas_h);
-            tiles::fetch_tiles(loaded_tiles, context);
-            return;
-        };
-
-        let callback = wasm_bindgen::closure::Closure::once(move || {
-            let (canvas_w, canvas_h) = canvas_dimensions();
-            let context =
-                tiles::TileFetchContext::new(viewport.get_untracked(), canvas_w, canvas_h);
-            tiles::fetch_tiles(loaded_tiles, context);
-        });
-        let mut scheduled = false;
-        if let Ok(idle_fn) =
-            Reflect::get(window.as_ref(), &JsValue::from_str("requestIdleCallback"))
-            && let Ok(idle_fn) = idle_fn.dyn_into::<Function>()
-        {
-            let _ = idle_fn.call1(window.as_ref(), callback.as_ref().unchecked_ref());
-            scheduled = true;
-        }
-        if !scheduled {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                callback.as_ref().unchecked_ref(),
-                4_000,
-            );
-        }
-        callback.forget();
+        let (canvas_w, canvas_h) = canvas_dimensions();
+        let context = tiles::TileFetchContext::new(viewport.get_untracked(), canvas_w, canvas_h);
+        tiles::fetch_tiles(loaded_tiles, context);
     });
 
     // Lazy-load the icon atlas only when resource icons are enabled.
