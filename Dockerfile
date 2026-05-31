@@ -153,6 +153,8 @@ RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registr
 ### Stage 3: Runtime
 FROM debian:bookworm-slim
 
+ARG SOURCE_COMMIT=
+
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 sequoia \
     && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/sequoia sequoia
@@ -167,6 +169,7 @@ COPY --from=client-build /app/claims-client/dist /app/claims-client/dist
 RUN chown -R sequoia:sequoia /app
 
 ENV RUST_LOG=info
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 EXPOSE 3000
 USER sequoia
 

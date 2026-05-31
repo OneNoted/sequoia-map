@@ -20,6 +20,8 @@ const CANONICAL_URL_TOKEN: &str = "__SEQUOIA_CANONICAL_URL__";
 const OG_IMAGE_URL_TOKEN: &str = "__SEQUOIA_OG_IMAGE_URL__";
 const ASSET_VERSION_TOKEN: &str = "__SEQUOIA_ASSET_VERSION__";
 const DEFAULT_OG_IMAGE_PATH: &str = "/tiles/main-3-2.webp";
+const IMMUTABLE_STATIC_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+const SHORT_STATIC_CACHE_CONTROL: &str = "public, max-age=86400";
 
 #[derive(Clone, Debug, Default)]
 struct HtmlResponseOptions {
@@ -186,7 +188,7 @@ fn cache_control_for_path(path: &str, versioned: bool) -> Option<&'static str> {
     let normalized_path = path.strip_prefix("/claims-app").unwrap_or(path);
 
     if is_hashed_bundle_asset(normalized_path) {
-        return Some("public, max-age=31536000, immutable");
+        return Some(IMMUTABLE_STATIC_CACHE_CONTROL);
     }
 
     if normalized_path.starts_with("/tiles/")
@@ -194,9 +196,9 @@ fn cache_control_for_path(path: &str, versioned: bool) -> Option<&'static str> {
         || normalized_path.starts_with("/icons/")
     {
         return Some(if versioned {
-            "public, max-age=31536000, immutable"
+            IMMUTABLE_STATIC_CACHE_CONTROL
         } else {
-            "public, max-age=86400"
+            SHORT_STATIC_CACHE_CONTROL
         });
     }
 
@@ -478,31 +480,31 @@ mod tests {
     fn immutable_cache_for_hashed_bundle_assets() {
         assert_eq!(
             cache_control_for_path("/sequoia-client-71578f6b278221f3_bg.wasm", false),
-            Some("public, max-age=31536000, immutable")
+            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
             cache_control_for_path("/input-a93762ff3bf6d63a.css", false),
-            Some("public, max-age=31536000, immutable")
+            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
     }
 
     #[test]
-    fn short_cache_for_unhashed_static_assets() {
+    fn short_cache_for_unversioned_static_assets() {
         assert_eq!(
             cache_control_for_path("/tiles/tile_0_0.webp", false),
-            Some("public, max-age=86400")
+            Some(SHORT_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
             cache_control_for_path("/fonts/minecraft-regular.otf", false),
-            Some("public, max-age=86400")
+            Some(SHORT_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
             cache_control_for_path("/claims-app/icons/crown_icon.webp", false),
-            Some("public, max-age=86400")
+            Some(SHORT_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
             cache_control_for_path("/claims-app/tiles/tile_0_0.webp", false),
-            Some("public, max-age=86400")
+            Some(SHORT_STATIC_CACHE_CONTROL)
         );
     }
 
@@ -516,15 +518,15 @@ mod tests {
     fn immutable_cache_for_versioned_static_assets() {
         assert_eq!(
             cache_control_for_path("/tiles/main-5-2.webp", true),
-            Some("public, max-age=31536000, immutable")
+            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
             cache_control_for_path("/icons/crown_icon.webp", true),
-            Some("public, max-age=31536000, immutable")
+            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
             cache_control_for_path("/claims-app/fonts/minecraft-regular.otf", true),
-            Some("public, max-age=31536000, immutable")
+            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
     }
 
@@ -621,6 +623,13 @@ mod tests {
         assert_eq!(
             response
                 .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert_eq!(
+            response
+                .headers()
                 .get(header::LINK)
                 .and_then(|value| value.to_str().ok()),
             Some("<https://map.example.com/>; rel=\"canonical\"")
@@ -639,6 +648,74 @@ mod tests {
         assert!(body.contains("application/ld+json"));
         assert!(body.contains("Sequoia Map: Live Wynncraft Territory Map"));
         assert!(body.contains("id=\"app\""));
+    }
+
+    #[tokio::test]
+    async fn static_tile_route_keeps_unversioned_assets_short_cached() {
+        let test_dir =
+            std::env::temp_dir().join(format!("sequoia-static-cache-test-{}", std::process::id()));
+        let tiles_dir = test_dir.join("tiles");
+        std::fs::create_dir_all(&tiles_dir).expect("create test static dir");
+        std::fs::write(tiles_dir.join("main-3-2.webp"), b"fake webp")
+            .expect("write test tile asset");
+
+        let app = static_assets_router(&test_dir);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/main-3-2.webp")
+                    .body(Body::empty())
+                    .expect("build static asset request"),
+            )
+            .await
+            .expect("static asset request should succeed");
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some(SHORT_STATIC_CACHE_CONTROL)
+        );
+    }
+
+    #[tokio::test]
+    async fn static_tile_route_serves_immutable_cache_header_for_versioned_assets() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "sequoia-static-cache-versioned-test-{}",
+            std::process::id()
+        ));
+        let tiles_dir = test_dir.join("tiles");
+        std::fs::create_dir_all(&tiles_dir).expect("create test static dir");
+        std::fs::write(tiles_dir.join("main-3-2.webp"), b"fake webp")
+            .expect("write test tile asset");
+
+        let app = static_assets_router(&test_dir);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/main-3-2.webp?v=abc123")
+                    .body(Body::empty())
+                    .expect("build static asset request"),
+            )
+            .await
+            .expect("static asset request should succeed");
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
+        );
     }
 
     #[tokio::test]
