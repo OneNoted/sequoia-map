@@ -21,6 +21,7 @@ const OG_IMAGE_URL_TOKEN: &str = "__SEQUOIA_OG_IMAGE_URL__";
 const ASSET_VERSION_TOKEN: &str = "__SEQUOIA_ASSET_VERSION__";
 const DEFAULT_OG_IMAGE_PATH: &str = "/tiles/main-3-2.webp";
 const IMMUTABLE_STATIC_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+const SHORT_STATIC_CACHE_CONTROL: &str = "public, max-age=86400";
 
 #[derive(Clone, Debug, Default)]
 struct HtmlResponseOptions {
@@ -168,10 +169,11 @@ async fn api_not_found() -> impl IntoResponse {
 
 async fn set_static_cache_control(request: Request, next: Next) -> Response {
     let path = request.uri().path().to_owned();
+    let versioned = has_asset_version_query(request.uri().query());
     let mut response = next.run(request).await;
 
     if response.status().is_success()
-        && let Some(cache_control) = cache_control_for_path(&path)
+        && let Some(cache_control) = cache_control_for_path(&path, versioned)
     {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
@@ -182,7 +184,7 @@ async fn set_static_cache_control(request: Request, next: Next) -> Response {
     response
 }
 
-fn cache_control_for_path(path: &str) -> Option<&'static str> {
+fn cache_control_for_path(path: &str, versioned: bool) -> Option<&'static str> {
     let normalized_path = path.strip_prefix("/claims-app").unwrap_or(path);
 
     if is_hashed_bundle_asset(normalized_path) {
@@ -193,10 +195,25 @@ fn cache_control_for_path(path: &str) -> Option<&'static str> {
         || normalized_path.starts_with("/fonts/")
         || normalized_path.starts_with("/icons/")
     {
-        return Some(IMMUTABLE_STATIC_CACHE_CONTROL);
+        return Some(if versioned {
+            IMMUTABLE_STATIC_CACHE_CONTROL
+        } else {
+            SHORT_STATIC_CACHE_CONTROL
+        });
     }
 
     None
+}
+
+fn has_asset_version_query(query: Option<&str>) -> bool {
+    query
+        .map(|query| {
+            query
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .any(|(key, value)| key == "v" && !value.trim().is_empty())
+        })
+        .unwrap_or(false)
 }
 
 fn is_hashed_bundle_asset(path: &str) -> bool {
@@ -462,55 +479,64 @@ mod tests {
     #[test]
     fn immutable_cache_for_hashed_bundle_assets() {
         assert_eq!(
-            cache_control_for_path("/sequoia-client-71578f6b278221f3_bg.wasm"),
-            Some("public, max-age=31536000, immutable")
+            cache_control_for_path("/sequoia-client-71578f6b278221f3_bg.wasm", false),
+            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
-            cache_control_for_path("/input-a93762ff3bf6d63a.css"),
-            Some("public, max-age=31536000, immutable")
+            cache_control_for_path("/input-a93762ff3bf6d63a.css", false),
+            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
     }
 
     #[test]
-    fn immutable_cache_for_unhashed_map_assets() {
+    fn short_cache_for_unversioned_static_assets() {
         assert_eq!(
-            cache_control_for_path("/tiles/tile_0_0.webp"),
-            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
+            cache_control_for_path("/tiles/tile_0_0.webp", false),
+            Some(SHORT_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
-            cache_control_for_path("/fonts/minecraft-regular.otf"),
-            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
+            cache_control_for_path("/fonts/minecraft-regular.otf", false),
+            Some(SHORT_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
-            cache_control_for_path("/claims-app/icons/crown_icon.webp"),
-            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
+            cache_control_for_path("/claims-app/icons/crown_icon.webp", false),
+            Some(SHORT_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
-            cache_control_for_path("/claims-app/tiles/tile_0_0.webp"),
-            Some(IMMUTABLE_STATIC_CACHE_CONTROL)
+            cache_control_for_path("/claims-app/tiles/tile_0_0.webp", false),
+            Some(SHORT_STATIC_CACHE_CONTROL)
         );
     }
 
     #[test]
     fn no_cache_header_override_for_html() {
-        assert_eq!(cache_control_for_path("/"), None);
-        assert_eq!(cache_control_for_path("/index.html"), None);
+        assert_eq!(cache_control_for_path("/", false), None);
+        assert_eq!(cache_control_for_path("/index.html", false), None);
     }
 
     #[test]
     fn immutable_cache_for_versioned_static_assets() {
         assert_eq!(
-            cache_control_for_path("/tiles/main-5-2.webp"),
+            cache_control_for_path("/tiles/main-5-2.webp", true),
             Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
-            cache_control_for_path("/icons/crown_icon.webp"),
+            cache_control_for_path("/icons/crown_icon.webp", true),
             Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
         assert_eq!(
-            cache_control_for_path("/claims-app/fonts/minecraft-regular.otf"),
+            cache_control_for_path("/claims-app/fonts/minecraft-regular.otf", true),
             Some(IMMUTABLE_STATIC_CACHE_CONTROL)
         );
+    }
+
+    #[test]
+    fn asset_version_query_detection_requires_non_empty_v_parameter() {
+        assert!(has_asset_version_query(Some("v=b7c99ee31b46")));
+        assert!(has_asset_version_query(Some("foo=bar&v=b7c99ee31b46")));
+        assert!(!has_asset_version_query(Some("foo=bar")));
+        assert!(!has_asset_version_query(Some("v=")));
+        assert!(!has_asset_version_query(None));
     }
 
     #[test]
@@ -625,7 +651,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn static_tile_route_serves_immutable_cache_header() {
+    async fn static_tile_route_keeps_unversioned_assets_short_cached() {
         let test_dir =
             std::env::temp_dir().join(format!("sequoia-static-cache-test-{}", std::process::id()));
         let tiles_dir = test_dir.join("tiles");
@@ -639,6 +665,41 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/tiles/main-3-2.webp")
+                    .body(Body::empty())
+                    .expect("build static asset request"),
+            )
+            .await
+            .expect("static asset request should succeed");
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some(SHORT_STATIC_CACHE_CONTROL)
+        );
+    }
+
+    #[tokio::test]
+    async fn static_tile_route_serves_immutable_cache_header_for_versioned_assets() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "sequoia-static-cache-versioned-test-{}",
+            std::process::id()
+        ));
+        let tiles_dir = test_dir.join("tiles");
+        std::fs::create_dir_all(&tiles_dir).expect("create test static dir");
+        std::fs::write(tiles_dir.join("main-3-2.webp"), b"fake webp")
+            .expect("write test tile asset");
+
+        let app = static_assets_router(&test_dir);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/tiles/main-3-2.webp?v=abc123")
                     .body(Body::empty())
                     .expect("build static asset request"),
             )

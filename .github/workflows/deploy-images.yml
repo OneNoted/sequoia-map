@@ -211,6 +211,7 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --file ./Dockerfile \
+            --build-arg SOURCE_COMMIT="${GITHUB_SHA}" \
             --tag "${SERVER_IMAGE}:main" \
             --tag "${SERVER_IMAGE}:sha-${GITHUB_SHA}" \
             --cache-from "type=registry,ref=${SERVER_IMAGE}:buildcache" \
