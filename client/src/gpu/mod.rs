@@ -3196,16 +3196,25 @@ impl GpuRenderer {
                     let hh = loc.height() as f32;
                     let sw = ww * scale;
                     let sh = hh * scale;
+                    let is_hq = ct
+                        .territory
+                        .runtime
+                        .as_ref()
+                        .and_then(|runtime| runtime.headquarters)
+                        .unwrap_or(false);
+                    if is_hq && hq_crown_expanded_at_zoom(scale) {
+                        continue;
+                    }
                     if show_far_zoom_tags {
                         let tag = ct.territory.guild.prefix.trim();
+                        if tag.is_empty() {
+                            continue;
+                        }
                         let Some(sizing) =
                             compute_far_zoom_tag_sizing(sw, sh, scale, static_tag_scale)
                         else {
                             continue;
                         };
-                        if tag.is_empty() {
-                            continue;
-                        }
                         let units_per_world = line_height / sizing.font_height_world.max(0.001);
                         let fitted = fit_text_to_units_with_tracking(
                             tag,
@@ -3242,15 +3251,6 @@ impl GpuRenderer {
                     let Some(sizing) = compute_static_label_sizing(ww, hh) else {
                         continue;
                     };
-                    let is_hq = ct
-                        .territory
-                        .runtime
-                        .as_ref()
-                        .and_then(|runtime| runtime.headquarters)
-                        .unwrap_or(false);
-                    if is_hq && hq_crown_expanded_at_zoom(scale) {
-                        continue;
-                    }
                     let cx = loc.midpoint_x() as f32;
                     let cy = loc.midpoint_y() as f32;
                     let detail_layout_alpha = sizing.detail_layout_alpha;

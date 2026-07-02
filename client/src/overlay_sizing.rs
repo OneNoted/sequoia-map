@@ -131,6 +131,9 @@ pub(crate) fn compute_far_zoom_tag_sizing(
     if !sw.is_finite() || !sh.is_finite() || !scale.is_finite() || scale <= 0.0 {
         return None;
     }
+    if !tag_scale.is_finite() {
+        return None;
+    }
     if sw < FAR_ZOOM_TAG_MIN_SCREEN_W || sh < FAR_ZOOM_TAG_MIN_SCREEN_H {
         return None;
     }
@@ -378,6 +381,12 @@ mod tests {
     fn far_zoom_tag_sizing_hides_impossible_boxes() {
         assert!(compute_far_zoom_tag_sizing(9.0, 18.0, 0.30, 1.0).is_none());
         assert!(compute_far_zoom_tag_sizing(42.0, 7.0, 0.30, 1.0).is_none());
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_rejects_non_finite_tag_scale() {
+        assert!(compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, f32::NAN).is_none());
+        assert!(compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, f32::INFINITY).is_none());
     }
 
     #[test]
