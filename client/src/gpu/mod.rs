@@ -31,7 +31,7 @@ use crate::overlay_sizing::{
     compute_territory_ornament_tint, static_name_bottom_bound,
 };
 use crate::renderer::{FrameMetrics, InvalidationReason, RenderCapabilities, SceneSnapshot};
-use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
+use crate::territory::{ClientTerritoryMap, is_sequoia_guild, is_unclaimed_guild};
 use crate::tiles::{LoadedTile, TileQuality};
 use crate::time_format::write_hms;
 use crate::viewport::Viewport;
@@ -3206,6 +3206,13 @@ impl GpuRenderer {
                         continue;
                     }
                     if show_far_zoom_tags {
+                        if is_unclaimed_guild(
+                            &ct.territory.guild.uuid,
+                            &ct.territory.guild.name,
+                            &ct.territory.guild.prefix,
+                        ) {
+                            continue;
+                        }
                         let tag = ct.territory.guild.prefix.trim();
                         if tag.is_empty() {
                             continue;
