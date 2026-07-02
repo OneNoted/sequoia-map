@@ -25,9 +25,10 @@ use crate::label_layout::{
 };
 use crate::overlay_sizing::{
     STATIC_NAME_BASELINE_GAP_MULTIPLIER, STATIC_NAME_MIN_RENDERED_PX, compute_dynamic_label_sizing,
-    compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
-    compute_resource_icon_size_world, compute_static_label_sizing,
-    compute_territory_ornament_sizing, compute_territory_ornament_tint, static_name_bottom_bound,
+    compute_far_zoom_tag_sizing, compute_resource_icon_center_y_world,
+    compute_resource_icon_label_lift_world, compute_resource_icon_size_world,
+    compute_static_label_sizing, compute_territory_ornament_sizing,
+    compute_territory_ornament_tint, static_name_bottom_bound,
 };
 use crate::renderer::{FrameMetrics, InvalidationReason, RenderCapabilities, SceneSnapshot};
 use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
@@ -1026,6 +1027,7 @@ pub struct GpuRenderer {
     pub use_full_gpu_text: bool,
     pub static_show_names: bool,
     pub show_claim_labels: bool,
+    pub show_far_zoom_territory_tags: bool,
     pub static_abbreviate_names: bool,
     pub static_name_color: NameColor,
     pub show_connections: bool,
@@ -1745,7 +1747,8 @@ impl GpuRenderer {
             use_static_gpu_labels: false,
             use_full_gpu_text: false,
             static_show_names: false,
-            show_claim_labels: true,
+            show_claim_labels: false,
+            show_far_zoom_territory_tags: true,
             static_abbreviate_names: true,
             static_name_color: NameColor::Guild,
             show_connections: true,
@@ -3138,7 +3141,8 @@ impl GpuRenderer {
             let line_height = text_renderer.line_height;
             let tag_tracking_units = line_height * STATIC_TAG_LETTER_SPACING_EM;
             let name_tracking_units = line_height * STATIC_NAME_LETTER_SPACING_EM;
-            if self.show_claim_labels && claim_label_zoom_active(vp.scale) {
+            let claim_label_zoom = claim_label_zoom_active(vp.scale);
+            if self.show_claim_labels && claim_label_zoom {
                 let claim_tracking_units = line_height * CLAIM_LABEL_LETTER_SPACING_EM;
                 let claim_clusters = build_claim_clusters(territories);
                 let claim_labels = select_claim_label_candidates(
@@ -3185,12 +3189,56 @@ impl GpuRenderer {
                 );
             } else {
                 set_claim_label_debug(vp.scale, false, 0, 0);
+                let show_far_zoom_tags = self.show_far_zoom_territory_tags && claim_label_zoom;
                 for (name, ct) in territories {
                     let loc = &ct.territory.location;
                     let ww = loc.width() as f32;
                     let hh = loc.height() as f32;
                     let sw = ww * scale;
                     let sh = hh * scale;
+                    if show_far_zoom_tags {
+                        let tag = ct.territory.guild.prefix.trim();
+                        let Some(sizing) =
+                            compute_far_zoom_tag_sizing(sw, sh, scale, static_tag_scale)
+                        else {
+                            continue;
+                        };
+                        if tag.is_empty() {
+                            continue;
+                        }
+                        let units_per_world = line_height / sizing.font_height_world.max(0.001);
+                        let fitted = fit_text_to_units_with_tracking(
+                            tag,
+                            sizing.max_width_world * units_per_world,
+                            glyphs,
+                            kerning,
+                            tag_tracking_units,
+                        );
+                        if fitted == "..." {
+                            continue;
+                        }
+
+                        let mut tag_color = name_color_rgba(self.static_tag_color, ct.guild_color);
+                        tag_color[3] = 0.92 * sizing.alpha;
+                        let tag_halo_alpha = 0.68 * sizing.alpha;
+                        push_text_line_dual_with_tracking(
+                            &mut fill_instances,
+                            &mut halo_instances,
+                            glyphs,
+                            kerning,
+                            line_height,
+                            &fitted,
+                            loc.midpoint_x() as f32,
+                            loc.midpoint_y() as f32,
+                            sizing.font_height_world,
+                            sizing.max_width_world,
+                            tag_tracking_units,
+                            tag_color,
+                            [0.0, 0.0, 0.0, tag_halo_alpha],
+                        );
+                        continue;
+                    }
+
                     let Some(sizing) = compute_static_label_sizing(ww, hh) else {
                         continue;
                     };

@@ -43,6 +43,7 @@ mod gpu {
         pub use_full_gpu_text: bool,
         pub static_show_names: bool,
         pub show_claim_labels: bool,
+        pub show_far_zoom_territory_tags: bool,
         pub static_abbreviate_names: bool,
         pub static_name_color: NameColor,
         pub static_tag_color: NameColor,
