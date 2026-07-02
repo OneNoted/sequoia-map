@@ -556,17 +556,24 @@ impl Default for SettingsV2 {
 
 impl SettingsV2 {
     fn with_current_defaults(mut self) -> Self {
-        if self.defaults_version == SETTINGS_DEFAULTS_VERSION {
+        if self.defaults_version >= SETTINGS_DEFAULTS_VERSION {
             return self;
         }
 
-        let defaults = SettingsV2::default();
+        if self.defaults_version < 1 {
+            let defaults = SettingsV2::default();
+            self.show_resource_icons = defaults.show_resource_icons;
+            self.show_territory_ornaments = defaults.show_territory_ornaments;
+            self.show_debug_info = defaults.show_debug_info;
+        }
+
+        if self.defaults_version < 2 {
+            let defaults = SettingsV2::default();
+            self.show_claim_labels = defaults.show_claim_labels;
+            self.show_far_zoom_territory_tags = defaults.show_far_zoom_territory_tags;
+        }
+
         self.defaults_version = SETTINGS_DEFAULTS_VERSION;
-        self.show_resource_icons = defaults.show_resource_icons;
-        self.show_territory_ornaments = defaults.show_territory_ornaments;
-        self.show_claim_labels = defaults.show_claim_labels;
-        self.show_far_zoom_territory_tags = defaults.show_far_zoom_territory_tags;
-        self.show_debug_info = defaults.show_debug_info;
         self
     }
 }
@@ -2967,7 +2974,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_settings_preserve_user_choices_and_apply_current_default_overrides() {
+    fn settings_v1_migration_preserves_unrelated_user_choices_and_applies_label_defaults() {
         let mut saved = SettingsV2 {
             defaults_version: 1,
             sidebar_width: 420.0,
@@ -2985,6 +2992,28 @@ mod tests {
         assert_eq!(saved.defaults_version, SETTINGS_DEFAULTS_VERSION);
         assert_eq!(saved.sidebar_width, 420.0);
         assert!(!saved.show_minimap);
+        assert!(!saved.show_resource_icons);
+        assert!(!saved.show_claim_labels);
+        assert!(saved.show_far_zoom_territory_tags);
+        assert!(saved.show_territory_ornaments);
+        assert!(saved.show_debug_info);
+    }
+
+    #[test]
+    fn settings_v0_migration_keeps_previous_default_overrides() {
+        let mut saved = SettingsV2 {
+            defaults_version: 0,
+            show_resource_icons: false,
+            show_claim_labels: true,
+            show_far_zoom_territory_tags: false,
+            show_territory_ornaments: true,
+            show_debug_info: true,
+            ..SettingsV2::default()
+        };
+
+        saved = saved.with_current_defaults();
+
+        assert_eq!(saved.defaults_version, SETTINGS_DEFAULTS_VERSION);
         assert!(saved.show_resource_icons);
         assert!(!saved.show_claim_labels);
         assert!(saved.show_far_zoom_territory_tags);
