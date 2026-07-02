@@ -3234,6 +3234,22 @@ impl GpuRenderer {
                             continue;
                         }
 
+                        let resource_icon_detail_layout_alpha =
+                            compute_label_layout_metrics(sw as f64, sh as f64, false)
+                                .detail_layout_alpha;
+                        let resource_icons_visible = resource_icons_visible_for_territory(
+                            self.dynamic_show_resource_icons,
+                            sw,
+                            sh,
+                            resource_icon_detail_layout_alpha,
+                            &ct.territory.resources,
+                        );
+                        let label_lift = compute_resource_icon_label_lift_world(
+                            hh,
+                            resource_icon_detail_layout_alpha,
+                            resource_icons_visible,
+                        );
+                        let tag_y = loc.midpoint_y() as f32 - label_lift;
                         let mut tag_color = name_color_rgba(self.static_tag_color, ct.guild_color);
                         tag_color[3] = 0.92 * sizing.alpha;
                         let tag_halo_alpha = 0.68 * sizing.alpha;
@@ -3245,7 +3261,7 @@ impl GpuRenderer {
                             line_height,
                             &fitted,
                             loc.midpoint_x() as f32,
-                            loc.midpoint_y() as f32,
+                            tag_y,
                             sizing.font_height_world,
                             sizing.max_width_world,
                             tag_tracking_units,
