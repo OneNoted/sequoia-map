@@ -110,6 +110,8 @@ pub(crate) struct ShowCompoundMapTime(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowNames(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowClaimLabels(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct ThickCooldownBorders(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct BoldConnections(pub RwSignal<bool>);
@@ -348,6 +350,8 @@ struct SettingsV2 {
     #[serde(default = "default_true")]
     compound_map_time: bool,
     show_names: bool,
+    #[serde(default = "default_true")]
+    show_claim_labels: bool,
     thick_cooldown_borders: bool,
     bold_connections: bool,
     #[serde(default = "default_connection_opacity_scale")]
@@ -508,6 +512,7 @@ impl Default for SettingsV2 {
             granular_map_time: false,
             compound_map_time: true,
             show_names: false,
+            show_claim_labels: true,
             thick_cooldown_borders: true,
             bold_connections: false,
             connection_opacity_scale: default_connection_opacity_scale(),
@@ -622,6 +627,7 @@ impl From<LegacySettings> for SettingsV2 {
             granular_map_time: value.granular_map_time,
             compound_map_time: value.compound_map_time,
             show_names: value.show_names,
+            show_claim_labels: true,
             thick_cooldown_borders: value.thick_cooldown_borders,
             bold_connections: value.bold_connections,
             connection_opacity_scale: default_connection_opacity_scale(),
@@ -782,6 +788,7 @@ pub fn MapPage() -> impl IntoView {
     let show_granular_map_time: RwSignal<bool> = RwSignal::new(saved.granular_map_time);
     let show_compound_map_time: RwSignal<bool> = RwSignal::new(saved.compound_map_time);
     let show_names: RwSignal<bool> = RwSignal::new(saved.show_names);
+    let show_claim_labels: RwSignal<bool> = RwSignal::new(saved.show_claim_labels);
     let thick_cooldown_borders: RwSignal<bool> = RwSignal::new(saved.thick_cooldown_borders);
     let bold_connections: RwSignal<bool> = RwSignal::new(saved.bold_connections);
     let connection_opacity_scale: RwSignal<f64> = RwSignal::new(clamp_connection_opacity_scale(
@@ -904,6 +911,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(ShowGranularMapTime(show_granular_map_time));
     provide_context(ShowCompoundMapTime(show_compound_map_time));
     provide_context(ShowNames(show_names));
+    provide_context(ShowClaimLabels(show_claim_labels));
     provide_context(ThickCooldownBorders(thick_cooldown_borders));
     provide_context(BoldConnections(bold_connections));
     provide_context(ConnectionOpacityScale(connection_opacity_scale));
@@ -992,6 +1000,7 @@ pub fn MapPage() -> impl IntoView {
         show_granular_map_time.set(defaults.granular_map_time);
         show_compound_map_time.set(defaults.compound_map_time);
         show_names.set(defaults.show_names);
+        show_claim_labels.set(defaults.show_claim_labels);
         thick_cooldown_borders.set(defaults.thick_cooldown_borders);
         bold_connections.set(defaults.bold_connections);
         connection_opacity_scale.set(clamp_connection_opacity_scale(
@@ -1482,6 +1491,7 @@ pub fn MapPage() -> impl IntoView {
             granular_map_time: show_granular_map_time.get(),
             compound_map_time: show_compound_map_time.get(),
             show_names: show_names.get(),
+            show_claim_labels: show_claim_labels.get(),
             thick_cooldown_borders: thick_cooldown_borders.get(),
             bold_connections: bold_connections.get(),
             connection_opacity_scale: clamp_connection_opacity_scale(
@@ -2929,6 +2939,7 @@ mod tests {
         assert!(!parsed.defense_highlight);
         assert!(!parsed.map_intel_enabled);
         assert!(parsed.show_resource_icons);
+        assert!(parsed.show_claim_labels);
         assert!(!parsed.show_debug_info);
     }
 
@@ -2937,6 +2948,7 @@ mod tests {
         let defaults = SettingsV2::default();
         assert_eq!(defaults.defaults_version, SETTINGS_DEFAULTS_VERSION);
         assert!(defaults.show_resource_icons);
+        assert!(defaults.show_claim_labels);
     }
 
     #[test]
@@ -2946,6 +2958,7 @@ mod tests {
             sidebar_width: 420.0,
             show_minimap: false,
             show_resource_icons: false,
+            show_claim_labels: false,
             show_territory_ornaments: true,
             show_debug_info: true,
             ..SettingsV2::default()
@@ -2957,6 +2970,7 @@ mod tests {
         assert_eq!(saved.sidebar_width, 420.0);
         assert!(!saved.show_minimap);
         assert!(saved.show_resource_icons);
+        assert!(!saved.show_claim_labels);
         assert!(!saved.show_territory_ornaments);
         assert!(!saved.show_debug_info);
     }
@@ -2982,6 +2996,7 @@ mod tests {
         assert_eq!(migrated.manual_sr_scalar, 2.0);
         assert!(migrated.name_color == NameColor::Gold);
         assert!(migrated.show_resource_icons);
+        assert!(migrated.show_claim_labels);
     }
 
     #[test]
