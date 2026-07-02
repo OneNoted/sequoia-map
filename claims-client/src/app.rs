@@ -63,6 +63,8 @@ pub(crate) struct ShowCompoundMapTime(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowNames(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowClaimLabels(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct ThickCooldownBorders(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct BoldConnections(pub RwSignal<bool>);

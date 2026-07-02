@@ -57,6 +57,7 @@ mod gpu {
         pub use_static_gpu_labels: bool,
         pub use_full_gpu_text: bool,
         pub static_show_names: bool,
+        pub show_claim_labels: bool,
         pub static_abbreviate_names: bool,
         pub static_name_color: NameColor,
         pub static_tag_color: NameColor,
