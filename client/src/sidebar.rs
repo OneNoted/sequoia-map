@@ -25,8 +25,8 @@ use crate::app::{
     LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
     LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapIntelModeEnabled, MapMode,
     NameColor, NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont,
-    ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild, ShowCompoundMapTime,
-    ShowCountdown, ShowDebugInfo, ShowGranularMapTime, ShowLeaderboardOnline,
+    ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild, ShowClaimLabels,
+    ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowGranularMapTime, ShowLeaderboardOnline,
     ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap,
     ShowNames, ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarIndex, SidebarItems,
     SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
@@ -564,6 +564,7 @@ fn SettingsPanel() -> impl IntoView {
     let ShowGranularMapTime(show_granular_map_time) = expect_context();
     let ShowCompoundMapTime(show_compound_map_time) = expect_context();
     let ShowNames(show_names) = expect_context();
+    let ShowClaimLabels(show_claim_labels) = expect_context();
     let ThickCooldownBorders(thick_cooldown_borders) = expect_context();
     let BoldConnections(bold_connections) = expect_context();
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
@@ -630,6 +631,7 @@ fn SettingsPanel() -> impl IntoView {
             <div style="padding: 0 12px 12px;">
                 <SettingsSectionHeader title="Labels" />
                 <SettingsToggleRow label="Territory Names" shortcut="N" active=show_names />
+                <SettingsToggleRow label="Guild Area Names" shortcut="" active=show_claim_labels />
                 <SettingsToggleRow label="Abbreviate Names" shortcut="A" active=abbreviate_names />
                 <SettingsToggleRow label="Readable Font" shortcut="F" active=readable_font />
                 <SettingsNameColorRow color=name_color />

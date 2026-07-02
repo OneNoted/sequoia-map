@@ -1025,6 +1025,7 @@ pub struct GpuRenderer {
     pub use_static_gpu_labels: bool,
     pub use_full_gpu_text: bool,
     pub static_show_names: bool,
+    pub show_claim_labels: bool,
     pub static_abbreviate_names: bool,
     pub static_name_color: NameColor,
     pub show_connections: bool,
@@ -1744,6 +1745,7 @@ impl GpuRenderer {
             use_static_gpu_labels: false,
             use_full_gpu_text: false,
             static_show_names: false,
+            show_claim_labels: true,
             static_abbreviate_names: true,
             static_name_color: NameColor::Guild,
             show_connections: true,
@@ -3136,7 +3138,7 @@ impl GpuRenderer {
             let line_height = text_renderer.line_height;
             let tag_tracking_units = line_height * STATIC_TAG_LETTER_SPACING_EM;
             let name_tracking_units = line_height * STATIC_NAME_LETTER_SPACING_EM;
-            if claim_label_zoom_active(vp.scale) {
+            if self.show_claim_labels && claim_label_zoom_active(vp.scale) {
                 let claim_tracking_units = line_height * CLAIM_LABEL_LETTER_SPACING_EM;
                 let claim_clusters = build_claim_clusters(territories);
                 let claim_labels = select_claim_label_candidates(
