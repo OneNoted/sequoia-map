@@ -80,6 +80,9 @@ pub type ClientTerritoryMap = HashMap<String, ClientTerritory>;
 
 const SEQUOIA_GUILD_NAME: &str = "Sequoia";
 const SEQUOIA_GUILD_PREFIX: &str = "SEQ";
+const UNCLAIMED_GUILD_UUID: &str = "00000000-0000-0000-0000-000000000000";
+const UNCLAIMED_GUILD_NAME: &str = "Unclaimed";
+const UNCLAIMED_GUILD_PREFIX: &str = "NONE";
 
 #[inline]
 pub fn is_sequoia_guild(guild_name: &str, guild_prefix: &str) -> bool {
@@ -87,6 +90,15 @@ pub fn is_sequoia_guild(guild_name: &str, guild_prefix: &str) -> bool {
         || guild_prefix
             .trim()
             .eq_ignore_ascii_case(SEQUOIA_GUILD_PREFIX)
+}
+
+#[inline]
+pub fn is_unclaimed_guild(guild_uuid: &str, guild_name: &str, guild_prefix: &str) -> bool {
+    guild_uuid.trim().eq_ignore_ascii_case(UNCLAIMED_GUILD_UUID)
+        || (guild_name.trim().eq_ignore_ascii_case(UNCLAIMED_GUILD_NAME)
+            && guild_prefix
+                .trim()
+                .eq_ignore_ascii_case(UNCLAIMED_GUILD_PREFIX))
 }
 
 /// Build client territory map from a full snapshot.
@@ -168,7 +180,7 @@ pub fn apply_runtime_updates(
 
 #[cfg(test)]
 mod tests {
-    use super::is_sequoia_guild;
+    use super::{is_sequoia_guild, is_unclaimed_guild};
 
     #[test]
     fn sequoia_guild_match_accepts_name_case_insensitively() {
@@ -183,5 +195,21 @@ mod tests {
     #[test]
     fn sequoia_guild_match_rejects_other_guilds() {
         assert!(!is_sequoia_guild("Nia", "NIA"));
+    }
+
+    #[test]
+    fn unclaimed_guild_match_accepts_server_sentinels() {
+        assert!(is_unclaimed_guild(
+            "00000000-0000-0000-0000-000000000000",
+            "Other",
+            "TAG",
+        ));
+        assert!(is_unclaimed_guild("", " unclaimed ", " none "));
+    }
+
+    #[test]
+    fn unclaimed_guild_match_rejects_claimed_guilds() {
+        assert!(!is_unclaimed_guild("guild-1", "Unclaimed", "SEQ"));
+        assert!(!is_unclaimed_guild("", "Sequoia", "NONE"));
     }
 }

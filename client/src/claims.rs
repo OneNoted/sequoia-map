@@ -25,10 +25,10 @@ use crate::app::{
     HistoryTimestamp, Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster,
     LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LiveResyncInFlight, MapMode, NameColor,
     NameColorSetting, NeedsLiveResync, PeekTerritory, ReadableFont, ResourceHighlight, Selected,
-    ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowGranularMapTime, ShowMinimap,
-    ShowNames, ShowSettings, ShowTerritoryOrnaments, SidebarOpen, SidebarTransient,
-    SseSeqGapDetectedCount, SuppressCooldownVisuals, TagColorSetting, ThickCooldownBorders,
-    canvas_dimensions,
+    ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowFarZoomTerritoryTags,
+    ShowGranularMapTime, ShowMinimap, ShowNames, ShowSettings, ShowTerritoryOrnaments, SidebarOpen,
+    SidebarTransient, SseSeqGapDetectedCount, SuppressCooldownVisuals, TagColorSetting,
+    ThickCooldownBorders, canvas_dimensions,
 };
 use crate::canvas::{ClaimCanvasController, ClaimTool, MapCanvas};
 use crate::history;
@@ -1557,7 +1557,8 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     provide_context(ShowGranularMapTime(RwSignal::new(false)));
     provide_context(ShowCompoundMapTime(RwSignal::new(false)));
     provide_context(ShowNames(RwSignal::new(false)));
-    provide_context(ShowClaimLabels(RwSignal::new(true)));
+    provide_context(ShowClaimLabels(RwSignal::new(false)));
+    provide_context(ShowFarZoomTerritoryTags(RwSignal::new(true)));
     provide_context(ThickCooldownBorders(RwSignal::new(false)));
     provide_context(BoldConnections(RwSignal::new(true)));
     provide_context(ConnectionOpacityScale(RwSignal::new(0.35)));

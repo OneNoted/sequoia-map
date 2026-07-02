@@ -14,9 +14,9 @@ use crate::app::{
     HeatWindowLabel, HistoryTimestamp, Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons,
     LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, MapMode, NameColorSetting,
     PeekTerritory, ReadableFont, ResourceHighlight, Selected, ShowClaimLabels, ShowCompoundMapTime,
-    ShowCountdown, ShowGranularMapTime, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
-    ShowTerritoryOrnaments, SidebarOpen, SidebarTransient, SuppressCooldownVisuals,
-    TagColorSetting, ThickCooldownBorders,
+    ShowCountdown, ShowFarZoomTerritoryTags, ShowGranularMapTime, ShowMinimap, ShowNames,
+    ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarOpen, SidebarTransient,
+    SuppressCooldownVisuals, TagColorSetting, ThickCooldownBorders,
 };
 use crate::gpu::{GpuRenderer, RenderFrameInput};
 use crate::icons::{self, ResourceAtlas};
@@ -381,6 +381,7 @@ pub fn MapCanvas() -> impl IntoView {
     let ShowCompoundMapTime(show_compound_map_time) = expect_context();
     let ShowNames(show_names) = expect_context();
     let ShowClaimLabels(show_claim_labels) = expect_context();
+    let ShowFarZoomTerritoryTags(show_far_zoom_territory_tags) = expect_context();
     let ThickCooldownBorders(thick_cooldown_borders) = expect_context();
     let BoldConnections(bold_connections) = expect_context();
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
@@ -509,6 +510,7 @@ pub fn MapCanvas() -> impl IntoView {
             renderer.use_full_gpu_text = true;
             renderer.static_show_names = show_names.get_untracked();
             renderer.show_claim_labels = show_claim_labels.get_untracked();
+            renderer.show_far_zoom_territory_tags = show_far_zoom_territory_tags.get_untracked();
             renderer.static_abbreviate_names = abbreviate_names.get_untracked();
             renderer.static_name_color = name_color.get_untracked();
             renderer.static_tag_color = tag_color.get_untracked();
@@ -699,6 +701,7 @@ pub fn MapCanvas() -> impl IntoView {
         move || {
             show_names.track();
             show_claim_labels.track();
+            show_far_zoom_territory_tags.track();
             abbreviate_names.track();
             show_countdown.track();
             show_granular_map_time.track();
@@ -774,6 +777,8 @@ pub fn MapCanvas() -> impl IntoView {
                             renderer.use_full_gpu_text = true;
                             renderer.use_static_gpu_labels = true;
                             renderer.show_claim_labels = show_claim_labels.get_untracked();
+                            renderer.show_far_zoom_territory_tags =
+                                show_far_zoom_territory_tags.get_untracked();
                             renderer.static_name_color = name_color.get_untracked();
                             renderer.label_scale_master = label_scale_master.get_untracked() as f32;
                             renderer.label_scale_static_tag =

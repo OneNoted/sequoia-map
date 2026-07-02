@@ -112,6 +112,8 @@ pub(crate) struct ShowNames(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowClaimLabels(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowFarZoomTerritoryTags(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct ThickCooldownBorders(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct BoldConnections(pub RwSignal<bool>);
@@ -336,7 +338,7 @@ pub(crate) enum NameColor {
 
 use gloo_storage::Storage;
 
-const SETTINGS_DEFAULTS_VERSION: u32 = 1;
+const SETTINGS_DEFAULTS_VERSION: u32 = 2;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -350,8 +352,10 @@ struct SettingsV2 {
     #[serde(default = "default_true")]
     compound_map_time: bool,
     show_names: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     show_claim_labels: bool,
+    #[serde(default = "default_true")]
+    show_far_zoom_territory_tags: bool,
     thick_cooldown_borders: bool,
     bold_connections: bool,
     #[serde(default = "default_connection_opacity_scale")]
@@ -512,7 +516,8 @@ impl Default for SettingsV2 {
             granular_map_time: false,
             compound_map_time: true,
             show_names: false,
-            show_claim_labels: true,
+            show_claim_labels: false,
+            show_far_zoom_territory_tags: true,
             thick_cooldown_borders: true,
             bold_connections: false,
             connection_opacity_scale: default_connection_opacity_scale(),
@@ -551,15 +556,24 @@ impl Default for SettingsV2 {
 
 impl SettingsV2 {
     fn with_current_defaults(mut self) -> Self {
-        if self.defaults_version == SETTINGS_DEFAULTS_VERSION {
+        if self.defaults_version >= SETTINGS_DEFAULTS_VERSION {
             return self;
         }
 
-        let defaults = SettingsV2::default();
+        if self.defaults_version < 1 {
+            let defaults = SettingsV2::default();
+            self.show_resource_icons = defaults.show_resource_icons;
+            self.show_territory_ornaments = defaults.show_territory_ornaments;
+            self.show_debug_info = defaults.show_debug_info;
+        }
+
+        if self.defaults_version < 2 {
+            let defaults = SettingsV2::default();
+            self.show_claim_labels = defaults.show_claim_labels;
+            self.show_far_zoom_territory_tags = defaults.show_far_zoom_territory_tags;
+        }
+
         self.defaults_version = SETTINGS_DEFAULTS_VERSION;
-        self.show_resource_icons = defaults.show_resource_icons;
-        self.show_territory_ornaments = defaults.show_territory_ornaments;
-        self.show_debug_info = defaults.show_debug_info;
         self
     }
 }
@@ -627,7 +641,8 @@ impl From<LegacySettings> for SettingsV2 {
             granular_map_time: value.granular_map_time,
             compound_map_time: value.compound_map_time,
             show_names: value.show_names,
-            show_claim_labels: true,
+            show_claim_labels: false,
+            show_far_zoom_territory_tags: true,
             thick_cooldown_borders: value.thick_cooldown_borders,
             bold_connections: value.bold_connections,
             connection_opacity_scale: default_connection_opacity_scale(),
@@ -789,6 +804,8 @@ pub fn MapPage() -> impl IntoView {
     let show_compound_map_time: RwSignal<bool> = RwSignal::new(saved.compound_map_time);
     let show_names: RwSignal<bool> = RwSignal::new(saved.show_names);
     let show_claim_labels: RwSignal<bool> = RwSignal::new(saved.show_claim_labels);
+    let show_far_zoom_territory_tags: RwSignal<bool> =
+        RwSignal::new(saved.show_far_zoom_territory_tags);
     let thick_cooldown_borders: RwSignal<bool> = RwSignal::new(saved.thick_cooldown_borders);
     let bold_connections: RwSignal<bool> = RwSignal::new(saved.bold_connections);
     let connection_opacity_scale: RwSignal<f64> = RwSignal::new(clamp_connection_opacity_scale(
@@ -912,6 +929,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(ShowCompoundMapTime(show_compound_map_time));
     provide_context(ShowNames(show_names));
     provide_context(ShowClaimLabels(show_claim_labels));
+    provide_context(ShowFarZoomTerritoryTags(show_far_zoom_territory_tags));
     provide_context(ThickCooldownBorders(thick_cooldown_borders));
     provide_context(BoldConnections(bold_connections));
     provide_context(ConnectionOpacityScale(connection_opacity_scale));
@@ -1001,6 +1019,7 @@ pub fn MapPage() -> impl IntoView {
         show_compound_map_time.set(defaults.compound_map_time);
         show_names.set(defaults.show_names);
         show_claim_labels.set(defaults.show_claim_labels);
+        show_far_zoom_territory_tags.set(defaults.show_far_zoom_territory_tags);
         thick_cooldown_borders.set(defaults.thick_cooldown_borders);
         bold_connections.set(defaults.bold_connections);
         connection_opacity_scale.set(clamp_connection_opacity_scale(
@@ -1492,6 +1511,7 @@ pub fn MapPage() -> impl IntoView {
             compound_map_time: show_compound_map_time.get(),
             show_names: show_names.get(),
             show_claim_labels: show_claim_labels.get(),
+            show_far_zoom_territory_tags: show_far_zoom_territory_tags.get(),
             thick_cooldown_borders: thick_cooldown_borders.get(),
             bold_connections: bold_connections.get(),
             connection_opacity_scale: clamp_connection_opacity_scale(
@@ -2939,7 +2959,8 @@ mod tests {
         assert!(!parsed.defense_highlight);
         assert!(!parsed.map_intel_enabled);
         assert!(parsed.show_resource_icons);
-        assert!(parsed.show_claim_labels);
+        assert!(!parsed.show_claim_labels);
+        assert!(parsed.show_far_zoom_territory_tags);
         assert!(!parsed.show_debug_info);
     }
 
@@ -2948,17 +2969,19 @@ mod tests {
         let defaults = SettingsV2::default();
         assert_eq!(defaults.defaults_version, SETTINGS_DEFAULTS_VERSION);
         assert!(defaults.show_resource_icons);
-        assert!(defaults.show_claim_labels);
+        assert!(!defaults.show_claim_labels);
+        assert!(defaults.show_far_zoom_territory_tags);
     }
 
     #[test]
-    fn stale_settings_preserve_user_choices_and_apply_current_default_overrides() {
+    fn settings_v1_migration_preserves_unrelated_user_choices_and_applies_label_defaults() {
         let mut saved = SettingsV2 {
-            defaults_version: 0,
+            defaults_version: 1,
             sidebar_width: 420.0,
             show_minimap: false,
             show_resource_icons: false,
-            show_claim_labels: false,
+            show_claim_labels: true,
+            show_far_zoom_territory_tags: false,
             show_territory_ornaments: true,
             show_debug_info: true,
             ..SettingsV2::default()
@@ -2969,10 +2992,48 @@ mod tests {
         assert_eq!(saved.defaults_version, SETTINGS_DEFAULTS_VERSION);
         assert_eq!(saved.sidebar_width, 420.0);
         assert!(!saved.show_minimap);
+        assert!(!saved.show_resource_icons);
+        assert!(!saved.show_claim_labels);
+        assert!(saved.show_far_zoom_territory_tags);
+        assert!(saved.show_territory_ornaments);
+        assert!(saved.show_debug_info);
+    }
+
+    #[test]
+    fn settings_v0_migration_keeps_previous_default_overrides() {
+        let mut saved = SettingsV2 {
+            defaults_version: 0,
+            show_resource_icons: false,
+            show_claim_labels: true,
+            show_far_zoom_territory_tags: false,
+            show_territory_ornaments: true,
+            show_debug_info: true,
+            ..SettingsV2::default()
+        };
+
+        saved = saved.with_current_defaults();
+
+        assert_eq!(saved.defaults_version, SETTINGS_DEFAULTS_VERSION);
         assert!(saved.show_resource_icons);
         assert!(!saved.show_claim_labels);
+        assert!(saved.show_far_zoom_territory_tags);
         assert!(!saved.show_territory_ornaments);
         assert!(!saved.show_debug_info);
+    }
+
+    #[test]
+    fn current_settings_preserve_user_label_choices() {
+        let mut saved = SettingsV2 {
+            defaults_version: SETTINGS_DEFAULTS_VERSION,
+            show_claim_labels: true,
+            show_far_zoom_territory_tags: false,
+            ..SettingsV2::default()
+        };
+
+        saved = saved.with_current_defaults();
+
+        assert!(saved.show_claim_labels);
+        assert!(!saved.show_far_zoom_territory_tags);
     }
 
     #[test]
@@ -2996,7 +3057,8 @@ mod tests {
         assert_eq!(migrated.manual_sr_scalar, 2.0);
         assert!(migrated.name_color == NameColor::Gold);
         assert!(migrated.show_resource_icons);
-        assert!(migrated.show_claim_labels);
+        assert!(!migrated.show_claim_labels);
+        assert!(migrated.show_far_zoom_territory_tags);
     }
 
     #[test]

@@ -4,6 +4,12 @@ pub(crate) const STATIC_NAME_MIN_RENDERED_PX: f32 = 12.0;
 
 const STATIC_TAG_SIZE_WORLD: f32 = 24.0;
 const STATIC_NAME_SIZE_WORLD: f32 = 21.5;
+const FAR_ZOOM_TAG_MIN_SCREEN_W: f32 = 11.0;
+const FAR_ZOOM_TAG_MIN_SCREEN_H: f32 = 8.0;
+const FAR_ZOOM_TAG_MIN_RENDERED_PX: f32 = 7.5;
+const FAR_ZOOM_TAG_MAX_RENDERED_PX: f32 = 12.0;
+const FAR_ZOOM_TAG_BOX_W_FRACTION: f32 = 0.92;
+const FAR_ZOOM_TAG_BOX_H_FRACTION: f32 = 0.82;
 const DYNAMIC_TAG_SIZE_WORLD: f32 = 24.0;
 const DYNAMIC_DETAIL_SIZE_WORLD: f32 = 21.5;
 const DYNAMIC_TIME_SIZE_WORLD: f32 = 20.5;
@@ -35,6 +41,13 @@ pub(crate) struct StaticLabelSizing {
     pub detail_layout_alpha: f32,
     pub tag_size: f32,
     pub detail_size: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FarZoomTagSizing {
+    pub font_height_world: f32,
+    pub max_width_world: f32,
+    pub alpha: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -106,6 +119,41 @@ pub(crate) fn compute_static_label_sizing(ww: f32, hh: f32) -> Option<StaticLabe
         detail_layout_alpha,
         tag_size: STATIC_TAG_SIZE_WORLD,
         detail_size: STATIC_NAME_SIZE_WORLD,
+    })
+}
+
+pub(crate) fn compute_far_zoom_tag_sizing(
+    sw: f32,
+    sh: f32,
+    scale: f32,
+    tag_scale: f32,
+) -> Option<FarZoomTagSizing> {
+    if !sw.is_finite() || !sh.is_finite() || !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    if !tag_scale.is_finite() {
+        return None;
+    }
+    if sw < FAR_ZOOM_TAG_MIN_SCREEN_W || sh < FAR_ZOOM_TAG_MIN_SCREEN_H {
+        return None;
+    }
+
+    let max_font_px = sh * FAR_ZOOM_TAG_BOX_H_FRACTION;
+    if max_font_px < FAR_ZOOM_TAG_MIN_RENDERED_PX {
+        return None;
+    }
+
+    let scaled_font_px = FAR_ZOOM_TAG_MAX_RENDERED_PX * tag_scale.clamp(0.5, 2.0);
+    let font_px = scaled_font_px
+        .min(max_font_px)
+        .clamp(FAR_ZOOM_TAG_MIN_RENDERED_PX, FAR_ZOOM_TAG_MAX_RENDERED_PX);
+    let width_px = (sw * FAR_ZOOM_TAG_BOX_W_FRACTION).max(font_px * 1.6);
+    let alpha = smoothstep_f32(8.0, 14.0, sh).min(smoothstep_f32(11.0, 22.0, sw));
+
+    Some(FarZoomTagSizing {
+        font_height_world: font_px / scale,
+        max_width_world: width_px / scale,
+        alpha,
     })
 }
 
@@ -296,10 +344,10 @@ pub(crate) fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_dynamic_label_sizing, compute_resource_icon_center_y_world,
-        compute_resource_icon_label_lift_world, compute_resource_icon_size_world,
-        compute_static_label_sizing, compute_territory_ornament_sizing,
-        compute_territory_ornament_tint,
+        compute_dynamic_label_sizing, compute_far_zoom_tag_sizing,
+        compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
+        compute_resource_icon_size_world, compute_static_label_sizing,
+        compute_territory_ornament_sizing, compute_territory_ornament_tint,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -318,6 +366,37 @@ mod tests {
         assert_close(large.tag_size, 24.0);
         assert_close(small.detail_size, 21.5);
         assert_close(large.detail_size, 21.5);
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_is_screen_stable() {
+        let near = compute_far_zoom_tag_sizing(42.0, 18.0, 0.60, 1.0).expect("sizing should exist");
+        let far = compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, 1.0).expect("sizing should exist");
+
+        assert_close(near.font_height_world * 0.60, far.font_height_world * 0.30);
+        assert_close(near.max_width_world * 0.60, far.max_width_world * 0.30);
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_hides_impossible_boxes() {
+        assert!(compute_far_zoom_tag_sizing(9.0, 18.0, 0.30, 1.0).is_none());
+        assert!(compute_far_zoom_tag_sizing(42.0, 7.0, 0.30, 1.0).is_none());
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_rejects_non_finite_tag_scale() {
+        assert!(compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, f32::NAN).is_none());
+        assert!(compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, f32::INFINITY).is_none());
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_keeps_small_readable_boxes() {
+        let sizing = compute_far_zoom_tag_sizing(18.0, 10.0, 0.30, 1.0)
+            .expect("small readable territory should keep a tag");
+
+        assert!(sizing.font_height_world * 0.30 >= 7.5);
+        assert!(sizing.max_width_world * 0.30 >= 16.5);
+        assert!(sizing.alpha > 0.0);
     }
 
     #[test]
