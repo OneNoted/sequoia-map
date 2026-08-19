@@ -2906,6 +2906,7 @@ dependencies = [
  "gloo-timers",
  "js-sys",
  "leptos 0.7.8",
+ "sequoia-map-engine",
  "sequoia-shared",
  "serde",
  "serde-wasm-bindgen",
@@ -2930,6 +2931,26 @@ dependencies = [
  "js-sys",
  "leptos 0.8.17",
  "leptos_router",
+ "sequoia-map-engine",
+ "sequoia-shared",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+]
+
+[[package]]
+name = "sequoia-map-engine"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "chrono",
+ "console_error_panic_hook",
+ "futures",
+ "js-sys",
  "sequoia-shared",
  "serde",
  "serde-wasm-bindgen",

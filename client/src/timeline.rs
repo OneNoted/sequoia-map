@@ -431,7 +431,7 @@ pub fn Timeline() -> impl IntoView {
                 }
             }
             style:bottom=move || if is_mobile.get() { "142px" } else { "88px" }
-            style="position: absolute; left: 0; z-index: 26; margin: 0 12px; padding: 8px 12px; border: 1px solid rgba(245,197,66,0.32); border-radius: 8px; background: rgba(19,22,31,0.96); color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,0.35);"
+            style="position: absolute; left: 0; z-index: 26; margin: 0 12px; padding: 8px 12px; border: 1px solid rgba(245,197,66,0.32); border-radius: 8px; background: rgba(19,22,31,0.96); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.68rem; line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,0.35);"
         >
             "Pre-Sequoia scrape data may be inaccurate."
         </div>
@@ -455,7 +455,7 @@ pub fn Timeline() -> impl IntoView {
             style:height=move || if is_mobile.get() { "auto" } else { "84px" }
             style:padding=move || if is_mobile.get() { "8px 12px" } else { "8px 16px" }
             style:gap=move || if is_mobile.get() { "7px" } else { "10px" }
-            style="position: absolute; bottom: 0; left: 0; z-index: 25; background: #13161f; border-top: 1px solid rgba(245,197,66,0.15); align-items: stretch; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);"
+            style="position: absolute; bottom: 0; left: 0; z-index: 25; background: var(--color-deep); border-top: 1px solid rgba(245,197,66,0.15); align-items: stretch; font-family: var(--font-mono); font-size: 0.72rem; transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);"
         >
             // --- Row 1: Transport + Speed controls ---
             <div
@@ -469,19 +469,19 @@ pub fn Timeline() -> impl IntoView {
                     style:min-height=move || if is_mobile.get() { "44px" } else { "32px" }
                     style:width=move || if is_mobile.get() { "44px" } else { "32px" }
                     style:height=move || if is_mobile.get() { "44px" } else { "32px" }
-                    style="background: #1a1d2a; border: 1px solid #282c3e; border-radius: 6px; cursor: pointer; color: #f5c542; font-size: 0.9rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
+                    style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 6px; cursor: pointer; color: var(--color-gold); font-size: 0.9rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
                     inner_html=move || if playing.get() { pause_svg } else { play_svg }
                     on:click=move |_| playing.update(|v| *v = !*v)
                     on:mouseenter=move |e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "#232738").ok();
-                            el.style().set_property("border-color", "#3a3f5c").ok();
+                            el.style().set_property("background", "var(--color-surface-hover)").ok();
+                            el.style().set_property("border-color", "var(--color-border-accent)").ok();
                         }
                     }
                     on:mouseleave=move |e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "#1a1d2a").ok();
-                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("background", "var(--color-surface)").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                         }
                     }
                 />
@@ -493,7 +493,7 @@ pub fn Timeline() -> impl IntoView {
                     style:min-height=move || if is_mobile.get() { "44px" } else { "28px" }
                     style:width=move || if is_mobile.get() { "44px" } else { "28px" }
                     style:height=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style="background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; cursor: pointer; color: #9a9590; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 4px; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
+                    style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; cursor: pointer; color: var(--color-text-secondary); font-size: 0.75rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 4px; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
                     inner_html=skip_back_svg
                     on:click=move |_| {
                         history::step_backward(history::HistoryStepContext {
@@ -513,16 +513,16 @@ pub fn Timeline() -> impl IntoView {
                     }
                     on:mouseenter=move |e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "#232738").ok();
-                            el.style().set_property("color", "#e2e0d8").ok();
-                            el.style().set_property("border-color", "#3a3f5c").ok();
+                            el.style().set_property("background", "var(--color-surface-hover)").ok();
+                            el.style().set_property("color", "var(--color-text-primary)").ok();
+                            el.style().set_property("border-color", "var(--color-border-accent)").ok();
                         }
                     }
                     on:mouseleave=move |e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "#1a1d2a").ok();
-                            el.style().set_property("color", "#9a9590").ok();
-                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("background", "var(--color-surface)").ok();
+                            el.style().set_property("color", "var(--color-text-secondary)").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                         }
                     }
                 />
@@ -534,7 +534,7 @@ pub fn Timeline() -> impl IntoView {
                     style:min-height=move || if is_mobile.get() { "44px" } else { "28px" }
                     style:width=move || if is_mobile.get() { "44px" } else { "28px" }
                     style:height=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style="background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; cursor: pointer; color: #9a9590; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 4px; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
+                    style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; cursor: pointer; color: var(--color-text-secondary); font-size: 0.75rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 4px; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
                     inner_html=skip_fwd_svg
                     on:click=move |_| {
                         history::step_forward(history::HistoryStepContext {
@@ -554,29 +554,29 @@ pub fn Timeline() -> impl IntoView {
                     }
                     on:mouseenter=move |e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "#232738").ok();
-                            el.style().set_property("color", "#e2e0d8").ok();
-                            el.style().set_property("border-color", "#3a3f5c").ok();
+                            el.style().set_property("background", "var(--color-surface-hover)").ok();
+                            el.style().set_property("color", "var(--color-text-primary)").ok();
+                            el.style().set_property("border-color", "var(--color-border-accent)").ok();
                         }
                     }
                     on:mouseleave=move |e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "#1a1d2a").ok();
-                            el.style().set_property("color", "#9a9590").ok();
-                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("background", "var(--color-surface)").ok();
+                            el.style().set_property("color", "var(--color-text-secondary)").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                         }
                     }
                 />
 
                 // Divider: transport | speed
-                <div style="width: 1px; height: 24px; background: #282c3e; margin: 0 10px; flex-shrink: 0;" />
+                <div style="width: 1px; height: 24px; background: var(--color-border-subtle); margin: 0 10px; flex-shrink: 0;" />
 
                 // Speed selector — desktop: <select>, mobile: cycle button
                 {move || {
                     if is_mobile.get() {
                         view! {
                             <button
-                                style="min-width: 44px; min-height: 44px; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; color: #9a9590; font-size: 0.68rem; padding: 4px 8px; cursor: pointer; font-family: 'JetBrains Mono', monospace; flex-shrink: 0; transition: border-color 0.15s ease, color 0.15s ease; touch-action: manipulation;"
+                                style="min-width: 44px; min-height: 44px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-secondary); font-size: 0.68rem; padding: 4px 8px; cursor: pointer; font-family: var(--font-mono); flex-shrink: 0; transition: border-color 0.15s ease, color 0.15s ease; touch-action: manipulation;"
                                 on:click=cycle_speed
                             >
                                 {move || format!("{}x", speed.get() as i32)}
@@ -586,7 +586,7 @@ pub fn Timeline() -> impl IntoView {
                         view! {
                             <select
                                 prop:value=move || speed.get().to_string()
-                                style="background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; color: #9a9590; font-size: 0.68rem; padding: 4px 6px; cursor: pointer; font-family: 'JetBrains Mono', monospace; flex-shrink: 0; outline: none; transition: border-color 0.15s ease, color 0.15s ease;"
+                                style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-secondary); font-size: 0.68rem; padding: 4px 6px; cursor: pointer; font-family: var(--font-mono); flex-shrink: 0; outline: none; transition: border-color 0.15s ease, color 0.15s ease;"
                                 on:change=move |e| {
                                     let Some(target) = e.target() else {
                                         return;
@@ -600,14 +600,14 @@ pub fn Timeline() -> impl IntoView {
                                 }
                                 on:mouseenter=move |e| {
                                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("border-color", "#3a3f5c").ok();
-                                        el.style().set_property("color", "#e2e0d8").ok();
+                                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
+                                        el.style().set_property("color", "var(--color-text-primary)").ok();
                                     }
                                 }
                                 on:mouseleave=move |e| {
                                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("border-color", "#282c3e").ok();
-                                        el.style().set_property("color", "#9a9590").ok();
+                                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
+                                        el.style().set_property("color", "var(--color-text-secondary)").ok();
                                     }
                                 }
                             >
@@ -628,20 +628,20 @@ pub fn Timeline() -> impl IntoView {
                     style:display=move || if is_mobile.get() { "flex" } else { "none" }
                     style="margin-left: auto; align-items: center; gap: 8px; flex-shrink: 0;"
                 >
-                    <span style="color: #e2e0d8; font-size: 0.7rem; text-align: center; font-variant-numeric: tabular-nums;">
+                    <span style="color: var(--color-text-primary); font-size: 0.7rem; text-align: center; font-variant-numeric: tabular-nums;">
                         {move || timestamp.get().map(format_history_timestamp).unwrap_or_default()}
                     </span>
                     // Desktop: "History" badge
                     <span
                         style:display=move || if is_mobile.get() { "none" } else { "inline" }
-                        style="border: 1px solid #3a3f5c; border-radius: 4px; padding: 5px 12px; color: #9a9590; font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;"
+                        style="border: 1px solid var(--color-border-accent); border-radius: 4px; padding: 5px 12px; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;"
                     >
                         "History"
                     </span>
                     // Mobile: close/exit history button
                     <button
                         style:display=move || if is_mobile.get() { "flex" } else { "none" }
-                        style="min-width: 44px; min-height: 44px; background: #1a1d2a; border: 1px solid #3a3f5c; border-radius: 6px; color: #9a9590; cursor: pointer; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.15s ease, color 0.15s ease; touch-action: manipulation;"
+                        style="min-width: 44px; min-height: 44px; background: var(--color-surface); border: 1px solid var(--color-border-accent); border-radius: 6px; color: var(--color-text-secondary); cursor: pointer; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.15s ease, color 0.15s ease; touch-action: manipulation;"
                         title="Exit history mode"
                         on:click=move |_| {
                             history::exit_history_mode(history::ExitHistoryModeInput {
@@ -677,12 +677,12 @@ pub fn Timeline() -> impl IntoView {
                     // Divider: speed | timeline (desktop only)
                     <div
                         style:display=move || if is_mobile.get() { "none" } else { "block" }
-                        style="width: 1px; height: 24px; background: #282c3e; margin-right: 2px; flex-shrink: 0;"
+                        style="width: 1px; height: 24px; background: var(--color-border-subtle); margin-right: 2px; flex-shrink: 0;"
                     />
 
                     <span
                         style:display=move || if is_mobile.get() { "none" } else { "inline" }
-                        style="color: #5a5860; flex-shrink: 0; font-size: 0.61rem;"
+                        style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.61rem;"
                     >
                         {move || bounds.get().map(|(earliest, _)| format_history_timestamp(earliest)).unwrap_or_default()}
                     </span>
@@ -714,12 +714,12 @@ pub fn Timeline() -> impl IntoView {
 
                     <span
                         style:display=move || if is_mobile.get() { "none" } else { "inline" }
-                        style="color: #5a5860; flex-shrink: 0; font-size: 0.61rem;"
+                        style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.61rem;"
                     >
                         {move || bounds.get().map(|(_, latest)| format_history_timestamp(latest)).unwrap_or_default()}
                     </span>
 
-                    <div style="display: inline-flex; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; overflow: hidden; flex-shrink: 0;">
+                    <div style="display: inline-flex; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; overflow: hidden; flex-shrink: 0;">
                         {HISTORY_FOCUS_SPANS.iter().enumerate().map(|(idx, &(span, label, is_wide))| {
                             view! {
                                 <button
@@ -728,11 +728,11 @@ pub fn Timeline() -> impl IntoView {
                                     style=move || {
                                         let active = focus_span.get() == span;
                                         format!(
-                                            "min-width: {}; height: 22px; padding: 0 7px; border: none; border-left: 1px solid {}; background: {}; color: {}; font-family: 'JetBrains Mono', monospace; font-size: 0.61rem; cursor: pointer; touch-action: manipulation;",
+                                            "min-width: {}; height: 22px; padding: 0 7px; border: none; border-left: 1px solid {}; background: {}; color: {}; font-family: var(--font-mono); font-size: 0.61rem; cursor: pointer; touch-action: manipulation;",
                                             if is_wide { "34px" } else { "30px" },
-                                            if idx == 0 { "transparent" } else { "#282c3e" },
+                                            if idx == 0 { "transparent" } else { "var(--color-border-subtle)" },
                                             if active { "rgba(245,197,66,0.14)" } else { "transparent" },
-                                            if active { "#f5c542" } else { "#7c829e" },
+                                            if active { "var(--color-gold)" } else { "#7c829e" },
                                         )
                                     }
                                     on:click=move |_| {
@@ -751,7 +751,7 @@ pub fn Timeline() -> impl IntoView {
                 </div>
 
                 <div style="display: flex; align-items: center; gap: 0; width: 100%; min-width: 0;">
-                    <span style="color: #5a5860; flex-shrink: 0; font-size: 0.65rem;">
+                    <span style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.65rem;">
                         {move || {
                             focus_window
                                 .get()
@@ -786,7 +786,7 @@ pub fn Timeline() -> impl IntoView {
                         on:change=on_range_change
                     />
 
-                    <span style="color: #5a5860; flex-shrink: 0; font-size: 0.65rem;">
+                    <span style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.65rem;">
                         {move || {
                             focus_window
                                 .get()
@@ -801,13 +801,13 @@ pub fn Timeline() -> impl IntoView {
                         style:display=move || if is_mobile.get() { "none" } else { "flex" }
                         style="align-items: center; gap: 0; flex-shrink: 0;"
                     >
-                        <div style="width: 1px; height: 24px; background: #282c3e; margin: 0 10px; flex-shrink: 0;" />
-                        <span style="color: #e2e0d8; flex-shrink: 0; min-width: 140px; text-align: center; font-size: 0.7rem;">
+                        <div style="width: 1px; height: 24px; background: var(--color-border-subtle); margin: 0 10px; flex-shrink: 0;" />
+                        <span style="color: var(--color-text-primary); flex-shrink: 0; min-width: 140px; text-align: center; font-size: 0.7rem;">
                             {move || timestamp.get().map(format_history_timestamp).unwrap_or_default()}
                         </span>
-                        <div style="width: 1px; height: 24px; background: #282c3e; margin: 0 10px; flex-shrink: 0;" />
+                        <div style="width: 1px; height: 24px; background: var(--color-border-subtle); margin: 0 10px; flex-shrink: 0;" />
                         <span
-                            style="border: 1px solid #3a3f5c; border-radius: 4px; padding: 5px 12px; color: #9a9590; font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; font-weight: 700; flex-shrink: 0; letter-spacing: 0.05em;"
+                            style="border: 1px solid var(--color-border-accent); border-radius: 4px; padding: 5px 12px; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; flex-shrink: 0; letter-spacing: 0.05em;"
                         >
                             "History"
                         </span>

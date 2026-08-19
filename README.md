@@ -246,6 +246,8 @@ Notes:
 | `GUILDS_ONLINE_CACHE_TTL_SECS` | Cache freshness threshold used by `/api/guilds/online` | `120` |
 | `GUILDS_ONLINE_MAX_CONCURRENCY` | Max concurrent upstream guild fetches in `/api/guilds/online` | `8` |
 | `MAP_DOMAIN` | Public HTTPS domain routed to Sequoia server by Caddy | `map.example.com` |
+| `SEQUOIA_BACKEND_BASE_URL` | Sequoia backend origin used for website sign-in (`/api/auth/*`) and internal season data. Without it the map renders every visitor as signed out and `/api/auth/login` returns 503. | *(empty; production uses `https://api.seqwawa.com`)* |
+| `SEQUOIA_BACKEND_INTERNAL_TOKEN` | Shared secret for internal Sequoia backend calls | *(empty)* |
 | `IRIS_DOMAIN` | Public HTTPS domain routed to ingest by Caddy | `iris.example.com` |
 | `ACME_EMAIL` | Email used for ACME certificate registration in Caddy | *(empty)* |
 | `INGEST_TRUSTED_PROXY_CIDRS` | Comma-separated trusted reverse proxy CIDRs for `X-Forwarded-For` | *(empty in service; prod/coolify compose defaults to loopback + RFC1918 private ranges)* |

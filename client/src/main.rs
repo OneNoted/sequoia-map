@@ -1,31 +1,32 @@
-mod animation;
 mod app;
 mod assets;
+mod auth;
 mod canvas;
-mod claim_labels;
-mod colors;
-mod defense;
 #[cfg(target_arch = "wasm32")]
 mod gpu;
 mod heat;
 mod history;
 mod icons;
-mod label_layout;
 mod map_intel;
-mod overlay_sizing;
+mod navbar;
 mod playback;
 mod render_loop;
 mod renderer;
 mod season_scalar;
 mod sidebar;
-mod spatial;
+mod site_nav;
 mod sse;
-mod territory;
 mod tiles;
-mod time_format;
 mod timeline;
 mod tower;
-mod viewport;
+
+// Render/math core. These modules moved to `sequoia-map-engine`; they are
+// re-exported at the crate root so existing `crate::<module>` paths resolve
+// unchanged while the Leptos UI is migrated away.
+pub(crate) use sequoia_map_engine::{
+    animation, claim_labels, colors, defense, label_layout, overlay_sizing, spatial, territory,
+    time_format, viewport,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu {
@@ -162,19 +163,19 @@ fn encode_uri_component_fallback(input: &str) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn encode_guild_name_for_url(guild_name: &str) -> String {
-    js_sys::encode_uri_component(guild_name)
+pub(crate) fn encode_uri_component(value: &str) -> String {
+    js_sys::encode_uri_component(value)
         .as_string()
-        .unwrap_or_else(|| encode_uri_component_fallback(guild_name))
+        .unwrap_or_else(|| encode_uri_component_fallback(value))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn encode_guild_name_for_url(guild_name: &str) -> String {
-    encode_uri_component_fallback(guild_name)
+pub(crate) fn encode_uri_component(value: &str) -> String {
+    encode_uri_component_fallback(value)
 }
 
 pub(crate) fn guild_stats_url(guild_name: &str) -> String {
-    let encoded = encode_guild_name_for_url(guild_name);
+    let encoded = encode_uri_component(guild_name);
     format!("https://wynncraft.com/stats/guild/{encoded}")
 }
 

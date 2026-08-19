@@ -1329,19 +1329,19 @@ pub fn MapCanvas() -> impl IntoView {
                     let token = diagnostics_token(&message);
                     view! {
                         <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(12, 14, 23, 0.96); z-index: 30;">
-                            <div style="max-width: 640px; margin: 0 24px; border: 1px solid #3a3f5c; background: #13161f; box-shadow: 0 24px 64px rgba(0,0,0,0.55); border-radius: 8px; padding: 22px 20px;">
-                                <div style="font-family: 'Silkscreen', monospace; color: #f5c542; letter-spacing: 0.08em; font-size: 0.78rem; text-transform: uppercase; margin-bottom: 8px;">
+                            <div style="max-width: 640px; margin: 0 24px; border: 1px solid var(--color-border-accent); background: var(--color-deep); box-shadow: 0 24px 64px rgba(0,0,0,0.55); border-radius: 8px; padding: 22px 20px;">
+                                <div style="font-family: var(--font-display); color: var(--color-gold); letter-spacing: 0.08em; font-size: 0.78rem; text-transform: uppercase; margin-bottom: 8px;">
                                     "Unsupported GPU Configuration"
                                 </div>
-                                <div style="font-family: 'Inter', system-ui, sans-serif; color: #e2e0d8; line-height: 1.45; font-size: 0.92rem;">
+                                <div style="font-family: var(--font-body); color: var(--color-text-primary); line-height: 1.45; font-size: 0.92rem;">
                                     "The map renderer requires wgpu/WebGL2 and does not provide a Canvas2D fallback."
                                 </div>
-                                <div style="margin-top: 10px; font-family: 'JetBrains Mono', monospace; font-size: 0.74rem; color: #9a9590; word-break: break-word;">
+                                <div style="margin-top: 10px; font-family: var(--font-mono); font-size: 0.74rem; color: var(--color-text-secondary); word-break: break-word;">
                                     {message}
                                 </div>
-                                <div style="margin-top: 12px; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: #5a5860;">
+                                <div style="margin-top: 12px; font-family: var(--font-mono); font-size: 0.7rem; color: var(--color-text-dim);">
                                     "Diagnostics token: "
-                                    <span style="color: #f5c542;">{token}</span>
+                                    <span style="color: var(--color-gold);">{token}</span>
                                 </div>
                             </div>
                         </div>
@@ -1388,10 +1388,10 @@ pub fn MapCanvas() -> impl IntoView {
                     scene.reference_time_secs
                 );
                 view! {
-                    <div style="position: absolute; top: 10px; left: 10px; z-index: 25; pointer-events: none; background: rgba(8,10,18,0.78); border: 1px solid rgba(245,197,66,0.35); border-radius: 6px; padding: 6px 8px; color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.66rem; line-height: 1.35;">
+                    <div style="position: absolute; top: calc(var(--nav-height, 0px) + 10px); left: 10px; z-index: 25; pointer-events: none; background: rgba(8,10,18,0.78); border: 1px solid rgba(245,197,66,0.35); border-radius: 6px; padding: 6px 8px; color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.66rem; line-height: 1.35;">
                         <div>{summary}</div>
                         <div style="color: #c9c3b8;">{scene_line}</div>
-                        <div style="color: #9a9590;">{caps_str}</div>
+                        <div style="color: var(--color-text-secondary);">{caps_str}</div>
                     </div>
                 }
                 .into_any()
@@ -1403,14 +1403,14 @@ pub fn MapCanvas() -> impl IntoView {
                 let max_count = heat_max_take_count.get();
                 let label = heat_window_label.get();
                 view! {
-                    <div style="position: absolute; top: 16px; left: 16px; z-index: 22; pointer-events: none; background: rgba(10,12,20,0.82); border: 1px solid rgba(245,197,66,0.25); border-radius: 6px; padding: 8px 10px; min-width: 172px;">
-                        <div style="font-family: 'Silkscreen', monospace; font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: #f5c542; margin-bottom: 5px;">"Heat"</div>
+                    <div style="position: absolute; top: calc(var(--nav-height, 0px) + 16px); left: 16px; z-index: 22; pointer-events: none; background: rgba(10,12,20,0.82); border: 1px solid rgba(245,197,66,0.25); border-radius: 6px; padding: 8px 10px; min-width: 172px;">
+                        <div style="font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); margin-bottom: 5px;">"Heat"</div>
                         <div style="height: 8px; border-radius: 0; background: linear-gradient(90deg, #1e50dc 0%, #28c8f0 25%, #f5dc46 50%, #f58c32 75%, #dc2823 100%);" />
-                        <div style="margin-top: 6px; display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: #9a9590;">
+                        <div style="margin-top: 6px; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);">
                             <span>"Low"</span>
                             <span>{format!("Max {max_count}")}</span>
                         </div>
-                        <div style="margin-top: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; color: #6f748f; line-height: 1.25;">
+                        <div style="margin-top: 4px; font-family: var(--font-mono); font-size: 0.6rem; color: #6f748f; line-height: 1.25;">
                             {label}
                         </div>
                     </div>

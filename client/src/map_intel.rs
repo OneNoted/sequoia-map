@@ -393,13 +393,13 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
                         "16px".to_string()
                     }
                 }
-                style="position: absolute; top: 16px; z-index: 9; pointer-events: none; width: 218px; padding: 9px 10px; border: 1px solid rgba(58,63,92,0.78); border-radius: 4px; background: rgba(19,22,31,0.92); box-shadow: 0 8px 24px rgba(0,0,0,0.34);"
+                style="position: absolute; top: calc(var(--nav-height) + 16px); z-index: 9; pointer-events: none; width: 218px; padding: 9px 10px; border: 1px solid rgba(58,63,92,0.78); border-radius: 4px; background: rgba(19,22,31,0.92); box-shadow: 0 8px 24px rgba(0,0,0,0.34);"
             >
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px;">
-                    <span style="font-family: 'Silkscreen', monospace; font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: #9a9590;">
+                    <span style="font-family: var(--font-display); font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-secondary);">
                         "Map Intel"
                     </span>
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: #6f748f;">
+                    <span style="font-family: var(--font-mono); font-size: 0.62rem; color: #6f748f;">
                         {move || data.with(|payload| map_intel_status(payload, loading.get(), error.get().as_deref()))}
                     </span>
                 </div>
@@ -432,10 +432,10 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
                         "position: absolute; left: {left:.0}px; top: {top:.0}px; z-index: 10; pointer-events: none; width: 222px; padding: 8px 9px; border: 1px solid {color}; border-radius: 4px; background: rgba(12,14,23,0.94); box-shadow: 0 8px 22px rgba(0,0,0,0.36);",
                         color = alpha_border(info.color),
                     )}>
-                        <div style="font-family: 'Silkscreen', monospace; font-size: 0.7rem; color: #e2e0d8; line-height: 1.25;">
+                        <div style="font-family: var(--font-display); font-size: 0.7rem; color: var(--color-text-primary); line-height: 1.25;">
                             {info.title}
                         </div>
-                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: #9a9590; margin-top: 3px; line-height: 1.25;">
+                        <div style="font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary); margin-top: 3px; line-height: 1.25;">
                             {info.meta}
                         </div>
                     </div>
@@ -465,7 +465,7 @@ fn LegendSwatch(color: &'static str, shape: &'static str, label: &'static str) -
     view! {
         <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
             <span style=mark_style />
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.61rem; color: #d8d5cb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+            <span style="font-family: var(--font-mono); font-size: 0.61rem; color: #d8d5cb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                 {label}
             </span>
         </div>
@@ -479,10 +479,10 @@ where
 {
     view! {
         <div style="min-width: 0;">
-            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; color: #f5c542; line-height: 1.2; font-variant-numeric: tabular-nums;">
+            <div style="font-family: var(--font-mono); font-size: 0.68rem; color: var(--color-gold); line-height: 1.2; font-variant-numeric: tabular-nums;">
                 {move || value()}
             </div>
-            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.53rem; color: #6f748f; text-transform: uppercase; line-height: 1.2; overflow: hidden; text-overflow: ellipsis;">
+            <div style="font-family: var(--font-mono); font-size: 0.53rem; color: #6f748f; text-transform: uppercase; line-height: 1.2; overflow: hidden; text-overflow: ellipsis;">
                 {label}
             </div>
         </div>

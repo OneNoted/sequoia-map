@@ -1,4 +1,4 @@
-pub(crate) const DEFENSE_TIERS: &[(&str, &str)] = &[
+pub const DEFENSE_TIERS: &[(&str, &str)] = &[
     ("Very Low", "#00aa00"),
     ("Low", "#55ff55"),
     ("Medium", "#ffff55"),
@@ -6,7 +6,7 @@ pub(crate) const DEFENSE_TIERS: &[(&str, &str)] = &[
     ("Very High", "#aa0000"),
 ];
 
-pub(crate) fn normalize_defense_tier(tier: &str) -> String {
+pub fn normalize_defense_tier(tier: &str) -> String {
     tier.trim()
         .replace(['_', '-'], " ")
         .split_whitespace()
@@ -15,7 +15,7 @@ pub(crate) fn normalize_defense_tier(tier: &str) -> String {
         .to_ascii_uppercase()
 }
 
-pub(crate) fn defense_tier_display(tier: &str) -> (String, &'static str) {
+pub fn defense_tier_display(tier: &str) -> (String, &'static str) {
     let normalized = normalize_defense_tier(tier);
     match normalized.as_str() {
         "NONE" => ("None".to_string(), "#ffffff"),
@@ -28,7 +28,7 @@ pub(crate) fn defense_tier_display(tier: &str) -> (String, &'static str) {
     }
 }
 
-pub(crate) fn defense_tier_overlay_data(tier: Option<&str>) -> [f32; 4] {
+pub fn defense_tier_overlay_data(tier: Option<&str>) -> [f32; 4] {
     let Some(tier) = tier else {
         return [0.0; 4];
     };

@@ -1,6 +1,6 @@
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) const STATIC_NAME_BASELINE_GAP_MULTIPLIER: f32 = 1.0;
-pub(crate) const STATIC_NAME_MIN_RENDERED_PX: f32 = 12.0;
+pub const STATIC_NAME_BASELINE_GAP_MULTIPLIER: f32 = 1.0;
+pub const STATIC_NAME_MIN_RENDERED_PX: f32 = 12.0;
 
 const STATIC_TAG_SIZE_WORLD: f32 = 24.0;
 const STATIC_NAME_SIZE_WORLD: f32 = 21.5;
@@ -37,21 +37,21 @@ const ORNAMENT_TINT_LIGHTEN_BASE: f32 = 0.04;
 const ORNAMENT_TINT_LIGHTEN_DARK_BOOST: f32 = 0.12;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct StaticLabelSizing {
+pub struct StaticLabelSizing {
     pub detail_layout_alpha: f32,
     pub tag_size: f32,
     pub detail_size: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct FarZoomTagSizing {
+pub struct FarZoomTagSizing {
     pub font_height_world: f32,
     pub max_width_world: f32,
     pub alpha: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct DynamicLabelSizing {
+pub struct DynamicLabelSizing {
     pub small_timer_factor: f32,
     pub tag_size: f32,
     pub detail_size: f32,
@@ -63,7 +63,7 @@ pub(crate) struct DynamicLabelSizing {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TerritoryOrnamentSizing {
+pub struct TerritoryOrnamentSizing {
     pub inset_world: f32,
     pub corner_w_world: f32,
     pub corner_h_world: f32,
@@ -107,7 +107,7 @@ fn timer_max_width_world(ww: f32, min_width: f32) -> f32 {
     (ww - 8.0).max(min_width)
 }
 
-pub(crate) fn compute_static_label_sizing(ww: f32, hh: f32) -> Option<StaticLabelSizing> {
+pub fn compute_static_label_sizing(ww: f32, hh: f32) -> Option<StaticLabelSizing> {
     if !static_label_visible(ww, hh) {
         return None;
     }
@@ -122,7 +122,7 @@ pub(crate) fn compute_static_label_sizing(ww: f32, hh: f32) -> Option<StaticLabe
     })
 }
 
-pub(crate) fn compute_far_zoom_tag_sizing(
+pub fn compute_far_zoom_tag_sizing(
     sw: f32,
     sh: f32,
     scale: f32,
@@ -158,7 +158,7 @@ pub(crate) fn compute_far_zoom_tag_sizing(
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn static_name_bottom_bound(
+pub fn static_name_bottom_bound(
     use_static_gpu_labels: bool,
     static_show_names: bool,
     ww: f32,
@@ -191,7 +191,7 @@ pub(crate) fn static_name_bottom_bound(
     Some(name_y + detail_size * 0.5)
 }
 
-pub(crate) fn compute_dynamic_label_sizing(
+pub fn compute_dynamic_label_sizing(
     ww: f32,
     hh: f32,
     scale: f32,
@@ -228,11 +228,11 @@ pub(crate) fn compute_dynamic_label_sizing(
     })
 }
 
-pub(crate) fn compute_resource_icon_size_world(icon_scale: f32) -> f32 {
+pub fn compute_resource_icon_size_world(icon_scale: f32) -> f32 {
     (RESOURCE_ICON_SIZE_WORLD * icon_scale.max(0.0)).max(1.0)
 }
 
-pub(crate) fn compute_resource_icon_label_lift_world(
+pub fn compute_resource_icon_label_lift_world(
     territory_height: f32,
     detail_layout_alpha: f32,
     resource_icons_enabled: bool,
@@ -251,7 +251,7 @@ pub(crate) fn compute_resource_icon_label_lift_world(
         * alpha
 }
 
-pub(crate) fn compute_resource_icon_center_y_world(
+pub fn compute_resource_icon_center_y_world(
     territory_top: f32,
     territory_height: f32,
     detail_layout_alpha: f32,
@@ -281,7 +281,7 @@ pub(crate) fn compute_resource_icon_center_y_world(
     Some(desired_center_y)
 }
 
-pub(crate) fn compute_territory_ornament_sizing(
+pub fn compute_territory_ornament_sizing(
     ww: f32,
     hh: f32,
     ornament_aspect: f32,
@@ -325,7 +325,7 @@ pub(crate) fn compute_territory_ornament_sizing(
     }
 }
 
-pub(crate) fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 4] {
+pub fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 4] {
     let (r, g, b) = guild_rgb;
     let rf = r as f32 / 255.0;
     let gf = g as f32 / 255.0;

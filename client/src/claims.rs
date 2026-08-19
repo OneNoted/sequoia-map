@@ -1383,16 +1383,16 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
                                 <div style="display: flex; align-items: start; gap: 14px;">
                                     <div
                                         style:display=move || if boot_error.get().is_some() { "none" } else { "block" }
-                                        style="width: 28px; height: 28px; border-radius: 999px; border: 3px solid rgba(245,197,66,0.22); border-top-color: #f5c542; animation: claims-bootstrap-spin 0.9s linear infinite;"
+                                        style="width: 28px; height: 28px; border-radius: 999px; border: 3px solid rgba(245,197,66,0.22); border-top-color: var(--color-gold); animation: claims-bootstrap-spin 0.9s linear infinite;"
                                     ></div>
                                     <div style="display: grid; gap: 8px;">
                                         <div style="display: inline-flex; align-items: center; gap: 10px; padding: 8px 12px; width: fit-content;
                                             border-radius: 999px; border: 1px solid rgba(245,197,66,0.22);
-                                            background: rgba(245,197,66,0.08); color: #f5c542; font-size: 0.7rem;
+                                            background: rgba(245,197,66,0.08); color: var(--color-gold); font-size: 0.7rem;
                                             letter-spacing: 0.12em; text-transform: uppercase;">
                                             "Claims Bootstrap"
                                         </div>
-                                        <div style="font-family: 'Silkscreen', monospace; color: #f4c94b; font-size: clamp(1rem, 2vw, 1.2rem);">
+                                        <div style="font-family: var(--font-display); color: #f4c94b; font-size: clamp(1rem, 2vw, 1.2rem);">
                                             {title.clone()}
                                         </div>
                                         <div style="color: #a2afc8; font-size: 0.8rem; line-height: 1.8;">
@@ -2167,7 +2167,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     };
 
     view! {
-        <div style="position: relative; width: 100%; height: 100%; background: #0c0e17; color: #e6e3d9; overflow: hidden;">
+        <div style="position: relative; width: 100%; height: 100%; background: var(--color-abyss); color: #e6e3d9; overflow: hidden;">
             <input
                 node_ref=file_input_ref
                 type="file"
@@ -2258,7 +2258,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 <button
                                                     class="btn"
                                                     class:active=move || tool.get() == entry
-                                                    style="font-family: 'Silkscreen', monospace;"
+                                                    style="font-family: var(--font-display);"
                                                     title=entry.tooltip()
                                                     on:click=move |_| tool.set(entry)
                                                 >
@@ -2410,7 +2410,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                             <div class="card">
                                                 <div style="display: flex; align-items: start; justify-content: space-between; gap: 10px;">
                                                     <div>
-                                                        <div style="font-family: 'Silkscreen', monospace; color: #f4c94b; font-size: 0.88rem;">{territory_name.clone()}</div>
+                                                        <div style="font-family: var(--font-display); color: #f4c94b; font-size: 0.88rem;">{territory_name.clone()}</div>
                                                         <div style="margin-top: 4px; color: #8d97b3; font-size: 0.72rem;">{coords}</div>
                                                     </div>
                                                     <button class="btn btn-sm" on:click=move |_| tool.set(ClaimTool::View)>"Focus View"</button>
@@ -2578,7 +2578,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 <div>{format!("Doubles {} • Rainbow {} • Emerald {}", metrics.resources.any_double, metrics.resources.rainbow, metrics.resources.emerald)}</div>
                                             </div>
                                         }.into_any()
-                                    }).unwrap_or_else(|| view! { <div style="color: #9a9590;">"Choose a guild or paint territories to see the summary."</div> }.into_any())}
+                                    }).unwrap_or_else(|| view! { <div style="color: var(--color-text-secondary);">"Choose a guild or paint territories to see the summary."</div> }.into_any())}
                                 </div>
                             }
                             .into_any()
@@ -2609,7 +2609,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 }
                                             }).collect_view()}
                                         }.into_any()
-                                    }).unwrap_or_else(|| view! { <div style="color: #9a9590;">"No active claim yet."</div> }.into_any())}
+                                    }).unwrap_or_else(|| view! { <div style="color: var(--color-text-secondary);">"No active claim yet."</div> }.into_any())}
                                 </div>
                             }
                             .into_any()

@@ -41,13 +41,25 @@
 
       window.SEQUOIA_ASSET_VERSION = rawAssetVersion;
 
-      const preload = document.createElement("link");
-      preload.rel = "preload";
-      preload.href = fontUrl("minecraft-regular.otf");
-      preload.as = "font";
-      preload.type = "font/otf";
-      preload.crossOrigin = "";
-      document.head.appendChild(preload);
+      // The site navbar draws from the woff2 faces, so those are what the
+      // first paint waits on. The .otf stays preloaded too: it backs
+      // SilkscreenLocal, which the WebGL glyph atlas measures against at
+      // renderer init, and the atlas is baked once - if the face has not
+      // landed by then every territory label keeps fallback monospace
+      // metrics for the rest of the session.
+      for (const [filename, type] of [
+        ["minecraft-regular.otf", "font/otf"],
+        ["minecraft-regular.woff2", "font/woff2"],
+        ["inter-variable.woff2", "font/woff2"],
+      ]) {
+        const preload = document.createElement("link");
+        preload.rel = "preload";
+        preload.href = fontUrl(filename);
+        preload.as = "font";
+        preload.type = type;
+        preload.crossOrigin = "";
+        document.head.appendChild(preload);
+      }
 
       const fontStyle = document.createElement("style");
       fontStyle.textContent = [
@@ -56,6 +68,18 @@
         '@font-face { font-family: "Silkscreen"; src: url("' + fontUrl("minecraft-bold.otf") + '") format("opentype"); font-style: normal; font-weight: 700; font-display: swap; }',
         '@font-face { font-family: "Silkscreen"; src: url("' + fontUrl("minecraft-bold-italic.otf") + '") format("opentype"); font-style: italic; font-weight: 700; font-display: swap; }',
         '@font-face { font-family: "SilkscreenLocal"; src: local("Minecraft"), url("' + fontUrl("minecraft-regular.otf") + '") format("opentype"); font-style: normal; font-weight: 400; font-display: swap; }',
+        // seqwawa.com names this face "Minecraft" and serves the re-hinted
+        // woff2 build of it, whose CFF hints keep the pixel stems rasterizing
+        // the same across platforms. The site navbar has to match that build
+        // exactly, so --font-display resolves here and not to the .otf above,
+        // which stays live for the WebGL glyph atlas.
+        '@font-face { font-family: "Minecraft"; src: url("' + fontUrl("minecraft-regular.woff2") + '") format("woff2"); font-style: normal; font-weight: 400; font-display: swap; }',
+        '@font-face { font-family: "Minecraft"; src: url("' + fontUrl("minecraft-italic.woff2") + '") format("woff2"); font-style: italic; font-weight: 400; font-display: swap; }',
+        '@font-face { font-family: "Minecraft"; src: url("' + fontUrl("minecraft-bold.woff2") + '") format("woff2"); font-style: normal; font-weight: 700; font-display: swap; }',
+        '@font-face { font-family: "Minecraft"; src: url("' + fontUrl("minecraft-bold-italic.woff2") + '") format("woff2"); font-style: italic; font-weight: 700; font-display: swap; }',
+        // The site's text face, for everything in the bar that is not display
+        // type - menu descriptions, the Discord handle.
+        '@font-face { font-family: "Inter"; src: url("' + fontUrl("inter-variable.woff2") + '") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }',
       ].join("\n");
       document.head.appendChild(fontStyle);
     </script>

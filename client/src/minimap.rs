@@ -278,10 +278,10 @@ pub fn Minimap() -> impl IntoView {
         <div
             style:display=move || if is_mobile.get() { "none" } else { "block" }
             style:bottom=move || if map_mode.get() == MapMode::History { "68px" } else { "16px" }
-            style="position: absolute; left: 16px; z-index: 5; background: #13161f; border: 1px solid #3a3f5c; border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.6), 0 0 1px rgba(168,85,247,0.15), inset 0 0 0 1px rgba(255,255,255,0.03); overflow: hidden;"
+            style="position: absolute; left: 16px; z-index: 5; background: var(--color-deep); border: 1px solid var(--color-border-accent); border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.6), 0 0 1px rgba(168,85,247,0.15), inset 0 0 0 1px rgba(255,255,255,0.03); overflow: hidden;"
         >
             // MAP label
-            <div style="position: absolute; top: 6px; left: 8px; z-index: 1; font-family: 'Silkscreen', monospace; font-size: 0.62rem; color: rgba(245,197,66,0.5); letter-spacing: 0.1em; pointer-events: none;">"MAP"</div>
+            <div style="position: absolute; top: 6px; left: 8px; z-index: 1; font-family: var(--font-display); font-size: 0.62rem; color: rgba(245,197,66,0.5); letter-spacing: 0.1em; pointer-events: none;">"MAP"</div>
             // Gold corner marks — top-left
             <div style="position: absolute; top: 0; left: 0; width: 8px; height: 1px; background: rgba(245,197,66,0.3); pointer-events: none;" />
             <div style="position: absolute; top: 0; left: 0; width: 1px; height: 8px; background: rgba(245,197,66,0.3); pointer-events: none;" />

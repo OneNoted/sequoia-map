@@ -1,18 +1,10 @@
-#[path = "../../client/src/animation.rs"]
-mod animation;
 mod app;
 #[path = "../../client/src/assets.rs"]
 mod assets;
 #[path = "../../client/src/canvas.rs"]
 mod canvas;
-#[path = "../../client/src/claim_labels.rs"]
-mod claim_labels;
 #[path = "../../client/src/claims.rs"]
 mod claims;
-#[path = "../../client/src/colors.rs"]
-mod colors;
-#[path = "../../client/src/defense.rs"]
-mod defense;
 #[cfg(target_arch = "wasm32")]
 #[path = "../../client/src/gpu/mod.rs"]
 mod gpu;
@@ -21,26 +13,22 @@ mod heat;
 mod history;
 #[path = "../../client/src/icons.rs"]
 mod icons;
-#[path = "../../client/src/label_layout.rs"]
-mod label_layout;
-#[path = "../../client/src/overlay_sizing.rs"]
-mod overlay_sizing;
 #[path = "../../client/src/render_loop.rs"]
 mod render_loop;
 #[path = "../../client/src/renderer/mod.rs"]
 mod renderer;
-#[path = "../../client/src/spatial.rs"]
-mod spatial;
 #[path = "../../client/src/sse.rs"]
 mod sse;
-#[path = "../../client/src/territory.rs"]
-mod territory;
 #[path = "../../client/src/tiles.rs"]
 mod tiles;
-#[path = "../../client/src/time_format.rs"]
-mod time_format;
-#[path = "../../client/src/viewport.rs"]
-mod viewport;
+
+// Render/math core. These modules moved to `sequoia-map-engine`; they are
+// re-exported at the crate root so existing `crate::<module>` paths resolve
+// unchanged while the Leptos UI is migrated away.
+pub(crate) use sequoia_map_engine::{
+    animation, claim_labels, colors, defense, label_layout, overlay_sizing, spatial, territory,
+    time_format, viewport,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu {

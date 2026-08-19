@@ -42,6 +42,11 @@
           '@font-face { font-family: "Silkscreen"; src: url("' + fontUrl("minecraft-bold.otf") + '") format("opentype"); font-style: normal; font-weight: 700; font-display: swap; }',
           '@font-face { font-family: "Silkscreen"; src: url("' + fontUrl("minecraft-bold-italic.otf") + '") format("opentype"); font-style: italic; font-weight: 700; font-display: swap; }',
           '@font-face { font-family: "SilkscreenLocal"; src: local("Minecraft"), url("' + fontUrl("minecraft-regular.otf") + '") format("opentype"); font-style: normal; font-weight: 400; font-display: swap; }',
+          // Alias for --font-display, matching seqwawa.com. See client/index.html.
+          '@font-face { font-family: "Minecraft"; src: url("' + fontUrl("minecraft-regular.otf") + '") format("opentype"); font-style: normal; font-weight: 400; font-display: swap; }',
+          '@font-face { font-family: "Minecraft"; src: url("' + fontUrl("minecraft-italic.otf") + '") format("opentype"); font-style: italic; font-weight: 400; font-display: swap; }',
+          '@font-face { font-family: "Minecraft"; src: url("' + fontUrl("minecraft-bold.otf") + '") format("opentype"); font-style: normal; font-weight: 700; font-display: swap; }',
+          '@font-face { font-family: "Minecraft"; src: url("' + fontUrl("minecraft-bold-italic.otf") + '") format("opentype"); font-style: italic; font-weight: 700; font-display: swap; }',
         ].join("\n");
         document.head.appendChild(fontStyle);
       })();

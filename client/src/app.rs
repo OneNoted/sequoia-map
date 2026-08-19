@@ -327,14 +327,10 @@ pub(crate) struct TerritoryGeometryStore(pub StoredValue<TerritoryGeometryMap>);
 #[derive(Clone, Copy)]
 pub(crate) struct GuildColorStore(pub StoredValue<GuildColorMap>);
 
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum NameColor {
-    White,  // rgba(220, 218, 210, 0.88) — current default
-    Guild,  // per-territory guild color (brightened), same as tag line
-    Gold,   // rgba(245, 197, 66, 0.88) — matches app accent
-    Copper, // rgba(181, 103, 39, 0.88) — warm copper
-    Muted,  // rgba(120, 116, 112, 0.78) — subtle/subdued
-}
+// Defined in the engine crate so the renderer can name it without depending on
+// the UI. Re-exported here to keep `crate::app::NameColor` paths working; its
+// serde form is PascalCase and is persisted in localStorage.
+pub(crate) use sequoia_map_engine::settings::NameColor;
 
 use gloo_storage::Storage;
 
@@ -696,6 +692,7 @@ use crate::heat::{self, HeatFetchInput};
 use crate::history;
 use crate::icons::{self, ResourceAtlas};
 use crate::map_intel::MapIntelOverlay;
+use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::sse::{self, ConnectionStatus};
@@ -987,6 +984,16 @@ pub fn MapPage() -> impl IntoView {
     provide_context(GuildColorStore(guild_colors));
     provide_context(crate::tower::TowerState::new());
     provide_context(IsMobile(is_mobile));
+
+    // Website session, resolved once on mount. Display-only: the navbar shows
+    // who is signed in, and nothing on the map is gated on it, so a failure
+    // here just leaves the bar reading "Sign in".
+    let viewer = RwSignal::new(None::<crate::auth::Viewer>);
+    provide_context(CurrentViewer(viewer));
+    wasm_bindgen_futures::spawn_local(async move {
+        viewer.set(crate::auth::fetch_viewer().await);
+    });
+
     provide_context(PeekTerritory(peek_territory));
     provide_context(SelectedGuild(selected_guild));
     provide_context(DetailReturnGuild(detail_return_guild));
@@ -2094,8 +2101,9 @@ pub fn MapPage() -> impl IntoView {
 
     view! {
         <div style="width: 100%; height: 100%; position: relative;">
-            <div style="width: 100%; height: 100%; position: relative; overflow: hidden; background: #0c0e17;">
+            <div style="width: 100%; height: 100%; position: relative; overflow: hidden; background: var(--bg-page);">
                 <MapCanvas />
+                <SiteNavbar />
                 // Minimap backdrop frame (desktop only)
                 <div
                     style:display=move || if is_mobile.get() || !show_minimap.get() { "none" } else { "block" }
@@ -2103,7 +2111,7 @@ pub fn MapPage() -> impl IntoView {
                     style="position: absolute; left: 16px; z-index: 6; width: 200px; height: 280px; pointer-events: none; border: 1px solid rgba(58,63,92,0.6); border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.12), inset 0 0 0 1px rgba(255,255,255,0.03);"
                 >
                     // "MAP" label
-                    <div style="position: absolute; top: 6px; left: 8px; font-family: 'Silkscreen', monospace; font-size: 0.62rem; color: rgba(245,197,66,0.5); letter-spacing: 0.1em;">"MAP"</div>
+                    <div style="position: absolute; top: 6px; left: 8px; font-family: var(--font-display); font-size: 0.62rem; color: rgba(245,197,66,0.5); letter-spacing: 0.1em;">"MAP"</div>
                     // Gold corner marks — top-left
                     <div style="position: absolute; top: 0; left: 0; width: 8px; height: 1px; background: rgba(245,197,66,0.3);" />
                     <div style="position: absolute; top: 0; left: 0; width: 1px; height: 8px; background: rgba(245,197,66,0.3);" />
@@ -2127,7 +2135,7 @@ pub fn MapPage() -> impl IntoView {
                     style:display=move || {
                         if is_mobile.get() && !sidebar_open.get() { "flex" } else { "none" }
                     }
-                    style="position: absolute; bottom: 16px; right: 16px; z-index: 20; width: 48px; height: 48px; border-radius: 12px; background: #13161f; border: 1px solid #3a3f5c; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.15); color: #f5c542; font-size: 1.4rem; font-family: 'JetBrains Mono', monospace; touch-action: manipulation;"
+                    style="position: absolute; bottom: 16px; right: 16px; z-index: 20; width: 48px; height: 48px; border-radius: 12px; background: var(--color-deep); border: 1px solid var(--color-border-accent); align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.15); color: var(--color-gold); font-size: 1.4rem; font-family: var(--font-mono); touch-action: manipulation;"
                     on:click=move |_| {
                         sidebar_open.set(true);
                         sidebar_transient.set(false);
@@ -2209,7 +2217,7 @@ fn SidebarToggle() -> impl IntoView {
         <button
             class="sidebar-toggle"
             title=move || if sidebar_open.get() { "Hide sidebar" } else { "Show sidebar" }
-            style="position: absolute; top: 16px; left: -44px; z-index: 11; width: 32px; height: 32px; background: #13161f; border: 1px solid #282c3e; border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; color: #5a5860; font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; line-height: 1;"
+            style="position: absolute; top: 16px; left: -44px; z-index: 11; width: 32px; height: 32px; background: var(--color-deep); border: 1px solid var(--color-border-subtle); border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; color: var(--color-text-dim); font-family: var(--font-mono); font-size: 1.1rem; line-height: 1;"
             on:click=move |_| {
                 sidebar_open.update(|v| *v = !*v);
                 sidebar_transient.set(false);
@@ -2217,15 +2225,15 @@ fn SidebarToggle() -> impl IntoView {
             on:mouseenter=move |e| {
                 if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
                     el.style().set_property("border-color", "rgba(245,197,66,0.4)").ok();
-                    el.style().set_property("color", "#f5c542").ok();
-                    el.style().set_property("background", "#1a1d2a").ok();
+                    el.style().set_property("color", "var(--color-gold)").ok();
+                    el.style().set_property("background", "var(--color-surface)").ok();
                 }
             }
             on:mouseleave=move |e| {
                 if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("border-color", "#282c3e").ok();
-                    el.style().set_property("color", "#5a5860").ok();
-                    el.style().set_property("background", "#13161f").ok();
+                    el.style().set_property("border-color", "var(--color-border-subtle)").ok();
+                    el.style().set_property("color", "var(--color-text-dim)").ok();
+                    el.style().set_property("background", "var(--color-deep)").ok();
                 }
             }
         >
@@ -2412,9 +2420,9 @@ fn MobileHistoryToggle() -> impl IntoView {
                 }
             }
             style:bottom=move || if is_history() { "76px" } else { "72px" }
-            style:background=move || if is_history() { "#f5c542" } else { "#13161f" }
-            style:color=move || if is_history() { "#13161f" } else { "#9a9590" }
-            style:border-color=move || if is_history() { "#f5c542" } else { "#3a3f5c" }
+            style:background=move || if is_history() { "var(--color-gold)" } else { "var(--color-deep)" }
+            style:color=move || if is_history() { "var(--color-deep)" } else { "var(--color-text-secondary)" }
+            style:border-color=move || if is_history() { "var(--color-gold)" } else { "var(--color-border-accent)" }
             style:box-shadow=move || {
                 if is_history() {
                     "0 0 12px rgba(245,197,66,0.4), 0 4px 16px rgba(0,0,0,0.5)"
@@ -2508,15 +2516,15 @@ fn DefenseLegend() -> impl IntoView {
                     "16px".to_string()
                 }
             }
-            style="position: absolute; top: 16px; z-index: 8; pointer-events: none; padding: 8px 9px; border: 1px solid rgba(58,63,92,0.78); border-radius: 4px; background: rgba(19,22,31,0.92); box-shadow: 0 8px 24px rgba(0,0,0,0.34);"
+            style="position: absolute; top: calc(var(--nav-height) + 16px); z-index: 8; pointer-events: none; padding: 8px 9px; border: 1px solid rgba(58,63,92,0.78); border-radius: 4px; background: rgba(19,22,31,0.92); box-shadow: 0 8px 24px rgba(0,0,0,0.34);"
         >
-            <div style="font-family: 'Silkscreen', monospace; font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: #9a9590; margin-bottom: 6px;">
+            <div style="font-family: var(--font-display); font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-secondary); margin-bottom: 6px;">
                 "Defense"
             </div>
             <div style="display: grid; grid-template-columns: auto auto; gap: 4px 8px; align-items: center;">
                 {DEFENSE_TIERS.iter().map(|(label, color)| view! {
                     <span style={format!("width: 10px; height: 10px; border-radius: 2px; background: {color}; border: 1px solid rgba(255,255,255,0.18);")} />
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.64rem; color: #d8d5cb; white-space: nowrap;">
+                    <span style="font-family: var(--font-mono); font-size: 0.64rem; color: #d8d5cb; white-space: nowrap;">
                         {*label}
                     </span>
                 }).collect_view()}
@@ -2622,8 +2630,8 @@ fn Tooltip() -> impl IntoView {
                 let (label, color) = defense_tier_display(tier);
                 view! {
                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                        <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Defense"</span>
-                        <span style={format!("color: {color}; font-size: 0.78rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;")}>{label}</span>
+                        <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Defense"</span>
+                        <span style={format!("color: {color}; font-size: 0.78rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;")}>{label}</span>
                     </div>
                 }
             });
@@ -2642,7 +2650,7 @@ fn Tooltip() -> impl IntoView {
                 view! {
                     <div style="padding: 7px 0 3px; border-top: 1px solid rgba(40,44,62,0.6);">
                         <div style={format!(
-                            "font-family: 'Silkscreen', monospace; font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.10em; color: {title_color}; margin-bottom: 5px;"
+                            "font-family: var(--font-display); font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.10em; color: {title_color}; margin-bottom: 5px;"
                         )}>
                             {title.to_string()}
                         </div>
@@ -2657,11 +2665,11 @@ fn Tooltip() -> impl IntoView {
                                     )}>
                                         <span style={icon_style} />
                                         {(is_double).then(|| view! { <span style={double_style} /> })}
-                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.70rem; color: #e2e0d8; font-variant-numeric: tabular-nums;">
+                                        <span style="font-family: var(--font-mono); font-size: 0.70rem; color: var(--color-text-primary); font-variant-numeric: tabular-nums;">
                                             {amount}
                                         </span>
                                         <span style={format!(
-                                            "font-family: 'Inter', system-ui, sans-serif; font-size: 0.60rem; color: #aeb7c7;"
+                                            "font-family: var(--font-body); font-size: 0.60rem; color: #aeb7c7;"
                                         )}>
                                             {label}
                                         </span>
@@ -2718,7 +2726,7 @@ fn Tooltip() -> impl IntoView {
                     class="tooltip-animate"
                     style:left=format!("{}px", x + 16.0)
                     style:top=format!("{}px", y - 8.0)
-                    style="position: fixed; pointer-events: none; z-index: 100; min-width: 280px; max-width: 340px; background: #13161f; border: 1px solid #282c3e; border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.02) inset; backdrop-filter: blur(2px); display: flex; flex-direction: row;"
+                    style="position: fixed; pointer-events: none; z-index: 100; min-width: 280px; max-width: 340px; background: var(--color-deep); border: 1px solid var(--color-border-subtle); border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.02) inset; backdrop-filter: blur(2px); display: flex; flex-direction: row;"
                 >
                     <div style={format!(
                         "width: 4px; flex-shrink: 0; background: linear-gradient(180deg, {} 0%, {} 100%);",
@@ -2733,11 +2741,11 @@ fn Tooltip() -> impl IntoView {
                                 rgba_css(r, g, b, 0.75),
                                 rgba_css(r, g, b, 0.25),
                             )} />
-                            <div style="font-size: 0.92rem; font-weight: 700; color: #e2e0d8; font-family: 'Silkscreen', monospace; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
+                            <div style="font-size: 0.92rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
                                 {info.name.clone()}
                             </div>
                             {info.is_headquarters.then(|| view! {
-                                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: #f5c542; flex-shrink: 0;">
+                                <span style="font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); flex-shrink: 0;">
                                     "[HQ]"
                                 </span>
                             })}
@@ -2749,29 +2757,29 @@ fn Tooltip() -> impl IntoView {
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 title="Open Wynncraft guild stats"
-                                style="font-size: 0.78rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif; text-decoration: none; pointer-events: auto;"
+                                style="font-size: 0.78rem; color: var(--color-gold); font-family: var(--font-body); text-decoration: none; pointer-events: auto;"
                             >
                                 {info.guild_name.clone()}
                             </a>
-                            <span style="font-size: 0.70rem; color: #9a9590; font-family: 'JetBrains Mono', monospace;">"[" {info.guild_prefix.clone()} "]"</span>
+                            <span style="font-size: 0.70rem; color: var(--color-text-secondary); font-family: var(--font-mono);">"[" {info.guild_prefix.clone()} "]"</span>
                         </div>
 
                         // Key-value rows
                         <div style="display: flex; flex-direction: column;">
                             <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Held"</span>
-                                <span style="color: #e2e0d8; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{info.held.clone()}</span>
+                                <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Held"</span>
+                                <span style="color: var(--color-text-primary); font-size: 0.82rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{info.held.clone()}</span>
                             </div>
                             {match info.cooldown.clone() {
                                 Some((remaining, frac)) => view! {
                                     <div style="padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
                                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                                            <span style="color: #f5c542; font-size: 0.72rem; font-family: 'Silkscreen', monospace;">"Cooldown"</span>
-                                            <span style="color: #f5c542; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{remaining}</span>
+                                            <span style="color: var(--color-gold); font-size: 0.72rem; font-family: var(--font-display);">"Cooldown"</span>
+                                            <span style="color: var(--color-gold); font-size: 0.82rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{remaining}</span>
                                         </div>
                                         <div style="height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;">
                                             <div style={format!(
-                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, #f5c542, #d4a030); border-radius: 2px; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
+                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, var(--color-gold), #d4a030); border-radius: 2px; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
                                                 frac * 100.0
                                             )} />
                                         </div>
@@ -2779,18 +2787,18 @@ fn Tooltip() -> impl IntoView {
                                 }.into_any(),
                                 None => view! {
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Cooldown"</span>
-                                        <span style="color: #50c878; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace;">"Ready"</span>
+                                        <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Cooldown"</span>
+                                        <span style="color: var(--color-emerald); font-size: 0.82rem; font-family: var(--font-mono);">"Ready"</span>
                                     </div>
                                 }.into_any(),
                             }}
                             <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Treasury"</span>
+                                <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Treasury"</span>
                                 <span style="display: inline-flex; align-items: center; gap: 5px;">
-                                    <span style={format!("color: {}; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
+                                    <span style={format!("color: {}; font-family: var(--font-mono); font-size: 0.78rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
                                     {(buff > 0).then(|| view! {
                                         <span style={format!(
-                                            "font-size: 0.65rem; font-family: 'JetBrains Mono', monospace; color: {}; background: {}; padding: 1px 5px; border-radius: 3px;",
+                                            "font-size: 0.65rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;",
                                             rgba_css(tr, tg, tb, 0.9),
                                             rgba_css(tr, tg, tb, 0.08),
                                         )}>{format!("+{}%", buff)}</span>
@@ -2800,8 +2808,8 @@ fn Tooltip() -> impl IntoView {
                             {defense_row}
                             {info.takes_in_window.map(|count| view! {
                                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Takes in window"</span>
-                                    <span style="color: #e2e0d8; font-size: 0.78rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{count}</span>
+                                    <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Takes in window"</span>
+                                    <span style="color: var(--color-text-primary); font-size: 0.78rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{count}</span>
                                 </div>
                             })}
                         </div>
@@ -2890,34 +2898,34 @@ fn TerritoryPeekCard() -> impl IntoView {
                 <div
                     class="peek-card-animate"
                     style:bottom=format!("{}px", bottom_px)
-                    style="position: fixed; left: 16px; right: 16px; z-index: 90; background: #161921; border: 1px solid #282c3e; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
+                    style="position: fixed; left: 16px; right: 16px; z-index: 90; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
                 >
                     <div style={format!("width: 4px; flex-shrink: 0; background: {};", rgba_css(r, g, b, 0.85))} />
                     <div style="padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 4px;">
-                        <div style="font-size: 0.85rem; font-weight: 700; color: #e2e0d8; font-family: 'Silkscreen', monospace; line-height: 1.3;">
-                            <span style="color: #9a9590; font-weight: 400;">"[" {info.2.clone()} "] "</span>
+                        <div style="font-size: 0.85rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.3;">
+                            <span style="color: var(--color-text-secondary); font-weight: 400;">"[" {info.2.clone()} "] "</span>
                             {info.1}
                         </div>
-                        <div style="font-size: 0.72rem; color: #9a9590; font-family: 'JetBrains Mono', monospace;">
+                        <div style="font-size: 0.72rem; color: var(--color-text-secondary); font-family: var(--font-mono);">
                             {info.0.clone()}
                         </div>
                         <div style="font-size: 0.68rem; display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 2px;">
-                            <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Held"</span>
-                            <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{info.3}</span>
+                            <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Held"</span>
+                            <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{info.3}</span>
                         </div>
                         {takes_in_window.map(|count| view! {
                             <div style="font-size: 0.68rem; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                                <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Takes in window"</span>
-                                <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{count}</span>
+                                <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Takes in window"</span>
+                                <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{count}</span>
                             </div>
                         })}
-                        <div style="font-size: 0.68rem; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 4px;">
+                        <div style="font-size: 0.68rem; font-family: var(--font-mono); display: flex; align-items: center; gap: 4px;">
                             <span style={format!("color: {}; font-size: 0.52rem;", rgba_css(tr, tg, tb, 1.0))}>{"\u{25C6}"}</span>
                             <span style={format!("color: {};", rgba_css(tr, tg, tb, 0.9))}>{treasury.label()}</span>
                         </div>
                     </div>
                     <button
-                        style="align-self: center; margin-right: 14px; min-height: 44px; min-width: 44px; padding: 8px 16px; background: #1a1d2a; border: 1px solid #3a3f5c; border-radius: 6px; color: #f5c542; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; cursor: pointer; touch-action: manipulation; white-space: nowrap;"
+                        style="align-self: center; margin-right: 14px; min-height: 44px; min-width: 44px; padding: 8px 16px; background: var(--color-surface); border: 1px solid var(--color-border-accent); border-radius: 6px; color: var(--color-gold); font-family: var(--font-mono); font-size: 0.72rem; cursor: pointer; touch-action: manipulation; white-space: nowrap;"
                         on:click=move |_| {
                             detail_return_guild.set(None);
                             selected.set(Some(name.clone()));
