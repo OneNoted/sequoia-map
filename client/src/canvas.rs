@@ -9,13 +9,14 @@ use web_sys::{HtmlCanvasElement, MouseEvent, PointerEvent, WheelEvent};
 
 use crate::app::{
     AbbreviateNames, BoldConnections, ConnectionOpacityScale, ConnectionThicknessScale,
-    ConnectionZoomFadeEnd, ConnectionZoomFadeStart, CurrentMode, DetailReturnGuild, FillAlphaBoost,
-    HeatEntriesByTerritory, HeatMaxTakeCount, HeatModeEnabled, HeatWindowLabel, HistoryTimestamp,
-    Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
-    LabelScaleStaticName, MapMode, NameColorSetting, PeekTerritory, ReadableFont,
-    ResourceHighlight, Selected, ShowCompoundMapTime, ShowCountdown, ShowGranularMapTime,
-    ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarOpen,
-    SidebarTransient, SuppressCooldownVisuals, TagColorSetting, ThickCooldownBorders,
+    ConnectionZoomFadeEnd, ConnectionZoomFadeStart, CurrentMode, DefenseHighlight,
+    DetailReturnGuild, FillAlphaBoost, HeatEntriesByTerritory, HeatMaxTakeCount, HeatModeEnabled,
+    HeatWindowLabel, HistoryTimestamp, Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons,
+    LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, MapMode, NameColorSetting,
+    PeekTerritory, ReadableFont, ResourceHighlight, Selected, ShowClaimLabels, ShowCompoundMapTime,
+    ShowCountdown, ShowFarZoomTerritoryTags, ShowGranularMapTime, ShowMinimap, ShowNames,
+    ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarOpen, SidebarTransient,
+    SuppressCooldownVisuals, TagColorSetting, ThickCooldownBorders,
 };
 use crate::gpu::{GpuRenderer, RenderFrameInput};
 use crate::icons::{self, ResourceAtlas};
@@ -379,6 +380,8 @@ pub fn MapCanvas() -> impl IntoView {
     let ShowGranularMapTime(show_granular_map_time) = expect_context();
     let ShowCompoundMapTime(show_compound_map_time) = expect_context();
     let ShowNames(show_names) = expect_context();
+    let ShowClaimLabels(show_claim_labels) = expect_context();
+    let ShowFarZoomTerritoryTags(show_far_zoom_territory_tags) = expect_context();
     let ThickCooldownBorders(thick_cooldown_borders) = expect_context();
     let BoldConnections(bold_connections) = expect_context();
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
@@ -388,6 +391,7 @@ pub fn MapCanvas() -> impl IntoView {
     let SuppressCooldownVisuals(suppress_cooldown_visuals) = expect_context();
     let FillAlphaBoost(fill_alpha_boost) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
+    let DefenseHighlight(defense_highlight) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
     let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
     let ReadableFont(readable_font) = expect_context();
@@ -501,9 +505,12 @@ pub fn MapCanvas() -> impl IntoView {
             renderer.resize(pixel_w, pixel_h, scale as f32);
             renderer.thick_cooldown_borders = thick_cooldown_borders.get_untracked();
             renderer.resource_highlight = resource_highlight.get_untracked();
+            renderer.defense_highlight = defense_highlight.get_untracked();
             renderer.use_static_gpu_labels = true;
             renderer.use_full_gpu_text = true;
             renderer.static_show_names = show_names.get_untracked();
+            renderer.show_claim_labels = show_claim_labels.get_untracked();
+            renderer.show_far_zoom_territory_tags = show_far_zoom_territory_tags.get_untracked();
             renderer.static_abbreviate_names = abbreviate_names.get_untracked();
             renderer.static_name_color = name_color.get_untracked();
             renderer.static_tag_color = tag_color.get_untracked();
@@ -693,6 +700,8 @@ pub fn MapCanvas() -> impl IntoView {
         let gpu = gpu.clone();
         move || {
             show_names.track();
+            show_claim_labels.track();
+            show_far_zoom_territory_tags.track();
             abbreviate_names.track();
             show_countdown.track();
             show_granular_map_time.track();
@@ -709,6 +718,7 @@ pub fn MapCanvas() -> impl IntoView {
             name_color.track();
             tag_color.track();
             resource_highlight.track();
+            defense_highlight.track();
             show_resource_icons.track();
             show_territory_ornaments.track();
             thick_cooldown_borders.track();
@@ -766,6 +776,9 @@ pub fn MapCanvas() -> impl IntoView {
                         Ok(mut renderer) => {
                             renderer.use_full_gpu_text = true;
                             renderer.use_static_gpu_labels = true;
+                            renderer.show_claim_labels = show_claim_labels.get_untracked();
+                            renderer.show_far_zoom_territory_tags =
+                                show_far_zoom_territory_tags.get_untracked();
                             renderer.static_name_color = name_color.get_untracked();
                             renderer.label_scale_master = label_scale_master.get_untracked() as f32;
                             renderer.label_scale_static_tag =
@@ -1316,19 +1329,19 @@ pub fn MapCanvas() -> impl IntoView {
                     let token = diagnostics_token(&message);
                     view! {
                         <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(12, 14, 23, 0.96); z-index: 30;">
-                            <div style="max-width: 640px; margin: 0 24px; border: 1px solid #3a3f5c; background: #13161f; box-shadow: 0 24px 64px rgba(0,0,0,0.55); border-radius: 8px; padding: 22px 20px;">
-                                <div style="font-family: 'Silkscreen', monospace; color: #f5c542; letter-spacing: 0.08em; font-size: 0.78rem; text-transform: uppercase; margin-bottom: 8px;">
+                            <div style="max-width: 640px; margin: 0 24px; border: 1px solid var(--color-border-accent); background: var(--color-deep); box-shadow: 0 24px 64px rgba(0,0,0,0.55); border-radius: 8px; padding: 22px 20px;">
+                                <div style="font-family: var(--font-display); color: var(--color-gold); letter-spacing: 0.08em; font-size: 0.78rem; text-transform: uppercase; margin-bottom: 8px;">
                                     "Unsupported GPU Configuration"
                                 </div>
-                                <div style="font-family: 'Inter', system-ui, sans-serif; color: #e2e0d8; line-height: 1.45; font-size: 0.92rem;">
+                                <div style="font-family: var(--font-body); color: var(--color-text-primary); line-height: 1.45; font-size: 0.92rem;">
                                     "The map renderer requires wgpu/WebGL2 and does not provide a Canvas2D fallback."
                                 </div>
-                                <div style="margin-top: 10px; font-family: 'JetBrains Mono', monospace; font-size: 0.74rem; color: #9a9590; word-break: break-word;">
+                                <div style="margin-top: 10px; font-family: var(--font-mono); font-size: 0.74rem; color: var(--color-text-secondary); word-break: break-word;">
                                     {message}
                                 </div>
-                                <div style="margin-top: 12px; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: #5a5860;">
+                                <div style="margin-top: 12px; font-family: var(--font-mono); font-size: 0.7rem; color: var(--color-text-dim);">
                                     "Diagnostics token: "
-                                    <span style="color: #f5c542;">{token}</span>
+                                    <span style="color: var(--color-gold);">{token}</span>
                                 </div>
                             </div>
                         </div>
@@ -1375,10 +1388,10 @@ pub fn MapCanvas() -> impl IntoView {
                     scene.reference_time_secs
                 );
                 view! {
-                    <div style="position: absolute; top: 10px; left: 10px; z-index: 25; pointer-events: none; background: rgba(8,10,18,0.78); border: 1px solid rgba(245,197,66,0.35); border-radius: 6px; padding: 6px 8px; color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.66rem; line-height: 1.35;">
+                    <div style="position: absolute; top: calc(var(--nav-height, 0px) + 10px); left: 10px; z-index: 25; pointer-events: none; background: rgba(8,10,18,0.78); border: 1px solid rgba(245,197,66,0.35); border-radius: 6px; padding: 6px 8px; color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.66rem; line-height: 1.35;">
                         <div>{summary}</div>
                         <div style="color: #c9c3b8;">{scene_line}</div>
-                        <div style="color: #9a9590;">{caps_str}</div>
+                        <div style="color: var(--color-text-secondary);">{caps_str}</div>
                     </div>
                 }
                 .into_any()
@@ -1390,14 +1403,14 @@ pub fn MapCanvas() -> impl IntoView {
                 let max_count = heat_max_take_count.get();
                 let label = heat_window_label.get();
                 view! {
-                    <div style="position: absolute; top: 16px; left: 16px; z-index: 22; pointer-events: none; background: rgba(10,12,20,0.82); border: 1px solid rgba(245,197,66,0.25); border-radius: 6px; padding: 8px 10px; min-width: 172px;">
-                        <div style="font-family: 'Silkscreen', monospace; font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: #f5c542; margin-bottom: 5px;">"Heat"</div>
+                    <div style="position: absolute; top: calc(var(--nav-height, 0px) + 16px); left: 16px; z-index: 22; pointer-events: none; background: rgba(10,12,20,0.82); border: 1px solid rgba(245,197,66,0.25); border-radius: 6px; padding: 8px 10px; min-width: 172px;">
+                        <div style="font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); margin-bottom: 5px;">"Heat"</div>
                         <div style="height: 8px; border-radius: 0; background: linear-gradient(90deg, #1e50dc 0%, #28c8f0 25%, #f5dc46 50%, #f58c32 75%, #dc2823 100%);" />
-                        <div style="margin-top: 6px; display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: #9a9590;">
+                        <div style="margin-top: 6px; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);">
                             <span>"Low"</span>
                             <span>{format!("Max {max_count}")}</span>
                         </div>
-                        <div style="margin-top: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; color: #6f748f; line-height: 1.25;">
+                        <div style="margin-top: 4px; font-family: var(--font-mono); font-size: 0.6rem; color: #6f748f; line-height: 1.25;">
                             {label}
                         </div>
                     </div>

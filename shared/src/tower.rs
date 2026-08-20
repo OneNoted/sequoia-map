@@ -19,7 +19,7 @@ pub const DAMAGES: [Range<f64>; 12] = [
 
 /// Attack speed multiplier per tower attack upgrade level (0–11).
 pub const ATTACK_RATES: [f64; 12] = [
-    0.5, 0.75, 1.0, 1.25, 1.61, 2.0, 2.5, 3.0, 3.1, 4.2, 4.35, 4.7,
+    0.5, 0.75, 1.0, 1.25, 1.61, 2.0, 2.5, 3.0, 3.6, 3.8, 4.35, 4.7,
 ];
 
 /// Tower HP per health upgrade level (0–11).
@@ -31,11 +31,11 @@ pub const HEALTHS: [f64; 12] = [
     960_000.0,
     1_200_000.0,
     1_500_000.0,
-    1_800_000.0,
-    2_160_000.0,
-    2_280_000.0,
+    1_860_000.0,
+    2_220_000.0,
     2_580_000.0,
-    2_820_000.0,
+    2_940_000.0,
+    3_300_000.0,
 ];
 
 /// Damage reduction percentage per defense upgrade level (0–11).
@@ -303,8 +303,8 @@ pub fn format_stat(val: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DefenseRating, calc_defense_index, calc_dps, calc_ehp, calc_stat, count_guild_connections,
-        find_externals, format_stat,
+        ATTACK_RATES, DefenseRating, HEALTHS, calc_defense_index, calc_dps, calc_ehp, calc_stat,
+        count_guild_connections, find_externals, format_stat,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -479,9 +479,59 @@ mod tests {
     }
 
     #[test]
+    fn health_progression_matches_current_tower_values() {
+        assert_eq!(
+            HEALTHS,
+            [
+                300_000.0,
+                450_000.0,
+                600_000.0,
+                750_000.0,
+                960_000.0,
+                1_200_000.0,
+                1_500_000.0,
+                1_860_000.0,
+                2_220_000.0,
+                2_580_000.0,
+                2_940_000.0,
+                3_300_000.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn hq_health_matches_six_connection_twenty_eight_external_example() {
+        let expected = [
+            7_140_000.0,
+            10_710_000.0,
+            14_280_000.0,
+            17_850_000.0,
+            22_848_000.0,
+            28_560_000.0,
+            35_700_000.0,
+            44_268_000.0,
+            52_836_000.0,
+            61_404_000.0,
+            69_972_000.0,
+            78_540_000.0,
+        ];
+
+        for (level, expected_health) in expected.into_iter().enumerate() {
+            let actual_health = calc_stat(HEALTHS[level], true, 6, 28);
+            assert_eq!(actual_health.round() as i64, expected_health as i64);
+        }
+    }
+
+    #[test]
     fn calc_dps_base_case() {
         let dps = calc_dps(0, 0, false, 0, 0);
         assert_close(dps, 625.0);
+    }
+
+    #[test]
+    fn attack_rate_mid_levels_match_expected_speeds() {
+        assert_close(ATTACK_RATES[8], 3.6);
+        assert_close(ATTACK_RATES[9], 3.8);
     }
 
     #[test]

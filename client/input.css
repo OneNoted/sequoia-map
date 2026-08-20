@@ -22,16 +22,145 @@
   --color-lapis: #4a6ce6;
   --color-nether: #e05252;
   --color-xp: #7dde6f;
-  --font-display: "Silkscreen", monospace;
-  --font-body: "Inter", system-ui, sans-serif;
+  --font-display: "Minecraft", "Silkscreen", monospace;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", monospace;
 }
 
 @layer base {
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     SEQUOIA DESIGN TOKENS
+     Mirrored from the token files under
+     sequoia-web/frontend/src/lib/design-system/tokens, so the map and
+     seqwawa.com share one visual language. Colours and fonts live
+     in the @theme block above (Tailwind needs them there to generate
+     utilities); everything below is plain custom properties.
+     ═══════════════════════════════════════════════════════════════════ */
   :root {
     --accent-live: #c7a3f0;
     --accent-live-rgb: 199, 163, 240;
+
+    /* Height of the fixed site navbar. The canvas stays full-bleed and runs
+       underneath it; DOM chrome offsets itself by this. In pixels, not the
+       website's `3.5rem`, because the map's root font-size is 14px - see the
+       note over the navbar rules below. */
+    --nav-height: 56px;
+
+    /* ── Semantic colour aliases ── */
+    --bg-page: var(--color-abyss);
+    --bg-alt: var(--color-deep);
+    --surface-card: var(--color-surface);
+    --surface-card-hover: var(--color-surface-hover);
+    --border-default: var(--color-border-subtle);
+    --border-strong: var(--color-border-accent);
+    --text-heading: var(--color-text-primary);
+    --text-body: var(--color-text-secondary);
+    --text-muted: var(--color-text-dim);
+    --accent: var(--color-gold);
+    --accent-hover: var(--color-gold-light);
+    --accent-secondary: var(--color-enchant);
+    --status-online: var(--color-emerald);
+    --status-error: var(--color-nether);
+    --status-positive: var(--color-xp);
+
+    /* ── Minecraft item rarity ramp ── */
+    --rarity-common: #e2e8f0;
+    --rarity-set: #55ff55;
+    --rarity-unique: #ffff55;
+    --rarity-rare: #ff55ff;
+    --rarity-legendary: #55ffff;
+    --rarity-fabled: #ff5555;
+    --rarity-mythic: #aa00aa;
+
+    /* ── Chart series (CVD-checked against --color-surface) ── */
+    --chart-amber: #a5821e;
+    --chart-emerald: #35a35e;
+    --chart-teal: #1fa9a6;
+    --chart-enchant: #a855f7;
+    --chart-nether: #e05252;
+    --chart-context: #6b7194;
+
+    /* ── Brand gradients ── */
+    --gradient-gold: linear-gradient(135deg, #f5c542, #ffd966, #c49a2a);
+    --gradient-enchant: linear-gradient(135deg, #a855f7, #c084fc, #7c3aed);
+    --gradient-diamond: linear-gradient(135deg, #5ce8e4, #67e8f9, #22d3ee);
+
+    /* ── Type scale ── */
+    --text-2xs: 0.7rem;
+    --text-xs: 0.75rem;
+    --text-sm: 0.875rem;
+    --text-base: 1rem;
+    --text-lg: 1.125rem;
+    --text-xl: 1.35rem;
+    --text-2xl: 1.75rem;
+    --text-3xl: 2rem;
+    --text-4xl: 2.5rem;
+
+    --weight-regular: 400;
+    --weight-bold: 700;
+
+    --leading-tight: 1.1;
+    --leading-snug: 1.3;
+    --leading-normal: 1.6;
+    --leading-relaxed: 1.75;
+
+    /* Tracking is a signature of the brand. */
+    --tracking-tight: 0.02em;
+    --tracking-wide: 0.06em;
+    --tracking-wider: 0.1em;
+    --tracking-widest: 0.18em;
+
+    /* ── Spacing (4px base) ── */
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.25rem;
+    --space-6: 1.5rem;
+    --space-8: 2rem;
+    --space-10: 2.5rem;
+    --space-12: 3rem;
+    --space-16: 4rem;
+
+    /* ── Corner radii — modest; this is a game UI, edges stay tight ── */
+    --radius-xs: 3px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+    --radius-full: 9999px;
+
+    /* ── Z-index ladder ── */
+    --z-base: 1;
+    --z-overlay: 50;
+    --z-nav: 100;
+    --z-lightbox: 1000;
+
+    /* ── Motion ── */
+    --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-in-out-soft: cubic-bezier(0.4, 0, 0.15, 1);
+    --dur-fast: 0.15s;
+    --dur-base: 0.25s;
+    --dur-slow: 0.35s;
+    --dur-slower: 0.6s;
+
+    /* ── Elevation & glow ── */
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.25);
+    --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.45);
+    --shadow-modal: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 40px rgba(0, 0, 0, 0.3);
+    --bevel-slot: inset 1px 1px 0 rgba(255, 255, 255, 0.06), inset -1px -1px 0 rgba(0, 0, 0, 0.3);
+    --glow-gold: 0 0 24px rgba(245, 197, 66, 0.35), 0 0 8px rgba(245, 197, 66, 0.2);
+    --glow-gold-soft: 0 0 12px rgba(245, 197, 66, 0.2);
+    --glow-enchant: 0 0 28px rgba(168, 85, 247, 0.18);
+    --glow-diamond: 0 0 20px rgba(92, 232, 228, 0.15);
+    --shadow-card-hover: 0 16px 48px rgba(0, 0, 0, 0.45), 0 0 28px rgba(168, 85, 247, 0.18);
+
+    /* Dark-themed native chrome: scrollbars, date pickers, select popups. */
+    color-scheme: dark;
+    scrollbar-color: var(--color-border-accent) rgba(19, 22, 31, 0.6);
   }
   html, body {
     width: 100%;
@@ -89,7 +218,7 @@
   }
   .divider-gold {
     height: 1px;
-    background: linear-gradient(to right, transparent, rgba(245,197,66,0.12) 30%, rgba(245,197,66,0.12) 70%, transparent);
+    background: linear-gradient(to right, transparent, rgba(245,197,66,0.18) 30%, rgba(245,197,66,0.18) 70%, transparent);
   }
   .focus-ring:focus-visible {
     outline: 2px solid rgba(245,197,66,0.5);
@@ -230,6 +359,55 @@
   box-shadow: none;
 }
 
+.timeline-overview-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 88px;
+  height: 18px;
+}
+
+.timeline-focus-band {
+  position: absolute;
+  top: 7px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(245, 197, 66, 0.28);
+  box-shadow: 0 0 10px rgba(245, 197, 66, 0.18);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.timeline-overview-slider {
+  position: relative;
+  z-index: 1;
+  height: 18px;
+}
+
+.timeline-overview-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  background: #202432;
+}
+
+.timeline-overview-slider::-webkit-slider-thumb {
+  width: 10px;
+  height: 10px;
+  margin-top: -3.5px;
+  background: #ffd966;
+}
+
+.timeline-overview-slider::-moz-range-track {
+  height: 3px;
+  background: #202432;
+}
+
+.timeline-overview-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  background: #ffd966;
+}
+
 @keyframes gold-glow-pulse {
   0%, 100% { box-shadow: 0 0 10px rgba(245,197,66,0.25); }
   50% { box-shadow: 0 0 18px rgba(245,197,66,0.45); }
@@ -238,7 +416,7 @@
 /* Sidebar wrapper — closed by default (off-screen right), class toggle for open */
 .sidebar-wrapper {
   position: absolute;
-  top: 0;
+  top: var(--nav-height);
   right: 0;
   bottom: 0;
   width: 380px;
@@ -363,4 +541,579 @@
 @media (min-width: 768px) {
   .mobile-sidebar-fab { display: none; }
   .bottom-sheet-scrim { display: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SEQUOIA SITE COMPONENTS
+   Ported from sequoia-web/frontend/src/app.css. Keep these selectors and
+   their metrics in step with the website - a visitor moving between
+   seqwawa.com and the map should not see the chrome change shape.
+   ═══════════════════════════════════════════════════════════════════ */
+
+@keyframes seq-menu-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes seq-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes seq-gold-glow-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(245,197,66,0.2), 0 0 4px rgba(245,197,66,0.1); }
+  50% { box-shadow: 0 0 24px rgba(245,197,66,0.35), 0 0 8px rgba(245,197,66,0.2); }
+}
+
+/* ── Buttons ── */
+.seq-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  text-decoration: none;
+  line-height: 1;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition:
+    transform var(--dur-base) var(--ease-out-soft),
+    background var(--dur-base) ease,
+    color var(--dur-base) ease,
+    border-color var(--dur-base) ease,
+    box-shadow var(--dur-base) ease;
+  white-space: nowrap;
+}
+
+.seq-button:disabled,
+.seq-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.seq-button-sm { padding: 0.4rem 0.85rem; font-size: 0.75rem; gap: 0.4rem; }
+.seq-button-md { padding: 0.6rem 1.2rem; font-size: 0.85rem; gap: 0.5rem; }
+.seq-button-lg { padding: 0.8rem 1.7rem; font-size: 1rem; gap: 0.6rem; }
+
+.seq-button-primary {
+  background: var(--color-gold);
+  color: var(--color-abyss);
+  border-color: var(--color-gold-dark);
+  box-shadow: var(--glow-gold-soft);
+}
+
+.seq-button-secondary {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border-color: var(--color-border-subtle);
+}
+
+.seq-button-ghost {
+  background: transparent;
+  color: var(--color-gold);
+  border-color: transparent;
+}
+
+.seq-button-enchant {
+  background: rgba(168,85,247,0.12);
+  color: var(--color-enchant);
+  border-color: rgba(168,85,247,0.4);
+}
+
+.seq-button-primary:not(:disabled):not([aria-disabled="true"]):hover {
+  background: var(--color-gold-light);
+  transform: translateY(-1px);
+  box-shadow: var(--glow-gold);
+}
+
+.seq-button-secondary:not(:disabled):not([aria-disabled="true"]):hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-accent);
+}
+
+.seq-button-ghost:not(:disabled):not([aria-disabled="true"]):hover {
+  color: var(--color-gold-light);
+}
+
+.seq-button-enchant:not(:disabled):not([aria-disabled="true"]):hover {
+  background: rgba(168,85,247,0.2);
+  color: #c084fc;
+  border-color: rgba(168,85,247,0.6);
+}
+
+/* ── Cards ── */
+.seq-card {
+  background: var(--surface-card);
+  border: 1px solid rgba(245, 197, 66, 0.3);
+  border-radius: var(--radius-lg);
+  padding: var(--seq-card-padding, 1.25rem);
+}
+
+.seq-card-static {
+  border-color: var(--color-border-subtle);
+}
+
+.seq-card-hoverable {
+  transition:
+    transform var(--dur-slow) var(--ease-out-soft),
+    box-shadow var(--dur-slow) ease,
+    border-color var(--dur-slow) ease;
+}
+
+.seq-card-hoverable:hover {
+  transform: translateY(-6px) scale(1.025);
+  box-shadow: var(--shadow-card-hover);
+  border-color: rgba(168, 85, 247, 0.5);
+}
+
+/* ── Form controls ── */
+.seq-field-label {
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+}
+
+.seq-input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-abyss) 65%, transparent);
+  color: var(--text-body);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  transition: border-color var(--dur-fast) ease;
+}
+
+.seq-input:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: 2px;
+  border-color: color-mix(in srgb, var(--color-gold) 55%, var(--color-border-subtle));
+}
+
+.seq-input[aria-invalid="true"] {
+  border-color: var(--status-error);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   TOP NAVIGATION
+   A rule-for-rule mirror of `sequoia-web/frontend/src/app.css`
+   (the `.seq-top-nav` … `.seq-mobile-sublink` run), so the bar is
+   pixel-identical when a visitor crosses between the two sites.
+
+   One deliberate difference: every literal `rem` on the website is
+   written here as the pixel value it resolves to there. The website
+   leaves the root font-size at the 16px default; the map sets it to
+   14px (see `html, body` above) and the rest of the map is laid out
+   against that, so rems would silently shrink the whole bar by 12.5%.
+   Multiply by 16 when porting a new rule across.
+   ═══════════════════════════════════════════════════════════════════ */
+.seq-top-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-nav);
+  background: rgba(12, 14, 23, 0.8);
+  border-bottom: 1px solid var(--color-border-subtle);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  /* index.html sets the pixel face on `body` for the map surface, unlayered,
+     so it would otherwise win over the token default in `@layer base`. The
+     size and leading are the website's `body` values, which anything in here
+     that does not set its own inherits - the brand's line box, for one. */
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.seq-top-nav-shell {
+  height: var(--nav-height);
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 clamp(16px, 2vw, 24px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.seq-nav-brand,
+.seq-nav-link,
+.seq-mobile-link {
+  position: relative;
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.seq-nav-brand {
+  color: var(--color-gold);
+  font-size: 13.76px;
+  letter-spacing: 0.14em;
+  transition: color var(--dur-base) ease, text-shadow var(--dur-base) ease;
+}
+
+.seq-nav-desktop {
+  display: flex;
+  align-items: center;
+  gap: clamp(16px, 2vw, 21.6px);
+}
+
+.seq-nav-link {
+  color: var(--color-text-secondary);
+  font-size: 12.48px;
+  letter-spacing: var(--tracking-wide);
+  line-height: 1;
+  transition: color var(--dur-base) ease, text-shadow var(--dur-base) ease;
+}
+
+.seq-nav-accent {
+  color: rgba(245, 197, 66, 0.82);
+}
+
+/* The signed-out link sits a step back from the sections. */
+.seq-nav-session {
+  color: var(--text-muted);
+}
+
+.seq-nav-brand::after,
+.seq-nav-link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(245, 197, 66, 0.55), transparent);
+  opacity: 0;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: opacity var(--dur-base) ease, transform var(--dur-base) ease;
+}
+
+.seq-nav-brand:hover,
+.seq-nav-link:hover {
+  color: var(--color-text-primary);
+}
+
+.seq-nav-accent:hover {
+  color: var(--color-enchant);
+  text-shadow: 0 0 16px rgba(168, 85, 247, 0.3), 0 1px 0 rgba(0, 0, 0, 0.3);
+}
+
+.seq-nav-brand:hover::after,
+.seq-nav-link:hover::after,
+.seq-nav-brand:focus-visible::after,
+.seq-nav-link:focus-visible::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.seq-nav-brand:focus-visible,
+.seq-nav-link:focus-visible,
+.seq-mobile-link:focus-visible,
+.seq-nav-burger:focus-visible {
+  outline: 2px solid rgba(168, 85, 247, 0.55);
+  outline-offset: 4px;
+}
+
+.seq-nav-item {
+  display: inline-flex;
+  position: relative;
+}
+
+.seq-nav-link-active {
+  color: var(--color-text-primary) !important;
+}
+
+.seq-nav-chevron {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 3.2px;
+  opacity: 0.65;
+  transition: transform 0.2s ease;
+}
+
+.seq-nav-chevron-open {
+  transform: rotate(180deg);
+}
+
+/* ── Navigation dropdowns ── */
+.seq-dropdown {
+  position: absolute;
+  top: calc(100% + 7.2px);
+  left: 0;
+  background: rgba(20, 23, 32, 0.97);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  padding: 16px;
+  display: flex;
+  gap: 12px;
+  white-space: nowrap;
+  animation: seq-menu-slide-in var(--dur-fast) var(--ease-out-soft) both;
+  z-index: 200;
+}
+
+.seq-dropdown-col {
+  min-width: 220px;
+}
+
+.seq-dropdown-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6.4px;
+  padding: 3.2px 8px 8px;
+  color: var(--color-text-dim);
+}
+
+.seq-dropdown-group-label {
+  font-family: var(--font-display);
+  font-size: 10.88px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-text-dim);
+  text-decoration: none;
+}
+
+.seq-dropdown-group-label:hover {
+  color: var(--color-text-secondary);
+}
+
+.seq-dropdown-item {
+  display: flex;
+  gap: 10.4px;
+  align-items: flex-start;
+  padding: 7.2px 8.8px;
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  transition: background var(--dur-base) ease;
+  white-space: normal;
+}
+
+.seq-dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.seq-dropdown-item-icon {
+  margin-top: 1.6px;
+  flex-shrink: 0;
+  color: var(--color-text-dim);
+}
+
+.seq-dropdown-item-text {
+  min-width: 0;
+}
+
+.seq-dropdown-item-label {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 12.48px;
+  letter-spacing: 0.04em;
+  color: var(--color-text-primary);
+}
+
+.seq-dropdown-item-desc {
+  display: block;
+  font-size: 11.84px;
+  line-height: 1.45;
+  color: var(--color-text-dim);
+  margin-top: 1.92px;
+}
+
+/* ── Account chip ── */
+.seq-nav-viewer,
+.seq-mobile-viewer {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.seq-nav-face {
+  width: 18px;
+  height: 18px;
+  image-rendering: pixelated;
+}
+
+.seq-account-col {
+  min-width: 190px;
+}
+
+.seq-account-identity {
+  display: flex;
+  align-items: center;
+  gap: 10.4px;
+  padding: 3.2px 8.8px 10.4px;
+  margin-bottom: 5.6px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.seq-account-face {
+  width: 36px;
+  height: 36px;
+  image-rendering: pixelated;
+}
+
+.seq-account-names {
+  display: flex;
+  flex-direction: column;
+  gap: 1.6px;
+  min-width: 0;
+}
+
+.seq-account-minecraft {
+  font-family: var(--font-display);
+  font-size: 12.48px;
+  letter-spacing: 0.04em;
+  color: var(--color-text-primary);
+}
+
+.seq-account-discord {
+  font-size: 11.52px;
+  color: var(--color-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Compact bar ── */
+.seq-nav-burger {
+  display: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5.28px;
+  transition: color var(--dur-base) ease;
+}
+
+.seq-nav-burger:hover {
+  color: var(--color-text-primary);
+}
+
+.seq-nav-burger span {
+  display: block;
+  width: 20px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.seq-nav-burger-line-open-top {
+  transform: translateY(6.72px) rotate(45deg);
+}
+
+.seq-nav-burger-line-hidden {
+  opacity: 0;
+}
+
+.seq-nav-burger-line-open-bottom {
+  transform: translateY(-6.72px) rotate(-45deg);
+}
+
+.seq-nav-mobile-panel {
+  display: none;
+}
+
+/* The website's own breakpoint, which is not the map's `MOBILE_BREAKPOINT`:
+   the bar has to collapse at the same width on both sites, whatever the map
+   layout underneath it is doing. */
+@media (max-width: 860px) {
+  .seq-nav-desktop { display: none !important; }
+  .seq-nav-burger { display: inline-flex !important; }
+
+  .seq-nav-mobile-panel {
+    display: block;
+    border-top: 1px solid var(--color-border-subtle);
+    background: rgba(12, 14, 23, 0.96);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    animation: seq-menu-slide-in 0.2s var(--ease-out-soft) both;
+  }
+
+  .seq-nav-mobile-links {
+    display: flex;
+    flex-direction: column;
+    gap: 2.4px;
+    max-height: calc(100vh - 56px);
+    overflow-y: auto;
+    padding: 16px 24px 20px;
+  }
+
+  .seq-mobile-link {
+    color: var(--color-text-secondary);
+    font-size: 15.2px;
+    letter-spacing: 0.08em;
+    padding: 8px 0;
+    transition: color var(--dur-base) ease, text-shadow var(--dur-base) ease;
+  }
+
+  .seq-mobile-link::before {
+    content: "";
+    position: absolute;
+    left: -8px;
+    top: 10.4px;
+    bottom: 10.4px;
+    width: 2px;
+    border-radius: 999px;
+    background: rgba(245, 197, 66, 0.55);
+    opacity: 0;
+    transform: scaleY(0.15);
+    transform-origin: top;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+
+  .seq-mobile-link:hover,
+  .seq-mobile-link:focus-visible {
+    color: var(--color-text-primary);
+  }
+
+  .seq-mobile-link:hover::before,
+  .seq-mobile-link:focus-visible::before {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+
+  .seq-mobile-link.seq-nav-accent:hover,
+  .seq-mobile-link.seq-nav-accent:focus-visible {
+    color: var(--color-enchant);
+  }
+
+  .seq-mobile-link-active {
+    color: var(--color-gold);
+  }
+
+  .seq-mobile-subgroup-label {
+    font-family: var(--font-display);
+    font-size: 10.4px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--color-text-dim);
+    padding: 8.8px 0 3.2px 12px;
+  }
+
+  .seq-mobile-sublink {
+    display: block;
+    font-size: 14.08px;
+    color: var(--color-text-secondary);
+    text-decoration: none;
+    padding: 4.48px 0 4.48px 12px;
+    transition: color 0.2s ease;
+  }
+
+  .seq-mobile-sublink:hover {
+    color: var(--color-text-primary);
+  }
 }

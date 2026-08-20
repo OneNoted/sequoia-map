@@ -191,6 +191,15 @@ pub fn resource_icon_sequence(resources: &Resources) -> Vec<IconKind> {
     out
 }
 
+pub fn resource_icons_drawable(resources: &Resources) -> bool {
+    resources.has_all()
+        || resources.has_double_emeralds()
+        || resources.ore > 0
+        || resources.crops > 0
+        || resources.fish > 0
+        || resources.wood > 0
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn dynamic_label_next_update_age(
     age_secs: i64,
@@ -367,9 +376,11 @@ mod tests {
             ..Resources::default()
         };
         assert!(resource_icon_sequence(&resources).is_empty());
+        assert!(!resource_icons_drawable(&resources));
 
         resources.emeralds = 18000;
         assert_eq!(resource_icon_sequence(&resources), vec![IconKind::Emerald]);
+        assert!(resource_icons_drawable(&resources));
     }
 
     #[test]
@@ -382,6 +393,17 @@ mod tests {
             wood: 100,
         };
         assert_eq!(resource_icon_sequence(&resources), vec![IconKind::Rainbow]);
+        assert!(resource_icons_drawable(&resources));
+    }
+
+    #[test]
+    fn test_resource_icons_drawable_for_non_emerald_resources() {
+        let resources = Resources {
+            ore: 3600,
+            ..Resources::default()
+        };
+        assert_eq!(resource_icon_sequence(&resources), vec![IconKind::Ore]);
+        assert!(resource_icons_drawable(&resources));
     }
 
     #[test]

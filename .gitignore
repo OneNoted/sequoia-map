@@ -8,8 +8,11 @@ claims-client/dist
 *.d
 .DS_Store
 .trunk/
+.playwright-cli/
+.data/
 services/sequoia-ingest/*.db
 services/sequoia-ingest/*.db-journal
 services/sequoia-ingest/*.db-wal
 services/sequoia-ingest/*.db-shm
 mods/wynn-iris/run/mods/ares-probe*.jar
+.omx/

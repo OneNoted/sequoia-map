@@ -1,3 +1,4 @@
+use std::env::VarError;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -6,8 +7,16 @@ use serde::Deserialize;
 pub const WYNNCRAFT_TERRITORY_URL: &str = "https://api.wynncraft.com/v3/guild/list/territory";
 pub const WYNNCRAFT_GUILD_URL: &str = "https://api.wynncraft.com/v3/guild";
 pub const WYNNCRAFT_GUILD_LIST_URL: &str = "https://api.wynncraft.com/v3/guild/list/guild";
+pub const WYNNCRAFT_GUILD_SEASONS_URL: &str = "https://api.wynncraft.com/v3/guild/seasons";
+pub const WYNNCRAFT_LEADERBOARD_TYPES_URL: &str = "https://api.wynncraft.com/v3/leaderboards/types";
+pub const WYNNCRAFT_LEADERBOARDS_URL: &str = "https://api.wynncraft.com/v3/leaderboards";
+pub const WYNNCRAFT_MAP_RAIDS_URL: &str = "https://api.wynncraft.com/v3/map/raids";
+pub const WYNNCRAFT_MAP_CAMPS_URL: &str = "https://api.wynncraft.com/v3/map/camps";
+pub const WYNNCRAFT_MAP_WORLD_EVENTS_URL: &str = "https://api.wynncraft.com/v3/map/world-events";
+pub const WYNNCRAFT_MAP_GATHERING_NODES_URL: &str =
+    "https://api.wynncraft.com/v3/map/gathering-nodes";
 
-pub const TERREXTRA_URL: &str = "https://gist.githubusercontent.com/Zatzou/14c82f2df0eb4093dfa1d543b78a73a8/raw/d03273fce33c031498c07e21b94f17644c8aae98/terrextra.json";
+pub const LEGACY_TERREXTRA_URL: &str = "https://gist.githubusercontent.com/Zatzou/14c82f2df0eb4093dfa1d543b78a73a8/raw/d03273fce33c031498c07e21b94f17644c8aae98/terrextra.json";
 pub const TERREXTRA_REFRESH_SECS: u64 = 3600; // re-fetch hourly
 
 pub const ATHENA_TERRITORY_URL: &str = "https://athena.wynntils.com/cache/get/territoryList";
@@ -15,7 +24,10 @@ pub const ATHENA_REFRESH_SECS: u64 = 600; // 10 minutes
 
 pub const POLL_INTERVAL_SECS: u64 = 10;
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
+pub const SEASON_LEADERBOARD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
+pub const MAP_INTEL_CACHE_TTL_SECS: i64 = 60; // shortest public map endpoint cache
 pub const DEFAULT_GUILDS_ONLINE_CACHE_TTL_SECS: i64 = 120; // 2 minutes
+pub const DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS: i64 = 130; // season definitions are near-static
 pub const DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY: usize = 8;
 pub const DEFAULT_SEASON_RATING_CONTENDER_COUNT: usize = 10;
 pub const MAX_GUILD_CACHE_ENTRIES: usize = 64;
@@ -40,7 +52,8 @@ pub const MIN_INTERNAL_API_TOKEN_LEN: usize = 24;
 
 // History feature
 pub const SNAPSHOT_INTERVAL_SECS: u64 = 21600; // every 6 hours
-pub const RETENTION_DAYS: i64 = 365;
+pub const DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS: i64 = 365;
+pub const DEFAULT_SEASON_HISTORY_RETENTION_DAYS: i64 = 365;
 pub const RETENTION_CHECK_SECS: u64 = 86400; // daily
 
 const INTERNAL_INGEST_TOKEN_REJECTED_VALUES: &[&str] = &[
@@ -113,6 +126,24 @@ pub fn upstream_connect_timeout() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS))
 }
 
+pub fn territory_extra_url() -> Option<String> {
+    match std::env::var("TERRITORY_EXTRA_URL") {
+        Ok(value) => parse_territory_extra_url(&value),
+        Err(VarError::NotPresent) => Some(LEGACY_TERREXTRA_URL.to_string()),
+        Err(VarError::NotUnicode(_)) => None,
+    }
+}
+
+fn parse_territory_extra_url(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let normalized = value.to_ascii_lowercase();
+    if value.is_empty() || matches!(normalized.as_str(), "0" | "false" | "none" | "off") {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
 pub fn guilds_online_cache_ttl_secs() -> i64 {
     std::env::var("GUILDS_ONLINE_CACHE_TTL_SECS")
         .ok()
@@ -121,12 +152,37 @@ pub fn guilds_online_cache_ttl_secs() -> i64 {
         .unwrap_or(DEFAULT_GUILDS_ONLINE_CACHE_TTL_SECS)
 }
 
+pub fn guild_seasons_cache_ttl_secs() -> i64 {
+    std::env::var("GUILD_SEASONS_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS)
+}
+
 pub fn guilds_online_max_concurrency() -> usize {
     std::env::var("GUILDS_ONLINE_MAX_CONCURRENCY")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY)
+}
+
+fn positive_i64_env(name: &str) -> Option<i64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+}
+
+pub fn territory_history_retention_days() -> i64 {
+    positive_i64_env("TERRITORY_HISTORY_RETENTION_DAYS")
+        .unwrap_or(DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS)
+}
+
+pub fn season_history_retention_days() -> i64 {
+    positive_i64_env("SEASON_HISTORY_RETENTION_DAYS")
+        .unwrap_or(DEFAULT_SEASON_HISTORY_RETENTION_DAYS)
 }
 
 pub fn season_rating_contender_count() -> usize {
@@ -396,9 +452,12 @@ fn sanitize_internal_api_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES, normalize_public_base_url,
+        ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES, DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS,
+        DEFAULT_SEASON_HISTORY_RETENTION_DAYS, DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS,
+        LEGACY_TERREXTRA_URL, guild_seasons_cache_ttl_secs, normalize_public_base_url,
         normalize_watchlist_key, parse_active_season_race_config,
         parse_season_scalar_override_points, sanitize_internal_ingest_token,
+        season_history_retention_days, territory_extra_url, territory_history_retention_days,
     };
     use chrono::{DateTime, Utc};
 
@@ -457,6 +516,39 @@ mod tests {
     }
 
     #[test]
+    fn territory_extra_url_uses_legacy_default_when_unset() {
+        temp_env::with_var_unset("TERRITORY_EXTRA_URL", || {
+            assert_eq!(
+                territory_extra_url(),
+                Some(LEGACY_TERREXTRA_URL.to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn territory_extra_url_preserves_explicit_opt_out() {
+        for value in ["", "  ", "0", "false", "none", "off", " OFF "] {
+            temp_env::with_var("TERRITORY_EXTRA_URL", Some(value), || {
+                assert_eq!(territory_extra_url(), None);
+            });
+        }
+    }
+
+    #[test]
+    fn territory_extra_url_accepts_override_url() {
+        temp_env::with_var(
+            "TERRITORY_EXTRA_URL",
+            Some(" https://example.com/extra.json "),
+            || {
+                assert_eq!(
+                    territory_extra_url(),
+                    Some("https://example.com/extra.json".to_string())
+                );
+            },
+        );
+    }
+
+    #[test]
     fn active_season_race_config_returns_none_when_unconfigured() {
         assert_eq!(
             parse_active_season_race_config(None, None, None, None, 10, 24).expect("config lookup"),
@@ -507,5 +599,54 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].scalar_weighted, 1.0);
         assert_eq!(parsed[1].scalar_weighted, 1.5);
+    }
+
+    #[test]
+    fn history_retention_days_use_defaults_without_env() {
+        temp_env::with_vars_unset(
+            [
+                "TERRITORY_HISTORY_RETENTION_DAYS",
+                "SEASON_HISTORY_RETENTION_DAYS",
+            ],
+            || {
+                assert_eq!(
+                    territory_history_retention_days(),
+                    DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS
+                );
+                assert_eq!(
+                    season_history_retention_days(),
+                    DEFAULT_SEASON_HISTORY_RETENTION_DAYS
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn guild_seasons_cache_ttl_uses_the_default_when_unset() {
+        temp_env::with_var_unset("GUILD_SEASONS_CACHE_TTL_SECS", || {
+            assert_eq!(
+                guild_seasons_cache_ttl_secs(),
+                DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS
+            );
+        });
+    }
+
+    #[test]
+    fn guild_seasons_cache_ttl_honours_a_positive_override() {
+        temp_env::with_var("GUILD_SEASONS_CACHE_TTL_SECS", Some("45"), || {
+            assert_eq!(guild_seasons_cache_ttl_secs(), 45);
+        });
+    }
+
+    #[test]
+    fn guild_seasons_cache_ttl_rejects_non_positive_or_unparseable_values() {
+        for value in ["0", "-5", "", "abc"] {
+            temp_env::with_var("GUILD_SEASONS_CACHE_TTL_SECS", Some(value), || {
+                assert_eq!(
+                    guild_seasons_cache_ttl_secs(),
+                    DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS
+                );
+            });
+        }
     }
 }

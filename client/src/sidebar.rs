@@ -13,17 +13,19 @@ use crate::app::{
     ConnectionOpacityScale, ConnectionThicknessScale, CurrentMode,
     DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_THICKNESS_SCALE,
     DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER, DEFAULT_LABEL_SCALE_STATIC_NAME,
-    DEFAULT_LABEL_SCALE_STATIC_TAG, DetailReturnGuild, GuildColorStore, GuildOnlineData,
-    HeatEntriesByTerritory, HeatFallbackApplied, HeatHistoryBasis, HeatHistoryBasisSetting,
-    HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId,
-    HeatWindowLabel, HistoryAvailable, HistoryBoundsSignal, HistoryBufferModeActive,
-    HistoryBufferedUpdates, HistoryFetchNonce, HistorySeasonLeaderboard, HistorySeasonScalarSample,
+    DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight, DetailReturnGuild, GuildColorStore,
+    GuildOnlineData, HeatEntriesByTerritory, HeatFallbackApplied, HeatHistoryBasis,
+    HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled,
+    HeatSelectedSeasonId, HeatWindowLabel, HistoryAvailable, HistoryBoundsSignal,
+    HistoryBufferModeActive, HistoryBufferedUpdates, HistoryFetchNonce,
+    HistoryLegacyGeometryActive, HistorySeasonLeaderboard, HistorySeasonScalarSample,
     HistoryTimestamp, IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN,
     LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
     LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
-    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapMode, NameColor,
-    NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont, ResetSettingsTrigger,
-    ResourceHighlight, Selected, SelectedGuild, ShowCompoundMapTime, ShowCountdown,
+    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapIntelModeEnabled, MapMode,
+    NameColor, NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont,
+    ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild, ShowClaimLabels,
+    ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
     ShowTerritoryOrnaments, SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient,
@@ -32,6 +34,7 @@ use crate::app::{
     clamp_label_scale_master,
 };
 use crate::colors::rgba_css;
+use crate::defense::defense_tier_display;
 use crate::history;
 use crate::icons;
 use crate::season_scalar::{ScalarSource, effective_scalar};
@@ -39,7 +42,6 @@ use crate::sse::ConnectionStatus;
 use crate::territory::ClientTerritoryMap;
 use crate::tower::TowerCalculator;
 use crate::viewport::Viewport;
-use crate::{IRIS_RELEASES_URL, SEQUOIA_WEBSITE_URL};
 
 /// Build list of (label, formatted_value, icon_name) for non-zero resources.
 fn build_resource_items(res: &Resources) -> Vec<(&'static str, String, &'static str)> {
@@ -149,8 +151,11 @@ fn visibility_label(provenance: &DataProvenance) -> &'static str {
     }
 }
 
-fn iris_source_display_label(source: &str) -> Option<&'static str> {
-    if source.eq_ignore_ascii_case("iris") || source.eq_ignore_ascii_case("fabric_reporter") {
+fn live_source_display_label(source: &str) -> Option<&'static str> {
+    if source.eq_ignore_ascii_case("wynncraft_api") {
+        Some("Wynncraft API")
+    } else if source.eq_ignore_ascii_case("iris") || source.eq_ignore_ascii_case("fabric_reporter")
+    {
         Some("iris")
     } else {
         None
@@ -213,7 +218,7 @@ pub fn Sidebar() -> impl IntoView {
             class="sidebar-inner"
             class:sidebar-animate=move || sidebar_open.get()
             style:display=move || if sidebar_open.get() { "flex" } else { "none" }
-            style="width: 100%; min-width: 100%; height: 100%; background: #13161f; border-left: 1px solid #282c3e; display: flex; flex-direction: column; z-index: 10; box-shadow: -4px 0 20px rgba(0,0,0,0.4), inset 1px 0 0 rgba(168,85,247,0.04);"
+            style="width: 100%; min-width: 100%; height: 100%; background: var(--color-deep); border-left: 1px solid var(--color-border-subtle); display: flex; flex-direction: column; z-index: 10; box-shadow: -4px 0 20px rgba(0,0,0,0.4), inset 1px 0 0 rgba(168,85,247,0.04);"
         >
             <SidebarHeader />
             <SearchBar />
@@ -251,9 +256,10 @@ fn SidebarHeader() -> impl IntoView {
     let IsMobile(is_mobile) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let tick: RwSignal<i64> = expect_context();
+    let ShowDebugInfo(show_debug_info) = expect_context();
 
     #[derive(Clone, PartialEq)]
-    struct IrisBadgeStatus {
+    struct LiveDataBadgeStatus {
         is_working: bool,
         status_label: String,
         status_reason: String,
@@ -266,7 +272,7 @@ fn SidebarHeader() -> impl IntoView {
         tooltip: String,
     }
 
-    let iris_status = Memo::new(move |_| {
+    let live_data_status = Memo::new(move |_| {
         let now = tick.get();
         let map = territories.get();
         let mut latest_status: Option<(i64, String, String, u16, String, String)> = None;
@@ -279,7 +285,7 @@ fn SidebarHeader() -> impl IntoView {
                 continue;
             };
             let source = provenance.source.trim();
-            let Some(source_label) = iris_source_display_label(source) else {
+            let Some(source_label) = live_source_display_label(source) else {
                 continue;
             };
 
@@ -305,7 +311,7 @@ fn SidebarHeader() -> impl IntoView {
             Some((observed_ts, source, observed_at, reporter_count, visibility, confidence)) => {
                 let age_secs = (now - observed_ts).max(0);
                 let is_active = age_secs <= 120;
-                let is_working = is_active && reporter_count > 0;
+                let is_working = is_active && (reporter_count > 0 || source == "Wynncraft API");
                 let status_label = if is_working {
                     "Working".to_string()
                 } else {
@@ -314,13 +320,13 @@ fn SidebarHeader() -> impl IntoView {
                 let observed_label = format_relative_time(&observed_at, now);
                 let age_label = format_age_seconds(age_secs);
                 let status_reason = if is_working {
-                    "recent Iris telemetry is arriving".to_string()
+                    "recent Wynncraft API territory data is arriving".to_string()
                 } else if !is_active {
-                    format!("latest Iris telemetry is stale ({age_label} old)")
+                    format!("latest Wynncraft API data is stale ({age_label} old)")
                 } else {
-                    "no active Iris reporters".to_string()
+                    "no active live data source".to_string()
                 };
-                IrisBadgeStatus {
+                LiveDataBadgeStatus {
                     is_working,
                     status_label: status_label.clone(),
                     status_reason: status_reason.clone(),
@@ -331,14 +337,14 @@ fn SidebarHeader() -> impl IntoView {
                     visibility: visibility.clone(),
                     confidence: confidence.clone(),
                     tooltip: format!(
-                        "Iris: {status_label}\nReason: {status_reason}\nSource: {source}\nObserved: {observed_label}\nAge: {age_label}\nReporters: {reporter_count}\nVisibility: {visibility}\nConfidence: {confidence}\nFreshness window: 120s"
+                        "Live data: {status_label}\nReason: {status_reason}\nSource: {source}\nObserved: {observed_label}\nAge: {age_label}\nSamples: {reporter_count}\nVisibility: {visibility}\nConfidence: {confidence}\nFreshness window: 120s"
                     ),
                 }
             }
             None => {
                 let status_label = "Not Working".to_string();
-                let status_reason = "no Iris telemetry received yet".to_string();
-                IrisBadgeStatus {
+                let status_reason = "no live API data received yet".to_string();
+                LiveDataBadgeStatus {
                     is_working: false,
                     status_label: status_label.clone(),
                     status_reason: status_reason.clone(),
@@ -349,19 +355,19 @@ fn SidebarHeader() -> impl IntoView {
                     visibility: "n/a".to_string(),
                     confidence: "n/a".to_string(),
                     tooltip: format!(
-                        "Iris: {status_label}\nReason: {status_reason}\nSource: none\nObserved: no observations yet"
+                        "Live data: {status_label}\nReason: {status_reason}\nSource: none\nObserved: no observations yet"
                     ),
                 }
             }
         }
     });
-    let iris_tooltip_visible = RwSignal::new(false);
+    let live_data_tooltip_visible = RwSignal::new(false);
 
     let padding = move || {
         if is_mobile.get() {
-            "padding: 10px 16px 8px; border-bottom: 1px solid #282c3e;"
+            "padding: 10px 16px 8px; border-bottom: 1px solid var(--color-border-subtle);"
         } else {
-            "padding: 20px 24px 16px; border-bottom: 1px solid #282c3e;"
+            "padding: 20px 24px 16px; border-bottom: 1px solid var(--color-border-subtle);"
         }
     };
     let divider_margin = move || {
@@ -375,24 +381,22 @@ fn SidebarHeader() -> impl IntoView {
     view! {
         <div style=padding>
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
-                <a
-                    href=SEQUOIA_WEBSITE_URL
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open seqwawa.com"
-                    style="display: flex; align-items: baseline; gap: 10px; min-width: 0; text-decoration: none;"
-                >
-                    <div class="text-gold-gradient" style="font-family: 'Silkscreen', monospace; font-size: 1.35rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; text-shadow: 0 0 16px rgba(245,197,66,0.08);">"SEQUOIA"</div>
-                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.673rem; color: #3a3f5c; background: #1a1d2a; padding: 1px 6px; border-radius: 3px; border: 1px solid rgba(245,197,66,0.15); letter-spacing: 0.04em;">"v0.1"</div>
-                </a>
-                <div style="position: relative; flex-shrink: 0;">
+                // The SEQUOIA wordmark now lives in the site navbar; the sidebar
+                // keeps only the build marker so the two do not compete.
+                <div style="font-family: var(--font-mono); font-size: 0.673rem; color: var(--color-border-accent); background: var(--surface-card); padding: 1px 6px; border-radius: var(--radius-xs); border: 1px solid rgba(245,197,66,0.15); letter-spacing: 0.04em;">
+                    "v0.1"
+                </div>
+                <div style=move || {
+                    let display = if show_debug_info.get() { "block" } else { "none" };
+                    format!("position: relative; flex-shrink: 0; display: {display};")
+                }>
                     <a
-                        href=IRIS_RELEASES_URL
+                        href="https://docs.wynncraft.com/"
                         target="_blank"
                         rel="noopener noreferrer"
-                        title="Open Iris releases"
+                        title="Open Wynncraft API documentation"
                         style=move || {
-                            let status = iris_status.get();
+                            let status = live_data_status.get();
                             let (border, bg, fg) = if status.is_working {
                                 (
                                     "rgba(var(--accent-live-rgb),0.42)",
@@ -403,39 +407,39 @@ fn SidebarHeader() -> impl IntoView {
                                 (
                                     "rgba(154,149,144,0.36)",
                                     "rgba(32, 35, 48, 0.62)",
-                                    "#9a9590",
+                                    "var(--color-text-secondary)",
                                 )
                             };
                             format!(
-                                "display: inline-flex; align-items: center; gap: 6px; font-family: 'Silkscreen', monospace; font-size: 0.66rem; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 999px; border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; text-decoration: none;"
+                                "display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-display); font-size: 0.66rem; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 999px; border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; text-decoration: none;"
                             )
                         }
-                        aria-label=move || iris_status.get().tooltip
-                        on:mouseenter=move |_| iris_tooltip_visible.set(true)
-                        on:mouseleave=move |_| iris_tooltip_visible.set(false)
+                        aria-label=move || live_data_status.get().tooltip
+                        on:mouseenter=move |_| live_data_tooltip_visible.set(true)
+                        on:mouseleave=move |_| live_data_tooltip_visible.set(false)
                     >
                         <span style=move || {
-                            let status = iris_status.get();
+                            let status = live_data_status.get();
                             let (dot_bg, dot_glow) = if status.is_working {
                                 ("var(--accent-live)", "0 0 6px var(--accent-live)")
                             } else {
-                                ("#9a9590", "none")
+                                ("var(--color-text-secondary)", "none")
                             };
                             format!(
                                 "width: 7px; height: 7px; border-radius: 50%; background: {dot_bg}; box-shadow: {dot_glow};"
                             )
                         } />
-                        <span>"Iris"</span>
+                        <span>"API"</span>
                     </a>
                     <div
                         style=move || {
-                            let status = iris_status.get();
+                            let status = live_data_status.get();
                             let border = if status.is_working {
                                 "rgba(var(--accent-live-rgb),0.42)"
                             } else {
                                 "rgba(154,149,144,0.45)"
                             };
-                            let display = if iris_tooltip_visible.get() {
+                            let display = if live_data_tooltip_visible.get() {
                                 "block"
                             } else {
                                 "none"
@@ -446,34 +450,34 @@ fn SidebarHeader() -> impl IntoView {
                         }
                     >
                         <div style=move || {
-                            let color = if iris_status.get().is_working {
+                            let color = if live_data_status.get().is_working {
                                 "var(--accent-live)"
                             } else {
                                 "#d5d2ce"
                             };
                             format!(
-                                "font-family: 'Silkscreen', monospace; font-size: 0.62rem; letter-spacing: 0.09em; text-transform: uppercase; color: {color};"
+                                "font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 0.09em; text-transform: uppercase; color: {color};"
                             )
                         }>
-                            {move || format!("Iris {}", iris_status.get().status_label)}
+                            {move || format!("API {}", live_data_status.get().status_label)}
                         </div>
-                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.67rem; color: #c5c2bc; margin-top: 4px;">
-                            {move || iris_status.get().status_reason}
+                        <div style="font-family: var(--font-mono); font-size: 0.67rem; color: #c5c2bc; margin-top: 4px;">
+                            {move || live_data_status.get().status_reason}
                         </div>
-                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.645rem; color: #9a9590; margin-top: 8px; line-height: 1.45;">
-                            <div>{move || format!("Observed: {}", iris_status.get().observed_label)}</div>
-                            <div>{move || format!("Age: {}", iris_status.get().age_label)}</div>
-                            <div>{move || format!("Source: {}", iris_status.get().source)}</div>
-                            <div>{move || format!("Reporters: {}", iris_status.get().reporter_count)}</div>
-                            <div>{move || format!("Visibility: {}", iris_status.get().visibility)}</div>
-                            <div>{move || format!("Confidence: {}", iris_status.get().confidence)}</div>
+                        <div style="font-family: var(--font-mono); font-size: 0.645rem; color: var(--color-text-secondary); margin-top: 8px; line-height: 1.45;">
+                            <div>{move || format!("Observed: {}", live_data_status.get().observed_label)}</div>
+                            <div>{move || format!("Age: {}", live_data_status.get().age_label)}</div>
+                            <div>{move || format!("Source: {}", live_data_status.get().source)}</div>
+                            <div>{move || format!("Samples: {}", live_data_status.get().reporter_count)}</div>
+                            <div>{move || format!("Visibility: {}", live_data_status.get().visibility)}</div>
+                            <div>{move || format!("Confidence: {}", live_data_status.get().confidence)}</div>
                             <div>"Freshness window: 120s"</div>
                         </div>
                     </div>
                 </div>
             </div>
             <div
-                style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.835rem; color: #5a5860; margin-top: 3px; letter-spacing: 0.08em;"
+                style="font-family: var(--font-body); font-size: 0.835rem; color: var(--color-text-dim); margin-top: 3px; letter-spacing: 0.08em;"
                 style:display=move || if is_mobile.get() { "none" } else { "block" }
             >"Wynncraft Territories"</div>
             // Gradient line divider
@@ -499,9 +503,9 @@ fn SearchBar() -> impl IntoView {
 
     let outer_padding = move || {
         if is_mobile.get() {
-            "padding: 8px 12px; border-bottom: 1px solid #282c3e;"
+            "padding: 8px 12px; border-bottom: 1px solid var(--color-border-subtle);"
         } else {
-            "padding: 12px 24px; border-bottom: 1px solid #282c3e;"
+            "padding: 12px 24px; border-bottom: 1px solid var(--color-border-subtle);"
         }
     };
 
@@ -509,7 +513,7 @@ fn SearchBar() -> impl IntoView {
         <div style=outer_padding>
             <div style="position: relative;">
                 // Search icon (inline SVG magnifying glass)
-                <div style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: #5a5860; width: 14px; height: 14px;">
+                <div style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--color-text-dim); width: 14px; height: 14px;">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
                         <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
                     </svg>
@@ -517,27 +521,27 @@ fn SearchBar() -> impl IntoView {
                 <input
                     data-search-input=""
                     class="focus-ring"
-                    style="width: 100%; padding: 10px 14px 10px 34px; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 6px; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif; font-size: 1.044rem; outline: none; transition: border-color 0.2s ease, box-shadow 0.3s ease;"
+                    style="width: 100%; padding: 10px 14px 10px 34px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 6px; color: var(--color-text-primary); font-family: var(--font-body); font-size: 0.9rem; outline: none; transition: border-color 0.2s ease, box-shadow 0.3s ease;"
                     type="text"
                     placeholder="Search territories or guilds..."
                     prop:value=move || search_query.get()
                     on:input=on_input
                     on:focus=|e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "#f5c542").ok();
+                            el.style().set_property("border-color", "var(--color-gold)").ok();
                             el.style().set_property("box-shadow", "0 0 12px rgba(245,197,66,0.08)").ok();
                         }
                     }
                     on:blur=|e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                             el.style().set_property("box-shadow", "none").ok();
                         }
                     }
                 />
                 // Keyboard hint — hidden on mobile (irrelevant on touch)
                 <div
-                    style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-family: 'JetBrains Mono', monospace; font-size: 0.719rem; color: #3a3f5c; background: #13161f; padding: 1px 5px; border-radius: 3px; border: 1px solid #282c3e; pointer-events: none;"
+                    style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-border-accent); background: var(--color-deep); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--color-border-subtle); pointer-events: none;"
                     style:display=move || if is_mobile.get() { "none" } else { "block" }
                 >"/"</div>
             </div>
@@ -555,11 +559,15 @@ fn SettingsPanel() -> impl IntoView {
     let ShowGranularMapTime(show_granular_map_time) = expect_context();
     let ShowCompoundMapTime(show_compound_map_time) = expect_context();
     let ShowNames(show_names) = expect_context();
+    let ShowClaimLabels(show_claim_labels) = expect_context();
+    let ShowFarZoomTerritoryTags(show_far_zoom_territory_tags) = expect_context();
     let ThickCooldownBorders(thick_cooldown_borders) = expect_context();
     let BoldConnections(bold_connections) = expect_context();
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
     let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
+    let DefenseHighlight(defense_highlight) = expect_context();
+    let MapIntelModeEnabled(map_intel_enabled) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
     let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
     let ManualSrScalar(manual_sr_scalar) = expect_context();
@@ -585,39 +593,42 @@ fn SettingsPanel() -> impl IntoView {
     let LabelScaleStaticName(label_scale_static_name) = expect_context();
     let LabelScaleDynamic(label_scale_dynamic) = expect_context();
     let LabelScaleIcons(label_scale_icons) = expect_context();
+    let ShowDebugInfo(show_debug_info) = expect_context();
     let territory_count = Memo::new(move |_| territories.get().len());
 
     view! {
-        <div style="border-bottom: 1px solid #282c3e;">
+        <div style="border-bottom: 1px solid var(--color-border-subtle);">
             <div style="padding: 12px 14px 8px; display: flex; align-items: center; gap: 10px;">
                 <button
-                    style="width: 30px; height: 30px; border-radius: 999px; border: 1px solid #282c3e; background: #1a1d2a; color: #9a9590; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color 0.15s, background 0.15s, color 0.15s; font-family: 'JetBrains Mono', monospace; font-size: 0.92rem; line-height: 1;"
+                    style="width: 30px; height: 30px; border-radius: 999px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: var(--color-text-secondary); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color 0.15s, background 0.15s, color 0.15s; font-family: var(--font-mono); font-size: 0.92rem; line-height: 1;"
                     title="Back"
                     on:click=move |_| show_settings.set(false)
                     on:mouseenter=move |e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("color", "#f5c542").ok();
+                            el.style().set_property("color", "var(--color-gold)").ok();
                             el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
-                            el.style().set_property("background", "#13161f").ok();
+                            el.style().set_property("background", "var(--color-deep)").ok();
                         }
                     }
                     on:mouseleave=move |e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("color", "#9a9590").ok();
-                            el.style().set_property("border-color", "#282c3e").ok();
-                            el.style().set_property("background", "#1a1d2a").ok();
+                            el.style().set_property("color", "var(--color-text-secondary)").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
+                            el.style().set_property("background", "var(--color-surface)").ok();
                         }
                     }
                 >
                     "\u{2039}"
                 </button>
-                <div style="font-family: 'Silkscreen', monospace; font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860;">
-                    <span style="color: #f5c542; margin-right: 6px; font-size: 0.812rem;">{"\u{2699}"}</span>"Settings"
+                <div style="font-family: var(--font-display); font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim);">
+                    <span style="color: var(--color-gold); margin-right: 6px; font-size: 0.812rem;">{"\u{2699}"}</span>"Settings"
                 </div>
             </div>
             <div style="padding: 0 12px 12px;">
                 <SettingsSectionHeader title="Labels" />
                 <SettingsToggleRow label="Territory Names" shortcut="N" active=show_names />
+                <SettingsToggleRow label="Guild Area Names" shortcut="" active=show_claim_labels />
+                <SettingsToggleRow label="Far-Zoom Territory Tags" shortcut="" active=show_far_zoom_territory_tags />
                 <SettingsToggleRow label="Abbreviate Names" shortcut="A" active=abbreviate_names />
                 <SettingsToggleRow label="Readable Font" shortcut="F" active=readable_font />
                 <SettingsNameColorRow color=name_color />
@@ -702,13 +713,15 @@ fn SettingsPanel() -> impl IntoView {
                     thickness=connection_thickness_scale
                 />
                 <SettingsToggleRow label="Resource Highlight" shortcut="P" active=resource_highlight />
+                <SettingsToggleRow label="Defense Highlight" shortcut="D" active=defense_highlight />
+                <SettingsToggleRow label="Map Intel" shortcut="I" active=map_intel_enabled />
                 <SettingsToggleRow label="Resource Icons" shortcut="" active=show_resource_icons />
                 <SettingsToggleRow label="Territory Ornaments" shortcut="" active=show_territory_ornaments />
                 <SettingsToggleRow label="Minimap" shortcut="M" active=show_minimap />
                 <SettingsToggleRow label="Heat Map" shortcut="" active=heat_mode_enabled />
                 <div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 10px;">
-                    <span style="font-size: 1.021rem; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif;">"Territories"</span>
-                    <span style="font-size: 0.858rem; color: #9a9590; font-family: 'JetBrains Mono', monospace;">
+                    <span style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body);">"Territories"</span>
+                    <span style="font-size: 0.858rem; color: var(--color-text-secondary); font-family: var(--font-mono);">
                         {move || territory_count.get()}
                     </span>
                 </div>
@@ -729,11 +742,11 @@ fn SettingsPanel() -> impl IntoView {
                             <SettingsHeatSeasonRow season_id=heat_selected_season_id meta=heat_meta />
                         </Show>
                         <Show when=move || heat_fallback_applied.get()>
-                            <div style="font-size: 0.766rem; color: #f5c542; font-family: 'JetBrains Mono', monospace; margin-top: 6px;">
+                            <div style="font-size: 0.766rem; color: var(--color-gold); font-family: var(--font-mono); margin-top: 6px;">
                                 "Season data unavailable, using last 60d fallback."
                             </div>
                         </Show>
-                        <div style="font-size: 0.719rem; color: #6f748f; font-family: 'JetBrains Mono', monospace; margin-top: 5px;">
+                        <div style="font-size: 0.719rem; color: #6f748f; font-family: var(--font-mono); margin-top: 5px;">
                             {move || heat_window_label.get()}
                         </div>
                     </div>
@@ -748,6 +761,9 @@ fn SettingsPanel() -> impl IntoView {
                 <SettingsToggleRow label="Online Count" shortcut="" active=show_leaderboard_online />
                 <SettingsToggleRow label="SR Gain" shortcut="" active=show_leaderboard_sr_gain />
                 <SettingsToggleRow label="SR Value" shortcut="" active=show_leaderboard_sr_value />
+
+                <SettingsSectionHeader title="Advanced" />
+                <SettingsToggleRow label="Debug Mode" shortcut="" active=show_debug_info />
             </div>
         </div>
     }
@@ -756,7 +772,7 @@ fn SettingsPanel() -> impl IntoView {
 const NAME_COLOR_OPTIONS: &[(NameColor, &str, &str)] = &[
     (NameColor::White, "White", "#dcdad2"),
     (NameColor::Guild, "Guild", "#a88cc8"), // representative purple for the swatch
-    (NameColor::Gold, "Gold", "#f5c542"),
+    (NameColor::Gold, "Gold", "#f5c542"),   // hex, not a token: the alpha suffix below concatenates
     (NameColor::Copper, "Copper", "#b56727"),
     (NameColor::Muted, "Muted", "#787470"),
 ];
@@ -768,7 +784,7 @@ fn SettingsNameColorRow(
 ) -> impl IntoView {
     view! {
         <div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 10px;">
-            <span style="font-size: 1.021rem; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif;">{label}</span>
+            <span style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body);">{label}</span>
             <div style="display: flex; gap: 6px; align-items: center;">
                 {NAME_COLOR_OPTIONS.iter().map(|&(variant, label, css_color)| {
                     let on_click = move |_| color.set(variant);
@@ -780,7 +796,7 @@ fn SettingsNameColorRow(
                                 format!(
                                     "display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: {}; cursor: pointer; border: 2px solid {}; transition: border-color 0.15s, box-shadow 0.15s;{}",
                                     css_color,
-                                    if selected { "#e2e0d8" } else { "#2a2e40" },
+                                    if selected { "var(--color-text-primary)" } else { "#2a2e40" },
                                     if selected { format!(" box-shadow: 0 0 5px {}80;", css_color) } else { String::new() },
                                 )
                             }
@@ -797,7 +813,7 @@ fn SettingsNameColorRow(
 fn SettingsSectionHeader(title: &'static str) -> impl IntoView {
     view! {
         <div
-            style="padding: 10px 10px 5px; margin-top: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.719rem; text-transform: uppercase; letter-spacing: 0.12em; color: #5a5860;"
+            style="padding: 10px 10px 5px; margin-top: 4px; font-family: var(--font-mono); font-size: 0.719rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-text-dim);"
         >
             {title}
         </div>
@@ -822,7 +838,7 @@ fn SettingsScalarRow(scalar: RwSignal<f64>) -> impl IntoView {
         <div
             style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border-radius: 4px;"
         >
-            <span style="font-size: 1.021rem; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif;">
+            <span style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body);">
                 "Manual Scalar"
             </span>
             <input
@@ -832,7 +848,7 @@ fn SettingsScalarRow(scalar: RwSignal<f64>) -> impl IntoView {
                 step="0.05"
                 prop:value=move || format!("{:.2}", scalar.get())
                 on:input=on_input
-                style="width: 90px; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.835rem; padding: 4px 6px; outline: none;"
+                style="width: 90px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.835rem; padding: 4px 6px; outline: none;"
             />
         </div>
     }
@@ -895,7 +911,7 @@ fn SettingsScaleRow(
 
     view! {
         <div style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 4px;">
-            <span style="min-width: 124px; font-size: 0.951rem; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif;">
+            <span style="min-width: 124px; font-size: 0.951rem; color: var(--color-text-primary); font-family: var(--font-body);">
                 {label}
             </span>
             <input
@@ -908,10 +924,10 @@ fn SettingsScaleRow(
                 value=format!("{:.2}", local_value.get_untracked())
                 on:input=on_input
                 on:change=on_change
-                style="flex: 1; margin: 0; accent-color: #f5c542;"
+                style="flex: 1; margin: 0; accent-color: var(--color-gold);"
             />
             <span
-                style="width: 42px; text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 0.766rem; color: #9a9590;"
+                style="width: 42px; text-align: right; font-family: var(--font-mono); font-size: 0.766rem; color: var(--color-text-secondary);"
             >
                 {move || format!("{:.2}", value.get())}
             </span>
@@ -939,7 +955,7 @@ fn SettingsScaleResetRow(
         <div style="display: flex; justify-content: flex-end; padding: 2px 10px 6px;">
             <button
                 on:click=on_reset
-                style="background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; color: #9a9590; font-family: 'JetBrains Mono', monospace; font-size: 0.719rem; padding: 3px 8px; cursor: pointer;"
+                style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.719rem; padding: 3px 8px; cursor: pointer;"
             >
                 "Reset"
             </button>
@@ -961,7 +977,7 @@ fn SettingsConnectionScaleResetRow(
         <div style="display: flex; justify-content: flex-end; padding: 2px 10px 6px;">
             <button
                 on:click=on_reset
-                style="background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; color: #9a9590; font-family: 'JetBrains Mono', monospace; font-size: 0.719rem; padding: 3px 8px; cursor: pointer;"
+                style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.719rem; padding: 3px 8px; cursor: pointer;"
             >
                 "Reset"
             </button>
@@ -985,7 +1001,7 @@ fn SettingsToggleRow(
             on:click=on_click
             on:mouseenter=|e| {
                 if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("background", "#232738").ok();
+                    el.style().set_property("background", "var(--color-surface-hover)").ok();
                 }
             }
             on:mouseleave=|e| {
@@ -995,16 +1011,16 @@ fn SettingsToggleRow(
             }
         >
             <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="font-size: 1.021rem; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif;">{label}</span>
+                <span style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body);">{label}</span>
                 {(!shortcut.is_empty()).then(|| view! {
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.673rem; color: #3a3f5c; background: #1a1d2a; padding: 1px 5px; border-radius: 3px; border: 1px solid #282c3e;">{shortcut}</span>
+                    <span style="font-family: var(--font-mono); font-size: 0.673rem; color: var(--color-border-accent); background: var(--color-surface); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--color-border-subtle);">{shortcut}</span>
                 })}
             </div>
             <span style=move || {
                 if active.get() {
-                    "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #50c878; box-shadow: 0 0 5px rgba(80,200,120,0.4); flex-shrink: 0;"
+                    "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--color-emerald); box-shadow: 0 0 5px rgba(80,200,120,0.4); flex-shrink: 0;"
                 } else {
-                    "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3a3f5c; flex-shrink: 0;"
+                    "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--color-border-accent); flex-shrink: 0;"
                 }
             } />
         </div>
@@ -1020,10 +1036,10 @@ fn SettingsHeatSourceRow(
     let is_history = move || mode.get() == MapMode::History;
     view! {
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px;">
-            <span style="font-size: 0.928rem; color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">
+            <span style="font-size: 0.928rem; color: var(--color-text-secondary); font-family: var(--font-body);">
                 {move || if is_history() { "History Basis" } else { "Live Source" }}
             </span>
-            <div style="display: inline-flex; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; overflow: hidden;">
+            <div style="display: inline-flex; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; overflow: hidden;">
                 <button
                     style=move || {
                         let active = if is_history() {
@@ -1032,9 +1048,9 @@ fn SettingsHeatSourceRow(
                             live_source.get() == HeatLiveSource::Season
                         };
                         format!(
-                            "padding: 4px 8px; border: none; background: {}; color: {}; font-family: 'JetBrains Mono', monospace; font-size: 0.766rem; cursor: pointer;",
+                            "padding: 4px 8px; border: none; background: {}; color: {}; font-family: var(--font-mono); font-size: 0.766rem; cursor: pointer;",
                             if active { "rgba(245,197,66,0.12)" } else { "transparent" },
-                            if active { "#f5c542" } else { "#7c829e" },
+                            if active { "var(--color-gold)" } else { "#7c829e" },
                         )
                     }
                     on:click=move |_| {
@@ -1055,9 +1071,9 @@ fn SettingsHeatSourceRow(
                             live_source.get() == HeatLiveSource::AllTime
                         };
                         format!(
-                            "padding: 4px 8px; border: none; border-left: 1px solid #282c3e; background: {}; color: {}; font-family: 'JetBrains Mono', monospace; font-size: 0.766rem; cursor: pointer;",
+                            "padding: 4px 8px; border: none; border-left: 1px solid var(--color-border-subtle); background: {}; color: {}; font-family: var(--font-mono); font-size: 0.766rem; cursor: pointer;",
                             if active { "rgba(245,197,66,0.12)" } else { "transparent" },
-                            if active { "#f5c542" } else { "#7c829e" },
+                            if active { "var(--color-gold)" } else { "#7c829e" },
                         )
                     }
                     on:click=move |_| {
@@ -1097,10 +1113,10 @@ fn SettingsHeatSeasonRow(
 
     view! {
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px;">
-            <span style="font-size: 0.928rem; color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Season"</span>
+            <span style="font-size: 0.928rem; color: var(--color-text-secondary); font-family: var(--font-body);">"Season"</span>
             <select
                 on:change=on_change
-                style="min-width: 120px; background: #1a1d2a; border: 1px solid #282c3e; border-radius: 4px; color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; padding: 4px 6px; outline: none;"
+                style="min-width: 120px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.812rem; padding: 4px 6px; outline: none;"
             >
                 <option
                     value="latest"
@@ -1187,10 +1203,10 @@ fn SearchResults() -> impl IntoView {
     let result_count = Memo::new(move |_| filtered.get().len());
 
     view! {
-        <div style="border-bottom: 1px solid #282c3e;">
+        <div style="border-bottom: 1px solid var(--color-border-subtle);">
             <div style="padding: 14px 24px 8px; display: flex; align-items: baseline; justify-content: space-between;">
-                <span style="font-family: 'Silkscreen', monospace; font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860;">"Search Results"</span>
-                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.754rem; color: #3a3f5c;">{move || format!("{} found", result_count.get())}</span>
+                <span style="font-family: var(--font-display); font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim);">"Search Results"</span>
+                <span style="font-family: var(--font-mono); font-size: 0.754rem; color: var(--color-border-accent);">{move || format!("{} found", result_count.get())}</span>
             </div>
             <div style="padding: 0 12px 12px;">
                 <For
@@ -1225,11 +1241,11 @@ fn SearchResults() -> impl IntoView {
                             <div
                                 data-sidebar-idx={list_idx.to_string()}
                                 style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; transition: background 0.15s, box-shadow 0.15s;"
-                                style:box-shadow=move || if sidebar_index.get() == list_idx { "inset 2px 0 0 #f5c542" } else { "none" }
+                                style:box-shadow=move || if sidebar_index.get() == list_idx { "inset 2px 0 0 var(--color-gold)" } else { "none" }
                                 on:click=on_click
                                 on:mouseenter=|e| {
                                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("background", "#232738").ok();
+                                        el.style().set_property("background", "var(--color-surface-hover)").ok();
                                     }
                                 }
                                 on:mouseleave=|e| {
@@ -1240,8 +1256,8 @@ fn SearchResults() -> impl IntoView {
                             >
                                 <div style={format!("width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; box-shadow: inset 1px 1px 0 rgba(255,255,255,0.06), inset -1px -1px 0 rgba(0,0,0,0.3); background: {};", rgba_css(r, g, b, 0.8))} />
                                 <div style="flex: 1; min-width: 0;">
-                                    <div style="font-size: 1.021rem; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{name}</div>
-                                    <div style="font-size: 0.87rem; color: #9a9590; font-family: 'JetBrains Mono', monospace;">{guild}</div>
+                                    <div style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{name}</div>
+                                    <div style="font-size: 0.87rem; color: var(--color-text-secondary); font-family: var(--font-mono);">{guild}</div>
                                 </div>
                             </div>
                         }
@@ -1399,21 +1415,21 @@ fn LeaderboardPanel() -> impl IntoView {
     let is_empty = Memo::new(move |_| territories.get().is_empty());
 
     view! {
-        <div style="border-bottom: 1px solid #282c3e;">
+        <div style="border-bottom: 1px solid var(--color-border-subtle);">
             <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 24px 8px;">
-                <div style="font-family: 'Silkscreen', monospace; font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860;">
-                    <span style="color: #f5c542; margin-right: 6px; font-size: 0.812rem;">{"\u{25C6}"}</span>"Top Guilds"
+                <div style="font-family: var(--font-display); font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim);">
+                    <span style="color: var(--color-gold); margin-right: 6px; font-size: 0.812rem;">{"\u{25C6}"}</span>"Top Guilds"
                 </div>
                 <div style="display: flex; gap: 4px;">
                     <span
                         style=move || {
                             let active = !sort_by_sr.get();
                             format!(
-                                "font-family: 'JetBrains Mono', monospace; font-size: 0.754rem; padding: 2px 8px; border-radius: 3px; cursor: pointer; transition: color 0.15s, background 0.15s; {}",
+                                "font-family: var(--font-mono); font-size: 0.754rem; padding: 2px 8px; border-radius: 3px; cursor: pointer; transition: color 0.15s, background 0.15s; {}",
                                 if active {
-                                    "color: #f5c542; background: rgba(245,197,66,0.1);"
+                                    "color: var(--color-gold); background: rgba(245,197,66,0.1);"
                                 } else {
-                                    "color: #3a3f5c; background: transparent;"
+                                    "color: var(--color-border-accent); background: transparent;"
                                 }
                             )
                         }
@@ -1423,11 +1439,11 @@ fn LeaderboardPanel() -> impl IntoView {
                         style=move || {
                             let active = sort_by_sr.get();
                             format!(
-                                "font-family: 'JetBrains Mono', monospace; font-size: 0.754rem; padding: 2px 8px; border-radius: 3px; cursor: pointer; transition: color 0.15s, background 0.15s; {}",
+                                "font-family: var(--font-mono); font-size: 0.754rem; padding: 2px 8px; border-radius: 3px; cursor: pointer; transition: color 0.15s, background 0.15s; {}",
                                 if active {
                                     "color: var(--accent-live); background: rgba(var(--accent-live-rgb),0.1);"
                                 } else {
-                                    "color: #3a3f5c; background: transparent;"
+                                    "color: var(--color-border-accent); background: transparent;"
                                 }
                             )
                         }
@@ -1439,11 +1455,11 @@ fn LeaderboardPanel() -> impl IntoView {
                 when=move || !is_empty.get()
                 fallback=|| view! {
                     <div style="padding: 24px; text-align: center;">
-                        <div class="status-pulse" style="font-family: 'JetBrains Mono', monospace; font-size: 0.905rem; color: #3a3f5c; letter-spacing: 0.05em;">"Awaiting territory data..."</div>
+                        <div class="status-pulse" style="font-family: var(--font-mono); font-size: 0.905rem; color: var(--color-border-accent); letter-spacing: 0.05em;">"Awaiting territory data..."</div>
                         <div style="margin-top: 12px; display: flex; justify-content: center; gap: 4px;">
-                            <div style="width: 4px; height: 4px; border-radius: 50%; background: #f5c542; opacity: 0.3; animation: pulse-dot 1.5s ease-in-out infinite;" />
-                            <div style="width: 4px; height: 4px; border-radius: 50%; background: #f5c542; opacity: 0.3; animation: pulse-dot 1.5s ease-in-out 0.3s infinite;" />
-                            <div style="width: 4px; height: 4px; border-radius: 50%; background: #f5c542; opacity: 0.3; animation: pulse-dot 1.5s ease-in-out 0.6s infinite;" />
+                            <div style="width: 4px; height: 4px; border-radius: 50%; background: var(--color-gold); opacity: 0.3; animation: pulse-dot 1.5s ease-in-out infinite;" />
+                            <div style="width: 4px; height: 4px; border-radius: 50%; background: var(--color-gold); opacity: 0.3; animation: pulse-dot 1.5s ease-in-out 0.3s infinite;" />
+                            <div style="width: 4px; height: 4px; border-radius: 50%; background: var(--color-gold); opacity: 0.3; animation: pulse-dot 1.5s ease-in-out 0.6s infinite;" />
                         </div>
                     </div>
                 }
@@ -1494,9 +1510,9 @@ fn LeaderboardPanel() -> impl IntoView {
                             _ => "",
                         };
                         let rank_style = if display_rank > 3 {
-                            "font-family: 'JetBrains Mono', monospace; font-size: 0.87rem; color: #4a4e6a; width: 26px; text-align: right; flex-shrink: 0;"
+                            "font-family: var(--font-mono); font-size: 0.87rem; color: #4a4e6a; width: 26px; text-align: right; flex-shrink: 0;"
                         } else {
-                            "font-family: 'JetBrains Mono', monospace; font-size: 0.87rem; font-weight: 700; width: 26px; text-align: right; flex-shrink: 0;"
+                            "font-family: var(--font-mono); font-size: 0.87rem; font-weight: 700; width: 26px; text-align: right; flex-shrink: 0;"
                         };
                         let row_style = if mode.get_untracked() == MapMode::History {
                             "display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; transition: background 0.15s, box-shadow 0.15s;".to_string()
@@ -1521,11 +1537,11 @@ fn LeaderboardPanel() -> impl IntoView {
                             <li
                                 data-sidebar-idx={list_idx.to_string()}
                                 style=row_style
-                                style:box-shadow=move || if sidebar_index.get() == list_idx { "inset 2px 0 0 #f5c542" } else { "none" }
+                                style:box-shadow=move || if sidebar_index.get() == list_idx { "inset 2px 0 0 var(--color-gold)" } else { "none" }
                                 on:click=on_click
                                 on:mouseenter=|e| {
                                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("background", "#232738").ok();
+                                        el.style().set_property("background", "var(--color-surface-hover)").ok();
                                     }
                                 }
                                 on:mouseleave=|e| {
@@ -1537,23 +1553,23 @@ fn LeaderboardPanel() -> impl IntoView {
                                 {is_podium.then(|| view! { <div style=color_bar_style.clone() /> })}
                                 <span class=rank_class style=rank_style>{display_rank}</span>
                                 <div style={format!("width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; box-shadow: 0 0 4px {}, inset 1px 1px 0 rgba(255,255,255,0.06), inset -1px -1px 0 rgba(0,0,0,0.3); background: {};", rgba_css(r, g, b, 0.15), rgba_css(r, g, b, 0.8))} />
-                                <span style="flex: 1; font-size: 1.044rem; color: #e2e0d8; font-family: 'Inter', system-ui, sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{name}</span>
-                                <span style="font-size: 0.812rem; color: #9a9590; font-family: 'JetBrains Mono', monospace;">"[" {prefix} "]"</span>
+                                <span style="flex: 1; font-size: 1.044rem; color: var(--color-text-primary); font-family: var(--font-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{name}</span>
+                                <span style="font-size: 0.812rem; color: var(--color-text-secondary); font-family: var(--font-mono);">"[" {prefix} "]"</span>
                                 {move || show_leaderboard_sr_gain.get().then(|| view! {
-                                    <span style="font-size: 0.766rem; color: var(--accent-live); font-family: 'JetBrains Mono', monospace; background: rgba(var(--accent-live-rgb),0.09); border: 1px solid rgba(var(--accent-live-rgb),0.2); padding: 1px 5px; border-radius: 3px; min-width: 58px; text-align: center;">
+                                    <span style="font-size: 0.766rem; color: var(--accent-live); font-family: var(--font-mono); background: rgba(var(--accent-live-rgb),0.09); border: 1px solid rgba(var(--accent-live-rgb),0.2); padding: 1px 5px; border-radius: 3px; min-width: 58px; text-align: center;">
                                         {sr_badge.clone()}
                                     </span>
                                 })}
                                 {move || {
                                     let show_sr = sort_by_sr.get() || show_leaderboard_sr_value.get();
                                     show_sr.then(|| sr_display.clone().map(|sr| view! {
-                                        <span style="font-size: 0.766rem; color: var(--accent-live); font-family: 'JetBrains Mono', monospace; background: rgba(var(--accent-live-rgb),0.06); padding: 1px 5px; border-radius: 3px; min-width: 40px; text-align: center;">
+                                        <span style="font-size: 0.766rem; color: var(--accent-live); font-family: var(--font-mono); background: rgba(var(--accent-live-rgb),0.06); padding: 1px 5px; border-radius: 3px; min-width: 40px; text-align: center;">
                                             {sr}
                                         </span>
                                     }))
                                 }}
                                 {move || show_leaderboard_territory_count.get().then(|| view! {
-                                    <span style="font-size: 0.951rem; color: #f5c542; font-family: 'JetBrains Mono', monospace; min-width: 24px; text-align: right; font-weight: 500; background: rgba(245,197,66,0.06); padding: 1px 6px; border-radius: 3px;">{count}</span>
+                                    <span style="font-size: 0.951rem; color: var(--color-gold); font-family: var(--font-mono); min-width: 24px; text-align: right; font-weight: 500; background: rgba(245,197,66,0.06); padding: 1px 6px; border-radius: 3px;">{count}</span>
                                 })}
                                 {move || {
                                     if !show_leaderboard_online.get() {
@@ -1561,7 +1577,7 @@ fn LeaderboardPanel() -> impl IntoView {
                                     }
                                     let data = guild_online_data.get();
                                     data.get(&name_for_online).map(|info| view! {
-                                        <span style="font-size: 0.766rem; color: #50c878; font-family: 'JetBrains Mono', monospace; background: rgba(80,200,120,0.06); padding: 1px 5px; border-radius: 3px; min-width: 28px; text-align: center; display: inline-flex; align-items: center; gap: 3px;">
+                                        <span style="font-size: 0.766rem; color: var(--color-emerald); font-family: var(--font-mono); background: rgba(80,200,120,0.06); padding: 1px 5px; border-radius: 3px; min-width: 28px; text-align: center; display: inline-flex; align-items: center; gap: 3px;">
                                             <span style="font-size: 0.522rem; line-height: 1;">{"\u{25CF}"}</span>
                                             {info.online}
                                         </span>
@@ -1722,20 +1738,20 @@ fn GuildPanel() -> impl IntoView {
     });
 
     view! {
-        <div class="panel-reveal" style="border-bottom: 1px solid #282c3e; position: relative;">
+        <div class="panel-reveal" style="border-bottom: 1px solid var(--color-border-subtle); position: relative;">
             // Close button
             <button
-                style="position: absolute; top: 12px; right: 12px; background: none; border: none; color: #5a5860; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s; z-index: 1; display: flex; align-items: center; justify-content: center;"
+                style="position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--color-text-dim); cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s; z-index: 1; display: flex; align-items: center; justify-content: center;"
                 on:click=on_close
                 on:mouseenter=|e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "#e05252").ok();
-                        el.style().set_property("background", "#232738").ok();
+                        el.style().set_property("color", "var(--color-nether)").ok();
+                        el.style().set_property("background", "var(--color-surface-hover)").ok();
                     }
                 }
                 on:mouseleave=|e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "#5a5860").ok();
+                        el.style().set_property("color", "var(--color-text-dim)").ok();
                         el.style().set_property("background", "transparent").ok();
                     }
                 }
@@ -1777,15 +1793,15 @@ fn GuildPanel() -> impl IntoView {
                                target="_blank"
                                rel="noopener noreferrer"
                                title="Open Wynncraft guild stats"
-                               style="font-family: 'Silkscreen', monospace; font-size: 1.188rem; color: #e2e0d8; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s;"
+                               style="font-family: var(--font-display); font-size: 1.188rem; color: var(--color-text-primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s;"
                                on:mouseenter=|e| {
                                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                       el.style().set_property("color", "#50c878").ok();
+                                       el.style().set_property("color", "var(--color-emerald)").ok();
                                    }
                                }
                                on:mouseleave=|e| {
                                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                       el.style().set_property("color", "#e2e0d8").ok();
+                                       el.style().set_property("color", "var(--color-text-primary)").ok();
                                    }
                                }
                             >
@@ -1801,7 +1817,7 @@ fn GuildPanel() -> impl IntoView {
                         let prefix = json.get("prefix").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let level = json.get("level").and_then(|v| v.as_u64()).unwrap_or(0);
                         view! {
-                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.905rem; color: #9a9590; margin-bottom: 10px;">
+                            <div style="font-family: var(--font-mono); font-size: 0.905rem; color: var(--color-text-secondary); margin-bottom: 10px;">
                                 "[" {prefix} "]" " \u{00b7} Lv. " {level}
                             </div>
                         }
@@ -1814,11 +1830,11 @@ fn GuildPanel() -> impl IntoView {
                         let online = json.get("online").and_then(|v| v.as_u64()).unwrap_or(0);
                         view! {
                             <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 14px;">
-                                <span style="font-size: 0.638rem; color: #50c878; line-height: 1;">{"\u{25CF}"}</span>
-                                <span style="font-family: 'JetBrains Mono', monospace; font-size: 1.102rem; color: #50c878; font-weight: 600;">
+                                <span style="font-size: 0.638rem; color: var(--color-emerald); line-height: 1;">{"\u{25CF}"}</span>
+                                <span style="font-family: var(--font-mono); font-size: 1.102rem; color: var(--color-emerald); font-weight: 600;">
                                     {online}
                                 </span>
-                                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.87rem; color: #50c878; opacity: 0.7;">
+                                <span style="font-family: var(--font-mono); font-size: 0.87rem; color: var(--color-emerald); opacity: 0.7;">
                                     "online"
                                 </span>
                             </div>
@@ -1830,7 +1846,7 @@ fn GuildPanel() -> impl IntoView {
                 {move || {
                     guild_loading.get().then(|| view! {
                         <div style="padding: 8px 0; text-align: center;">
-                            <span class="status-pulse" style="font-family: 'JetBrains Mono', monospace; font-size: 0.905rem; color: #3a3f5c; letter-spacing: 0.05em;">"Loading guild data..."</span>
+                            <span class="status-pulse" style="font-family: var(--font-mono); font-size: 0.905rem; color: var(--color-border-accent); letter-spacing: 0.05em;">"Loading guild data..."</span>
                         </div>
                     })
                 }}
@@ -1864,31 +1880,31 @@ fn GuildPanel() -> impl IntoView {
                         };
 
                         view! {
-                            <div style="display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; border-top: 1px solid #282c3e; padding-top: 12px;">
-                                <div style="display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">
-                                    <span style="color: #5a5860;">"Territories"</span>
-                                    <span style="color: #f5c542;">{territories_count}</span>
+                            <div style="display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; border-top: 1px solid var(--color-border-subtle); padding-top: 12px;">
+                                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
+                                    <span style="color: var(--color-text-dim);">"Territories"</span>
+                                    <span style="color: var(--color-gold);">{territories_count}</span>
                                 </div>
-                                <div style="display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">
-                                    <span style="color: #5a5860;">"Members"</span>
-                                    <span style="color: #e2e0d8;">{members}</span>
+                                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
+                                    <span style="color: var(--color-text-dim);">"Members"</span>
+                                    <span style="color: var(--color-text-primary);">{members}</span>
                                 </div>
-                                <div style="display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">
-                                    <span style="color: #5a5860;">"Wars"</span>
-                                    <span style="color: #e2e0d8;">{wars}</span>
+                                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
+                                    <span style="color: var(--color-text-dim);">"Wars"</span>
+                                    <span style="color: var(--color-text-primary);">{wars}</span>
                                 </div>
                                 {season_rating.map(|(season_id, rating)| {
                                     let sr_text = format!("S{}: {}", season_id, format_sr_value(rating));
                                     view! {
-                                        <div style="display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">
-                                            <span style="color: #5a5860;">"Season Rating"</span>
+                                        <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
+                                            <span style="color: var(--color-text-dim);">"Season Rating"</span>
                                             <span style="color: var(--accent-live);">{sr_text}</span>
                                         </div>
                                     }
                                 })}
-                                <div style="display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">
-                                    <span style="color: #5a5860;">"Created"</span>
-                                    <span style="color: #9a9590;">{created_ago}</span>
+                                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
+                                    <span style="color: var(--color-text-dim);">"Created"</span>
+                                    <span style="color: var(--color-text-secondary);">{created_ago}</span>
                                 </div>
                             </div>
                         }
@@ -1904,8 +1920,8 @@ fn GuildPanel() -> impl IntoView {
                         }
                         view! {
                             <div style="margin-bottom: 14px;">
-                                <div style="font-family: 'Silkscreen', monospace; font-size: 0.87rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860; margin-bottom: 8px;">
-                                    <span style="color: #50c878; margin-right: 6px; font-size: 0.696rem;">{"\u{25C6}"}</span>"Online Members"
+                                <div style="font-family: var(--font-display); font-size: 0.87rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim); margin-bottom: 8px;">
+                                    <span style="color: var(--color-emerald); margin-right: 6px; font-size: 0.696rem;">{"\u{25C6}"}</span>"Online Members"
                                 </div>
                                 <div style="display: flex; flex-direction: column; gap: 3px;">
                                     {online_members.into_iter().map(|member| {
@@ -1914,27 +1930,27 @@ fn GuildPanel() -> impl IntoView {
                                         let server = member.server;
                                         let profile_url = format!("https://wynncraft.com/stats/player/{}", username);
                                         view! {
-                                            <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0; font-family: 'JetBrains Mono', monospace; font-size: 0.87rem;">
-                                                <span style="font-size: 0.464rem; color: #50c878; line-height: 1;">{"\u{25CF}"}</span>
-                                                <span style="color: #9a9590; font-size: 0.812rem; min-width: 72px;">"[" {rank_label} "]"</span>
+                                            <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0; font-family: var(--font-mono); font-size: 0.87rem;">
+                                                <span style="font-size: 0.464rem; color: var(--color-emerald); line-height: 1;">{"\u{25CF}"}</span>
+                                                <span style="color: var(--color-text-secondary); font-size: 0.812rem; min-width: 72px;">"[" {rank_label} "]"</span>
                                                 <a href=profile_url
                                                    target="_blank"
                                                    rel="noopener noreferrer"
-                                                   style="flex: 1; color: #e2e0d8; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s;"
+                                                   style="flex: 1; color: var(--color-text-primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s;"
                                                    on:mouseenter=|e| {
                                                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                                           el.style().set_property("color", "#50c878").ok();
+                                                           el.style().set_property("color", "var(--color-emerald)").ok();
                                                        }
                                                    }
                                                    on:mouseleave=|e| {
                                                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                                           el.style().set_property("color", "#e2e0d8").ok();
+                                                           el.style().set_property("color", "var(--color-text-primary)").ok();
                                                        }
                                                    }
                                                 >
                                                     {username}
                                                 </a>
-                                                <span style="color: #5a5860; font-size: 0.812rem;">{server}</span>
+                                                <span style="color: var(--color-text-dim); font-size: 0.812rem;">{server}</span>
                                             </div>
                                         }
                                     }).collect::<Vec<_>>()}
@@ -1952,8 +1968,8 @@ fn GuildPanel() -> impl IntoView {
                     }
                     view! {
                         <div>
-                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.87rem; text-transform: uppercase; letter-spacing: 0.14em; color: #5a5860; margin-bottom: 8px; border-top: 1px solid #282c3e; padding-top: 12px;">
-                                <span style="color: #f5c542; margin-right: 6px; font-size: 0.696rem;">{"\u{25C6}"}</span>"Territories"
+                            <div style="font-family: var(--font-display); font-size: 0.87rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim); margin-bottom: 8px; border-top: 1px solid var(--color-border-subtle); padding-top: 12px;">
+                                <span style="color: var(--color-gold); margin-right: 6px; font-size: 0.696rem;">{"\u{25C6}"}</span>"Territories"
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 2px;">
                                 {terrs.into_iter().map(|(territory_name, (r, g, b))| {
@@ -1987,11 +2003,11 @@ fn GuildPanel() -> impl IntoView {
                                     );
                                     view! {
                                         <div
-                                            style="display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 3px; cursor: pointer; transition: background 0.15s; font-family: 'JetBrains Mono', monospace; font-size: 0.87rem; color: #e2e0d8;"
+                                            style="display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 3px; cursor: pointer; transition: background 0.15s; font-family: var(--font-mono); font-size: 0.87rem; color: var(--color-text-primary);"
                                             on:click=on_terr_click
                                             on:mouseenter=|e| {
                                                 if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                                    el.style().set_property("background", "#232738").ok();
+                                                    el.style().set_property("background", "var(--color-surface-hover)").ok();
                                                 }
                                             }
                                             on:mouseleave=|e| {
@@ -2030,6 +2046,7 @@ fn DetailPanel() -> impl IntoView {
     let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
+    let ShowDebugInfo(show_debug_info) = expect_context();
 
     let tower_state: crate::tower::TowerState = expect_context();
 
@@ -2104,11 +2121,19 @@ fn DetailPanel() -> impl IntoView {
                 }
             })
             .count();
-        let treasury = chrono::DateTime::parse_from_rfc3339(&acquired_rfc)
-            .ok()
-            .map(|dt| {
-                let secs = (reference_secs - dt.timestamp()).max(0);
-                TreasuryLevel::from_held_seconds(secs)
+        let treasury = ct
+            .territory
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.treasury.as_deref())
+            .and_then(TreasuryLevel::from_api_tier)
+            .or_else(|| {
+                chrono::DateTime::parse_from_rfc3339(&acquired_rfc)
+                    .ok()
+                    .map(|dt| {
+                        let secs = (reference_secs - dt.timestamp()).max(0);
+                        TreasuryLevel::from_held_seconds(secs)
+                    })
             })
             .unwrap_or(TreasuryLevel::VeryLow);
         Some((
@@ -2157,24 +2182,24 @@ fn DetailPanel() -> impl IntoView {
     };
 
     view! {
-        <div class="panel-reveal" style="border-bottom: 1px solid #282c3e; position: relative;">
+        <div class="panel-reveal" style="border-bottom: 1px solid var(--color-border-subtle); position: relative;">
             <button
                 title="Back to guild"
                 aria-label="Back to guild"
-                style="position: absolute; top: 12px; left: 12px; background: #1a1d2a; border: 1px solid #282c3e; color: #9a9590; cursor: pointer; padding: 3px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s, border-color 0.15s; z-index: 1; display: flex; align-items: center; gap: 5px; font-family: 'JetBrains Mono', monospace; font-size: 0.777rem; text-transform: uppercase; letter-spacing: 0.08em;"
+                style="position: absolute; top: 12px; left: 12px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); cursor: pointer; padding: 3px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s, border-color 0.15s; z-index: 1; display: flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 0.777rem; text-transform: uppercase; letter-spacing: 0.08em;"
                 on:click=on_back
                 on:mouseenter=|e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "#f5c542").ok();
-                        el.style().set_property("background", "#232738").ok();
-                        el.style().set_property("border-color", "#3a3f5c").ok();
+                        el.style().set_property("color", "var(--color-gold)").ok();
+                        el.style().set_property("background", "var(--color-surface-hover)").ok();
+                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
                     }
                 }
                 on:mouseleave=|e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "#9a9590").ok();
-                        el.style().set_property("background", "#1a1d2a").ok();
-                        el.style().set_property("border-color", "#282c3e").ok();
+                        el.style().set_property("color", "var(--color-text-secondary)").ok();
+                        el.style().set_property("background", "var(--color-surface)").ok();
+                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                     }
                 }
             >
@@ -2182,17 +2207,17 @@ fn DetailPanel() -> impl IntoView {
                 <span>"Back"</span>
             </button>
             <button
-                style="position: absolute; top: 12px; right: 12px; background: none; border: none; color: #5a5860; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s; z-index: 1; display: flex; align-items: center; justify-content: center;"
+                style="position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--color-text-dim); cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s; z-index: 1; display: flex; align-items: center; justify-content: center;"
                 on:click=on_close
                 on:mouseenter=|e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "#e05252").ok();
-                        el.style().set_property("background", "#232738").ok();
+                        el.style().set_property("color", "var(--color-nether)").ok();
+                        el.style().set_property("background", "var(--color-surface-hover)").ok();
                     }
                 }
                 on:mouseleave=|e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "#5a5860").ok();
+                        el.style().set_property("color", "var(--color-text-dim)").ok();
                         el.style().set_property("background", "transparent").ok();
                     }
                 }
@@ -2216,35 +2241,40 @@ fn DetailPanel() -> impl IntoView {
                             format_sr_rate(passive_sr_h),
                             format_sr_rate(passive_sr_5s)
                         );
-                        let scalar_note = match (scalar_details.source, scalar_details.sample.as_ref()) {
-                            (ScalarSource::Manual, _) => {
-                                format!("Manual scalar {:.2} in use", scalar_details.value)
-                            }
-                            (ScalarSource::LiveEstimate, Some(sample)) => {
-                                let sampled = format_relative_time(&sample.sampled_at, reference_secs);
-                                format!(
-                                    "Live estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
-                                    sample.season_id,
-                                    sample.scalar_weighted,
-                                    sample.scalar_raw,
-                                    sample.confidence * 100.0,
-                                    sampled
-                                )
-                            }
-                            (ScalarSource::HistoryEstimate, Some(sample)) => {
-                                let sampled = format_relative_time(&sample.sampled_at, reference_secs);
-                                format!(
-                                    "History estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
-                                    sample.season_id,
-                                    sample.scalar_weighted,
-                                    sample.scalar_raw,
-                                    sample.confidence * 100.0,
-                                    sampled
-                                )
-                            }
-                            (_, None) => {
-                                format!("Manual fallback scalar {:.2} (estimate unavailable)", scalar_details.value)
-                            }
+                        let show_debug_details = show_debug_info.get();
+                        let scalar_note = if show_debug_details {
+                            Some(match (scalar_details.source, scalar_details.sample.as_ref()) {
+                                (ScalarSource::Manual, _) => {
+                                    format!("Manual scalar {:.2} in use", scalar_details.value)
+                                }
+                                (ScalarSource::LiveEstimate, Some(sample)) => {
+                                    let sampled = format_relative_time(&sample.sampled_at, reference_secs);
+                                    format!(
+                                        "Live estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
+                                        sample.season_id,
+                                        sample.scalar_weighted,
+                                        sample.scalar_raw,
+                                        sample.confidence * 100.0,
+                                        sampled
+                                    )
+                                }
+                                (ScalarSource::HistoryEstimate, Some(sample)) => {
+                                    let sampled = format_relative_time(&sample.sampled_at, reference_secs);
+                                    format!(
+                                        "History estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
+                                        sample.season_id,
+                                        sample.scalar_weighted,
+                                        sample.scalar_raw,
+                                        sample.confidence * 100.0,
+                                        sampled
+                                    )
+                                }
+                                (_, None) => {
+                                    format!("Manual fallback scalar {:.2} (estimate unavailable)", scalar_details.value)
+                                }
+                            })
+                        } else {
+                            None
                         };
 
                         let runtime_hq = runtime.as_ref().and_then(|runtime| runtime.headquarters);
@@ -2263,33 +2293,37 @@ fn DetailPanel() -> impl IntoView {
                             .as_ref()
                             .and_then(|runtime| runtime.storage_capacity.clone())
                             .filter(|value| !value.is_empty());
-                        let runtime_provenance = runtime
-                            .as_ref()
-                            .and_then(|runtime| runtime.provenance.clone())
-                            .map(|provenance| {
-                                let source = if provenance.source.trim().is_empty() {
-                                    "unknown".to_string()
-                                } else {
-                                    provenance.source.clone()
-                                };
-                                let observed_label = format_relative_time(
-                                    &provenance.observed_at,
-                                    reference_secs,
-                                );
-                                let visibility = visibility_label(&provenance);
-                                let confidence = format_confidence(provenance.confidence);
-                                let reporter_count = provenance.reporter_count;
-                                (
-                                    format!(
-                                        "{} source \u{00b7} {} \u{00b7} conf {}",
-                                        visibility, source, confidence
-                                    ),
-                                    format!(
-                                        "Observed {} \u{00b7} reporters {}",
-                                        observed_label, reporter_count
-                                    ),
-                                )
-                            });
+                        let runtime_provenance = if show_debug_details {
+                            runtime
+                                .as_ref()
+                                .and_then(|runtime| runtime.provenance.clone())
+                                .map(|provenance| {
+                                    let source = if provenance.source.trim().is_empty() {
+                                        "unknown".to_string()
+                                    } else {
+                                        provenance.source.clone()
+                                    };
+                                    let observed_label = format_relative_time(
+                                        &provenance.observed_at,
+                                        reference_secs,
+                                    );
+                                    let visibility = visibility_label(&provenance);
+                                    let confidence = format_confidence(provenance.confidence);
+                                    let reporter_count = provenance.reporter_count;
+                                    (
+                                        format!(
+                                            "{} source \u{00b7} {} \u{00b7} conf {}",
+                                            visibility, source, confidence
+                                        ),
+                                        format!(
+                                            "Observed {} \u{00b7} reporters {}",
+                                            observed_label, reporter_count
+                                        ),
+                                    )
+                                })
+                        } else {
+                            None
+                        };
 
                         // Cooldown: territory can be queued again after 10 minutes
                         let cooldown = chrono::DateTime::parse_from_rfc3339(&acquired).ok().and_then(|dt| {
@@ -2318,72 +2352,76 @@ fn DetailPanel() -> impl IntoView {
                                         rgba_css(r, g, b, 0.8),
                                         rgba_css(r, g, b, 0.3),
                                     )} />
-                                    <div style="font-size: 1.242rem; font-weight: 700; color: #e2e0d8; font-family: 'Silkscreen', monospace;">{name}</div>
+                                    <div style="font-size: 1.242rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display);">{name}</div>
                                 </div>
                                 <a
                                     href=guild_stats_url
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     title="Open Wynncraft guild stats"
-                                    style="display: inline-block; font-size: 1.102rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif; margin-bottom: 2px; margin-left: 28px; text-decoration: none;"
+                                    style="display: inline-block; font-size: 1.102rem; color: var(--color-gold); font-family: var(--font-body); margin-bottom: 2px; margin-left: 28px; text-decoration: none;"
                                 >
                                     {guild_name}
                                 </a>
-                                <div style="font-size: 0.928rem; color: #9a9590; font-family: 'JetBrains Mono', monospace; margin-bottom: 16px; margin-left: 28px;">
+                                <div style="font-size: 0.928rem; color: var(--color-text-secondary); font-family: var(--font-mono); margin-bottom: 16px; margin-left: 28px;">
                                     "[" {guild_prefix} "]"
                                 </div>
 
                                 // Detail rows with dotted leaders
                                 <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Acquired"</span>
-                                    <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;" title=acquired>{relative_time}</span>
+                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Acquired"</span>
+                                    <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;" title=acquired>{relative_time}</span>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Treasury"</span>
+                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Treasury"</span>
                                     <span style="display: flex; align-items: center; gap: 6px;">
-                                        <span style={format!("color: {}; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
+                                        <span style={format!("color: {}; font-family: var(--font-mono); font-size: 0.905rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
                                         {(buff > 0).then(|| view! {
-                                            <span style={format!("font-size: 0.754rem; font-family: 'JetBrains Mono', monospace; color: {}; background: {}; padding: 1px 5px; border-radius: 3px;", rgba_css(tr, tg, tb, 0.9), rgba_css(tr, tg, tb, 0.08))}>{format!("+{}%", buff)}</span>
+                                            <span style={format!("font-size: 0.754rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;", rgba_css(tr, tg, tb, 0.9), rgba_css(tr, tg, tb, 0.08))}>{format!("+{}%", buff)}</span>
                                         })}
                                     </span>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Passive SR"</span>
-                                    <span style="color: var(--accent-live); font-family: 'JetBrains Mono', monospace; font-size: 0.882rem;">
+                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Passive SR"</span>
+                                    <span style="color: var(--accent-live); font-family: var(--font-mono); font-size: 0.882rem;">
                                         {passive_sr_label}
                                     </span>
                                 </div>
                                 {takes_in_window.map(|count| view! {
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Takes in window"</span>
-                                        <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem; font-variant-numeric: tabular-nums;">{count}</span>
+                                        <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Takes in window"</span>
+                                        <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem; font-variant-numeric: tabular-nums;">{count}</span>
                                     </div>
                                 })}
-                                <div style="padding: 6px 0 8px; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="font-size: 0.789rem; color: #7c829e; font-family: 'JetBrains Mono', monospace;">
-                                        {scalar_note}
-                                    </span>
-                                </div>
+                                {scalar_note.map(|scalar_note| view! {
+                                    <div style="padding: 6px 0 8px; border-bottom: 1px solid rgba(40,44,62,0.6);">
+                                        <span style="font-size: 0.789rem; color: #7c829e; font-family: var(--font-mono);">
+                                            {scalar_note}
+                                        </span>
+                                    </div>
+                                })}
                                 {runtime_hq.map(|is_hq| view! {
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Headquarters"</span>
-                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.835rem; color: #e2e0d8;">
+                                        <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Headquarters"</span>
+                                        <span style="font-family: var(--font-mono); font-size: 0.835rem; color: var(--color-text-primary);">
                                             {if is_hq { "Yes" } else { "No" }}
                                         </span>
                                     </div>
                                 })}
-                                {runtime_defense.map(|defense_tier| view! {
+                                {runtime_defense.map(|defense_tier| {
+                                    let (defense_label, defense_color) = defense_tier_display(&defense_tier);
+                                    view! {
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Defense Tier"</span>
-                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.835rem; color: #e2e0d8;">{defense_tier}</span>
+                                        <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Defense"</span>
+                                        <span style={format!("font-family: var(--font-mono); font-size: 0.835rem; color: {defense_color};")}>{defense_label}</span>
                                     </div>
-                                })}
+                                }})}
                                 {runtime_provenance.map(|(primary, secondary)| view! {
                                     <div style="padding: 8px 0; border-bottom: 1px solid rgba(40,44,62,0.6); display: flex; flex-direction: column; gap: 2px;">
-                                        <span style="font-size: 0.777rem; color: var(--accent-live); font-family: 'JetBrains Mono', monospace;">
+                                        <span style="font-size: 0.777rem; color: var(--accent-live); font-family: var(--font-mono);">
                                             {primary}
                                         </span>
-                                        <span style="font-size: 0.742rem; color: #7c829e; font-family: 'JetBrains Mono', monospace;">
+                                        <span style="font-size: 0.742rem; color: #7c829e; font-family: var(--font-mono);">
                                             {secondary}
                                         </span>
                                     </div>
@@ -2391,20 +2429,20 @@ fn DetailPanel() -> impl IntoView {
                                 {cooldown.map(|(remaining_text, frac)| view! {
                                     <div style="padding: 8px 0; border-bottom: 1px solid rgba(40,44,62,0.6);">
                                         <div style="display: flex; justify-content: space-between; font-size: 0.986rem; margin-bottom: 6px;">
-                                            <span style="color: #f5c542; font-family: 'Silkscreen', monospace;">"Cooldown"</span>
-                                            <span style="color: #f5c542; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">{remaining_text}</span>
+                                            <span style="color: var(--color-gold); font-family: var(--font-display);">"Cooldown"</span>
+                                            <span style="color: var(--color-gold); font-family: var(--font-mono); font-size: 0.905rem;">{remaining_text}</span>
                                         </div>
                                         <div style="height: 5px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;">
                                             <div style={format!(
-                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, #f5c542, #d4a030); border-radius: 2px; transition: width 1s linear; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
+                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, var(--color-gold), #d4a030); border-radius: 2px; transition: width 1s linear; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
                                                 frac * 100.0
                                             )} />
                                         </div>
                                     </div>
                                 })}
                                 <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Region"</span>
-                                    <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">
+                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Region"</span>
+                                    <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;">
                                         {format!(
                                             "({}, {}) \u{2192} ({}, {})",
                                             location.start[0],
@@ -2415,8 +2453,8 @@ fn DetailPanel() -> impl IntoView {
                                     </span>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Size"</span>
-                                    <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">
+                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Size"</span>
+                                    <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;">
                                         {format!(
                                             "{}\u{00d7}{}",
                                             location.width(),
@@ -2425,8 +2463,8 @@ fn DetailPanel() -> impl IntoView {
                                     </span>
                                 </div>
                                 <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Connections"</span>
-                                    <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.905rem;">
+                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Connections"</span>
+                                    <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;">
                                         {move || guild_counts.get().map(|(gc, tc, _)| format!("{}/{}", gc, tc)).unwrap_or_else(|| format!("{}", conn_count))}
                                     </span>
                                 </div>
@@ -2434,17 +2472,17 @@ fn DetailPanel() -> impl IntoView {
                                     let res_items = build_resource_items(&resources);
                                     view! {
                                         <div style="padding: 10px 0 4px;">
-                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.12em; color: #5a5860; margin-bottom: 8px;">
-                                                <span style="color: #f5c542; margin-right: 5px; font-size: 0.812rem;">{"\u{25C6}"}</span>"Resources"
+                                            <div style="font-family: var(--font-display); font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-text-dim); margin-bottom: 8px;">
+                                                <span style="color: var(--color-gold); margin-right: 5px; font-size: 0.812rem;">{"\u{25C6}"}</span>"Resources"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {res_items.into_iter().map(|(label, value, icon_name)| {
                                                     let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #1a1d2a; padding: 4px 8px; border-radius: 4px; border: 1px solid #282c3e;">
+                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
-                                                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; color: #e2e0d8;">{value}</span>
-                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: #5a5860;">{label}</span>
+                                                            <span style="font-family: var(--font-mono); font-size: 0.812rem; color: var(--color-text-primary);">{value}</span>
+                                                            <span style="font-family: var(--font-body); font-size: 0.719rem; color: #aeb7c7;">{label}</span>
                                                         </div>
                                                     }
                                                 }).collect::<Vec<_>>()}
@@ -2456,17 +2494,17 @@ fn DetailPanel() -> impl IntoView {
                                     let held_items = build_resource_items(&held);
                                     view! {
                                         <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Held Resources (Live)"
+                                            <div style="font-family: var(--font-display); font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
+                                                "Held Resources"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {held_items.into_iter().map(|(label, value, icon_name)| {
                                                     let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #1a1d2a; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--accent-live-rgb),0.25);">
+                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
-                                                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; color: #e2e0d8;">{value}</span>
-                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: var(--accent-live);">{label}</span>
+                                                            <span style="font-family: var(--font-mono); font-size: 0.812rem; color: var(--color-text-primary);">{value}</span>
+                                                            <span style="font-family: var(--font-body); font-size: 0.719rem; color: #aeb7c7;">{label}</span>
                                                         </div>
                                                     }
                                                 }).collect::<Vec<_>>()}
@@ -2478,17 +2516,17 @@ fn DetailPanel() -> impl IntoView {
                                     let prod_items = build_resource_items(&prod);
                                     view! {
                                         <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Production/Hr (Live)"
+                                            <div style="font-family: var(--font-display); font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
+                                                "Production/Hr"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {prod_items.into_iter().map(|(label, value, icon_name)| {
                                                     let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #1a1d2a; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--accent-live-rgb),0.2);">
+                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
-                                                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; color: #e2e0d8;">{value}</span>
-                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: var(--accent-live);">{label}</span>
+                                                            <span style="font-family: var(--font-mono); font-size: 0.812rem; color: var(--color-text-primary);">{value}</span>
+                                                            <span style="font-family: var(--font-body); font-size: 0.719rem; color: #aeb7c7;">{label}</span>
                                                         </div>
                                                     }
                                                 }).collect::<Vec<_>>()}
@@ -2500,17 +2538,17 @@ fn DetailPanel() -> impl IntoView {
                                     let cap_items = build_resource_items(&cap);
                                     view! {
                                         <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: 'Silkscreen', monospace; font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-live); margin-bottom: 6px;">
-                                                "Storage Cap (Live)"
+                                            <div style="font-family: var(--font-display); font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
+                                                "Storage Cap"
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {cap_items.into_iter().map(|(label, value, icon_name)| {
                                                     let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #1a1d2a; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(var(--accent-live-rgb),0.2);">
+                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
-                                                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.812rem; color: #e2e0d8;">{value}</span>
-                                                            <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.719rem; color: var(--accent-live);">{label}</span>
+                                                            <span style="font-family: var(--font-mono); font-size: 0.812rem; color: var(--color-text-primary);">{value}</span>
+                                                            <span style="font-family: var(--font-body); font-size: 0.719rem; color: #aeb7c7;">{label}</span>
                                                         </div>
                                                     }
                                                 }).collect::<Vec<_>>()}
@@ -2538,6 +2576,7 @@ fn StatsBar() -> impl IntoView {
     let HistoryTimestamp(history_timestamp) = expect_context();
     let HistoryBoundsSignal(history_bounds) = expect_context();
     let HistoryFetchNonce(history_fetch_nonce) = expect_context();
+    let HistoryLegacyGeometryActive(history_legacy_geometry_active) = expect_context();
     let LastLiveSeq(last_live_seq) = expect_context();
     let HistoryBufferedUpdates(history_buffered_updates) = expect_context();
     let HistoryBufferModeActive(history_buffer_mode_active) = expect_context();
@@ -2562,13 +2601,13 @@ fn StatsBar() -> impl IntoView {
 
     let status_dot_style = Memo::new(move |_| match connection.get() {
         ConnectionStatus::Live => {
-            "width: 8px; height: 8px; border-radius: 50%; background: #50c878; box-shadow: 0 0 8px rgba(80,200,120,0.5);"
+            "width: 8px; height: 8px; border-radius: 50%; background: var(--color-emerald); box-shadow: 0 0 8px rgba(80,200,120,0.5);"
         }
         ConnectionStatus::Connecting => {
-            "width: 8px; height: 8px; border-radius: 50%; background: #f5c542; box-shadow: 0 0 8px rgba(245,197,66,0.35); animation: pulse-dot 1.5s ease-in-out infinite;"
+            "width: 8px; height: 8px; border-radius: 50%; background: var(--color-gold); box-shadow: 0 0 8px rgba(245,197,66,0.35); animation: pulse-dot 1.5s ease-in-out infinite;"
         }
         ConnectionStatus::Reconnecting => {
-            "width: 8px; height: 8px; border-radius: 50%; background: #f5c542; box-shadow: 0 0 8px rgba(245,197,66,0.35); animation: pulse-dot 1.5s ease-in-out infinite;"
+            "width: 8px; height: 8px; border-radius: 50%; background: var(--color-gold); box-shadow: 0 0 8px rgba(245,197,66,0.35); animation: pulse-dot 1.5s ease-in-out infinite;"
         }
     });
 
@@ -2581,15 +2620,15 @@ fn StatsBar() -> impl IntoView {
     let is_history = move || mode.get() == MapMode::History;
 
     view! {
-        <div style="padding: 10px 12px; border-top: 1px solid #282c3e; display: flex; align-items: center; justify-content: space-between; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 0.789rem; color: #6a6870;">
+        <div style="padding: 10px 12px; border-top: 1px solid var(--color-border-subtle); display: flex; align-items: center; justify-content: space-between; gap: 8px; font-family: var(--font-mono); font-size: 0.789rem; color: #6a6870;">
             <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: none;">
             <button
                 style:display=move || if history_available.get() && !is_mobile.get() { "flex" } else { "none" }
-                style="background: none; border: 1px solid #282c3e; border-radius: 999px; padding: 5px 10px; cursor: pointer; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; font-size: 0.766rem; min-width: 64px;"
+                style="background: none; border: 1px solid var(--color-border-subtle); border-radius: 999px; padding: 5px 10px; cursor: pointer; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; font-size: 0.766rem; min-width: 64px;"
                 title=move || if is_history() { "Disable history mode (h)" } else { "Enable history mode (h)" }
-                style:color=move || if is_history() { "#13161f" } else { "#5a5860" }
-                style:background=move || if is_history() { "#f5c542" } else { "#1a1d2a" }
-                style:border-color=move || if is_history() { "#f5c542" } else { "#282c3e" }
+                style:color=move || if is_history() { "var(--color-deep)" } else { "var(--color-text-dim)" }
+                style:background=move || if is_history() { "var(--color-gold)" } else { "var(--color-surface)" }
+                style:border-color=move || if is_history() { "var(--color-gold)" } else { "var(--color-border-subtle)" }
                 style:box-shadow=move || if is_history() { "0 0 8px rgba(245,197,66,0.35)" } else { "none" }
                 on:click=move |_| {
                     if is_history() {
@@ -2598,6 +2637,7 @@ fn StatsBar() -> impl IntoView {
                             playback_active,
                             history_fetch_nonce,
                             history_timestamp,
+                            history_legacy_geometry_active,
                             history_buffered_updates,
                             history_buffer_mode_active,
                             last_live_seq,
@@ -2612,6 +2652,7 @@ fn StatsBar() -> impl IntoView {
                             history_timestamp,
                             history_bounds,
                             history_fetch_nonce,
+                            history_legacy_geometry_active,
                             history_buffered_updates,
                             history_buffer_mode_active,
                             needs_live_resync,
@@ -2627,16 +2668,16 @@ fn StatsBar() -> impl IntoView {
                     if !is_history()
                         && let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                     {
-                        el.style().set_property("color", "#9a9590").ok();
-                        el.style().set_property("border-color", "#3a3f5c").ok();
+                        el.style().set_property("color", "var(--color-text-secondary)").ok();
+                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
                     }
                 }
                 on:mouseleave=move |e| {
                     if !is_history()
                         && let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                     {
-                        el.style().set_property("color", "#5a5860").ok();
-                        el.style().set_property("border-color", "#282c3e").ok();
+                        el.style().set_property("color", "var(--color-text-dim)").ok();
+                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                     }
                 }
             >
@@ -2644,50 +2685,50 @@ fn StatsBar() -> impl IntoView {
             </button>
             <button
                 style:display=move || if !is_mobile.get() { "flex" } else { "none" }
-                style="background: none; border: 1px solid #282c3e; border-radius: 999px; padding: 5px 10px; cursor: pointer; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; font-size: 0.766rem; min-width: 58px;"
+                style="background: none; border: 1px solid var(--color-border-subtle); border-radius: 999px; padding: 5px 10px; cursor: pointer; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; font-size: 0.766rem; min-width: 58px;"
                 title=move || if heat_mode_enabled.get() { "Disable heat map" } else { "Enable heat map" }
-                style:color=move || if heat_mode_enabled.get() { "#13161f" } else { "#5a5860" }
-                style:background=move || if heat_mode_enabled.get() { "#f58c32" } else { "#1a1d2a" }
-                style:border-color=move || if heat_mode_enabled.get() { "#f58c32" } else { "#282c3e" }
+                style:color=move || if heat_mode_enabled.get() { "var(--color-deep)" } else { "var(--color-text-dim)" }
+                style:background=move || if heat_mode_enabled.get() { "#f58c32" } else { "var(--color-surface)" }
+                style:border-color=move || if heat_mode_enabled.get() { "#f58c32" } else { "var(--color-border-subtle)" }
                 style:box-shadow=move || if heat_mode_enabled.get() { "0 0 8px rgba(245,140,50,0.35)" } else { "none" }
                 on:click=move |_| heat_mode_enabled.update(|v| *v = !*v)
                 on:mouseenter=move |e| {
                     if !heat_mode_enabled.get()
                         && let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                     {
-                        el.style().set_property("color", "#9a9590").ok();
-                        el.style().set_property("border-color", "#3a3f5c").ok();
+                        el.style().set_property("color", "var(--color-text-secondary)").ok();
+                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
                     }
                 }
                 on:mouseleave=move |e| {
                     if !heat_mode_enabled.get()
                         && let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                     {
-                        el.style().set_property("color", "#5a5860").ok();
-                        el.style().set_property("border-color", "#282c3e").ok();
+                        el.style().set_property("color", "var(--color-text-dim)").ok();
+                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                     }
                 }
             >
                 "Heat"
             </button>
             <div
-                style="background: #1a1d2a; border-radius: 999px; padding: 5px 10px; border: 1px solid #282c3e; display: flex; align-items: center; gap: 4px;"
+                style="background: var(--color-surface); border-radius: 999px; padding: 5px 10px; border: 1px solid var(--color-border-subtle); display: flex; align-items: center; gap: 4px;"
                 style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }
             >
-                <span style="color: #9a9590;">{move || guild_count.get()}</span>
+                <span style="color: var(--color-text-secondary);">{move || guild_count.get()}</span>
                 <span>" guilds"</span>
             </div>
             </div>
             <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
             <div
                 title=move || status_text.get()
-                style="width: 26px; height: 26px; border: 1px solid #282c3e; border-radius: 999px; background: #1a1d2a; display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
+                style="width: 26px; height: 26px; border: 1px solid var(--color-border-subtle); border-radius: 999px; background: var(--color-surface); display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
             >
                 <span style=move || status_dot_style.get()></span>
             </div>
             <button
                 style:display=move || if show_settings.get() { "flex" } else { "none" }
-                style="background: linear-gradient(180deg, rgba(245,197,66,0.12) 0%, rgba(245,197,66,0.06) 100%); border: 1px solid rgba(245,197,66,0.24); border-radius: 999px; padding: 5px 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s, box-shadow 0.15s; font-family: 'Silkscreen', monospace; font-size: 0.648rem; letter-spacing: 0.08em; text-transform: uppercase; color: #f5c542; box-shadow: 0 0 12px rgba(245,197,66,0.08);"
+                style="background: linear-gradient(180deg, rgba(245,197,66,0.12) 0%, rgba(245,197,66,0.06) 100%); border: 1px solid rgba(245,197,66,0.24); border-radius: 999px; padding: 5px 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s, box-shadow 0.15s; font-family: var(--font-display); font-size: 0.648rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); box-shadow: 0 0 12px rgba(245,197,66,0.08);"
                 style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }
                 title="Reset all settings to defaults"
                 on:click=move |_| {
@@ -2695,15 +2736,15 @@ fn StatsBar() -> impl IntoView {
                 }
                 on:mouseenter=move |e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "#13161f").ok();
-                        el.style().set_property("background", "#f5c542").ok();
-                        el.style().set_property("border-color", "#f5c542").ok();
+                        el.style().set_property("color", "var(--color-deep)").ok();
+                        el.style().set_property("background", "var(--color-gold)").ok();
+                        el.style().set_property("border-color", "var(--color-gold)").ok();
                         el.style().set_property("box-shadow", "0 0 12px rgba(245,197,66,0.24)").ok();
                     }
                 }
                 on:mouseleave=move |e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "#f5c542").ok();
+                        el.style().set_property("color", "var(--color-gold)").ok();
                         el.style().set_property("background", "linear-gradient(180deg, rgba(245,197,66,0.12) 0%, rgba(245,197,66,0.06) 100%)").ok();
                         el.style().set_property("border-color", "rgba(245,197,66,0.24)").ok();
                         el.style().set_property("box-shadow", "0 0 12px rgba(245,197,66,0.08)").ok();
@@ -2713,27 +2754,27 @@ fn StatsBar() -> impl IntoView {
                 "Defaults"
             </button>
             <button
-                style="background: none; border: 1px solid #282c3e; border-radius: 999px; padding: 5px 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s;"
+                style="background: none; border: 1px solid var(--color-border-subtle); border-radius: 999px; padding: 5px 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s;"
                 style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }
                 style:min-width=move || if is_mobile.get() { "44px" } else { "auto" }
-                style:color=move || if show_settings.get() { "#f5c542" } else { "#5a5860" }
-                style:background=move || if show_settings.get() { "rgba(245,197,66,0.06)" } else { "#1a1d2a" }
-                style:border-color=move || if show_settings.get() { "rgba(245,197,66,0.25)" } else { "#282c3e" }
+                style:color=move || if show_settings.get() { "var(--color-gold)" } else { "var(--color-text-dim)" }
+                style:background=move || if show_settings.get() { "rgba(245,197,66,0.06)" } else { "var(--color-surface)" }
+                style:border-color=move || if show_settings.get() { "rgba(245,197,66,0.25)" } else { "var(--color-border-subtle)" }
                 on:click=move |_| show_settings.update(|v| *v = !*v)
                 on:mouseenter=move |e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                         && !show_settings.get_untracked()
                     {
-                        el.style().set_property("color", "#9a9590").ok();
-                        el.style().set_property("border-color", "#3a3f5c").ok();
+                        el.style().set_property("color", "var(--color-text-secondary)").ok();
+                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
                     }
                 }
                 on:mouseleave=move |e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                         && !show_settings.get_untracked()
                     {
-                        el.style().set_property("color", "#5a5860").ok();
-                        el.style().set_property("border-color", "#282c3e").ok();
+                        el.style().set_property("color", "var(--color-text-dim)").ok();
+                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                     }
                 }
             >

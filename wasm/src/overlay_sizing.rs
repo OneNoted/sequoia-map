@@ -1,8 +1,15 @@
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) const STATIC_NAME_BASELINE_GAP_MULTIPLIER: f32 = 1.0;
+pub const STATIC_NAME_BASELINE_GAP_MULTIPLIER: f32 = 1.0;
+pub const STATIC_NAME_MIN_RENDERED_PX: f32 = 12.0;
 
 const STATIC_TAG_SIZE_WORLD: f32 = 24.0;
 const STATIC_NAME_SIZE_WORLD: f32 = 21.5;
+const FAR_ZOOM_TAG_MIN_SCREEN_W: f32 = 11.0;
+const FAR_ZOOM_TAG_MIN_SCREEN_H: f32 = 8.0;
+const FAR_ZOOM_TAG_MIN_RENDERED_PX: f32 = 7.5;
+const FAR_ZOOM_TAG_MAX_RENDERED_PX: f32 = 12.0;
+const FAR_ZOOM_TAG_BOX_W_FRACTION: f32 = 0.92;
+const FAR_ZOOM_TAG_BOX_H_FRACTION: f32 = 0.82;
 const DYNAMIC_TAG_SIZE_WORLD: f32 = 24.0;
 const DYNAMIC_DETAIL_SIZE_WORLD: f32 = 21.5;
 const DYNAMIC_TIME_SIZE_WORLD: f32 = 20.5;
@@ -12,6 +19,11 @@ const DYNAMIC_TIME_MIN_WIDTH_WORLD: f32 = 108.0;
 const DYNAMIC_COOLDOWN_MIN_WIDTH_WORLD: f32 = 132.0;
 const DYNAMIC_TIME_STALE_SCALE: f32 = 0.96;
 const RESOURCE_ICON_SIZE_WORLD: f32 = 29.0;
+const RESOURCE_ICON_LABEL_LIFT_BOX_FRACTION: f32 = 0.22;
+const RESOURCE_ICON_LABEL_LIFT_MAX_WORLD: f32 = 26.0;
+const RESOURCE_ICON_LOWER_ANCHOR_START_RATIO: f32 = 0.62;
+const RESOURCE_ICON_LOWER_ANCHOR_END_RATIO: f32 = 0.70;
+const RESOURCE_ICON_EDGE_PADDING_WORLD: f32 = 3.0;
 const ORNAMENT_INSET_WORLD: f32 = 3.0;
 const ORNAMENT_CORNER_SHORT_SIDE_WORLD: f32 = 42.0;
 const ORNAMENT_TINY_FIT_START_WORLD: f32 = 54.0;
@@ -25,14 +37,21 @@ const ORNAMENT_TINT_LIGHTEN_BASE: f32 = 0.04;
 const ORNAMENT_TINT_LIGHTEN_DARK_BOOST: f32 = 0.12;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct StaticLabelSizing {
+pub struct StaticLabelSizing {
     pub detail_layout_alpha: f32,
     pub tag_size: f32,
     pub detail_size: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct DynamicLabelSizing {
+pub struct FarZoomTagSizing {
+    pub font_height_world: f32,
+    pub max_width_world: f32,
+    pub alpha: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DynamicLabelSizing {
     pub small_timer_factor: f32,
     pub tag_size: f32,
     pub detail_size: f32,
@@ -44,7 +63,7 @@ pub(crate) struct DynamicLabelSizing {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct TerritoryOrnamentSizing {
+pub struct TerritoryOrnamentSizing {
     pub inset_world: f32,
     pub corner_w_world: f32,
     pub corner_h_world: f32,
@@ -88,7 +107,7 @@ fn timer_max_width_world(ww: f32, min_width: f32) -> f32 {
     (ww - 8.0).max(min_width)
 }
 
-pub(crate) fn compute_static_label_sizing(ww: f32, hh: f32) -> Option<StaticLabelSizing> {
+pub fn compute_static_label_sizing(ww: f32, hh: f32) -> Option<StaticLabelSizing> {
     if !static_label_visible(ww, hh) {
         return None;
     }
@@ -103,15 +122,52 @@ pub(crate) fn compute_static_label_sizing(ww: f32, hh: f32) -> Option<StaticLabe
     })
 }
 
+pub fn compute_far_zoom_tag_sizing(
+    sw: f32,
+    sh: f32,
+    scale: f32,
+    tag_scale: f32,
+) -> Option<FarZoomTagSizing> {
+    if !sw.is_finite() || !sh.is_finite() || !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    if !tag_scale.is_finite() {
+        return None;
+    }
+    if sw < FAR_ZOOM_TAG_MIN_SCREEN_W || sh < FAR_ZOOM_TAG_MIN_SCREEN_H {
+        return None;
+    }
+
+    let max_font_px = sh * FAR_ZOOM_TAG_BOX_H_FRACTION;
+    if max_font_px < FAR_ZOOM_TAG_MIN_RENDERED_PX {
+        return None;
+    }
+
+    let scaled_font_px = FAR_ZOOM_TAG_MAX_RENDERED_PX * tag_scale.clamp(0.5, 2.0);
+    let font_px = scaled_font_px
+        .min(max_font_px)
+        .clamp(FAR_ZOOM_TAG_MIN_RENDERED_PX, FAR_ZOOM_TAG_MAX_RENDERED_PX);
+    let width_px = (sw * FAR_ZOOM_TAG_BOX_W_FRACTION).max(font_px * 1.6);
+    let alpha = smoothstep_f32(8.0, 14.0, sh).min(smoothstep_f32(11.0, 22.0, sw));
+
+    Some(FarZoomTagSizing {
+        font_height_world: font_px / scale,
+        max_width_world: width_px / scale,
+        alpha,
+    })
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) fn static_name_bottom_bound(
+pub fn static_name_bottom_bound(
     use_static_gpu_labels: bool,
     static_show_names: bool,
     ww: f32,
     hh: f32,
     cy: f32,
+    px_per_world: f32,
     tag_scale: f32,
     name_scale: f32,
+    resource_icons_enabled: bool,
 ) -> Option<f32> {
     if !use_static_gpu_labels || !static_show_names {
         return None;
@@ -124,13 +180,18 @@ pub(crate) fn static_name_bottom_bound(
     }
     let tag_size = sizing.tag_size * tag_scale.clamp(0.5, 4.0);
     let detail_size = sizing.detail_size * name_scale.clamp(0.5, 4.0);
+    if detail_size * px_per_world < STATIC_NAME_MIN_RENDERED_PX {
+        return None;
+    }
 
-    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha);
+    let label_lift =
+        compute_resource_icon_label_lift_world(hh, detail_layout_alpha, resource_icons_enabled);
+    let tag_y = lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha) - label_lift;
     let name_y = tag_y + tag_size * 0.5 + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
     Some(name_y + detail_size * 0.5)
 }
 
-pub(crate) fn compute_dynamic_label_sizing(
+pub fn compute_dynamic_label_sizing(
     ww: f32,
     hh: f32,
     scale: f32,
@@ -167,11 +228,60 @@ pub(crate) fn compute_dynamic_label_sizing(
     })
 }
 
-pub(crate) fn compute_resource_icon_size_world(icon_scale: f32) -> f32 {
+pub fn compute_resource_icon_size_world(icon_scale: f32) -> f32 {
     (RESOURCE_ICON_SIZE_WORLD * icon_scale.max(0.0)).max(1.0)
 }
 
-pub(crate) fn compute_territory_ornament_sizing(
+pub fn compute_resource_icon_label_lift_world(
+    territory_height: f32,
+    detail_layout_alpha: f32,
+    resource_icons_enabled: bool,
+) -> f32 {
+    if !resource_icons_enabled {
+        return 0.0;
+    }
+
+    let alpha = detail_layout_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.001 {
+        return 0.0;
+    }
+
+    (territory_height.max(0.0) * RESOURCE_ICON_LABEL_LIFT_BOX_FRACTION)
+        .min(RESOURCE_ICON_LABEL_LIFT_MAX_WORLD)
+        * alpha
+}
+
+pub fn compute_resource_icon_center_y_world(
+    territory_top: f32,
+    territory_height: f32,
+    detail_layout_alpha: f32,
+    base_center_y: f32,
+    icon_size_world: f32,
+) -> Option<f32> {
+    let territory_height = territory_height.max(0.0);
+    let icon_half = icon_size_world.max(1.0) * 0.5;
+    let top_limit = territory_top + icon_half + RESOURCE_ICON_EDGE_PADDING_WORLD;
+    let bottom_limit =
+        territory_top + territory_height - icon_half - RESOURCE_ICON_EDGE_PADDING_WORLD;
+    if bottom_limit <= top_limit {
+        return None;
+    }
+
+    let lower_anchor = territory_top
+        + territory_height
+            * lerp_f32(
+                RESOURCE_ICON_LOWER_ANCHOR_START_RATIO,
+                RESOURCE_ICON_LOWER_ANCHOR_END_RATIO,
+                detail_layout_alpha,
+            );
+    let desired_center_y = base_center_y.max(lower_anchor).max(top_limit);
+    if desired_center_y > bottom_limit {
+        return None;
+    }
+    Some(desired_center_y)
+}
+
+pub fn compute_territory_ornament_sizing(
     ww: f32,
     hh: f32,
     ornament_aspect: f32,
@@ -215,7 +325,7 @@ pub(crate) fn compute_territory_ornament_sizing(
     }
 }
 
-pub(crate) fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 4] {
+pub fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 4] {
     let (r, g, b) = guild_rgb;
     let rf = r as f32 / 255.0;
     let gf = g as f32 / 255.0;
@@ -234,9 +344,10 @@ pub(crate) fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_dynamic_label_sizing, compute_resource_icon_size_world,
-        compute_static_label_sizing, compute_territory_ornament_sizing,
-        compute_territory_ornament_tint,
+        compute_dynamic_label_sizing, compute_far_zoom_tag_sizing,
+        compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
+        compute_resource_icon_size_world, compute_static_label_sizing,
+        compute_territory_ornament_sizing, compute_territory_ornament_tint,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -255,6 +366,37 @@ mod tests {
         assert_close(large.tag_size, 24.0);
         assert_close(small.detail_size, 21.5);
         assert_close(large.detail_size, 21.5);
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_is_screen_stable() {
+        let near = compute_far_zoom_tag_sizing(42.0, 18.0, 0.60, 1.0).expect("sizing should exist");
+        let far = compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, 1.0).expect("sizing should exist");
+
+        assert_close(near.font_height_world * 0.60, far.font_height_world * 0.30);
+        assert_close(near.max_width_world * 0.60, far.max_width_world * 0.30);
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_hides_impossible_boxes() {
+        assert!(compute_far_zoom_tag_sizing(9.0, 18.0, 0.30, 1.0).is_none());
+        assert!(compute_far_zoom_tag_sizing(42.0, 7.0, 0.30, 1.0).is_none());
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_rejects_non_finite_tag_scale() {
+        assert!(compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, f32::NAN).is_none());
+        assert!(compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, f32::INFINITY).is_none());
+    }
+
+    #[test]
+    fn far_zoom_tag_sizing_keeps_small_readable_boxes() {
+        let sizing = compute_far_zoom_tag_sizing(18.0, 10.0, 0.30, 1.0)
+            .expect("small readable territory should keep a tag");
+
+        assert!(sizing.font_height_world * 0.30 >= 7.5);
+        assert!(sizing.max_width_world * 0.30 >= 16.5);
+        assert!(sizing.alpha > 0.0);
     }
 
     #[test]
@@ -300,6 +442,36 @@ mod tests {
     fn resource_icon_size_is_fixed_in_world_space() {
         let size = compute_resource_icon_size_world(1.0);
         assert_close(size, 29.0);
+    }
+
+    #[test]
+    fn resource_icon_label_lift_moves_labels_toward_upper_quadrant() {
+        let lift = compute_resource_icon_label_lift_world(80.0, 1.0, true);
+        assert_close(lift, 17.6);
+        assert_close(compute_resource_icon_label_lift_world(80.0, 0.5, true), 8.8);
+        assert_close(
+            compute_resource_icon_label_lift_world(80.0, 1.0, false),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn resource_icon_label_lift_is_capped_for_large_territories() {
+        let lift = compute_resource_icon_label_lift_world(220.0, 1.0, true);
+        assert_close(lift, 26.0);
+    }
+
+    #[test]
+    fn resource_icon_center_prefers_lower_territory_band() {
+        let center = compute_resource_icon_center_y_world(100.0, 120.0, 1.0, 145.0, 29.0)
+            .expect("icon should fit");
+        assert_close(center, 184.0);
+    }
+
+    #[test]
+    fn resource_icon_center_hides_when_vertical_space_would_overlap_labels() {
+        let center = compute_resource_icon_center_y_world(100.0, 70.0, 1.0, 260.0, 29.0);
+        assert!(center.is_none());
     }
 
     #[test]

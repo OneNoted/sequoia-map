@@ -28,15 +28,39 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git fetch --no-tags --prune origin "+${GITHUB_REF}:refs/remotes/origin/workflow-checkout"
+          git checkout --force "${GITHUB_SHA}"
+          git clean -ffdx
 
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup update stable
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
 
       - name: Cache Cargo Artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/git/db/
+            ~/.cargo/registry/cache/
+            ~/.cargo/registry/index/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Build And Test
         run: |
@@ -51,7 +75,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends binaryen brotli gzip
-          cargo install trunk --locked
+          if command -v trunk >/dev/null 2>&1; then
+            trunk --version
+          else
+            cargo install trunk --locked
+          fi
 
       - name: Enforce Client WASM Size Budget
         working-directory: client

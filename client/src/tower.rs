@@ -208,8 +208,8 @@ pub fn TowerCalculator() -> impl IntoView {
 
     view! {
         <div style="padding: 10px 0 4px;">
-            <div style="font-family: 'Silkscreen', monospace; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.12em; color: #5f5d65; margin-bottom: 10px;">
-                <span style="color: #f5c542; margin-right: 5px; font-size: 0.7rem;">{"\u{25C6}"}</span>"Tower Calculator"
+            <div style="font-family: var(--font-display); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.12em; color: #5f5d65; margin-bottom: 10px;">
+                <span style="color: var(--color-gold); margin-right: 5px; font-size: 0.7rem;">{"\u{25C6}"}</span>"Tower Calculator"
             </div>
 
             // Stat rows
@@ -237,10 +237,10 @@ pub fn TowerCalculator() -> impl IntoView {
             <div style="display: flex; gap: 6px; margin-top: 8px; margin-bottom: 8px;">
                 <button
                     style=move || format!(
-                        "flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid {}; background: {}; color: {}; font-family: 'Silkscreen', monospace; font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;",
-                        if is_hq.get() { "rgba(245,197,66,0.35)" } else { "#282c3e" },
-                        if is_hq.get() { "rgba(245,197,66,0.08)" } else { "#1a1d2a" },
-                        if is_hq.get() { "#f5c542" } else { "#9f9a95" },
+                        "flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid {}; background: {}; color: {}; font-family: var(--font-display); font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;",
+                        if is_hq.get() { "rgba(245,197,66,0.35)" } else { "var(--color-border-subtle)" },
+                        if is_hq.get() { "rgba(245,197,66,0.08)" } else { "var(--color-surface)" },
+                        if is_hq.get() { "var(--color-gold)" } else { "#9f9a95" },
                     )
                     on:click=move |_| is_hq.update(|v| *v = !*v)
                     on:mouseenter=move |e| {
@@ -249,7 +249,7 @@ pub fn TowerCalculator() -> impl IntoView {
                         }
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
                             el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
-                            el.style().set_property("color", "#f5c542").ok();
+                            el.style().set_property("color", "var(--color-gold)").ok();
                             el.style().set_property("background", "rgba(245,197,66,0.08)").ok();
                         }
                     }
@@ -258,18 +258,18 @@ pub fn TowerCalculator() -> impl IntoView {
                             return;
                         }
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                             el.style().set_property("color", "#9f9a95").ok();
-                            el.style().set_property("background", "#1a1d2a").ok();
+                            el.style().set_property("background", "var(--color-surface)").ok();
                         }
                     }
                 >"HQ"</button>
                 <button
                     style=move || format!(
-                        "flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid {}; background: {}; color: {}; font-family: 'Silkscreen', monospace; font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;",
-                        if is_max_preset_active.get() { "rgba(245,197,66,0.35)" } else { "#282c3e" },
-                        if is_max_preset_active.get() { "rgba(245,197,66,0.08)" } else { "#1a1d2a" },
-                        if is_max_preset_active.get() { "#f5c542" } else { "#9f9a95" },
+                        "flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid {}; background: {}; color: {}; font-family: var(--font-display); font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;",
+                        if is_max_preset_active.get() { "rgba(245,197,66,0.35)" } else { "var(--color-border-subtle)" },
+                        if is_max_preset_active.get() { "rgba(245,197,66,0.08)" } else { "var(--color-surface)" },
+                        if is_max_preset_active.get() { "var(--color-gold)" } else { "#9f9a95" },
                     )
                     on:click=on_max_toggle
                     on:mouseenter=move |e| {
@@ -278,7 +278,7 @@ pub fn TowerCalculator() -> impl IntoView {
                         }
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
                             el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
-                            el.style().set_property("color", "#f5c542").ok();
+                            el.style().set_property("color", "var(--color-gold)").ok();
                             el.style().set_property("background", "rgba(245,197,66,0.08)").ok();
                         }
                     }
@@ -287,14 +287,14 @@ pub fn TowerCalculator() -> impl IntoView {
                             return;
                         }
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                             el.style().set_property("color", "#9f9a95").ok();
-                            el.style().set_property("background", "#1a1d2a").ok();
+                            el.style().set_property("background", "var(--color-surface)").ok();
                         }
                     }
                 >"11x4"</button>
                 <div style="flex: 1; display: flex; align-items: center; gap: 4px;">
-                    <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.62rem; color: #5f5d65; white-space: nowrap;">"Conn"</span>
+                    <span style="font-family: var(--font-body); font-size: 0.62rem; color: #5f5d65; white-space: nowrap;">"Conn"</span>
                     <CounterInput
                         value=connections
                         max=20
@@ -303,7 +303,7 @@ pub fn TowerCalculator() -> impl IntoView {
                     />
                 </div>
                 <div style="flex: 1; display: flex; align-items: center; gap: 4px;">
-                    <span style="font-family: 'Inter', system-ui, sans-serif; font-size: 0.62rem; color: #5f5d65; white-space: nowrap;">"Ext"</span>
+                    <span style="font-family: var(--font-body); font-size: 0.62rem; color: #5f5d65; white-space: nowrap;">"Ext"</span>
                     <CounterInput value=externals max=50 />
                 </div>
             </div>
@@ -311,26 +311,26 @@ pub fn TowerCalculator() -> impl IntoView {
             <div style="display: flex; gap: 6px; margin-top: -2px; margin-bottom: 8px;">
                 <button
                     title="Reset Conn/Ext to guild-owned values"
-                    style="flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid #282c3e; background: #1a1d2a; color: #9f9a95; font-family: 'Silkscreen', monospace; font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;"
+                    style="flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; font-family: var(--font-display); font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;"
                     on:click=on_reset_owned
                     on:mouseenter=|e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
                             el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
-                            el.style().set_property("color", "#f5c542").ok();
+                            el.style().set_property("color", "var(--color-gold)").ok();
                             el.style().set_property("background", "rgba(245,197,66,0.08)").ok();
                         }
                     }
                     on:mouseleave=|e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                             el.style().set_property("color", "#9f9a95").ok();
-                            el.style().set_property("background", "#1a1d2a").ok();
+                            el.style().set_property("background", "var(--color-surface)").ok();
                         }
                     }
                 >"Reset"</button>
                 <button
                     title="Set Ext to all territories reachable in 3 hops (ignores ownership)"
-                    style="flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid #282c3e; background: #1a1d2a; color: #9f9a95; font-family: 'Silkscreen', monospace; font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;"
+                    style="flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; font-family: var(--font-display); font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;"
                     on:click=on_apply_all_externals
                     on:mouseenter=|e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
@@ -341,9 +341,9 @@ pub fn TowerCalculator() -> impl IntoView {
                     }
                     on:mouseleave=|e| {
                         if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "#282c3e").ok();
+                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
                             el.style().set_property("color", "#9f9a95").ok();
-                            el.style().set_property("background", "#1a1d2a").ok();
+                            el.style().set_property("background", "var(--color-surface)").ok();
                         }
                     }
                 >"All Ext"</button>
@@ -353,24 +353,24 @@ pub fn TowerCalculator() -> impl IntoView {
             <div class="divider-gold" style="margin: 8px 0;" />
             <div style="display: flex; flex-direction: column; gap: 6px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-family: 'Silkscreen', monospace; font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"Avg DPS"</span>
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: #f5c542; font-weight: 700;">
+                    <span style="font-family: var(--font-display); font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"Avg DPS"</span>
+                    <span style="font-family: var(--font-mono); font-size: 0.82rem; color: var(--color-gold); font-weight: 700;">
                         {move || tower::format_stat(dps.get())}
                     </span>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-family: 'Silkscreen', monospace; font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"EHP"</span>
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: #50c878; font-weight: 700;">
+                    <span style="font-family: var(--font-display); font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"EHP"</span>
+                    <span style="font-family: var(--font-mono); font-size: 0.82rem; color: var(--color-emerald); font-weight: 700;">
                         {move || tower::format_stat(ehp.get())}
                     </span>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-family: 'Silkscreen', monospace; font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"Rating"</span>
+                    <span style="font-family: var(--font-display); font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"Rating"</span>
                     <span style=move || {
                         let rating = defense_rating.get();
                         let (rr, rg, rb) = rating.color_rgb();
                         format!(
-                            "font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; font-weight: 700; color: {};",
+                            "font-family: var(--font-mono); font-size: 0.78rem; font-weight: 700; color: {};",
                             rgba_css(rr, rg, rb, 1.0)
                         )
                     }>
@@ -419,24 +419,24 @@ fn StatRow(
             style="display: flex; align-items: center; gap: 4px; margin-bottom: 3px;"
             on:wheel=on_wheel
         >
-            <span style="font-family: 'Silkscreen', monospace; font-size: 0.58rem; color: #5f5d65; width: 48px; text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0;">{label}</span>
+            <span style="font-family: var(--font-display); font-size: 0.58rem; color: #5f5d65; width: 48px; text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0;">{label}</span>
             <button
-                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid #282c3e; background: #1a1d2a; color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-family: 'JetBrains Mono', monospace; padding: 0; flex-shrink: 0; transition: border-color 0.15s;"
+                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-family: var(--font-mono); padding: 0; flex-shrink: 0; transition: border-color 0.15s;"
                 on:click=on_dec
             >"-"</button>
             <input
                 type="text"
                 inputmode="numeric"
-                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid #282c3e; background: #1a1d2a; color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; text-align: center; padding: 0; flex-shrink: 0; outline: none; -moz-appearance: textfield; appearance: textfield;"
+                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.72rem; text-align: center; padding: 0; flex-shrink: 0; outline: none; -moz-appearance: textfield; appearance: textfield;"
                 prop:value=move || level.get().to_string()
                 on:input=on_input
                 on:focus=on_focus
             />
             <button
-                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid #282c3e; background: #1a1d2a; color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-family: 'JetBrains Mono', monospace; padding: 0; flex-shrink: 0; transition: border-color 0.15s;"
+                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-family: var(--font-mono); padding: 0; flex-shrink: 0; transition: border-color 0.15s;"
                 on:click=on_inc
             >"+"</button>
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #9f9a95; margin-left: auto; flex-shrink: 0;">
+            <span style="font-family: var(--font-mono); font-size: 0.65rem; color: #9f9a95; margin-left: auto; flex-shrink: 0;">
                 {move || detail.get()}
             </span>
         </div>
@@ -503,19 +503,19 @@ fn CounterInput(
             on:wheel=on_wheel
         >
             <button
-                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid #282c3e; background: #1a1d2a; color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.6rem; font-family: 'JetBrains Mono', monospace; padding: 0;"
+                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.6rem; font-family: var(--font-mono); padding: 0;"
                 on:click=on_dec
             >"-"</button>
             <input
                 type="text"
                 inputmode="numeric"
-                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid #282c3e; background: #1a1d2a; color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; text-align: center; padding: 0; outline: none; -moz-appearance: textfield; appearance: textfield;"
+                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.65rem; text-align: center; padding: 0; outline: none; -moz-appearance: textfield; appearance: textfield;"
                 prop:value=move || value.get().to_string()
                 on:input=on_input
                 on:focus=on_focus
             />
             <button
-                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid #282c3e; background: #1a1d2a; color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.6rem; font-family: 'JetBrains Mono', monospace; padding: 0;"
+                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.6rem; font-family: var(--font-mono); padding: 0;"
                 on:click=on_inc
             >"+"</button>
         </div>

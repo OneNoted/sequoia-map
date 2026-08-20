@@ -30,66 +30,111 @@ jobs:
       deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 1
-          persist-credentials: false
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git fetch --no-tags --prune origin "+${GITHUB_REF}:refs/remotes/origin/workflow-checkout"
+          git checkout --force "${GITHUB_SHA}"
+          git clean -ffdx
 
       - name: Detect Deploy-Relevant Changes
         id: filter
-        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
-        with:
-          filters: |
-            server:
-              - '.github/workflows/deploy-images.yml'
-              - '.ci/**'
-              - 'docker-compose.coolify.yml'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'Dockerfile'
-              - 'shared/**'
-              - 'client/**'
-              - 'claims-client/**'
-              - 'server/**'
-            ingest:
-              - '.github/workflows/deploy-images.yml'
-              - 'docker-compose.coolify.yml'
-              - 'Cargo.toml'
-              - 'shared/**'
-              - 'services/sequoia-ingest/**'
-            edge:
-              - '.github/workflows/deploy-images.yml'
-              - 'docker-compose.coolify.yml'
-              - 'ops/caddy/**'
-            deploy:
-              - '.github/workflows/deploy-images.yml'
-              - '.ci/**'
-              - 'docker-compose.coolify.yml'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'Dockerfile'
-              - 'shared/**'
-              - 'client/**'
-              - 'claims-client/**'
-              - 'server/**'
-              - 'services/sequoia-ingest/**'
-              - 'ops/caddy/**'
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          emit_all() {
+            {
+              echo "server=true"
+              echo "ingest=true"
+              echo "edge=true"
+              echo "deploy=true"
+            } >> "${GITHUB_OUTPUT}"
+          }
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            emit_all
+            exit 0
+          fi
+
+          before="${BEFORE_SHA:-}"
+          after="${AFTER_SHA}"
+          if [ -z "${before}" ] || [[ "${before}" =~ ^0+$ ]]; then
+            changed_files="$(git ls-tree -r --name-only "${after}")"
+          else
+            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "${before}" 2>/dev/null || true
+            fi
+            if ! changed_files="$(git diff --name-only "${before}" "${after}" 2>/dev/null)"; then
+              emit_all
+              exit 0
+            fi
+          fi
+
+          matches() {
+            local pattern="$1"
+            printf '%s\n' "${changed_files}" | grep -Eq "${pattern}"
+          }
+
+          server=false
+          ingest=false
+          edge=false
+          if matches '^(\.github/workflows/deploy-images\.yml|\.ci/|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|Dockerfile|shared/|client/|claims-client/|server/)'; then
+            server=true
+          fi
+          if matches '^(\.github/workflows/deploy-images\.yml|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|shared/|services/sequoia-ingest/)'; then
+            ingest=true
+          fi
+          if matches '^(\.github/workflows/deploy-images\.yml|docker-compose\.coolify\.yml|ops/caddy/)'; then
+            edge=true
+          fi
+          if [ "${server}" = "true" ] || [ "${ingest}" = "true" ] || [ "${edge}" = "true" ]; then
+            deploy=true
+          else
+            deploy=false
+          fi
+
+          {
+            echo "server=${server}"
+            echo "ingest=${ingest}"
+            echo "edge=${edge}"
+            echo "deploy=${deploy}"
+          } >> "${GITHUB_OUTPUT}"
 
   publish-and-deploy:
     name: Publish Images And Trigger Coolify
     needs: changes
     if: github.repository == 'SequoiaWynncraft/sequoia-map' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true')
-    runs-on: apollo-sequoia-map
+    # Use a GitHub-hosted runner so fork-sync pushes can always publish images and call Coolify.
+    # The previous self-hosted label could leave deploys queued indefinitely when no runner was registered.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 1
-          persist-credentials: false
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git fetch --no-tags --prune origin "+${GITHUB_REF}:refs/remotes/origin/workflow-checkout"
+          git checkout --force "${GITHUB_SHA}"
+          git clean -ffdx
 
       - name: Validate Coolify Deploy Credentials
         env:
@@ -118,14 +163,19 @@ jobs:
           fi
 
       - name: Set Up Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx create --name sequoia-builder --use || docker buildx use sequoia-builder
+          docker buildx inspect --bootstrap
 
       - name: Log In To GHCR
-        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${GHCR_TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_ACTOR}" --password-stdin
 
       - name: Prepare Client Build Tool Archives
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
@@ -155,51 +205,55 @@ jobs:
 
       - name: Build And Push Server Image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          sbom: false
-          tags: |
-            ${{ env.SERVER_IMAGE }}:main
-            ${{ env.SERVER_IMAGE }}:sha-${{ github.sha }}
-          cache-from: type=gha,scope=map-server
-          cache-to: type=gha,mode=max,scope=map-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --file ./Dockerfile \
+            --build-arg SOURCE_COMMIT="${GITHUB_SHA}" \
+            --tag "${SERVER_IMAGE}:main" \
+            --tag "${SERVER_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${SERVER_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${SERVER_IMAGE}:buildcache,mode=max" \
+            --provenance=false \
+            --sbom=false \
+            --push \
+            .
 
       - name: Build And Push Ingest Image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.ingest == 'true'
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        with:
-          context: .
-          file: ./services/sequoia-ingest/Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          sbom: false
-          tags: |
-            ${{ env.INGEST_IMAGE }}:main
-            ${{ env.INGEST_IMAGE }}:sha-${{ github.sha }}
-          cache-from: type=gha,scope=map-ingest
-          cache-to: type=gha,mode=max,scope=map-ingest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --file ./services/sequoia-ingest/Dockerfile \
+            --tag "${INGEST_IMAGE}:main" \
+            --tag "${INGEST_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${INGEST_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${INGEST_IMAGE}:buildcache,mode=max" \
+            --provenance=false \
+            --sbom=false \
+            --push \
+            .
 
       - name: Build And Push Edge Image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.edge == 'true'
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        with:
-          context: .
-          file: ./ops/caddy/Dockerfile.coolify
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          sbom: false
-          tags: |
-            ${{ env.EDGE_IMAGE }}:main
-            ${{ env.EDGE_IMAGE }}:sha-${{ github.sha }}
-          cache-from: type=gha,scope=map-edge
-          cache-to: type=gha,mode=max,scope=map-edge
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --file ./ops/caddy/Dockerfile.coolify \
+            --tag "${EDGE_IMAGE}:main" \
+            --tag "${EDGE_IMAGE}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${EDGE_IMAGE}:buildcache" \
+            --cache-to "type=registry,ref=${EDGE_IMAGE}:buildcache,mode=max" \
+            --provenance=false \
+            --sbom=false \
+            --push \
+            .
 
       - name: Trigger Coolify Deploy
         env:

@@ -63,6 +63,10 @@ pub(crate) struct ShowCompoundMapTime(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowNames(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowClaimLabels(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct ShowFarZoomTerritoryTags(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct ThickCooldownBorders(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct BoldConnections(pub RwSignal<bool>);
@@ -80,6 +84,8 @@ pub(crate) struct SuppressCooldownVisuals(pub RwSignal<bool>);
 pub(crate) struct FillAlphaBoost(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceHighlight(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct DefenseHighlight(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowResourceIcons(pub RwSignal<bool>);
 #[derive(Clone, Copy)]

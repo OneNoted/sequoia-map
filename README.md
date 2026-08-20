@@ -40,6 +40,23 @@ The comments in combination with the README.md should be enough for anyone to pi
 
 ### Development
 
+If you want the smallest local setup without Docker, use the root `justfile`:
+
+```bash
+just dev
+```
+
+- Map client: `http://127.0.0.1:8081`
+- Server: `http://127.0.0.1:3000`
+- Repo-local Postgres: `postgres://sequoia:sequoia@127.0.0.1:55432/sequoia`
+- `just dev-full` also starts the claims client and ingest service without Docker
+- `just pg-start`, `just pg-stop`, `just pg-status`, and `just pg-reset` manage the repo-local Postgres cluster under `.data/postgres`
+- `just native-env` prints the default local environment variables
+- `just server`, `just client`, `just claims-client`, and `just ingest` run the pieces individually
+- If you prefer an external database, set `DATABASE_URL` before running the recipes and the local Postgres bootstrap will be skipped
+
+Manual equivalent:
+
 ```bash
 # Start the client dev server 
 cd client && trunk serve
@@ -223,10 +240,15 @@ Notes:
 | `MAX_INGEST_UPDATES_PER_REQUEST` | Max canonical territory updates accepted per internal ingest request | `1024` |
 | `MAX_HISTORY_REPLAY_EVENTS` | Max historical events replayed in `/api/history/at` reconstruction | `20000` |
 | `MAX_HISTORY_SR_SAMPLE_ROWS` | Max raw rows loaded for `/api/history/sr-samples` | `20000` |
+| `TERRITORY_HISTORY_RETENTION_DAYS` | Days the server keeps `territory_events` and `territory_snapshots` before retention cleanup | `365` *(prod compose default)*, `36500` *(coolify compose default to preserve long-lived imports)* |
+| `SEASON_HISTORY_RETENTION_DAYS` | Days the server keeps `season_scalar_samples` and `season_guild_observations` before retention cleanup | `365` |
 | `SEQ_LIVE_HANDOFF_V1` | Enable sequence-aware live-state handoff | `true` |
 | `GUILDS_ONLINE_CACHE_TTL_SECS` | Cache freshness threshold used by `/api/guilds/online` | `120` |
 | `GUILDS_ONLINE_MAX_CONCURRENCY` | Max concurrent upstream guild fetches in `/api/guilds/online` | `8` |
+| `GUILD_SEASONS_CACHE_TTL_SECS` | Cache freshness threshold for the Wynncraft `/guild/seasons` definitions used by `/api/season/*`. A failed refresh serves the last good value. | `130` |
 | `MAP_DOMAIN` | Public HTTPS domain routed to Sequoia server by Caddy | `map.example.com` |
+| `SEQUOIA_BACKEND_BASE_URL` | Sequoia backend origin used for website sign-in (`/api/auth/*`) and internal season data. Without it the map renders every visitor as signed out and `/api/auth/login` returns 503. | *(empty; production uses `https://api.seqwawa.com`)* |
+| `SEQUOIA_BACKEND_INTERNAL_TOKEN` | Shared secret for internal Sequoia backend calls | *(empty)* |
 | `IRIS_DOMAIN` | Public HTTPS domain routed to ingest by Caddy | `iris.example.com` |
 | `ACME_EMAIL` | Email used for ACME certificate registration in Caddy | *(empty)* |
 | `INGEST_TRUSTED_PROXY_CIDRS` | Comma-separated trusted reverse proxy CIDRs for `X-Forwarded-For` | *(empty in service; prod/coolify compose defaults to loopback + RFC1918 private ranges)* |

@@ -3,18 +3,18 @@ use std::collections::BTreeMap;
 use crate::territory::ClientTerritoryMap;
 use crate::viewport::Viewport;
 
-pub(crate) const CLAIM_LABEL_MIN_SCALE: f64 = 0.10;
-pub(crate) const CLAIM_LABEL_MAX_SCALE: f64 = 0.45;
+pub const CLAIM_LABEL_MIN_SCALE: f64 = 0.10;
+pub const CLAIM_LABEL_MAX_SCALE: f64 = 0.60;
 const CLAIM_LABEL_GUILD_AGGREGATE_MAX_SCALE: f64 = CLAIM_LABEL_MAX_SCALE;
-pub(crate) const CLAIM_LABEL_FULL_NAME_MIN_SCALE: f64 = 0.14;
-pub(crate) const CLAIM_LABEL_MIN_TERRITORIES: usize = 4;
-pub(crate) const CLAIM_LABEL_MIN_SCREEN_WIDTH: f32 = 56.0;
-pub(crate) const CLAIM_LABEL_MIN_SCREEN_HEIGHT: f32 = 28.0;
-pub(crate) const CLAIM_LABEL_MAX_WIDTH_FRACTION: f32 = 0.88;
-pub(crate) const CLAIM_LABEL_FONT_MIN_WORLD: f32 = 32.0;
-pub(crate) const CLAIM_LABEL_FONT_MAX_WORLD: f32 = 180.0;
+pub const CLAIM_LABEL_FULL_NAME_MIN_SCALE: f64 = 0.14;
+pub const CLAIM_LABEL_MIN_TERRITORIES: usize = 4;
+pub const CLAIM_LABEL_MIN_SCREEN_WIDTH: f32 = 56.0;
+pub const CLAIM_LABEL_MIN_SCREEN_HEIGHT: f32 = 28.0;
+pub const CLAIM_LABEL_MAX_WIDTH_FRACTION: f32 = 0.88;
+pub const CLAIM_LABEL_FONT_MIN_WORLD: f32 = 32.0;
+pub const CLAIM_LABEL_FONT_MAX_WORLD: f32 = 180.0;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(crate) const CLAIM_LABEL_LETTER_SPACING_EM: f32 = 0.065;
+pub const CLAIM_LABEL_LETTER_SPACING_EM: f32 = 0.065;
 
 const CLAIM_LABEL_BOUNDS_INSET_PX: f32 = 6.0;
 const CLAIM_LABEL_COLLISION_TOLERANCE_PX: f32 = 4.0;
@@ -30,7 +30,7 @@ const CLAIM_COMPACT_LABEL_FONT_MAX_WORLD: f32 = 42.0;
 const CLAIM_COMPACT_LABEL_BOUNDS_INSET_PX: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Rect {
+pub struct Rect {
     pub left: f32,
     pub top: f32,
     pub right: f32,
@@ -116,7 +116,7 @@ impl Rect {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ClaimCluster {
+pub struct ClaimCluster {
     pub guild_name: String,
     pub guild_prefix: String,
     pub guild_color: (u8, u8, u8),
@@ -126,7 +126,7 @@ pub(crate) struct ClaimCluster {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ClaimLabelCandidate {
+pub struct ClaimLabelCandidate {
     pub text: String,
     pub guild_color: (u8, u8, u8),
     pub territory_count: usize,
@@ -146,11 +146,11 @@ struct TerritoryNode {
     bounds_world: Rect,
 }
 
-pub(crate) fn claim_label_zoom_active(scale: f64) -> bool {
+pub fn claim_label_zoom_active(scale: f64) -> bool {
     scale >= CLAIM_LABEL_MIN_SCALE && scale <= CLAIM_LABEL_MAX_SCALE
 }
 
-pub(crate) fn build_claim_clusters(territories: &ClientTerritoryMap) -> Vec<ClaimCluster> {
+pub fn build_claim_clusters(territories: &ClientTerritoryMap) -> Vec<ClaimCluster> {
     let mut by_guild: BTreeMap<String, Vec<TerritoryNode>> = BTreeMap::new();
     for (territory_name, ct) in territories {
         let guild = &ct.territory.guild;
@@ -238,7 +238,7 @@ where
     components
 }
 
-pub(crate) fn select_claim_label_candidates<F>(
+pub fn select_claim_label_candidates<F>(
     clusters: &[ClaimCluster],
     vp: &Viewport,
     viewport_screen_bounds: Rect,
@@ -895,7 +895,8 @@ mod tests {
     fn claim_label_zoom_band_reaches_mid_zoom_views() {
         assert!(claim_label_zoom_active(0.30));
         assert!(claim_label_zoom_active(0.40));
-        assert!(!claim_label_zoom_active(0.50));
+        assert!(claim_label_zoom_active(0.50));
+        assert!(!claim_label_zoom_active(0.70));
     }
 
     #[test]

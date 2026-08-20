@@ -1,6 +1,95 @@
+/* ═══════════════════════════════════════════════════════════════════
+   SEQUOIA DESIGN TOKENS — claims editor
+   Duplicated from client/input.css, which in turn mirrors the token files
+   under sequoia-web/frontend/src/lib/design-system/tokens. This build is
+   plain CSS served by Trunk's `rel="css"`, which does not resolve @import,
+   so the block is copied rather than shared. Keep the three in step.
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+  /* ── Base surfaces ── */
+  --color-abyss: #0c0e17;
+  --color-deep: #13161f;
+  --color-surface: #1a1d2a;
+  --color-surface-hover: #232738;
+
+  /* ── Borders ── */
+  --color-border-subtle: #282c3e;
+  --color-border-accent: #3a3f5c;
+
+  /* ── Text ── */
+  --color-text-primary: #e2e0d8;
+  --color-text-secondary: #9a9590;
+  --color-text-dim: #5a5860;
+
+  /* ── Gold — the signature accent ── */
+  --color-gold-light: #ffd966;
+  --color-gold: #f5c542;
+  --color-gold-dark: #c49a2a;
+
+  /* ── Accent spectrum ── */
+  --color-emerald: #50c878;
+  --color-crimson: #8c3d3d;
+  --color-enchant: #a855f7;
+  --color-diamond: #5ce8e4;
+  --color-lapis: #4a6ce6;
+  --color-nether: #e05252;
+  --color-xp: #7dde6f;
+
+  /* ── Semantic aliases ── */
+  --bg-page: var(--color-abyss);
+  --surface-card: var(--color-surface);
+  --border-default: var(--color-border-subtle);
+  --border-strong: var(--color-border-accent);
+  --text-heading: var(--color-text-primary);
+  --text-body: var(--color-text-secondary);
+  --text-muted: var(--color-text-dim);
+  --accent: var(--color-gold);
+  --status-error: var(--color-nether);
+
+  /* ── Fonts ── */
+  --font-display: "Minecraft", "Silkscreen", monospace;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  /* ── Type scale ── */
+  --text-2xs: 0.7rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --tracking-wide: 0.06em;
+  --tracking-wider: 0.1em;
+
+  /* ── Corner radii ── */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* ── Motion ── */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 0.15s;
+  --dur-base: 0.25s;
+  --dur-slow: 0.35s;
+
+  /* ── Elevation & glow ── */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.45);
+  --bevel-slot: inset 1px 1px 0 rgba(255, 255, 255, 0.06), inset -1px -1px 0 rgba(0, 0, 0, 0.3);
+  --glow-gold: 0 0 24px rgba(245, 197, 66, 0.35), 0 0 8px rgba(245, 197, 66, 0.2);
+  --glow-gold-soft: 0 0 12px rgba(245, 197, 66, 0.2);
+}
+
 html {
   color-scheme: dark;
 }
+
+/* The editor's own class names are kept - `claims.rs` is shared source with
+   the map client and carries ~60 call sites - but every value below now comes
+   from the tokens above, so the editor matches seqwawa.com rather than the
+   near-miss palette it had drifted to. */
 
 /* ── Surfaces ── */
 .pill-group {
@@ -9,45 +98,61 @@ html {
   align-items: center;
   padding: 10px;
   background: rgba(19, 22, 31, 0.94);
-  border: 1px solid #2c3146;
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
 }
 
 .pill-divider {
   width: 1px;
   align-self: stretch;
   margin: 0 2px;
-  background: #2c3146;
+  background: var(--color-border-subtle);
 }
 
 /* ── Buttons ── */
 .btn {
   padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid #3a415c;
-  background: #171b28;
-  color: #e6e3d9;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-accent);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
   cursor: pointer;
   font-family: inherit;
   font-size: inherit;
+  transition:
+    background var(--dur-base) ease,
+    color var(--dur-base) ease,
+    border-color var(--dur-base) ease,
+    box-shadow var(--dur-base) ease;
 }
 .btn:hover {
-  background: #1e2336;
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-accent);
+}
+.btn:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: 2px;
 }
 .btn.active {
-  background: #f5c542;
-  color: #161821;
-  border-color: #f5c542;
+  background: var(--color-gold);
+  color: var(--color-abyss);
+  border-color: var(--color-gold-dark);
+  box-shadow: var(--glow-gold-soft);
+}
+.btn.active:hover {
+  background: var(--color-gold-light);
+  box-shadow: var(--glow-gold);
 }
 
 .btn-neutral {
-  border-color: #45506e;
-  background: #5b5f70;
-  color: #f1eee6;
+  border-color: var(--color-border-accent);
+  background: transparent;
+  color: var(--color-text-secondary);
 }
 .btn-neutral:hover {
-  background: #6a6e80;
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
 }
 
 .btn-sm {
@@ -56,17 +161,27 @@ html {
 
 .btn-tab {
   flex: 1;
-  font-family: 'Silkscreen', monospace;
+  font-family: var(--font-display);
   font-size: 0.72rem;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
 }
 
 /* ── Inputs ── */
 .input {
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid #3a415c;
-  background: #111521;
-  color: #e6e3d9;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  background: color-mix(in srgb, var(--color-abyss) 65%, transparent);
+  color: var(--text-body);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  transition: border-color var(--dur-fast) ease;
+}
+.input:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: 2px;
+  border-color: color-mix(in srgb, var(--color-gold) 55%, var(--color-border-subtle));
 }
 
 /* ── Badge ── */
@@ -76,11 +191,11 @@ html {
   justify-content: center;
   min-width: 52px;
   padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(58, 65, 92, 0.88);
-  background: rgba(11, 16, 26, 0.92);
-  color: #cfd7ef;
-  font-family: 'JetBrains Mono', monospace;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-accent);
+  background: rgba(12, 14, 23, 0.92);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
   font-size: 0.72rem;
 }
 
@@ -108,9 +223,9 @@ html {
   display: flex;
   flex-direction: column;
   background: rgba(19, 22, 31, 0.96);
-  border: 1px solid #2c3146;
-  border-radius: 14px;
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
 
@@ -119,8 +234,8 @@ html {
   flex-wrap: wrap;
   gap: 6px;
   padding: 10px 8px;
-  border-bottom: 1px solid #2c3146;
-  background: rgba(14, 16, 24, 0.9);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: rgba(12, 14, 23, 0.9);
 }
 
 .sidebar-scroll {
@@ -134,9 +249,9 @@ html {
 
 .card {
   padding: 12px;
-  border-radius: 12px;
-  background: #121725;
-  border: 1px solid #2c3146;
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+  border: 1px solid var(--color-border-subtle);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -144,14 +259,17 @@ html {
 
 .card-inset {
   padding: 10px;
-  border-radius: 10px;
-  background: rgba(16, 20, 31, 0.92);
-  border: 1px solid #2c3146;
+  border-radius: var(--radius-md);
+  background: rgba(12, 14, 23, 0.92);
+  border: 1px solid var(--color-border-subtle);
+  box-shadow: var(--bevel-slot);
 }
 
 /* ── Labels ── */
 .section-label {
-  font-family: 'Silkscreen', monospace;
-  color: #f5c542;
+  font-family: var(--font-display);
+  color: var(--color-gold);
   font-size: 0.78rem;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
 }
