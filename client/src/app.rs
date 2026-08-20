@@ -985,14 +985,40 @@ pub fn MapPage() -> impl IntoView {
     provide_context(crate::tower::TowerState::new());
     provide_context(IsMobile(is_mobile));
 
-    // Website session, resolved once on mount. Display-only: the navbar shows
-    // who is signed in, and nothing on the map is gated on it, so a failure
-    // here just leaves the bar reading "Sign in".
+    // Website session, resolved on mount. Display-only: the navbar shows who is
+    // signed in, and nothing on the map is gated on it, so a failure here just
+    // leaves the bar reading "Sign in".
     let viewer = RwSignal::new(None::<crate::auth::Viewer>);
     provide_context(CurrentViewer(viewer));
-    wasm_bindgen_futures::spawn_local(async move {
-        viewer.set(crate::auth::fetch_viewer().await);
-    });
+    let refresh_viewer = move || {
+        wasm_bindgen_futures::spawn_local(async move {
+            viewer.set(crate::auth::fetch_viewer().await);
+        });
+    };
+    refresh_viewer();
+    // Signing in and out are full page loads, so the mount above normally sees
+    // the new session - except on a back-forward cache restore, which replays
+    // the old DOM without re-running any of this. Re-probe on a persisted
+    // `pageshow` so the chip cannot outlive the session it describes.
+    {
+        let handler =
+            wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::PageTransitionEvent)>::new(
+                move |event: web_sys::PageTransitionEvent| {
+                    if event.persisted() {
+                        refresh_viewer();
+                    }
+                },
+            );
+        if let Some(window) = web_sys::window() {
+            let _ = window.add_event_listener_with_callback(
+                "pageshow",
+                wasm_bindgen::JsCast::unchecked_ref(handler.as_ref()),
+            );
+        }
+        // The listener lives as long as the page does; the map is never
+        // unmounted, so leaking it is the correct lifetime here.
+        handler.forget();
+    }
 
     provide_context(PeekTerritory(peek_territory));
     provide_context(SelectedGuild(selected_guild));
