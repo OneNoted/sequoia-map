@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: deploy-dev
@@ -21,8 +22,9 @@ jobs:
       COOLIFY_RESOURCE_UUID: ${{ secrets.COOLIFY_RESOURCE_UUID }}
       COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
       COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Provision and deploy the development resource
+      - name: Deploy the dev pull-request environment
         shell: bash
         run: |
           set -euo pipefail
@@ -34,166 +36,57 @@ jobs:
             fi
           done
 
+          pr_number="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head dev \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+          if [ -z "${pr_number}" ]; then
+            echo "The dev branch needs an open pull request to create a Coolify preview environment."
+            exit 1
+          fi
+
           coolify_origin="${COOLIFY_WEBHOOK%%/api/v1/deploy*}"
           api_base="${coolify_origin}/api/v1"
           token_variable=COOLIFY_TOKEN
           auth_header="Authorization: Bearer ${!token_variable}"
 
-          api_get() {
-            curl --proto '=https' --fail-with-body --silent --show-error \
-              --connect-timeout 10 --max-time 60 \
-              -H "${auth_header}" \
-              "${api_base}$1"
-          }
-
-          api_post() {
-            local path="$1"
-            local body="$2"
-            curl --proto '=https' --fail-with-body --silent --show-error \
-              --connect-timeout 10 --max-time 60 \
-              -X POST \
-              -H "${auth_header}" \
-              -H 'Content-Type: application/json' \
-              --data "${body}" \
-              "${api_base}${path}"
-          }
-
-          api_patch() {
-            local path="$1"
-            local body="$2"
-            curl --proto '=https' --fail-with-body --silent --show-error \
-              --connect-timeout 10 --max-time 60 \
-              -X PATCH \
-              -H "${auth_header}" \
-              -H 'Content-Type: application/json' \
-              --data "${body}" \
-              "${api_base}${path}"
-          }
-
-          production="$(api_get "/applications/${COOLIFY_RESOURCE_UUID}")"
-          production_environment_id="$(jq -r '.environment_id' <<<"${production}")"
-          production_destination_id="$(jq -r '.destination_id' <<<"${production}")"
-
-          projects="$(api_get /projects)"
-          project_uuid=""
-          while IFS= read -r candidate; do
-            environments="$(api_get "/projects/${candidate}/environments")"
-            if jq -e --argjson id "${production_environment_id}" \
-              'any(.[]; .id == $id)' <<<"${environments}" >/dev/null; then
-              project_uuid="${candidate}"
-              break
-            fi
-          done < <(jq -r '.[].uuid' <<<"${projects}")
-
-          if [ -z "${project_uuid}" ] && [ "$(jq 'length' <<<"${projects}")" -eq 1 ]; then
-            project_uuid="$(jq -r '.[0].uuid' <<<"${projects}")"
-          fi
-          if [ -z "${project_uuid}" ]; then
-            echo "Could not identify the project that owns the production resource."
-            exit 1
-          fi
-
-          servers="$(api_get /servers)"
-          server_uuid=""
-          while IFS= read -r candidate; do
-            destinations="$(api_get "/servers/${candidate}/destinations")"
-            if jq -e --argjson id "${production_destination_id}" \
-              'any(.[]; .id == $id)' <<<"${destinations}" >/dev/null; then
-              server_uuid="${candidate}"
-              break
-            fi
-          done < <(jq -r '.[].uuid' <<<"${servers}")
-
-          if [ -z "${server_uuid}" ] && [ "$(jq 'length' <<<"${servers}")" -eq 1 ]; then
-            server_uuid="$(jq -r '.[0].uuid' <<<"${servers}")"
-          fi
-          if [ -z "${server_uuid}" ]; then
-            echo "Could not identify the server that hosts the production resource."
-            exit 1
-          fi
-
-          environments="$(api_get "/projects/${project_uuid}/environments")"
-          if ! jq -e 'any(.[]; .name == "development")' <<<"${environments}" >/dev/null; then
-            api_post "/projects/${project_uuid}/environments" \
-              '{"name":"development"}' >/dev/null
-          fi
-
-          applications="$(api_get /applications)"
-          dev_uuid="$(jq -r \
-            '[.[] | select(.name == "sequoia-map-dev")][0].uuid // empty' \
-            <<<"${applications}")"
-          created=false
-
-          if [ -z "${dev_uuid}" ]; then
-            create_body="$(jq -n \
-              --arg project_uuid "${project_uuid}" \
-              --arg server_uuid "${server_uuid}" \
-              '{
-                project_uuid: $project_uuid,
-                server_uuid: $server_uuid,
-                environment_name: "development",
-                git_repository: "https://github.com/SequoiaWynncraft/sequoia-map",
-                git_branch: "dev",
-                build_pack: "dockercompose",
-                ports_exposes: "8080",
-                name: "sequoia-map-dev",
-                description: "Development deployment tracking the dev branch",
-                docker_compose_location: "/docker-compose.coolify.dev.yml",
-                is_auto_deploy_enabled: false,
-                is_force_https_enabled: true,
-                autogenerate_domain: true,
-                instant_deploy: false
-              }')"
-            create_response="$(api_post /applications/public "${create_body}")"
-            dev_uuid="$(jq -r '.uuid // empty' <<<"${create_response}")"
-            if [ -z "${dev_uuid}" ]; then
-              echo "Coolify did not return a development resource UUID."
-              exit 1
-            fi
-            created=true
-          fi
-
-          if [ "${created}" = true ]; then
-            postgres_password="$(openssl rand -hex 32)"
-            ingest_token="$(openssl rand -hex 32)"
-            env_body="$(jq -n \
-              --arg postgres_password "${postgres_password}" \
-              --arg ingest_token "${ingest_token}" \
-              '{data: [
-                {key: "POSTGRES_DB", value: "sequoia_dev", is_literal: true},
-                {key: "POSTGRES_USER", value: "sequoia_dev", is_literal: true},
-                {key: "POSTGRES_PASSWORD", value: $postgres_password, is_literal: true},
-                {key: "INTERNAL_INGEST_TOKEN", value: $ingest_token, is_literal: true},
-                {key: "RUST_LOG", value: "info", is_literal: true},
-                {key: "TERRITORY_HISTORY_RETENTION_DAYS", value: "30", is_literal: true},
-                {key: "SEASON_HISTORY_RETENTION_DAYS", value: "30", is_literal: true}
-              ]}')"
-            api_patch "/applications/${dev_uuid}/envs/bulk" "${env_body}" >/dev/null
-            unset postgres_password ingest_token env_body
-          fi
-
-          application="$(api_get "/applications/${dev_uuid}")"
-          if [ "$(jq -r '.git_branch' <<<"${application}")" != "dev" ]; then
-            echo "Development resource does not target the dev branch."
-            exit 1
-          fi
-          if [ "$(jq -r '.docker_compose_location' <<<"${application}")" != "/docker-compose.coolify.dev.yml" ]; then
-            echo "Development resource does not use the development Compose file."
-            exit 1
-          fi
-
-          deploy_response="$(api_post "/deploy?uuid=${dev_uuid}" '{}')"
+          deploy_response="$(curl --proto '=https' --fail-with-body --silent --show-error \
+            --connect-timeout 10 --max-time 60 \
+            -X POST \
+            -H "${auth_header}" \
+            "${api_base}/deploy?uuid=${COOLIFY_RESOURCE_UUID}&pr=${pr_number}")"
           deployment_uuid="$(jq -r '.deployments[0].deployment_uuid // empty' <<<"${deploy_response}")"
           if [ -z "${deployment_uuid}" ]; then
-            echo "Coolify did not return a deployment UUID."
+            echo "Coolify accepted no preview deployment."
             exit 1
           fi
 
-          echo "Coolify resource: ${dev_uuid}"
+          echo "Pull request: ${pr_number}"
           echo "Deployment: ${deployment_uuid}"
 
           for attempt in $(seq 1 300); do
-            deployment="$(api_get "/deployments/${deployment_uuid}")"
+            response_file="$(mktemp)"
+            status_code="$(curl --proto '=https' --silent --show-error \
+              --connect-timeout 10 --max-time 60 \
+              --output "${response_file}" --write-out '%{http_code}' \
+              -H "${auth_header}" \
+              "${api_base}/deployments/${deployment_uuid}")"
+
+            if [ "${status_code}" = 403 ]; then
+              echo "The deploy-scoped token cannot read deployment status; Coolify accepted the preview deployment."
+              exit 0
+            fi
+            if [ "${status_code}" != 200 ]; then
+              echo "Coolify deployment status request failed with HTTP ${status_code}."
+              rm -f "${response_file}"
+              exit 1
+            fi
+
+            deployment="$(<"${response_file}")"
+            rm -f "${response_file}"
             status="$(jq -r '.status // "unknown"' <<<"${deployment}")"
             case "${status}" in
               finished)
