@@ -20,6 +20,7 @@ use crate::config::{
     max_history_sr_sample_rows, max_ingest_updates_per_request, seq_live_handoff_v1_enabled,
     sse_broadcast_buffer, upstream_connect_timeout, upstream_http_timeout,
 };
+use crate::services::wynncraft_api::GuildSeasonDefinition;
 
 pub type GuildColor = (u8, u8, u8);
 pub type GuildColorMap = HashMap<String, GuildColor>;
@@ -162,6 +163,8 @@ pub struct AppState {
     pub guild_catalog_cache: Arc<RwLock<Option<CachedGuildCatalog>>>,
     pub season_leaderboard_cache: Arc<RwLock<Option<CachedSeasonLeaderboard>>>,
     pub season_leaderboard_fetch_lock: Arc<Mutex<()>>,
+    pub guild_seasons_cache: Arc<RwLock<Option<CachedGuildSeasons>>>,
+    pub guild_seasons_fetch_lock: Arc<Mutex<()>>,
     pub map_intel_cache: Arc<RwLock<Option<CachedMapIntel>>>,
     pub map_intel_fetch_lock: Arc<Mutex<()>>,
     /// Extra territory data (resources, connections) from bundled and supplemental sources.
@@ -219,6 +222,15 @@ pub struct CachedSeasonLeaderboardEntry {
 pub struct CachedSeasonLeaderboard {
     pub season_id: i32,
     pub entries: Vec<CachedSeasonLeaderboardEntry>,
+    pub fetched_at: DateTime<Utc>,
+}
+
+/// Wynncraft season definitions. Near-static, so this is cached to keep the
+/// season endpoints off the upstream on every request; a failed refresh reuses
+/// the last good value rather than dropping every API-sourced window.
+#[derive(Debug, Clone)]
+pub struct CachedGuildSeasons {
+    pub seasons: HashMap<String, GuildSeasonDefinition>,
     pub fetched_at: DateTime<Utc>,
 }
 
@@ -401,6 +413,8 @@ impl AppState {
             guild_catalog_cache: Arc::new(RwLock::new(None)),
             season_leaderboard_cache: Arc::new(RwLock::new(None)),
             season_leaderboard_fetch_lock: Arc::new(Mutex::new(())),
+            guild_seasons_cache: Arc::new(RwLock::new(None)),
+            guild_seasons_fetch_lock: Arc::new(Mutex::new(())),
             map_intel_cache: Arc::new(RwLock::new(None)),
             map_intel_fetch_lock: Arc::new(Mutex::new(())),
             extra_terr: Arc::new(RwLock::new(HashMap::new())),

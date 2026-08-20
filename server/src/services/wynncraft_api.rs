@@ -9,14 +9,17 @@ use sequoia_shared::{
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use tracing::warn;
 
 use crate::config::{
     MAP_INTEL_CACHE_TTL_SECS, SEASON_LEADERBOARD_CACHE_TTL_SECS, WYNNCRAFT_GUILD_SEASONS_URL,
     WYNNCRAFT_LEADERBOARD_TYPES_URL, WYNNCRAFT_LEADERBOARDS_URL, WYNNCRAFT_MAP_CAMPS_URL,
     WYNNCRAFT_MAP_GATHERING_NODES_URL, WYNNCRAFT_MAP_RAIDS_URL, WYNNCRAFT_MAP_WORLD_EVENTS_URL,
+    guild_seasons_cache_ttl_secs,
 };
 use crate::state::{
-    AppState, CachedMapIntel, CachedSeasonLeaderboard, CachedSeasonLeaderboardEntry,
+    AppState, CachedGuildSeasons, CachedMapIntel, CachedSeasonLeaderboard,
+    CachedSeasonLeaderboardEntry,
 };
 
 #[derive(Debug, Clone)]
@@ -136,6 +139,49 @@ pub async fn fetch_guild_seasons(
         .map_err(|e| format!("guild seasons decode failed: {e}"))
 }
 
+/// Season definitions change a few times a year, so they are served from a
+/// short-lived cache instead of being refetched on every season API request.
+///
+/// Never fails: a refresh error falls back to the last good value, and only an
+/// empty cache yields an empty map. That keeps a Wynncraft blip from erasing
+/// every API-sourced season window mid-request.
+pub async fn cached_guild_seasons(state: &AppState) -> HashMap<String, GuildSeasonDefinition> {
+    let ttl_secs = guild_seasons_cache_ttl_secs();
+    {
+        let cached = state.guild_seasons_cache.read().await;
+        if let Some(seasons) = fresh_guild_seasons(cached.as_ref(), Utc::now(), ttl_secs) {
+            return seasons;
+        }
+    }
+
+    let _refresh_guard = state.guild_seasons_fetch_lock.lock().await;
+    {
+        let cached = state.guild_seasons_cache.read().await;
+        if let Some(seasons) = fresh_guild_seasons(cached.as_ref(), Utc::now(), ttl_secs) {
+            return seasons;
+        }
+    }
+
+    match fetch_guild_seasons(&state.http_client).await {
+        Ok(seasons) => {
+            let mut cached = state.guild_seasons_cache.write().await;
+            *cached = Some(CachedGuildSeasons {
+                seasons: seasons.clone(),
+                fetched_at: Utc::now(),
+            });
+            seasons
+        }
+        Err(error) => {
+            warn!("guild seasons refresh failed, serving stale definitions: {error}");
+            let cached = state.guild_seasons_cache.read().await;
+            cached
+                .as_ref()
+                .map(|cached| cached.seasons.clone())
+                .unwrap_or_default()
+        }
+    }
+}
+
 pub async fn cached_latest_guild_season_leaderboard(
     state: &AppState,
 ) -> Result<Option<CachedSeasonLeaderboard>, String> {
@@ -215,6 +261,16 @@ pub async fn cached_map_intel_overlay(state: &AppState) -> Result<MapIntelOverla
         fetched_at: Utc::now(),
     });
     Ok(overlay)
+}
+
+fn fresh_guild_seasons(
+    cached: Option<&CachedGuildSeasons>,
+    now: DateTime<Utc>,
+    ttl_secs: i64,
+) -> Option<HashMap<String, GuildSeasonDefinition>> {
+    let cached = cached?;
+    let age = now.signed_duration_since(cached.fetched_at).num_seconds();
+    (age < ttl_secs).then(|| cached.seasons.clone())
 }
 
 fn fresh_season_leaderboard(
@@ -849,5 +905,47 @@ mod tests {
         assert_eq!(markers[0].location.x, -1751.0);
         assert_eq!(markers[0].location.z, -4420.0);
         assert_eq!(markers[0].resource, "COPPER");
+    }
+
+    fn cached_seasons(fetched_at: DateTime<Utc>) -> CachedGuildSeasons {
+        let mut seasons = HashMap::new();
+        seasons.insert(
+            "30".to_string(),
+            GuildSeasonDefinition {
+                start_date: None,
+                end_date: None,
+                territory_holding_sr_per_hour: Some(3),
+                sr_per_war: Some(5),
+            },
+        );
+        CachedGuildSeasons {
+            seasons,
+            fetched_at,
+        }
+    }
+
+    #[test]
+    fn fresh_guild_seasons_serves_an_entry_inside_the_ttl() {
+        let now = "2026-03-01T00:02:00Z".parse::<DateTime<Utc>>().unwrap();
+        let cached = cached_seasons("2026-03-01T00:00:00Z".parse().unwrap());
+        let seasons = fresh_guild_seasons(Some(&cached), now, 130).expect("fresh entry");
+        assert_eq!(seasons.len(), 1);
+        assert_eq!(seasons["30"].sr_per_war, Some(5));
+    }
+
+    #[test]
+    fn fresh_guild_seasons_expires_at_the_ttl_boundary() {
+        let cached = cached_seasons("2026-03-01T00:00:00Z".parse().unwrap());
+        // Exactly at the TTL is already stale; one second earlier is not.
+        let at_ttl = "2026-03-01T00:02:10Z".parse::<DateTime<Utc>>().unwrap();
+        let before_ttl = "2026-03-01T00:02:09Z".parse::<DateTime<Utc>>().unwrap();
+        assert!(fresh_guild_seasons(Some(&cached), at_ttl, 130).is_none());
+        assert!(fresh_guild_seasons(Some(&cached), before_ttl, 130).is_some());
+    }
+
+    #[test]
+    fn fresh_guild_seasons_handles_an_empty_cache() {
+        let now = "2026-03-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert!(fresh_guild_seasons(None, now, 130).is_none());
     }
 }

@@ -245,6 +245,7 @@ Notes:
 | `SEQ_LIVE_HANDOFF_V1` | Enable sequence-aware live-state handoff | `true` |
 | `GUILDS_ONLINE_CACHE_TTL_SECS` | Cache freshness threshold used by `/api/guilds/online` | `120` |
 | `GUILDS_ONLINE_MAX_CONCURRENCY` | Max concurrent upstream guild fetches in `/api/guilds/online` | `8` |
+| `GUILD_SEASONS_CACHE_TTL_SECS` | Cache freshness threshold for the Wynncraft `/guild/seasons` definitions used by `/api/season/*`. A failed refresh serves the last good value. | `130` |
 | `MAP_DOMAIN` | Public HTTPS domain routed to Sequoia server by Caddy | `map.example.com` |
 | `SEQUOIA_BACKEND_BASE_URL` | Sequoia backend origin used for website sign-in (`/api/auth/*`) and internal season data. Without it the map renders every visitor as signed out and `/api/auth/login` returns 503. | *(empty; production uses `https://api.seqwawa.com`)* |
 | `SEQUOIA_BACKEND_INTERNAL_TOKEN` | Shared secret for internal Sequoia backend calls | *(empty)* |
