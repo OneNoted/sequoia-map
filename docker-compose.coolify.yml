@@ -28,9 +28,8 @@ services:
     logging: *default-logging
 
   server:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${SEQUOIA_SERVER_IMAGE:-ghcr.io/sequoiawynncraft/sequoia-map-server:main}
+    pull_policy: always
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -62,9 +61,8 @@ services:
     logging: *default-logging
 
   ingest:
-    build:
-      context: .
-      dockerfile: services/sequoia-ingest/Dockerfile
+    image: ${SEQUOIA_INGEST_IMAGE:-ghcr.io/sequoiawynncraft/sequoia-map-ingest:main}
+    pull_policy: always
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -98,9 +96,8 @@ services:
     logging: *default-logging
 
   edge:
-    build:
-      context: .
-      dockerfile: ops/caddy/Dockerfile.coolify
+    image: ${SEQUOIA_EDGE_IMAGE:-ghcr.io/sequoiawynncraft/sequoia-map-edge:main}
+    pull_policy: always
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
