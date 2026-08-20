@@ -10,6 +10,7 @@
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
+use leptos_router::hooks::use_location;
 
 use crate::SEQUOIA_WEBSITE_URL;
 use crate::auth::{self, Viewer};
@@ -28,6 +29,23 @@ const ACCOUNT_MENU: &str = "#account";
 
 fn site_url(path: &str) -> String {
     format!("{SEQUOIA_WEBSITE_URL}{path}")
+}
+
+/// The sign-in href, recomputed on every router navigation.
+///
+/// `return_to` has to name the page the viewer is on *when they click*, not the
+/// one the bar happened to render on - the map rewrites the path as the mode
+/// changes (`/` <-> `/history`), so a value captured once sends them back to the
+/// wrong view.
+fn login_href() -> impl Fn() -> String + Copy {
+    let location = use_location();
+    let (pathname, search, hash) = (location.pathname, location.search, location.hash);
+    move || {
+        pathname.track();
+        search.track();
+        hash.track();
+        auth::login_url(&auth::current_url())
+    }
 }
 
 #[component]
@@ -226,14 +244,16 @@ fn AccountControl(
     open: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let is_open = move || open.get().as_deref() == Some(ACCOUNT_MENU);
+    let login_href = login_href();
 
     move || {
         let Some(current) = viewer.get() else {
             return view! {
-                <a
-                    class="seq-nav-link seq-nav-session"
-                    href=auth::login_url(&auth::current_url())
-                >
+                // `rel="external"` keeps the router's global anchor handler off
+                // this click: `/api/auth/*` is same-origin, so without it the
+                // router turns sign-in into a client-side route change and the
+                // request never reaches the server.
+                <a class="seq-nav-link seq-nav-session" href=login_href rel="external">
                     "Sign in"
                 </a>
             }
@@ -329,6 +349,7 @@ fn MobilePanel(
     mobile_open: RwSignal<bool>,
 ) -> impl IntoView {
     let close = move |_| mobile_open.set(false);
+    let login_href = login_href();
 
     view! {
         <div class="seq-nav-mobile-panel">
@@ -380,10 +401,7 @@ fn MobilePanel(
                 {move || {
                     let Some(current) = viewer.get() else {
                         return view! {
-                            <a
-                                class="seq-mobile-link"
-                                href=auth::login_url(&auth::current_url())
-                            >
+                            <a class="seq-mobile-link" href=login_href rel="external">
                                 "Sign in"
                             </a>
                         }
@@ -431,7 +449,7 @@ fn MobilePanel(
                         >
                             "Settings"
                         </a>
-                        <a class="seq-mobile-link" href=auth::logout_url()>
+                        <a class="seq-mobile-link" href=auth::logout_url() rel="external">
                             "Sign out"
                         </a>
                     }
@@ -454,7 +472,11 @@ fn MobileSublink(leaf: NavLeaf, close: impl Fn(ev::MouseEvent) + 'static) -> imp
 #[component]
 fn AccountMenuItem(href: String, label: &'static str) -> impl IntoView {
     view! {
-        <a class="seq-dropdown-item" href=href>
+        // Every account destination leaves the map - the website for Playercard
+        // / Manage / Settings, `/api/auth/logout` for Sign out. The latter is
+        // same-origin, so without `rel="external"` the router would swallow the
+        // click and sign-out would silently do nothing.
+        <a class="seq-dropdown-item" href=href rel="external">
             <span class="seq-dropdown-item-text">
                 <span class="seq-dropdown-item-label">{label}</span>
             </span>

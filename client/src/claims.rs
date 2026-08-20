@@ -1407,6 +1407,10 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
                                 <div style="display: flex; gap: 12px; flex-wrap: wrap;">
                                     <a
                                         href="/claims"
+                                        // A separate server-rendered page, not a
+                                        // map route: without this the router
+                                        // swallows the click and nothing loads.
+                                        rel="external"
                                         style="padding: 11px 14px; border-radius: 12px; border: 1px solid rgba(245,197,66,0.22);
                                             background: rgba(245,197,66,0.08); color: #f3ead0; text-decoration: none;"
                                     >
