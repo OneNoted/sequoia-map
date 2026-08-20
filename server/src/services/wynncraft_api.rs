@@ -252,15 +252,26 @@ pub async fn cached_map_intel_overlay(state: &AppState) -> Result<MapIntelOverla
         }
     }
 
-    let payload = fetch_map_intel_payload(&state.http_client).await?;
-    let overlay = payload.overlay.clone();
-    let mut cached = state.map_intel_cache.write().await;
-    *cached = Some(CachedMapIntel {
-        summary: payload.summary,
-        overlay: payload.overlay,
-        fetched_at: Utc::now(),
-    });
-    Ok(overlay)
+    match fetch_map_intel_payload(&state.http_client).await {
+        Ok(payload) => {
+            let overlay = payload.overlay.clone();
+            let mut cached = state.map_intel_cache.write().await;
+            *cached = Some(CachedMapIntel {
+                summary: payload.summary,
+                overlay: payload.overlay,
+                fetched_at: Utc::now(),
+            });
+            Ok(overlay)
+        }
+        Err(error) => {
+            warn!("map intel refresh failed, serving stale overlay: {error}");
+            let cached = state.map_intel_cache.read().await;
+            cached
+                .as_ref()
+                .map(|cached| cached.overlay.clone())
+                .ok_or(error)
+        }
+    }
 }
 
 fn fresh_guild_seasons(
