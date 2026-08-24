@@ -22,7 +22,12 @@ pub const TERREXTRA_REFRESH_SECS: u64 = 3600; // re-fetch hourly
 pub const ATHENA_TERRITORY_URL: &str = "https://athena.wynntils.com/cache/get/territoryList";
 pub const ATHENA_REFRESH_SECS: u64 = 600; // 10 minutes
 
-pub const POLL_INTERVAL_SECS: u64 = 10;
+pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 10;
+pub const DEFAULT_WARCONTROLLER_POLL_INTERVAL_SECS: u64 = 5;
+/// The Sequoia backend mounts each internal endpoint at three aliases —
+/// `/internal/<x>`, `/api/<x>`, and `/public/<x>` — and enforces the bearer token only on
+/// the `/internal/` prefix. Default to that prefix so the configured token is actually used.
+pub const DEFAULT_WARCONTROLLER_PATH: &str = "/internal/warcontroller";
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const SEASON_LEADERBOARD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const MAP_INTEL_CACHE_TTL_SECS: i64 = 60; // shortest public map endpoint cache
@@ -126,6 +131,50 @@ pub fn upstream_connect_timeout() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS))
 }
 
+pub fn territory_poll_interval() -> Duration {
+    std::env::var("TERRITORY_POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS))
+}
+
+pub fn warcontroller_poll_interval() -> Duration {
+    std::env::var("WARCONTROLLER_POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_WARCONTROLLER_POLL_INTERVAL_SECS))
+}
+
+/// Upstream territory source. Overridable so local dev can target a different endpoint.
+pub fn wynncraft_territory_url() -> String {
+    std::env::var("WYNNCRAFT_TERRITORY_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| WYNNCRAFT_TERRITORY_URL.to_string())
+}
+
+/// Full URL of the Sequoia backend war controller feed.
+/// `None` when `SEQUOIA_BACKEND_BASE_URL` is unset, which keeps the poller dormant.
+pub fn warcontroller_url() -> Option<String> {
+    let base = sequoia_backend_base_url()?;
+    let path = std::env::var("SEQUOIA_BACKEND_WARCONTROLLER_PATH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_WARCONTROLLER_PATH.to_string());
+
+    if path.starts_with('/') {
+        Some(format!("{base}{path}"))
+    } else {
+        Some(format!("{base}/{path}"))
+    }
+}
+
 pub fn territory_extra_url() -> Option<String> {
     match std::env::var("TERRITORY_EXTRA_URL") {
         Ok(value) => parse_territory_extra_url(&value),
@@ -226,6 +275,19 @@ pub fn sequoia_backend_base_url() -> Option<String> {
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
+}
+
+/// The backend origin as the *browser* can reach it, for the sign-in redirects.
+///
+/// Production serves both from `https://api.seqwawa.com`, so this normally just echoes
+/// [`sequoia_backend_base_url`]. It exists for split deploys, where the server reaches the
+/// backend over a private network address that no browser on the outside can resolve.
+pub fn sequoia_backend_public_base_url() -> Option<String> {
+    std::env::var("SEQUOIA_BACKEND_PUBLIC_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(sequoia_backend_base_url)
 }
 
 pub fn sequoia_backend_internal_token() -> Option<String> {

@@ -34,6 +34,26 @@ pub struct Viewer {
     pub minecraft_username: Option<String>,
     #[serde(default)]
     pub website_admin: bool,
+    /// In-game guild rank, present only while the viewer is on the Sequoia roster.
+    #[serde(default)]
+    pub guild_rank: Option<String>,
+}
+
+impl Viewer {
+    /// Sequoia membership: any in-game guild rank, or a website administrator - the same
+    /// application-wide staff override the website's own branch gate applies.
+    ///
+    /// A backend that does not send `guild_rank` therefore fails closed for everyone but
+    /// admins, which is the right way round for internal war data.
+    pub fn is_guild_member(&self) -> bool {
+        self.website_admin || self.guild_rank.is_some()
+    }
+}
+
+/// Whether the request carries a session belonging to a Sequoia member. Signed-out
+/// viewers, and signed-in outsiders, are both denied.
+pub fn viewer_is_guild_member(viewer: Option<&Viewer>) -> bool {
+    viewer.is_some_and(Viewer::is_guild_member)
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,11 +66,18 @@ pub struct ReturnToQuery {
 /// Never fails: an unset backend URL, a timeout, a non-2xx, or an unparseable
 /// body all render the viewer as signed out. The map is fully usable that way.
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let viewer = match session_cookie(&headers) {
-        Some(token) => fetch_viewer(&state, token).await,
-        None => None,
-    };
+    let viewer = resolve_viewer(&state, &headers).await;
     session_json(serde_json::json!({ "viewer": viewer }))
+}
+
+/// Resolves the request's `seq_session` cookie to a verified identity, or `None`.
+///
+/// The single entry point for "who is asking" - route handlers must not re-read the
+/// cookie themselves. Costs one backend round trip (capped at [`ME_TIMEOUT`]), so call it
+/// off the critical path of anything that has to render immediately.
+pub async fn resolve_viewer(state: &AppState, headers: &HeaderMap) -> Option<Viewer> {
+    let token = session_cookie(headers)?;
+    fetch_viewer(state, token).await
 }
 
 /// Starts the website sign-in flow and returns the browser to a map page.
@@ -99,7 +126,9 @@ async fn fetch_viewer(state: &AppState, token: &str) -> Option<Viewer> {
 }
 
 fn redirect_to_auth(action: &str, return_to: Option<&str>) -> Response {
-    let Some(base_url) = config::sequoia_backend_base_url() else {
+    // The browser follows this, so it needs the publicly reachable origin, which is not
+    // necessarily the one this server polls over an internal network.
+    let Some(base_url) = config::sequoia_backend_public_base_url() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "website sign-in is not configured",
@@ -198,6 +227,51 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, HeaderValue::from_str(raw).unwrap());
         headers
+    }
+
+    fn viewer_with(guild_rank: Option<&str>, website_admin: bool) -> Viewer {
+        Viewer {
+            discord_id: "1".to_string(),
+            discord_username: None,
+            minecraft_uuid: "ee860b7c-9a1d-49cf-9f19-ab673ba0f23b".to_string(),
+            minecraft_username: None,
+            website_admin,
+            guild_rank: guild_rank.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn any_guild_rank_makes_a_viewer_a_member() {
+        assert!(viewer_with(Some("chief"), false).is_guild_member());
+        assert!(viewer_with(Some("recruit"), false).is_guild_member());
+    }
+
+    #[test]
+    fn a_website_admin_is_a_member_without_a_rank() {
+        assert!(viewer_with(None, true).is_guild_member());
+    }
+
+    #[test]
+    fn a_signed_in_outsider_is_not_a_member() {
+        // The backend answers for any linked account, not just Sequoia's roster, and a
+        // deploy predating the `guild_rank` field sends none at all - both must fail closed.
+        assert!(!viewer_with(None, false).is_guild_member());
+        assert!(!viewer_is_guild_member(Some(&viewer_with(None, false))));
+    }
+
+    #[test]
+    fn a_signed_out_visitor_is_not_a_member() {
+        assert!(!viewer_is_guild_member(None));
+    }
+
+    #[test]
+    fn a_viewer_deserializes_without_a_guild_rank() {
+        let viewer: Viewer = serde_json::from_str(
+            r#"{"discord_id":"1","minecraft_uuid":"ee860b7c-9a1d-49cf-9f19-ab673ba0f23b"}"#,
+        )
+        .expect("legacy viewer payload parses");
+        assert_eq!(viewer.guild_rank, None);
+        assert!(!viewer.is_guild_member());
     }
 
     #[test]

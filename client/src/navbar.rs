@@ -533,10 +533,8 @@ fn chip_name(viewer: &Viewer) -> String {
 
 /// The viewer's own playercard, when there is a linked player to open one for.
 fn playercard_url(viewer: &Viewer) -> Option<String> {
-    viewer.minecraft_username.as_deref().map(|player| {
-        site_url(&format!(
-            "/statistics/player/playercard?player={}",
-            crate::encode_uri_component(player),
-        ))
-    })
+    viewer
+        .minecraft_username
+        .as_deref()
+        .map(crate::player_card_url)
 }

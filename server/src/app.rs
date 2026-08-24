@@ -120,6 +120,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route("/api/health", axum::routing::get(routes::api::health))
         .route("/api/metrics", axum::routing::get(routes::api::metrics))
         .route(
+            "/api/warcontroller",
+            axum::routing::get(routes::api::get_warcontroller),
+        )
+        .route(
             "/api/history/at",
             axum::routing::get(routes::history::history_at),
         )

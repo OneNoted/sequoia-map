@@ -69,6 +69,7 @@ jobs:
           cargo check -p sequoia-client --target wasm32-unknown-unknown
           cargo check -p sequoia-claims-client
           cargo check -p sequoia-claims-client --target wasm32-unknown-unknown
+          cargo test -p sequoia-shared -- --nocapture
           cargo test -p sequoia-server -- --nocapture
 
       - name: Install Client Build Tooling

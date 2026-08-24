@@ -11,7 +11,9 @@ use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
 use tracing::warn;
 
-use super::http_util::{if_none_match_matches, json_bytes_response, not_modified_response};
+use super::http_util::{
+    if_none_match_matches, json_bytes_response, not_modified_response, private_json_bytes_response,
+};
 
 use crate::config::{
     GUILD_CACHE_TTL_SECS, MAX_GUILD_CACHE_ENTRIES, WYNNCRAFT_GUILD_URL,
@@ -178,6 +180,30 @@ pub async fn get_season_race(
         HeaderValue::from_static("public, max-age=60"),
     );
     Ok((headers, Json(response)))
+}
+
+/// The war feed is internal guild intel, so it is served only to a signed-in Sequoia
+/// member. Everyone else is refused outright rather than handed an empty state, so the
+/// client can tell "no wars" apart from "not yours to see".
+pub async fn get_warcontroller(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let viewer = super::auth::resolve_viewer(&state, &headers).await;
+    if !super::auth::viewer_is_guild_member(viewer.as_ref()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let cached = {
+        let cache = state.warcontroller_cache.read().await;
+        cache.as_ref().map(|cached| Arc::clone(&cached.json))
+    };
+    let body = match cached {
+        Some(json) => (*json).clone(),
+        None => Bytes::from_static(br#"{"timestamp":0,"queues":[],"wars":[],"players":[]}"#),
+    };
+
+    private_json_bytes_response(body)
 }
 
 pub async fn get_map_intel(State(state): State<AppState>) -> Result<impl IntoResponse, StatusCode> {
@@ -1077,6 +1103,91 @@ mod tests {
             .expect("parse season scalar response");
 
         assert!(sample.sample.is_none());
+
+        server_handle.abort();
+        let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn warcontroller_endpoint_refuses_a_viewer_outside_sequoia() {
+        use sequoia_shared::WarControllerState;
+
+        let state = AppState::new(None);
+        let (addr, server_handle) = spawn_test_server(state.clone()).await;
+        let url = format!("http://{addr}/api/warcontroller");
+        let client = reqwest::Client::new();
+
+        let payload = r#"{"timestamp": 1787517420, "queues": [], "players": [],
+            "wars": [{"territory": "Entrance to Olux", "difficulty": "VERY_HIGH",
+                      "health": 0.8731, "start": 1787517417, "ehp": 24135275, "dps": 32143}]}"#;
+        let parsed: WarControllerState = serde_json::from_str(payload).expect("payload parses");
+        *state.warcontroller_cache.write().await = Some(crate::state::CachedWarController {
+            state: parsed,
+            json: Arc::new(Bytes::from(payload.as_bytes().to_vec())),
+        });
+
+        // No `seq_session` cookie, so the viewer cannot be a Sequoia member. Internal war
+        // intel must be refused outright rather than served or emptied out.
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .expect("warcontroller request");
+        assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+        let body = response.text().await.expect("warcontroller body");
+        assert!(
+            !body.contains("Entrance to Olux"),
+            "refusal must not leak the feed, got: {body}"
+        );
+
+        server_handle.abort();
+        let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn sse_stream_withholds_warcontroller_from_a_viewer_outside_sequoia() {
+        let state = AppState::new(None);
+        let payload = r#"{"timestamp":1787517420,"queues":[],"wars":[],"players":[]}"#;
+        *state.warcontroller_cache.write().await = Some(crate::state::CachedWarController {
+            state: serde_json::from_str(payload).expect("payload parses"),
+            json: Arc::new(Bytes::from(payload.as_bytes().to_vec())),
+        });
+        {
+            let mut snapshot = state.live_snapshot.write().await;
+            snapshot.seq = 7;
+            snapshot.snapshot_json = Arc::new(Bytes::from_static(br#"{"territories":{}}"#));
+        }
+
+        let (addr, server_handle) = spawn_test_server(state).await;
+        let mut response = reqwest::Client::new()
+            .get(format!("http://{addr}/api/events"))
+            .send()
+            .await
+            .expect("sse request")
+            .error_for_status()
+            .expect("sse status");
+
+        // The session probe runs after the snapshot precisely so the map's first paint
+        // never waits on it; the snapshot frame is therefore still immediate.
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), response.chunk())
+            .await
+            .expect("sse frame arrives")
+            .expect("sse chunk")
+            .expect("sse chunk is present");
+        let frame = String::from_utf8_lossy(&chunk).to_string();
+
+        assert!(
+            frame.contains("event: snapshot"),
+            "expected the snapshot frame, got: {frame}"
+        );
+        assert!(
+            !frame.contains("event: warcontroller"),
+            "an anonymous stream must carry no war feed, got: {frame}"
+        );
+        assert!(
+            !frame.contains("1787517420"),
+            "an anonymous stream must carry no war payload, got: {frame}"
+        );
 
         server_handle.abort();
         let _ = server_handle.await;

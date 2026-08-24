@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sequoia_shared::{
     ClaimDocumentV1, GuildRef, LiveState, MapIntelOverlay, MapIntelSummary, Resources,
-    SeasonScalarSample, TerritoryMap, TerritoryRuntimeData,
+    SeasonScalarSample, TerritoryMap, TerritoryRuntimeData, WarControllerState,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -95,9 +95,24 @@ pub fn lookup_guild_color(
 /// Pre-serialized SSE event — serialized once by the poller, shared by all clients via Arc.
 #[derive(Debug, Clone)]
 pub enum PreSerializedEvent {
-    Snapshot { seq: u64, json: Arc<Bytes> },
-    Update { seq: u64, json: Arc<Bytes> },
-    RuntimeUpdate { seq: u64, json: Arc<Bytes> },
+    Snapshot {
+        seq: u64,
+        json: Arc<Bytes>,
+    },
+    Update {
+        seq: u64,
+        json: Arc<Bytes>,
+    },
+    RuntimeUpdate {
+        seq: u64,
+        json: Arc<Bytes>,
+    },
+    /// War controller state. Deliberately carries no `seq`: it rides the same SSE
+    /// connection as territory events but is not part of their sequence stream, so it
+    /// must never influence client-side gap detection or live resync.
+    WarController {
+        json: Arc<Bytes>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -167,6 +182,8 @@ pub struct AppState {
     pub guild_seasons_fetch_lock: Arc<Mutex<()>>,
     pub map_intel_cache: Arc<RwLock<Option<CachedMapIntel>>>,
     pub map_intel_fetch_lock: Arc<Mutex<()>>,
+    /// Latest war controller state from the Sequoia backend, with its pre-serialized payload.
+    pub warcontroller_cache: Arc<RwLock<Option<CachedWarController>>>,
     /// Extra territory data (resources, connections) from bundled and supplemental sources.
     pub extra_terr: Arc<RwLock<HashMap<String, ExtraTerrInfo>>>,
     pub extra_data_dirty: Arc<AtomicBool>,
@@ -239,6 +256,12 @@ pub struct CachedMapIntel {
     pub summary: MapIntelSummary,
     pub overlay: MapIntelOverlay,
     pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedWarController {
+    pub state: WarControllerState,
+    pub json: Arc<Bytes>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,6 +440,7 @@ impl AppState {
             guild_seasons_fetch_lock: Arc::new(Mutex::new(())),
             map_intel_cache: Arc::new(RwLock::new(None)),
             map_intel_fetch_lock: Arc::new(Mutex::new(())),
+            warcontroller_cache: Arc::new(RwLock::new(None)),
             extra_terr: Arc::new(RwLock::new(HashMap::new())),
             extra_data_dirty: Arc::new(AtomicBool::new(true)),
             guild_colors: Arc::new(RwLock::new(HashMap::new())),
