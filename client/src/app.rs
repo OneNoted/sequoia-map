@@ -244,6 +244,19 @@ pub(crate) struct HeatWindowLabel(pub RwSignal<String>);
 pub(crate) struct HeatMetaState(pub RwSignal<Option<HistoryHeatMeta>>);
 
 pub(crate) const MOBILE_BREAKPOINT: f64 = 768.0;
+/// Longest wait between website session probe attempts.
+///
+/// Doubling from a second, then held here for as long as the probe keeps failing. The loop
+/// deliberately does not give up: it used to, after about half a minute, which is shorter than
+/// a redeploy - and a member whose probe gave up kept the war feed hidden until the
+/// [`VIEWER_PROBE_REFRESH`] sweep came round up to five minutes later, long after the server
+/// had started serving them again. The server re-probes a stream every 30s
+/// (`WAR_FEED_RETRY`); this is the display side of the same policy, at a comparable cadence.
+const VIEWER_PROBE_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(16);
+/// Wait before the first session probe retry, doubling towards [`VIEWER_PROBE_MAX_BACKOFF`].
+const FIRST_PROBE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+/// How often an open map re-checks the session behind the war feed.
+const VIEWER_PROBE_REFRESH: std::time::Duration = std::time::Duration::from_secs(300);
 const GUILD_ONLINE_POLL_INTERVAL_SECS: u64 = 120;
 const GUILD_ONLINE_BOOTSTRAP_RETRY_SECS: u64 = 3;
 const GUILD_ONLINE_ERROR_RETRY_SECS: u64 = 15;
@@ -1074,12 +1087,56 @@ pub fn MapPage() -> impl IntoView {
     // Sequoia membership, so a failure here leaves the bar reading "Sign in" and the war
     // overview hidden - which is the safe way round for internal data.
     provide_context(CurrentViewer(viewer));
+    // The retry loop below never terminates on its own, so a second caller - `pageshow` after
+    // a back-forward restore, while the first is still backing off - would leave two loops
+    // probing forever. One at a time.
+    let probe_in_flight = RwSignal::new(false);
     let refresh_viewer = move || {
+        if probe_in_flight.get_untracked() {
+            return;
+        }
+        probe_in_flight.set(true);
         wasm_bindgen_futures::spawn_local(async move {
-            viewer.set(crate::auth::fetch_viewer().await);
+            // Retried on failure, and only on failure: a signed-out answer is final, but a
+            // transport blip used to read the same way and left a member without the war feed
+            // for the rest of the page's life. An existing viewer is kept while retrying, so a
+            // hiccup never blanks a session that is still good.
+            let mut backoff = FIRST_PROBE_BACKOFF;
+            loop {
+                match crate::auth::fetch_viewer().await {
+                    Ok(resolved) => {
+                        viewer.set(resolved);
+                        probe_in_flight.set(false);
+                        return;
+                    }
+                    Err(error) => {
+                        // Once per outage, not once per attempt: this loop runs until it
+                        // succeeds, and a backend that stays down would otherwise fill the
+                        // console every few seconds for the life of the page.
+                        if backoff == FIRST_PROBE_BACKOFF {
+                            web_sys::console::warn_1(
+                                &format!("website session probe failed, retrying: {error}").into(),
+                            );
+                        }
+                        gloo_timers::future::sleep(backoff).await;
+                        backoff = (backoff * 2).min(VIEWER_PROBE_MAX_BACKOFF);
+                    }
+                }
+            }
         });
     };
     refresh_viewer();
+    // Membership can be revoked, and a session can expire, while the map stays open for hours.
+    // The server mutes the war feed on its own schedule; this is the display side of that, so
+    // the panel and the at-war highlight cannot outlive the access they depend on.
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            gloo_timers::future::sleep(VIEWER_PROBE_REFRESH).await;
+            if let Ok(resolved) = crate::auth::fetch_viewer().await {
+                viewer.set(resolved);
+            }
+        }
+    });
     // Signing in and out are full page loads, so the mount above normally sees
     // the new session - except on a back-forward cache restore, which replays
     // the old DOM without re-running any of this. Re-probe on a persisted
@@ -1520,7 +1577,15 @@ pub fn MapPage() -> impl IntoView {
         }
         wasm_bindgen_futures::spawn_local(async move {
             match warcontroller::fetch_warcontroller().await {
-                Ok(state) => warcontroller_state.set(Some(state)),
+                // The SSE stream may already have delivered something newer while this was in
+                // flight - including the empty payload this endpoint falls back to.
+                Ok(state) => warcontroller_state.maybe_update(|current| {
+                    if !state.supersedes(current.as_ref()) {
+                        return false;
+                    }
+                    *current = Some(state);
+                    true
+                }),
                 Err(e) => {
                     web_sys::console::warn_1(&format!("war controller fetch failed: {e}").into());
                 }

@@ -88,6 +88,10 @@ pub fn calc_stat(base: f64, is_hq: bool, connections: u32, externals: u32) -> f6
 }
 
 /// Compute the min/max DPS band for given damage level & attack rate level with multipliers.
+///
+/// The `* 2.0` is deliberate, not a leftover from extracting this out of [`calc_dps`]: a
+/// tower attack lands two hits, so a tower's real output is twice the per-hit figure in
+/// [`DAMAGES`]. Dropping it halves every DPS number the calculator shows.
 pub fn calc_dps_range(
     damage_level: usize,
     attack_level: usize,
@@ -98,8 +102,8 @@ pub fn calc_dps_range(
     let dmg = &DAMAGES[damage_level.min(11)];
     let rate = ATTACK_RATES[attack_level.min(11)];
     (
-        calc_stat(dmg.start * rate, is_hq, connections, externals),
-        calc_stat(dmg.end * rate, is_hq, connections, externals),
+        calc_stat(dmg.start * 2.0 * rate, is_hq, connections, externals),
+        calc_stat(dmg.end * 2.0 * rate, is_hq, connections, externals),
     )
 }
 
@@ -538,7 +542,7 @@ mod tests {
     #[test]
     fn calc_dps_base_case() {
         let dps = calc_dps(0, 0, false, 0, 0);
-        assert_close(dps, 625.0);
+        assert_close(dps, 1250.0);
     }
 
     #[test]
@@ -563,8 +567,8 @@ mod tests {
     #[test]
     fn calc_dps_range_base_case() {
         let (lo, hi) = calc_dps_range(0, 0, false, 0, 0);
-        assert_close(lo, 500.0);
-        assert_close(hi, 750.0);
+        assert_close(lo, 1000.0);
+        assert_close(hi, 1500.0);
     }
 
     #[test]

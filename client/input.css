@@ -490,10 +490,18 @@
   overflow-y: hidden;
   scroll-behavior: smooth;
   pointer-events: none;
+  /* The scrollbar belongs to this box, and this box does not take pointer events, so a bar
+     drawn here could never be dragged. Hide it rather than show a dead control: the +N chip
+     and the wheel over a card are how the strip is paged. */
+  scrollbar-width: none;
   /* `overflow-x: auto` computes the other axis to `auto` too, which would clip the cards'
      drop shadow and their upward growth. Buy that room back without moving the strip. */
   padding-top: 16px;
   margin-top: -16px;
+}
+
+.war-stats-scroller::-webkit-scrollbar {
+  display: none;
 }
 
 .war-stats-card {

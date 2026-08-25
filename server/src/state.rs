@@ -111,6 +111,9 @@ pub enum PreSerializedEvent {
     /// connection as territory events but is not part of their sequence stream, so it
     /// must never influence client-side gap detection or live resync.
     WarController {
+        /// The payload's own `timestamp`, so a receiver can drop a frame older than what it
+        /// has already emitted - seeds, lag replays and live frames can otherwise interleave.
+        timestamp: i64,
         json: Arc<Bytes>,
     },
 }
@@ -262,6 +265,11 @@ pub struct CachedMapIntel {
 pub struct CachedWarController {
     pub state: WarControllerState,
     pub json: Arc<Bytes>,
+    /// When this server last saw the backend confirm this payload - not when the payload last
+    /// changed, so a quiet feed does not age out. Deliberately not
+    /// [`WarControllerState::timestamp`]: staleness has to be measured on a clock this process
+    /// controls, or a backend running fast would keep a dead cache looking fresh.
+    pub fetched_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

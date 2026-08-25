@@ -3,24 +3,25 @@
 //! expected to fall.
 //!
 //! The companion to [`crate::warcontroller::WarQueuePanel`], which lists the same feed's
-//! *queue* from the top left. This module reads the halves that panel ignores -
-//! `WarControllerState::wars` and `::players` - and is gated the same two ways: Sequoia members
-//! only, live mode only.
+//! *queue* from the top left. This module leads with the halves that panel ignores -
+//! `WarControllerState::wars` and `::players` - and joins the queue entries back in for each
+//! card's ETA and for the `ENTERED` territories that have no war row yet. Gated the two ways
+//! the panel is, Sequoia members only and live mode only, plus desktop only.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use leptos::prelude::*;
-use sequoia_shared::tower::format_stat;
-use sequoia_shared::{
-    ActiveWar, PlayerClass, QueueStatus, WarControllerState, WarPlayer, WarQueueEntry,
-};
 use crate::app::{
     CurrentMode, IsMobile, MapMode, ShowMinimap, SidebarOpen, SidebarWidth, WarControllerData,
     WarFeedVisible, WindowWidth,
 };
 use crate::icons::class_icon_url;
 use crate::warcontroller::{difficulty_color, format_eta};
+use leptos::prelude::*;
+use sequoia_shared::tower::format_stat;
+use sequoia_shared::{
+    ActiveWar, PlayerClass, QueueStatus, WarControllerState, WarPlayer, WarQueueEntry,
+};
 
 /// Members listed per card before the roster is summarized as "+N more".
 const MAX_MEMBERS: usize = 5;
@@ -119,6 +120,14 @@ pub(crate) fn build_war_boxes(state: &WarControllerState) -> Vec<WarBox> {
         )
         .collect();
 
+    // One card per territory: the strip keys its `<For>` on that name, and a duplicate key
+    // desyncs Leptos's diff into dropped or repeated cards - the old unkeyed render tolerated
+    // a repeat silently, this one would not. The feed should not repeat a territory in either
+    // collection (`index_queues` says as much about queue rows), so this only ever fires on a
+    // malformed payload. Done in feed order, so a live war wins over a queue row.
+    let mut seen: HashSet<String> = HashSet::new();
+    boxes.retain(|war| seen.insert(war.territory.clone()));
+
     boxes.sort_by(compare_boxes);
     boxes
 }
@@ -151,13 +160,10 @@ fn index_members(players: &[WarPlayer]) -> HashMap<&str, Vec<WarBoxMember>> {
         let Some(territory) = player.territory.as_deref() else {
             continue;
         };
-        index
-            .entry(territory)
-            .or_default()
-            .push(WarBoxMember {
-                username: player.username.clone(),
-                class: PlayerClass::from_api_class(&player.class),
-            });
+        index.entry(territory).or_default().push(WarBoxMember {
+            username: player.username.clone(),
+            class: PlayerClass::from_api_class(&player.class),
+        });
     }
     for bucket in index.values_mut() {
         bucket.sort_by_key(|member| member.username.to_lowercase());
@@ -309,7 +315,8 @@ fn strip_layout(available: f64, total: usize) -> StripLayout {
     }
 }
 
-/// Health bar colour, stepping through the same palette the queue panel uses for its stages.
+/// Health bar colour: the middle of the same ramp [`difficulty_color`] draws its squares from,
+/// so a draining tower reads green through amber to red without introducing a second palette.
 fn health_color(health: f32) -> &'static str {
     match health {
         value if value > 0.5 => COLOR_HEALTHY,
@@ -349,12 +356,7 @@ pub(crate) fn WarStatsStrip() -> impl IntoView {
         if !visible.get() {
             return Vec::new();
         }
-        warcontroller_state.with(|state| {
-            state
-                .as_ref()
-                .map(build_war_boxes)
-                .unwrap_or_default()
-        })
+        warcontroller_state.with(|state| state.as_ref().map(build_war_boxes).unwrap_or_default())
     });
     // ETAs are seconds remaining as of the moment the backend built the payload, so the
     // countdown is measured from that instant rather than from when a card was rendered.
@@ -388,19 +390,24 @@ pub(crate) fn WarStatsStrip() -> impl IntoView {
                 }
             >
                 <div
-                    class="war-stats-scroller scrollbar-thin-x"
+                    class="war-stats-scroller"
                     node_ref=scroller_ref
                     style:width=move || format!("{:.0}px", layout.get().scroller_width)
                 >
                     // Every card is rendered, not just the visible run: the hidden ones have
                     // to exist for the chip to be able to scroll to them.
-                    {move || {
-                        boxes
-                            .get()
-                            .into_iter()
-                            .map(|war| view! { <WarStatsCard war feed_timestamp /> })
-                            .collect_view()
-                    }}
+                    //
+                    // Keyed by territory, and deliberately so: rebuilding the list wholesale
+                    // replaced every card on each feed update, which collapsed `scrollWidth`
+                    // and snapped `scrollLeft` back to 0 - undoing the chip's paging every few
+                    // seconds. Cards read their own row out of `boxes` instead.
+                    <For
+                        each=move || boxes.get()
+                        key=|war| war.territory.clone()
+                        let:war
+                    >
+                        <WarStatsCard territory=war.territory boxes feed_timestamp />
+                    </For>
                 </div>
                 <Show when=move || has_hidden.get()>
                     <button
@@ -431,56 +438,95 @@ pub(crate) fn WarStatsStrip() -> impl IntoView {
 }
 
 #[component]
-fn WarStatsCard(war: WarBox, feed_timestamp: Memo<i64>) -> impl IntoView {
+fn WarStatsCard(
+    /// This card's identity, and the key `For` holds it by. Everything else is looked up
+    /// from `boxes` so the card updates in place.
+    territory: String,
+    boxes: Memo<Vec<WarBox>>,
+    feed_timestamp: Memo<i64>,
+) -> impl IntoView {
     // The shared 1-second clock, so the ETA keeps ticking down between feed updates. Read
     // only here, never in the box memo, or the whole strip would rebuild once a second.
     let tick: RwSignal<i64> = expect_context();
 
+    // Long names are ellipsized in the header, so the full one lives in the tooltip.
+    let full_name = territory.clone();
+    let label = territory.clone();
+
+    // This card's own row, re-derived rather than rebuilt. The card is keyed by territory, so
+    // its DOM node - and with it the scroller's position - survives a feed update; reading the
+    // row through a memo is what keeps the contents live anyway. `None` only while `For` is
+    // tearing the card down.
+    let war = Memo::new(move |_| {
+        boxes.with(|boxes| boxes.iter().find(|war| war.territory == territory).cloned())
+    });
+
     // The dot is the territory's difficulty, not its stage: a card only ever exists for a
     // war that has started or is about to, so stage carried almost no information here.
-    let dot_color = difficulty_color(&war.difficulty);
-    let territory = war.territory.clone();
-    // Long names are ellipsized in the header, so the full one lives in the tooltip; the view
-    // macro consumes the body first, hence the clone up here.
-    let full_name = war.territory.clone();
-    let eta = war.eta;
-    let health = war.health;
-    let ehp_label = format_figure(war.remaining_ehp());
-    let dps_label = format_figure(war.dps.map(|dps| dps as f64));
-    let members = war.members;
-    let extra_members = war.extra_members;
+    let dot_color = Memo::new(move |_| {
+        war.with(|war| {
+            war.as_ref()
+                .map(|war| difficulty_color(&war.difficulty))
+                .unwrap_or("#6f748f")
+        })
+    });
+    let eta = Memo::new(move |_| war.with(|war| war.as_ref().and_then(|war| war.eta)));
+    let health = Memo::new(move |_| war.with(|war| war.as_ref().and_then(|war| war.health)));
+    let ehp_label = Memo::new(move |_| {
+        format_figure(war.with(|war| war.as_ref().and_then(WarBox::remaining_ehp)))
+    });
+    let dps_label = Memo::new(move |_| {
+        format_figure(war.with(|war| war.as_ref().and_then(|war| war.dps).map(|dps| dps as f64)))
+    });
+    let members = Memo::new(move |_| {
+        war.with(|war| {
+            war.as_ref()
+                .map(|war| war.members.clone())
+                .unwrap_or_default()
+        })
+    });
+    let extra_members =
+        Memo::new(move |_| war.with(|war| war.as_ref().map(|war| war.extra_members).unwrap_or(0)));
 
     view! {
         <div class="war-stats-card">
             <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;">
-                <span style=format!(
-                    "flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: {dot_color};",
-                ) />
+                <span style=move || {
+                    format!(
+                        "flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: {};",
+                        dot_color.get(),
+                    )
+                } />
                 <span
                     title=full_name
                     style="flex: 1; min-width: 0; font-family: var(--font-display); font-size: 0.74rem; color: #d8d5cb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                 >
-                    {territory}
+                    {label}
                 </span>
                 <span style="flex-shrink: 0; font-family: var(--font-mono); font-size: 0.72rem; color: #6f748f; font-variant-numeric: tabular-nums;">
-                    {move || format_eta(eta, feed_timestamp.get(), tick.get())}
+                    {move || format_eta(eta.get(), feed_timestamp.get(), tick.get())}
                 </span>
             </div>
 
-            {members
-                .into_iter()
-                .map(|member| view! { <WarStatsMember member /> })
-                .collect_view()}
-            {(extra_members > 0)
-                .then(|| {
-                    view! {
-                        <div style="font-family: var(--font-mono); font-size: 0.68rem; color: #6f748f; padding-left: 20px;">
-                            {format!("+{extra_members} more")}
-                        </div>
-                    }
-                })}
+            {move || {
+                members
+                    .get()
+                    .into_iter()
+                    .map(|member| view! { <WarStatsMember member /> })
+                    .collect_view()
+            }}
+            {move || {
+                (extra_members.get() > 0)
+                    .then(|| {
+                        view! {
+                            <div style="font-family: var(--font-mono); font-size: 0.68rem; color: #6f748f; padding-left: 20px;">
+                                {format!("+{} more", extra_members.get())}
+                            </div>
+                        }
+                    })
+            }}
 
-            {match health {
+            {move || match health.get() {
                 // A war with null ehp/dps still has a health fraction to draw, so the footer
                 // is gated on health rather than on the figures being present.
                 Some(health) => {
@@ -491,13 +537,13 @@ fn WarStatsCard(war: WarBox, feed_timestamp: Memo<i64>) -> impl IntoView {
                                     <span style="color: #6f748f; font-size: 0.62rem; letter-spacing: 0.06em;">
                                         "EHP LEFT "
                                     </span>
-                                    {ehp_label}
+                                    {move || ehp_label.get()}
                                 </span>
                                 <span>
                                     <span style="color: #6f748f; font-size: 0.62rem; letter-spacing: 0.06em;">
                                         "TOWER DPS "
                                     </span>
-                                    {dps_label}
+                                    {move || dps_label.get()}
                                 </span>
                             </div>
                             <div class="war-stats-bar">
@@ -608,6 +654,23 @@ mod tests {
         boxes.iter().map(|b| b.territory.as_str()).collect()
     }
 
+    #[test]
+    fn a_territory_repeated_in_the_feed_yields_one_box() {
+        // The strip keys its `<For>` on the territory name, so a duplicate key would desync
+        // Leptos's diff. The live war row wins over the stale repeat and over a queue row.
+        let boxes = build_war_boxes(&state(
+            vec![queue("Ragni", "ENTERED", 1_000)],
+            vec![
+                war("Ragni", 0.5, Some(1_000), Some(500)),
+                war("Ragni", 1.0, Some(9_999), Some(9_999)),
+            ],
+            Vec::new(),
+        ));
+
+        assert_eq!(names(&boxes), vec!["Ragni"]);
+        assert_eq!(boxes[0].health, Some(0.5));
+    }
+
     // --- ordering ---
 
     #[test]
@@ -698,7 +761,11 @@ mod tests {
     #[test]
     fn remaining_ehp_is_absent_without_a_total_ehp() {
         // The feed really does send null ehp/dps on a live war.
-        let boxes = build_war_boxes(&state(vec![], vec![war("Overtaken Outpost", 1.0, None, None)], vec![]));
+        let boxes = build_war_boxes(&state(
+            vec![],
+            vec![war("Overtaken Outpost", 1.0, None, None)],
+            vec![],
+        ));
 
         assert_eq!(boxes[0].remaining_ehp(), None);
         // ...but the bar still has a health fraction to draw.
@@ -720,7 +787,11 @@ mod tests {
 
     #[test]
     fn entered_only_boxes_have_no_tower_stats() {
-        let boxes = build_war_boxes(&state(vec![queue("Waiting", "ENTERED", 900)], vec![], vec![]));
+        let boxes = build_war_boxes(&state(
+            vec![queue("Waiting", "ENTERED", 900)],
+            vec![],
+            vec![],
+        ));
 
         assert!(boxes[0].is_awaiting_start());
         assert_eq!(boxes[0].remaining_ehp(), None);
@@ -782,8 +853,16 @@ mod tests {
         let mut backward = forward.clone();
         backward.reverse();
 
-        let a = build_war_boxes(&state(vec![], vec![war("T", 1.0, Some(1), Some(1))], forward));
-        let b = build_war_boxes(&state(vec![], vec![war("T", 1.0, Some(1), Some(1))], backward));
+        let a = build_war_boxes(&state(
+            vec![],
+            vec![war("T", 1.0, Some(1), Some(1))],
+            forward,
+        ));
+        let b = build_war_boxes(&state(
+            vec![],
+            vec![war("T", 1.0, Some(1), Some(1))],
+            backward,
+        ));
 
         let usernames: Vec<&str> = a[0].members.iter().map(|m| m.username.as_str()).collect();
         assert_eq!(usernames, vec!["Alpha", "bravo", "charlie", "delta"]);
@@ -819,7 +898,11 @@ mod tests {
 
     #[test]
     fn entered_entries_without_a_war_row_get_their_own_box() {
-        let boxes = build_war_boxes(&state(vec![queue("Waiting", "ENTERED", 900)], vec![], vec![]));
+        let boxes = build_war_boxes(&state(
+            vec![queue("Waiting", "ENTERED", 900)],
+            vec![],
+            vec![],
+        ));
 
         assert_eq!(names(&boxes), vec!["Waiting"]);
     }
@@ -861,14 +944,22 @@ mod tests {
 
     #[test]
     fn a_war_without_a_queue_entry_has_no_eta() {
-        let boxes = build_war_boxes(&state(vec![], vec![war("Orphan", 1.0, Some(1), Some(1))], vec![]));
+        let boxes = build_war_boxes(&state(
+            vec![],
+            vec![war("Orphan", 1.0, Some(1), Some(1))],
+            vec![],
+        ));
 
         assert_eq!(boxes[0].eta, None);
     }
 
     #[test]
     fn entered_only_boxes_have_no_eta() {
-        let boxes = build_war_boxes(&state(vec![queue("Waiting", "ENTERED", 1_180)], vec![], vec![]));
+        let boxes = build_war_boxes(&state(
+            vec![queue("Waiting", "ENTERED", 1_180)],
+            vec![],
+            vec![],
+        ));
 
         assert_eq!(boxes[0].eta, None);
     }
@@ -929,7 +1020,10 @@ mod tests {
         for total in 1..12 {
             let layout = strip_layout(700.0, total);
             let pitch = BOX_WIDTH + BOX_GAP;
-            assert_eq!(layout.scroller_width, layout.visible as f64 * pitch - BOX_GAP);
+            assert_eq!(
+                layout.scroller_width,
+                layout.visible as f64 * pitch - BOX_GAP
+            );
         }
     }
 

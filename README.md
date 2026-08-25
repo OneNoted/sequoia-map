@@ -237,8 +237,10 @@ Notes:
 | `RUST_LOG` | Tracing filter directive | `info` |
 | `TERRITORY_POLL_INTERVAL_SECS` | How often the server polls the upstream territory API | `10` |
 | `WARCONTROLLER_POLL_INTERVAL_SECS` | How often the server polls the Sequoia backend war controller feed | `5` |
+| `WARCONTROLLER_MAX_STALENESS_SECS` | How long a cached war controller payload stays servable after the backend stops responding; past it the cache is dropped and clients are told there are no known wars. `0` disables expiry | `60` |
 | `WYNNCRAFT_TERRITORY_URL` | Upstream territory source | `https://api.wynncraft.com/v3/guild/list/territory` |
 | `SEQUOIA_BACKEND_BASE_URL` | Sequoia backend base URL; unset disables the war controller poller | *(empty)* |
+| `SEQUOIA_BACKEND_PUBLIC_BASE_URL` | Backend origin as the browser reaches it, for sign-in redirects; only needed for split deploys | *(falls back to `SEQUOIA_BACKEND_BASE_URL`)* |
 | `SEQUOIA_BACKEND_WARCONTROLLER_PATH` | Path appended to the backend base URL for the war controller feed. The backend mounts internal endpoints at `/internal/*`, `/api/*`, and `/public/*`, enforcing the bearer token only on `/internal/*`. | `/internal/warcontroller` |
 | `SEQUOIA_BACKEND_INTERNAL_TOKEN` | Bearer token sent to the Sequoia backend (>=24 chars; placeholders rejected) | *(empty)* |
 | `DB_MAX_CONNECTIONS` | SQLx PostgreSQL pool max connections | `10` |

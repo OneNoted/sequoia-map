@@ -531,7 +531,17 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
             return;
         };
         match serde_json::from_str::<WarControllerState>(&data) {
-            Ok(state) => warcontroller_state.set(Some(state)),
+            // Seeds, lag replays and live frames all arrive here and can interleave, so an
+            // older payload must never overwrite a newer one.
+            // `maybe_update` so a dropped frame does not notify: the feed re-broadcasts often
+            // enough that a needless wake would ripple through every war memo.
+            Ok(state) => warcontroller_state.maybe_update(|current| {
+                if !state.supersedes(current.as_ref()) {
+                    return false;
+                }
+                *current = Some(state);
+                true
+            }),
             Err(error) => {
                 web_sys::console::warn_1(
                     &format!("war controller event decode failed: {error}").into(),

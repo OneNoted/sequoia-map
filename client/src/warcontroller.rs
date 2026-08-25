@@ -335,9 +335,12 @@ fn row_title(territory: &str, difficulty: &str) -> String {
 
 /// Buckets the feed's queue entries into the three stages, oldest first within each.
 ///
-/// Oldest first is the useful order both ways round: it is the order queued territories
-/// will start in, and it puts the longest-running war at the top. Entries whose status the
-/// backend has since renamed are dropped rather than guessed at.
+/// `timestamp` means two different things - see [`WarQueueEntry::timestamp`] - and oldest
+/// first is the useful order under both. For `QUEUED` and `ENTERED` it is the instant the
+/// entry reached that stage, so the section lists territories in the order they will start;
+/// for `STARTED` it is the expected win instant, so that section leads with the war expected
+/// to finish soonest. Entries whose status the backend has since renamed are dropped rather
+/// than guessed at.
 fn grouped_queue(queues: &[WarQueueEntry]) -> Vec<(QueueStatus, Vec<WarQueueEntry>)> {
     SECTIONS
         .iter()
@@ -356,11 +359,13 @@ fn grouped_queue(queues: &[WarQueueEntry]) -> Vec<(QueueStatus, Vec<WarQueueEntr
         .collect()
 }
 
-/// The ETA column: time remaining until the war is expected to be won, counting down for
-/// every stage, and a placeholder while the backend withholds the ETA.
+/// The ETA column: time remaining until the war is expected to be won, and an em-dash for the
+/// rows that have none.
 ///
-/// The backend's ETA is seconds remaining as of `feed_timestamp`, so the elapsed time since
-/// that snapshot is subtracted to keep the column ticking between polls.
+/// In practice only `STARTED` rows tick - nothing in the feed predicts when a war that has not
+/// begun will be won, so [`WarQueueEntry::eta_secs`] gives the other stages no ETA at all.
+/// The ETA is seconds remaining as of `feed_timestamp`, so the elapsed time since that
+/// snapshot is subtracted to keep the column moving between polls.
 pub(crate) fn format_eta(eta: Option<i64>, feed_timestamp: i64, now: i64) -> String {
     let Some(eta) = eta.filter(|seconds| *seconds >= 0) else {
         return "\u{2014}".to_string();

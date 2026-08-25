@@ -24,6 +24,12 @@ pub const ATHENA_REFRESH_SECS: u64 = 600; // 10 minutes
 
 pub const DEFAULT_POLL_INTERVAL_SECS: u64 = 10;
 pub const DEFAULT_WARCONTROLLER_POLL_INTERVAL_SECS: u64 = 5;
+/// How long the last war controller payload stays servable once the backend stops answering.
+///
+/// Long enough to ride out a redeploy or a blip - the panel must not flicker on every failed
+/// poll - but bounded, because a war that ended during an outage would otherwise stay
+/// highlighted forever with its ETA pinned at zero.
+pub const DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS: u64 = 60;
 /// The Sequoia backend mounts each internal endpoint at three aliases —
 /// `/internal/<x>`, `/api/<x>`, and `/public/<x>` — and enforces the bearer token only on
 /// the `/internal/` prefix. Default to that prefix so the configured token is actually used.
@@ -147,6 +153,19 @@ pub fn warcontroller_poll_interval() -> Duration {
         .filter(|value| *value > 0)
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_WARCONTROLLER_POLL_INTERVAL_SECS))
+}
+
+/// How stale a cached war controller payload may get before the poller drops it.
+///
+/// `None` when `WARCONTROLLER_MAX_STALENESS_SECS` is `0`, which disables expiry and keeps the
+/// last payload indefinitely. An unparseable value falls back to the default rather than
+/// disabling expiry, so a typo cannot silently pin a dead war on every client's map.
+pub fn warcontroller_max_staleness() -> Option<Duration> {
+    let secs = std::env::var("WARCONTROLLER_MAX_STALENESS_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS);
+    (secs > 0).then(|| Duration::from_secs(secs))
 }
 
 /// Upstream territory source. Overridable so local dev can target a different endpoint.
@@ -290,10 +309,17 @@ pub fn sequoia_backend_public_base_url() -> Option<String> {
         .or_else(sequoia_backend_base_url)
 }
 
+/// The bearer token the poller presents to the backend's internal API.
+///
+/// Both spellings are read because deployments disagree on the case. The uppercase value is
+/// filtered for emptiness *before* the fallback: compose renders `${VAR:-}` as an empty string
+/// rather than leaving the variable unset, so a bare `.or_else` on `env::var` would see
+/// `Ok("")`, never consult the lowercase name, and leave the poller unauthenticated.
 pub fn sequoia_backend_internal_token() -> Option<String> {
     std::env::var("SEQUOIA_BACKEND_INTERNAL_TOKEN")
-        .or_else(|_| std::env::var("sequoia_backend_internal_token"))
         .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("sequoia_backend_internal_token").ok())
         .and_then(|value| sanitize_internal_api_token(&value))
 }
 
@@ -552,8 +578,93 @@ mod tests {
     }
 
     #[test]
+    fn internal_token_falls_back_to_the_lowercase_name_when_the_uppercase_one_is_empty() {
+        // Compose renders `${VAR:-}` as an empty string rather than leaving the variable
+        // unset, so the uppercase name is always present in a container.
+        temp_env::with_vars(
+            [
+                ("SEQUOIA_BACKEND_INTERNAL_TOKEN", Some("   ")),
+                (
+                    "sequoia_backend_internal_token",
+                    Some("this-is-a-long-internal-api-token"),
+                ),
+            ],
+            || {
+                assert_eq!(
+                    super::sequoia_backend_internal_token(),
+                    Some("this-is-a-long-internal-api-token".to_string())
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn internal_token_prefers_the_uppercase_name_when_it_carries_a_value() {
+        temp_env::with_vars(
+            [
+                (
+                    "SEQUOIA_BACKEND_INTERNAL_TOKEN",
+                    Some("uppercase-internal-api-token-value"),
+                ),
+                (
+                    "sequoia_backend_internal_token",
+                    Some("lowercase-internal-api-token-value"),
+                ),
+            ],
+            || {
+                assert_eq!(
+                    super::sequoia_backend_internal_token(),
+                    Some("uppercase-internal-api-token-value".to_string())
+                );
+            },
+        );
+    }
+
+    #[test]
     fn default_api_body_limit_matches_ingest_forwarder_default_size() {
         assert_eq!(DEFAULT_API_BODY_LIMIT_BYTES, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn warcontroller_max_staleness_defaults_to_a_minute() {
+        temp_env::with_var_unset("WARCONTROLLER_MAX_STALENESS_SECS", || {
+            assert_eq!(
+                super::warcontroller_max_staleness(),
+                Some(std::time::Duration::from_secs(
+                    super::DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS
+                ))
+            );
+        });
+    }
+
+    #[test]
+    fn warcontroller_max_staleness_honours_an_override() {
+        temp_env::with_var("WARCONTROLLER_MAX_STALENESS_SECS", Some(" 300 "), || {
+            assert_eq!(
+                super::warcontroller_max_staleness(),
+                Some(std::time::Duration::from_secs(300))
+            );
+        });
+    }
+
+    #[test]
+    fn warcontroller_max_staleness_zero_disables_expiry() {
+        temp_env::with_var("WARCONTROLLER_MAX_STALENESS_SECS", Some("0"), || {
+            assert_eq!(super::warcontroller_max_staleness(), None);
+        });
+    }
+
+    #[test]
+    fn an_unparseable_max_staleness_falls_back_to_the_default_rather_than_never() {
+        // A typo must not pin a war that ended during an outage on every client's map.
+        temp_env::with_var("WARCONTROLLER_MAX_STALENESS_SECS", Some("forever"), || {
+            assert_eq!(
+                super::warcontroller_max_staleness(),
+                Some(std::time::Duration::from_secs(
+                    super::DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS
+                ))
+            );
+        });
     }
 
     #[test]

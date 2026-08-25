@@ -56,6 +56,40 @@ pub fn viewer_is_guild_member(viewer: Option<&Viewer>) -> bool {
     viewer.is_some_and(Viewer::is_guild_member)
 }
 
+/// The outcome of a session probe, keeping "nobody is signed in" apart from "the backend
+/// could not tell us".
+///
+/// Collapsing the two is what made a backend restart look like a sign-out: the war feed
+/// fails closed, so a three-second blip used to strip a member's panel for the life of the
+/// page. Callers must decide for themselves whether an unanswerable probe is fatal.
+#[derive(Debug, Clone)]
+pub enum ViewerProbe {
+    /// A verified identity. Still not necessarily a Sequoia member - check with
+    /// [`viewer_is_guild_member`].
+    Viewer(Viewer),
+    /// No session, or one the backend refused. An authoritative answer.
+    Anonymous,
+    /// The backend did not answer: timeout, transport error, 5xx, or a body that could not
+    /// be read. Says nothing about the viewer. An *unconfigured* backend is deliberately not
+    /// in this list - see [`fetch_viewer`].
+    Unavailable,
+}
+
+impl ViewerProbe {
+    /// The identity, if the probe produced one. `None` covers both `Anonymous` and
+    /// `Unavailable`, so never use this alone to deny access to member-only data.
+    pub fn viewer(&self) -> Option<&Viewer> {
+        match self {
+            Self::Viewer(viewer) => Some(viewer),
+            Self::Anonymous | Self::Unavailable => None,
+        }
+    }
+
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ReturnToQuery {
     return_to: Option<String>,
@@ -63,20 +97,26 @@ pub struct ReturnToQuery {
 
 /// Resolves the `seq_session` cookie to a verified identity, or null.
 ///
-/// Never fails: an unset backend URL, a timeout, a non-2xx, or an unparseable
-/// body all render the viewer as signed out. The map is fully usable that way.
+/// Answers `503` when the backend could not be reached at all, rather than reporting a
+/// signed-out viewer: the client retries a 5xx and keeps whatever session it already holds,
+/// which is what stops a backend restart from blanking a member's war feed.
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let viewer = resolve_viewer(&state, &headers).await;
-    session_json(serde_json::json!({ "viewer": viewer }))
+    match resolve_viewer(&state, &headers).await {
+        ViewerProbe::Unavailable => session_unavailable(),
+        probe => session_json(serde_json::json!({ "viewer": probe.viewer() })),
+    }
 }
 
-/// Resolves the request's `seq_session` cookie to a verified identity, or `None`.
+/// Resolves the request's `seq_session` cookie to a [`ViewerProbe`].
 ///
 /// The single entry point for "who is asking" - route handlers must not re-read the
 /// cookie themselves. Costs one backend round trip (capped at [`ME_TIMEOUT`]), so call it
 /// off the critical path of anything that has to render immediately.
-pub async fn resolve_viewer(state: &AppState, headers: &HeaderMap) -> Option<Viewer> {
-    let token = session_cookie(headers)?;
+pub async fn resolve_viewer(state: &AppState, headers: &HeaderMap) -> ViewerProbe {
+    // No cookie is an answer in itself, and needs no round trip.
+    let Some(token) = session_cookie(headers) else {
+        return ViewerProbe::Anonymous;
+    };
     fetch_viewer(state, token).await
 }
 
@@ -90,8 +130,15 @@ pub async fn logout(Query(query): Query<ReturnToQuery>) -> Response {
     redirect_to_auth("logout", query.return_to.as_deref())
 }
 
-async fn fetch_viewer(state: &AppState, token: &str) -> Option<Viewer> {
-    let base_url = config::sequoia_backend_base_url()?;
+async fn fetch_viewer(state: &AppState, token: &str) -> ViewerProbe {
+    // Without a configured backend there is nothing that could ever answer. `Unavailable` is
+    // the honest label, but it is the wrong *answer*: it asks every caller to retry a
+    // condition that cannot change without a restart, and the client retries any 5xx forever.
+    // A deployment with no backend has no sessions either, so treat the cookie as unusable
+    // and say so authoritatively. Retries stay reserved for genuine blips below.
+    let Some(base_url) = config::sequoia_backend_base_url() else {
+        return ViewerProbe::Anonymous;
+    };
     let response = state
         .http_client
         .get(format!("{base_url}/auth/web/me"))
@@ -104,25 +151,41 @@ async fn fetch_viewer(state: &AppState, token: &str) -> Option<Viewer> {
         Ok(response) => response,
         Err(error) => {
             warn!("website session probe failed: {error}");
-            return None;
+            return ViewerProbe::Unavailable;
         }
     };
-    if !response.status().is_success() {
-        return None;
+    let status = response.status();
+    if !status.is_success() {
+        return probe_for_error_status(status);
     }
 
     match response.json::<Viewer>().await {
-        // The backend can only answer for a session it linked to a player, but
-        // a blank id would still deserialize - treat it as no session.
-        Ok(viewer) if !viewer.discord_id.is_empty() && !viewer.minecraft_uuid.is_empty() => {
-            Some(viewer)
-        }
-        Ok(_) => None,
+        Ok(viewer) => probe_for_body(viewer),
         Err(error) => {
+            // A truncated or unreadable body is a failed exchange, not a verdict.
             warn!("website session probe returned an unreadable body: {error}");
-            None
+            ViewerProbe::Unavailable
         }
     }
+}
+
+/// Reads a non-2xx answer. A 4xx is the backend's verdict on this token; a 5xx is the
+/// backend having a bad moment and says nothing at all about the viewer.
+fn probe_for_error_status(status: StatusCode) -> ViewerProbe {
+    if status.is_server_error() {
+        warn!("website session probe returned {status}");
+        return ViewerProbe::Unavailable;
+    }
+    ViewerProbe::Anonymous
+}
+
+/// Reads a 2xx body. The backend can only answer for a session it linked to a player, but a
+/// blank id would still deserialize - treat that as no session.
+fn probe_for_body(viewer: Viewer) -> ViewerProbe {
+    if viewer.discord_id.is_empty() || viewer.minecraft_uuid.is_empty() {
+        return ViewerProbe::Anonymous;
+    }
+    ViewerProbe::Viewer(viewer)
 }
 
 fn redirect_to_auth(action: &str, return_to: Option<&str>) -> Response {
@@ -159,6 +222,20 @@ fn session_json(body: serde_json::Value) -> Response {
             (header::VARY, "Cookie"),
         ],
         axum::Json(body),
+    )
+        .into_response()
+}
+
+/// The answer when the backend could not be asked. Carries the same no-store headers as a
+/// real session response, so nothing caches a transient failure against this viewer.
+fn session_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [
+            (header::CACHE_CONTROL, "private, no-store"),
+            (header::VARY, "Cookie"),
+        ],
+        axum::Json(serde_json::json!({ "error": "session probe unavailable" })),
     )
         .into_response()
 }
@@ -262,6 +339,59 @@ mod tests {
     #[test]
     fn a_signed_out_visitor_is_not_a_member() {
         assert!(!viewer_is_guild_member(None));
+    }
+
+    #[test]
+    fn a_4xx_is_a_verdict_and_a_5xx_is_not() {
+        assert!(matches!(
+            probe_for_error_status(StatusCode::UNAUTHORIZED),
+            ViewerProbe::Anonymous
+        ));
+        assert!(matches!(
+            probe_for_error_status(StatusCode::FORBIDDEN),
+            ViewerProbe::Anonymous
+        ));
+        // The restart case: the backend is up but unwell, which says nothing about the
+        // session. Reading it as "signed out" is what used to mute a member's war feed.
+        assert!(
+            probe_for_error_status(StatusCode::BAD_GATEWAY).is_unavailable(),
+            "a 5xx must stay retryable"
+        );
+        assert!(probe_for_error_status(StatusCode::SERVICE_UNAVAILABLE).is_unavailable());
+    }
+
+    #[test]
+    fn a_body_without_a_linked_account_is_a_signed_out_answer() {
+        let mut blank = viewer_with(Some("chief"), false);
+        blank.minecraft_uuid = String::new();
+        assert!(matches!(probe_for_body(blank), ViewerProbe::Anonymous));
+
+        let mut blank = viewer_with(Some("chief"), false);
+        blank.discord_id = String::new();
+        assert!(matches!(probe_for_body(blank), ViewerProbe::Anonymous));
+
+        assert!(matches!(
+            probe_for_body(viewer_with(Some("chief"), false)),
+            ViewerProbe::Viewer(_)
+        ));
+    }
+
+    #[test]
+    fn only_a_resolved_member_passes_the_gate() {
+        // `viewer()` is `None` for both of the non-identity outcomes, so the gate denies
+        // them - the difference between the two is for the caller's retry policy, not this.
+        assert!(viewer_is_guild_member(
+            ViewerProbe::Viewer(viewer_with(Some("chief"), false)).viewer()
+        ));
+        assert!(!viewer_is_guild_member(
+            ViewerProbe::Viewer(viewer_with(None, false)).viewer()
+        ));
+        assert!(!viewer_is_guild_member(ViewerProbe::Anonymous.viewer()));
+        assert!(!viewer_is_guild_member(ViewerProbe::Unavailable.viewer()));
+
+        assert!(!ViewerProbe::Anonymous.is_unavailable());
+        assert!(!ViewerProbe::Viewer(viewer_with(Some("chief"), false)).is_unavailable());
+        assert!(ViewerProbe::Unavailable.is_unavailable());
     }
 
     #[test]

@@ -3,8 +3,9 @@
 //! There is no login form here. `sequoia-backend` owns the account (Discord
 //! OAuth linked to a Minecraft UUID) and issues the `seq_session` cookie for
 //! `.seqwawa.com`; the map server exchanges that HttpOnly cookie for an
-//! identity on `/api/auth/me`. This module is display-only - nothing on the
-//! map is gated on the viewer.
+//! identity on `/api/auth/me`. The server is the real gate on everything
+//! member-only; what the viewer decides here is what the map bothers to
+//! render - the account chip, and the war feed's presence.
 
 use serde::Deserialize;
 
@@ -51,19 +52,30 @@ struct MeResponse {
     viewer: Option<Viewer>,
 }
 
-/// Resolves the current website session, or `None` when signed out.
+/// Resolves the current website session: `Ok(None)` when signed out, `Err` when the answer
+/// could not be obtained.
 ///
-/// Any failure - offline, backend down, unparseable body - reads as signed out.
-/// The map is fully usable either way, so there is nothing to retry.
-pub async fn fetch_viewer() -> Option<Viewer> {
+/// The two are kept apart because they call for opposite handling. A signed-out answer is
+/// final. A failure - offline, server restarting, unreadable body - is not, and collapsing it
+/// into "signed out" would hide the war feed from a member until they reloaded the page, so
+/// the caller retries instead.
+pub async fn fetch_viewer() -> Result<Option<Viewer>, String> {
     let response = gloo_net::http::Request::get("/api/auth/me")
         .send()
         .await
-        .ok()?;
-    if !response.ok() {
-        return None;
+        .map_err(|error| format!("request failed: {error}"))?;
+    // 4xx is an authoritative "not signed in"; 5xx is the server having a bad moment.
+    if response.status() >= 500 {
+        return Err(format!("status {}", response.status()));
     }
-    response.json::<MeResponse>().await.ok()?.viewer
+    if !response.ok() {
+        return Ok(None);
+    }
+    response
+        .json::<MeResponse>()
+        .await
+        .map(|body| body.viewer)
+        .map_err(|error| format!("decode failed: {error}"))
 }
 
 /// Starts sign-in and returns the browser to `return_to` (an absolute map URL).

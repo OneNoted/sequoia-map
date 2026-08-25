@@ -189,8 +189,13 @@ pub async fn get_warcontroller(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let viewer = super::auth::resolve_viewer(&state, &headers).await;
-    if !super::auth::viewer_is_guild_member(viewer.as_ref()) {
+    let probe = super::auth::resolve_viewer(&state, &headers).await;
+    // A probe that never got an answer must not read to the client as "you are not a
+    // member": 503 is retryable, 403 would have the map hide the feed for good.
+    if probe.is_unavailable() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    if !super::auth::viewer_is_guild_member(probe.viewer()) {
         return StatusCode::FORBIDDEN.into_response();
     }
 
@@ -1124,6 +1129,7 @@ mod tests {
         *state.warcontroller_cache.write().await = Some(crate::state::CachedWarController {
             state: parsed,
             json: Arc::new(Bytes::from(payload.as_bytes().to_vec())),
+            fetched_at: chrono::Utc::now(),
         });
 
         // No `seq_session` cookie, so the viewer cannot be a Sequoia member. Internal war
@@ -1144,6 +1150,122 @@ mod tests {
         let _ = server_handle.await;
     }
 
+    #[test]
+    fn an_unconfigured_backend_is_a_verdict_but_an_unreachable_one_is_not() {
+        // Two conditions that used to look identical. Both halves share one test, and one
+        // runtime, because they disagree about `SEQUOIA_BACKEND_BASE_URL` - running them
+        // concurrently would have each see the other's environment.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build test runtime");
+
+        // No backend configured at all: nothing could ever resolve this cookie, and no
+        // amount of retrying will change that. Answering 503 asked the client to retry a
+        // permanent condition forever, so this is an authoritative "signed out" instead -
+        // and the war feed is refused on that basis, not held open.
+        temp_env::with_var_unset("SEQUOIA_BACKEND_BASE_URL", || {
+            runtime.block_on(async {
+                let state = AppState::new(None);
+                let (addr, server_handle) = spawn_test_server(state).await;
+                let client = reqwest::Client::new();
+
+                let response = client
+                    .get(format!("http://{addr}/api/warcontroller"))
+                    .header(reqwest::header::COOKIE, "seq_session=some.jwt.value")
+                    .send()
+                    .await
+                    .expect("warcontroller request");
+                assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+
+                let response = client
+                    .get(format!("http://{addr}/api/auth/me"))
+                    .header(reqwest::header::COOKIE, "seq_session=some.jwt.value")
+                    .send()
+                    .await
+                    .expect("me request");
+                assert_eq!(response.status(), reqwest::StatusCode::OK);
+                assert_eq!(
+                    response
+                        .json::<serde_json::Value>()
+                        .await
+                        .expect("me body parses"),
+                    serde_json::json!({ "viewer": null })
+                );
+
+                server_handle.abort();
+                let _ = server_handle.await;
+            });
+        });
+
+        // A backend that is configured but cannot be reached - a redeploy, a blip. That is
+        // not a verdict on the viewer, so the map must not answer 403: the client reads that
+        // as "not a member" and hides the feed until a reload, while a 503 it simply retries.
+        let dead_backend = runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind dead backend port");
+            listener.local_addr().expect("dead backend address")
+            // Dropped here, so connecting is refused rather than merely slow.
+        });
+        temp_env::with_var(
+            "SEQUOIA_BACKEND_BASE_URL",
+            Some(format!("http://{dead_backend}")),
+            || {
+                runtime.block_on(async {
+                    let state = AppState::new(None);
+                    let (addr, server_handle) = spawn_test_server(state).await;
+                    let client = reqwest::Client::new();
+
+                    let response = client
+                        .get(format!("http://{addr}/api/warcontroller"))
+                        .header(reqwest::header::COOKIE, "seq_session=some.jwt.value")
+                        .send()
+                        .await
+                        .expect("warcontroller request");
+                    assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+
+                    let response = client
+                        .get(format!("http://{addr}/api/auth/me"))
+                        .header(reqwest::header::COOKIE, "seq_session=some.jwt.value")
+                        .send()
+                        .await
+                        .expect("me request");
+                    assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+                    // Never cached, or the next viewer would be handed this failure.
+                    assert_eq!(
+                        response
+                            .headers()
+                            .get(reqwest::header::CACHE_CONTROL)
+                            .and_then(|value| value.to_str().ok()),
+                        Some("private, no-store")
+                    );
+
+                    server_handle.abort();
+                    let _ = server_handle.await;
+                });
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn me_reports_a_signed_out_viewer_when_no_cookie_is_present() {
+        // No cookie needs no round trip and is an answer in itself, so this stays a 200 with
+        // a null viewer even with no backend configured.
+        let state = AppState::new(None);
+        let (addr, server_handle) = spawn_test_server(state.clone()).await;
+
+        let response = reqwest::get(format!("http://{addr}/api/auth/me"))
+            .await
+            .expect("me request");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = response.text().await.expect("me body");
+        assert_eq!(body, r#"{"viewer":null}"#);
+
+        server_handle.abort();
+        let _ = server_handle.await;
+    }
+
     #[tokio::test]
     async fn sse_stream_withholds_warcontroller_from_a_viewer_outside_sequoia() {
         let state = AppState::new(None);
@@ -1151,6 +1273,7 @@ mod tests {
         *state.warcontroller_cache.write().await = Some(crate::state::CachedWarController {
             state: serde_json::from_str(payload).expect("payload parses"),
             json: Arc::new(Bytes::from(payload.as_bytes().to_vec())),
+            fetched_at: chrono::Utc::now(),
         });
         {
             let mut snapshot = state.live_snapshot.write().await;
