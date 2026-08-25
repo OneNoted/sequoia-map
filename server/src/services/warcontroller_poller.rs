@@ -95,9 +95,11 @@ async fn poll_once(
     });
 
     // A send error only means nobody is subscribed right now.
-    let _ = state
-        .event_tx
-        .send(PreSerializedEvent::WarController { timestamp, json });
+    let _ = state.event_tx.send(PreSerializedEvent::WarController {
+        timestamp,
+        clears: false,
+        json,
+    });
     true
 }
 
@@ -156,6 +158,9 @@ async fn expire_stale_cache(
     *state.warcontroller_cache.write().await = None;
     let _ = state.event_tx.send(PreSerializedEvent::WarController {
         timestamp: empty.timestamp,
+        // Stamped on our clock, not the backend's: receivers must not order it against the
+        // backend-stamped frame it is dropping.
+        clears: true,
         json,
     });
     true
@@ -287,9 +292,14 @@ mod tests {
         }
 
         match rx.try_recv() {
-            Ok(PreSerializedEvent::WarController { json, .. }) => {
+            Ok(PreSerializedEvent::WarController { clears, json, .. }) => {
                 let raw = std::str::from_utf8(json.as_ref()).expect("payload is utf-8");
                 assert!(raw.contains("Entrance to Olux"));
+                assert!(
+                    !clears,
+                    "a polled frame carries the backend's clock and stays under the \
+                     receiver's monotonic guard"
+                );
             }
             other => panic!("expected a WarController broadcast, got {other:?}"),
         }
@@ -393,10 +403,19 @@ mod tests {
             "a war that ended during the outage must not stay cached"
         );
         match rx.try_recv() {
-            Ok(PreSerializedEvent::WarController { timestamp, json }) => {
+            Ok(PreSerializedEvent::WarController {
+                timestamp,
+                clears,
+                json,
+            }) => {
                 let cleared: WarControllerState =
                     serde_json::from_slice(json.as_ref()).expect("cleared payload parses");
                 assert!(cleared.wars.is_empty() && cleared.queues.is_empty());
+                assert!(
+                    clears,
+                    "the drop is stamped on our clock, so receivers must not order it \
+                     against the backend-stamped frame it replaces"
+                );
                 // Stamped now, so it wins the client's monotonic check against the state it
                 // is clearing.
                 assert_eq!(timestamp, cleared.timestamp);

@@ -171,8 +171,16 @@ async fn fetch_viewer(state: &AppState, token: &str) -> ViewerProbe {
 
 /// Reads a non-2xx answer. A 4xx is the backend's verdict on this token; a 5xx is the
 /// backend having a bad moment and says nothing at all about the viewer.
+///
+/// Two 4xx codes are exceptions, because they describe the *exchange* rather than the
+/// session: a 429 means the probe was rate limited and a 408 that it timed out server-side.
+/// Reading either as "signed out" would settle the SSE feed into its final denied state, so a
+/// burst of probes would mute a member's war feed until they reloaded the page.
 fn probe_for_error_status(status: StatusCode) -> ViewerProbe {
-    if status.is_server_error() {
+    if status.is_server_error()
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
+    {
         warn!("website session probe returned {status}");
         return ViewerProbe::Unavailable;
     }
@@ -358,6 +366,17 @@ mod tests {
             "a 5xx must stay retryable"
         );
         assert!(probe_for_error_status(StatusCode::SERVICE_UNAVAILABLE).is_unavailable());
+    }
+
+    #[test]
+    fn a_rate_limited_or_timed_out_probe_stays_retryable() {
+        // Neither answers the question that was asked, and `Anonymous` is final for an SSE
+        // stream - a rate-limited burst would mute the war feed until the next page load.
+        assert!(
+            probe_for_error_status(StatusCode::TOO_MANY_REQUESTS).is_unavailable(),
+            "a 429 is about the probe, not the session"
+        );
+        assert!(probe_for_error_status(StatusCode::REQUEST_TIMEOUT).is_unavailable());
     }
 
     #[test]

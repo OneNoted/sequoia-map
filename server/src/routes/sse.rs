@@ -201,7 +201,7 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
                         PreSerializedEvent::RuntimeUpdate { seq, json } => {
                             ("runtime_update", Some(seq), json)
                         }
-                        PreSerializedEvent::WarController { timestamp, json } => {
+                        PreSerializedEvent::WarController { timestamp, clears, json } => {
                             // A settled denial is the end of it; anything else is re-probed,
                             // which is what lets a stream that connected during an outage
                             // start serving once the backend answers again.
@@ -256,7 +256,7 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
                             if !access.serves() {
                                 continue;
                             }
-                            if !accept_war_frame(&mut last_war_ts, timestamp) {
+                            if !admit_war_frame(&mut last_war_ts, timestamp, clears) {
                                 continue;
                             }
                             ("warcontroller", None, json)
@@ -312,15 +312,29 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
                     } else {
                         None
                     };
-                    if let Some((timestamp, data)) = replay {
-                        if !accept_war_frame(&mut last_war_ts, timestamp) {
-                            continue;
+                    match replay {
+                        Some((timestamp, data)) => {
+                            if !accept_war_frame(&mut last_war_ts, timestamp) {
+                                continue;
+                            }
+                            let Some(payload) = event_payload(data.as_ref()) else {
+                                warn!("warcontroller payload is not valid utf-8; skipping SSE replay");
+                                continue;
+                            };
+                            yield Ok(Event::default().event("warcontroller").data(payload));
                         }
-                        let Some(payload) = event_payload(data.as_ref()) else {
-                            warn!("warcontroller payload is not valid utf-8; skipping SSE replay");
-                            continue;
-                        };
-                        yield Ok(Event::default().event("warcontroller").data(payload));
+                        // An empty cache is a state in its own right, and the broadcast that
+                        // announced it is one of the events this client just missed. Replaying
+                        // nothing here would leave it rendering the expired war for good, which
+                        // is exactly what the staleness bound exists to prevent. Same rule as
+                        // the empty seed: emitted unconditionally, watermark left unset.
+                        None if access.serves() => {
+                            if let Some(payload) = empty_war_state() {
+                                last_war_ts = None;
+                                yield Ok(Event::default().event("warcontroller").data(payload));
+                            }
+                        }
+                        None => {}
                     }
                 }
             }
@@ -345,6 +359,24 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
     response
 }
 
+/// Whether a broadcast war frame goes out on this stream, and what it does to the watermark.
+///
+/// A frame this server generated to *clear* the feed always goes out, and releases the
+/// watermark instead of setting it. Every real frame is stamped by the backend while a clear
+/// is stamped here, so the two are not comparable: ordering them would drop the clear whenever
+/// the backend's clock leads ours - stranding every connected client on a war whose cache was
+/// deliberately dropped - and adopting its stamp would drop the backend's first frame after
+/// recovery whenever the backend's clock trails ours. The empty seed and the revocation frame
+/// release the watermark for the same reason, and `WarControllerState::supersedes` applies the
+/// matching rule on the client.
+fn admit_war_frame(last_war_ts: &mut Option<i64>, timestamp: i64, clears: bool) -> bool {
+    if clears {
+        *last_war_ts = None;
+        return true;
+    }
+    accept_war_frame(last_war_ts, timestamp)
+}
+
 /// Whether a war frame stamped `timestamp` may be emitted, recording it when it may.
 ///
 /// Guards against moving a client backwards: seeds, lag replays and live frames are read from
@@ -360,7 +392,8 @@ fn accept_war_frame(last_war_ts: &mut Option<i64>, timestamp: i64) -> bool {
 
 /// An empty war state stamped now, with its timestamp, for a stream that has nothing to show.
 ///
-/// Neither caller - the empty seed, or a revocation - records the timestamp as a watermark.
+/// No caller - the empty seed, the empty lag replay, or a revocation - records the timestamp
+/// as a watermark.
 /// A clear is stamped on *this* server's clock while every real frame is stamped by the
 /// backend, so pinning the watermark here would drop a recovered backend's first frame
 /// whenever that backend's clock trails ours. `WarControllerState::supersedes` applies the
@@ -423,6 +456,32 @@ mod tests {
         assert!(cleared.timestamp > 1_787_517_420);
         let mut last = Some(1_787_517_420);
         assert!(accept_war_frame(&mut last, cleared.timestamp));
+    }
+
+    #[test]
+    fn a_clear_is_never_ordered_against_a_backend_stamped_frame() {
+        // The staleness expiry stamps the drop on this server's clock. A backend running a
+        // few seconds ahead used to make that drop lose the comparison, and every stream
+        // held the expired war until the backend came back with something newer.
+        let mut last = Some(1_787_517_420);
+        assert!(
+            admit_war_frame(&mut last, 1_787_517_400, true),
+            "a clear must go out however the clocks compare"
+        );
+        assert_eq!(last, None, "and must release the watermark, not set it");
+
+        // The backend's first frame after recovery is then accepted even if it trails.
+        assert!(admit_war_frame(&mut last, 1_787_517_390, false));
+        assert_eq!(last, Some(1_787_517_390));
+    }
+
+    #[test]
+    fn an_empty_frame_the_backend_sent_is_still_ordinary_data() {
+        // Only a locally generated clear is exempt; a war ending upstream is a normal frame
+        // carrying the backend's own clock, and stays under the monotonic guard.
+        let mut last = Some(1_000);
+        assert!(!admit_war_frame(&mut last, 999, false));
+        assert_eq!(last, Some(1_000));
     }
 
     #[test]

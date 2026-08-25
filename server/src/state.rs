@@ -114,6 +114,14 @@ pub enum PreSerializedEvent {
         /// The payload's own `timestamp`, so a receiver can drop a frame older than what it
         /// has already emitted - seeds, lag replays and live frames can otherwise interleave.
         timestamp: i64,
+        /// Whether this is a clear this server generated on its *own* clock, rather than a
+        /// frame the backend stamped - today, the poller's staleness expiry. Every real
+        /// frame carries the backend's clock, so a clear cannot be ordered against them:
+        /// if the backend runs even slightly ahead, the drop loses the comparison and every
+        /// connected client keeps rendering the war the cache was deliberately dropped for.
+        /// A receiver must let these through unconditionally and never adopt the stamp as a
+        /// watermark. An empty state the *backend* sent is ordinary data, and is `false`.
+        clears: bool,
         json: Arc<Bytes>,
     },
 }
