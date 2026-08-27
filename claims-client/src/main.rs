@@ -113,6 +113,7 @@ mod gpu {
                 frame.heat_mode_enabled,
                 frame.heat_entries,
                 frame.heat_max_take_count,
+                frame.territories_in_war,
             );
             false
         }

@@ -76,6 +76,7 @@ async fn main() {
 
     // Spawn background services
     tokio::spawn(services::territory_poller::run(state.clone()));
+    tokio::spawn(services::warcontroller_poller::run(state.clone()));
     tokio::spawn(services::guild_evictor::run(state.clone()));
     tokio::spawn(services::extra_data_loader::run(state.clone()));
     tokio::spawn(services::guild_color_loader::run(state.clone()));

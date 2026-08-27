@@ -3,8 +3,9 @@
 //! There is no login form here. `sequoia-backend` owns the account (Discord
 //! OAuth linked to a Minecraft UUID) and issues the `seq_session` cookie for
 //! `.seqwawa.com`; the map server exchanges that HttpOnly cookie for an
-//! identity on `/api/auth/me`. This module is display-only - nothing on the
-//! map is gated on the viewer.
+//! identity on `/api/auth/me`. The server is the real gate on everything
+//! member-only; what the viewer decides here is what the map bothers to
+//! render - the account chip, and the war feed's presence.
 
 use serde::Deserialize;
 
@@ -29,6 +30,20 @@ pub struct Viewer {
     pub minecraft_username: Option<String>,
     #[serde(default)]
     pub website_admin: bool,
+    /// In-game guild rank, present only while the viewer is on the Sequoia roster.
+    #[serde(default)]
+    pub guild_rank: Option<String>,
+}
+
+impl Viewer {
+    /// Sequoia membership: any in-game guild rank, or a website administrator - the same
+    /// application-wide staff override the website's own branch gate applies.
+    ///
+    /// Display-side only. The server refuses the war feed to non-members on its own; this
+    /// just keeps the map from asking for, or reserving space for, data it cannot have.
+    pub fn is_guild_member(&self) -> bool {
+        self.website_admin || self.guild_rank.is_some()
+    }
 }
 
 #[derive(Deserialize)]
@@ -37,19 +52,30 @@ struct MeResponse {
     viewer: Option<Viewer>,
 }
 
-/// Resolves the current website session, or `None` when signed out.
+/// Resolves the current website session: `Ok(None)` when signed out, `Err` when the answer
+/// could not be obtained.
 ///
-/// Any failure - offline, backend down, unparseable body - reads as signed out.
-/// The map is fully usable either way, so there is nothing to retry.
-pub async fn fetch_viewer() -> Option<Viewer> {
+/// The two are kept apart because they call for opposite handling. A signed-out answer is
+/// final. A failure - offline, server restarting, unreadable body - is not, and collapsing it
+/// into "signed out" would hide the war feed from a member until they reloaded the page, so
+/// the caller retries instead.
+pub async fn fetch_viewer() -> Result<Option<Viewer>, String> {
     let response = gloo_net::http::Request::get("/api/auth/me")
         .send()
         .await
-        .ok()?;
-    if !response.ok() {
-        return None;
+        .map_err(|error| format!("request failed: {error}"))?;
+    // 4xx is an authoritative "not signed in"; 5xx is the server having a bad moment.
+    if response.status() >= 500 {
+        return Err(format!("status {}", response.status()));
     }
-    response.json::<MeResponse>().await.ok()?.viewer
+    if !response.ok() {
+        return Ok(None);
+    }
+    response
+        .json::<MeResponse>()
+        .await
+        .map(|body| body.viewer)
+        .map_err(|error| format!("decode failed: {error}"))
 }
 
 /// Starts sign-in and returns the browser to `return_to` (an absolute map URL).
@@ -93,6 +119,43 @@ pub fn nmsr_face(identifier: &str, size: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn viewer_with(guild_rank: Option<&str>, website_admin: bool) -> Viewer {
+        Viewer {
+            discord_id: "1".to_string(),
+            discord_username: None,
+            minecraft_uuid: "ee860b7c-9a1d-49cf-9f19-ab673ba0f23b".to_string(),
+            minecraft_username: None,
+            website_admin,
+            guild_rank: guild_rank.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn any_guild_rank_makes_a_viewer_a_member() {
+        assert!(viewer_with(Some("chief"), false).is_guild_member());
+        assert!(viewer_with(Some("recruit"), false).is_guild_member());
+    }
+
+    #[test]
+    fn a_website_admin_is_a_member_without_a_rank() {
+        assert!(viewer_with(None, true).is_guild_member());
+    }
+
+    #[test]
+    fn a_signed_in_outsider_is_not_a_member() {
+        assert!(!viewer_with(None, false).is_guild_member());
+    }
+
+    #[test]
+    fn a_viewer_deserializes_without_a_guild_rank() {
+        let viewer: Viewer = serde_json::from_str(
+            r#"{"discord_id":"1","minecraft_uuid":"ee860b7c-9a1d-49cf-9f19-ab673ba0f23b"}"#,
+        )
+        .expect("legacy viewer payload parses");
+        assert_eq!(viewer.guild_rank, None);
+        assert!(!viewer.is_guild_member());
+    }
 
     #[test]
     fn login_url_encodes_the_return_destination() {

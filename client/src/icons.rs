@@ -20,6 +20,7 @@ const ATLAS_PATH: &str = "icons/territory-resources-atlas.webp";
 const HQ_CROWN_PATH: &str = "icons/crown_icon.webp";
 const TERRITORY_ORNAMENT_PATH: &str = "icons/territory-ornament.webp";
 const SEQUOIA_TERRITORY_ORNAMENT_PATH: &str = "icons/seq-border-v1.webp";
+const CLASS_ICON_DIR: &str = "icons/classes";
 const TRANSPARENT_PLACEHOLDER_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==";
 
 static ATLAS_WARNED: AtomicBool = AtomicBool::new(false);
@@ -56,6 +57,33 @@ pub fn sprite_style(name: &str, size_px: u32) -> Option<String> {
         size_px,
         idx * size_px,
     ))
+}
+
+/// Player-class icons, keyed by base class name. Wynncraft's second-tier class
+/// names (hunter, ninja, dark wizard, skyseer, knight) map onto the same icons.
+#[allow(dead_code)]
+pub const CLASS_ICONS: [&str; 5] = ["archer", "assassin", "mage", "shaman", "warrior"];
+
+pub fn class_icon_name(name: &str) -> Option<&'static str> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "archer" | "hunter" => Some("archer"),
+        "assassin" | "ninja" => Some("assassin"),
+        "mage" | "darkwizard" | "dark wizard" => Some("mage"),
+        "shaman" | "skyseer" => Some("shaman"),
+        "warrior" | "knight" => Some("warrior"),
+        _ => None,
+    }
+}
+
+/// Versioned URL for a class icon, e.g. `class_icon_url("ninja")` ->
+/// `/icons/classes/assassin.webp?v=...`.
+///
+/// Reads `window`, so it belongs in a view rather than in anything unit-tested natively.
+pub fn class_icon_url(name: &str) -> Option<String> {
+    let icon = class_icon_name(name)?;
+    Some(versioned_app_asset_url(&format!(
+        "{CLASS_ICON_DIR}/{icon}.webp"
+    )))
 }
 
 fn warn_atlas_once(message: &str) {
@@ -195,5 +223,16 @@ mod tests {
         assert_close(uv5[1], 0.0);
         assert_close(uv5[2], 1.0);
         assert_close(uv5[3], 1.0);
+    }
+
+    #[test]
+    fn class_icon_name_accepts_aliases_and_casing() {
+        assert_eq!(class_icon_name("Archer"), Some("archer"));
+        assert_eq!(class_icon_name("hunter"), Some("archer"));
+        assert_eq!(class_icon_name(" NINJA "), Some("assassin"));
+        assert_eq!(class_icon_name("Dark Wizard"), Some("mage"));
+        assert_eq!(class_icon_name("skyseer"), Some("shaman"));
+        assert_eq!(class_icon_name("knight"), Some("warrior"));
+        assert_eq!(class_icon_name("shopkeeper"), None);
     }
 }

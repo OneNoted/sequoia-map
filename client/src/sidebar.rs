@@ -1918,6 +1918,12 @@ fn GuildPanel() -> impl IntoView {
                         if online_members.is_empty() {
                             return view! { <div /> }.into_any();
                         }
+                        // Playercards only cover our own roster, so every other guild
+                        // keeps linking out to Wynncraft.
+                        let is_sequoia = json
+                            .get("prefix")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|p| p.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX));
                         view! {
                             <div style="margin-bottom: 14px;">
                                 <div style="font-family: var(--font-display); font-size: 0.87rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim); margin-bottom: 8px;">
@@ -1928,7 +1934,16 @@ fn GuildPanel() -> impl IntoView {
                                         let username = member.username;
                                         let rank_label = member.rank_label;
                                         let server = member.server;
-                                        let profile_url = format!("https://wynncraft.com/stats/player/{}", username);
+                                        let profile_url = if is_sequoia {
+                                            crate::player_card_url(&username)
+                                        } else {
+                                            format!("https://wynncraft.com/stats/player/{username}")
+                                        };
+                                        let profile_title = if is_sequoia {
+                                            "Open Sequoia playercard"
+                                        } else {
+                                            "Open Wynncraft player stats"
+                                        };
                                         view! {
                                             <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0; font-family: var(--font-mono); font-size: 0.87rem;">
                                                 <span style="font-size: 0.464rem; color: var(--color-emerald); line-height: 1;">{"\u{25CF}"}</span>
@@ -1936,6 +1951,7 @@ fn GuildPanel() -> impl IntoView {
                                                 <a href=profile_url
                                                    target="_blank"
                                                    rel="noopener noreferrer"
+                                                   title=profile_title
                                                    style="flex: 1; color: var(--color-text-primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s;"
                                                    on:mouseenter=|e| {
                                                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {

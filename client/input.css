@@ -213,6 +213,11 @@
   .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
   .scrollbar-thin::-webkit-scrollbar-thumb { background: #282c3e; border-radius: 3px; }
   .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #4a4e6a; }
+  /* The vertical rule above sets `width`, which does nothing for a horizontal scroller. */
+  .scrollbar-thin-x::-webkit-scrollbar { height: 6px; }
+  .scrollbar-thin-x::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin-x::-webkit-scrollbar-thumb { background: #282c3e; border-radius: 3px; }
+  .scrollbar-thin-x::-webkit-scrollbar-thumb:hover { background: #4a4e6a; }
   .slot-bevel {
     box-shadow: inset 1px 1px 0 rgba(255,255,255,0.06), inset -1px -1px 0 rgba(0,0,0,0.3);
   }
@@ -432,6 +437,149 @@
   pointer-events: auto;
 }
 
+/* War queue overview — top-left, collapses out through the left edge the way the
+   sidebar collapses out through the right. Open by default. */
+.war-panel {
+  position: absolute;
+  top: calc(var(--nav-height) + 16px);
+  left: 16px;
+  z-index: 9;
+  width: 278px;
+  pointer-events: none;
+  transform: translateX(calc(-100% - 16px));
+}
+
+.war-panel.war-panel-open {
+  transform: translateX(0);
+}
+
+.war-panel.war-panel-ready {
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.war-panel-card {
+  pointer-events: auto;
+  padding: 11px 13px;
+  border: 1px solid rgba(58, 63, 92, 0.78);
+  border-radius: 4px;
+  background: rgba(19, 22, 31, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+}
+
+.war-panel-toggle {
+  pointer-events: auto;
+}
+
+/* War stats strip — bottom-anchored row of per-war cards, starting clear of the minimap and
+   running to the sidebar. Cards are bottom-aligned and grow upward as their rosters lengthen. */
+.war-stats-strip {
+  position: absolute;
+  z-index: 9;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  /* Map drags pass through the gaps; only the cards and the chip opt back in. */
+  pointer-events: none;
+}
+
+.war-stats-scroller {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  pointer-events: none;
+  /* The scrollbar belongs to this box, and this box does not take pointer events, so a bar
+     drawn here could never be dragged. Hide it rather than show a dead control: the +N chip
+     and the wheel over a card are how the strip is paged. */
+  scrollbar-width: none;
+  /* `overflow-x: auto` computes the other axis to `auto` too, which would clip the cards'
+     drop shadow and their upward growth. Buy that room back without moving the strip. */
+  padding-top: 16px;
+  margin-top: -16px;
+}
+
+.war-stats-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.war-stats-card {
+  flex: 0 0 208px;
+  pointer-events: auto;
+  user-select: none;
+  padding: 8px 10px;
+  border: 1px solid rgba(58, 63, 92, 0.78);
+  border-radius: 4px;
+  background: rgba(19, 22, 31, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+}
+
+.war-stats-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(58, 63, 92, 0.55);
+  overflow: hidden;
+}
+
+.war-stats-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.war-stats-chip {
+  pointer-events: auto;
+  flex-shrink: 0;
+  min-width: 36px;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--color-deep);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--color-text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.war-stats-chip:hover {
+  border-color: rgba(245, 197, 66, 0.4);
+  background: var(--color-surface);
+  color: var(--color-gold);
+}
+
+/* Mirror of .sidebar-resize-handle, on the opposite edge. */
+.war-panel-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  pointer-events: auto;
+  z-index: 12;
+}
+
+.war-panel-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 3px;
+  width: 2px;
+  background: rgba(245, 197, 66, 0);
+  transition: background 0.15s ease;
+}
+
+.war-panel-resize-handle:hover::before,
+.war-panel-resize-handle.war-panel-resize-active::before {
+  background: rgba(245, 197, 66, 0.35);
+}
+
 .sidebar-resize-handle {
   position: absolute;
   top: 0;
@@ -485,6 +633,18 @@
   }
   .sidebar-toggle { display: none !important; }
   .sidebar-resize-handle { display: none !important; }
+  /* Width comes from the component (MOBILE_WAR_PANEL_WIDTH), since the desktop one is
+     drag-resizable and therefore inline. */
+  .war-panel {
+    top: calc(var(--nav-height) + 8px);
+    left: 8px;
+    transform: translateX(calc(-100% - 8px));
+  }
+  .war-panel.war-panel-open { transform: translateX(0); }
+  .war-panel-resize-handle { display: none !important; }
+  /* No room for a horizontal card strip on a phone. The component gates on `is_mobile`
+     too; this is the belt to that pair of braces. */
+  .war-stats-strip { display: none !important; }
   .mobile-sidebar-fab { display: flex; }
   .bottom-sheet-scrim { display: block; }
 }

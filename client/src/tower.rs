@@ -74,8 +74,8 @@ pub fn TowerCalculator() -> impl IntoView {
     } = expect_context();
 
     // Computed results
-    let dps = Memo::new(move |_| {
-        tower::calc_dps(
+    let dps_range = Memo::new(move |_| {
+        tower::calc_dps_range(
             damage_lvl.get() as usize,
             attack_lvl.get() as usize,
             is_hq.get(),
@@ -353,9 +353,12 @@ pub fn TowerCalculator() -> impl IntoView {
             <div class="divider-gold" style="margin: 8px 0;" />
             <div style="display: flex; flex-direction: column; gap: 6px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-family: var(--font-display); font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"Avg DPS"</span>
+                    <span style="font-family: var(--font-display); font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"DPS"</span>
                     <span style="font-family: var(--font-mono); font-size: 0.82rem; color: var(--color-gold); font-weight: 700;">
-                        {move || tower::format_stat(dps.get())}
+                        {move || {
+                            let (lo, hi) = dps_range.get();
+                            format!("{}-{}", tower::format_stat(lo), tower::format_stat(hi))
+                        }}
                     </span>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">

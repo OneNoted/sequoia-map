@@ -16,7 +16,7 @@ use crate::app::{
     PeekTerritory, ReadableFont, ResourceHighlight, Selected, ShowClaimLabels, ShowCompoundMapTime,
     ShowCountdown, ShowFarZoomTerritoryTags, ShowGranularMapTime, ShowMinimap, ShowNames,
     ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, SidebarOpen, SidebarTransient,
-    SuppressCooldownVisuals, TagColorSetting, ThickCooldownBorders,
+    SuppressCooldownVisuals, TagColorSetting, TerritoriesInWar, ThickCooldownBorders,
 };
 use crate::gpu::{GpuRenderer, RenderFrameInput};
 use crate::icons::{self, ResourceAtlas};
@@ -402,6 +402,7 @@ pub fn MapCanvas() -> impl IntoView {
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
     let HeatMaxTakeCount(heat_max_take_count) = expect_context();
     let HeatWindowLabel(heat_window_label) = expect_context();
+    let TerritoriesInWar(territories_in_war) = expect_context();
     let LabelScaleMaster(label_scale_master) = expect_context();
     let LabelScaleStatic(label_scale_static_tag) = expect_context();
     let LabelScaleStaticName(label_scale_static_name) = expect_context();
@@ -575,32 +576,35 @@ pub fn MapCanvas() -> impl IntoView {
             territories.with_untracked(|territory_map| {
                 loaded_tiles.with_untracked(|tiles| {
                     heat_entries_by_territory.with_untracked(|heat_entries| {
-                        let frame_input = {
-                            let mut builder = scene_builder.borrow_mut();
-                            builder.build(RenderFrameInput {
-                                vp: &vp_now,
-                                territories: territory_map,
-                                hovered: &hovered_name,
-                                selected: &selected_name,
-                                tiles,
-                                world_bounds: bounds,
-                                now,
-                                reference_time_secs,
-                                interaction_active,
-                                icons: &icon_set,
-                                show_minimap: show_mini,
-                                history_mode,
-                                heat_mode_enabled: heat_mode,
-                                heat_entries,
-                                heat_max_take_count: heat_max,
-                            })
-                        };
-                        let keep_animating = renderer.render(frame_input);
-                        if show_render_stats {
-                            frame_metrics.set(renderer.frame_metrics());
-                            scene_summary.set(scene_builder.borrow().latest_summary());
-                        }
-                        keep_animating
+                        territories_in_war.with_untracked(|in_war| {
+                            let frame_input = {
+                                let mut builder = scene_builder.borrow_mut();
+                                builder.build(RenderFrameInput {
+                                    vp: &vp_now,
+                                    territories: territory_map,
+                                    hovered: &hovered_name,
+                                    selected: &selected_name,
+                                    tiles,
+                                    world_bounds: bounds,
+                                    now,
+                                    reference_time_secs,
+                                    interaction_active,
+                                    icons: &icon_set,
+                                    show_minimap: show_mini,
+                                    history_mode,
+                                    heat_mode_enabled: heat_mode,
+                                    heat_entries,
+                                    heat_max_take_count: heat_max,
+                                    territories_in_war: in_war,
+                                })
+                            };
+                            let keep_animating = renderer.render(frame_input);
+                            if show_render_stats {
+                                frame_metrics.set(renderer.frame_metrics());
+                                scene_summary.set(scene_builder.borrow().latest_summary());
+                            }
+                            keep_animating
+                        })
                     })
                 })
             })
@@ -725,6 +729,7 @@ pub fn MapCanvas() -> impl IntoView {
             heat_mode_enabled.track();
             heat_entries_by_territory.track();
             heat_max_take_count.track();
+            territories_in_war.track();
             if let Some(renderer) = gpu.borrow_mut().as_mut() {
                 renderer.mark_dirty(InvalidationReason::Geometry);
                 renderer.mark_dirty(InvalidationReason::StaticLabel);

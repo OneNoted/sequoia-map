@@ -19,6 +19,8 @@ mod sse;
 mod tiles;
 mod timeline;
 mod tower;
+mod war_stats;
+mod warcontroller;
 
 // Render/math core. These modules moved to `sequoia-map-engine`; they are
 // re-exported at the crate root so existing `crate::<module>` paths resolve
@@ -111,6 +113,7 @@ mod gpu {
                 frame.heat_mode_enabled,
                 frame.heat_entries,
                 frame.heat_max_take_count,
+                frame.territories_in_war,
             );
             false
         }
@@ -130,6 +133,10 @@ thread_local! {
 
 pub(crate) const SEQUOIA_WEBSITE_URL: &str = "https://seqwawa.com";
 pub(crate) const IRIS_RELEASES_URL: &str = "https://github.com/OneNoted/sequoia-map/releases";
+
+/// Our guild's Wynncraft tag. Members of this guild get seqwawa playercards
+/// instead of Wynncraft stats pages, since playercards only cover our roster.
+pub(crate) const SEQUOIA_GUILD_PREFIX: &str = "SEQ";
 
 fn encode_uri_component_fallback(input: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -179,9 +186,16 @@ pub(crate) fn guild_stats_url(guild_name: &str) -> String {
     format!("https://wynncraft.com/stats/guild/{encoded}")
 }
 
+/// A player's card on the Sequoia website. Only our own members have one, so
+/// gate callers on [`SEQUOIA_GUILD_PREFIX`] before linking here.
+pub(crate) fn player_card_url(username: &str) -> String {
+    let encoded = encode_uri_component(username);
+    format!("{SEQUOIA_WEBSITE_URL}/statistics/player/playercard?player={encoded}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{encode_uri_component_fallback, guild_stats_url};
+    use super::{encode_uri_component_fallback, guild_stats_url, player_card_url};
 
     #[test]
     fn fallback_uri_encoder_escapes_reserved_characters() {
@@ -193,6 +207,18 @@ mod tests {
         assert_eq!(
             guild_stats_url("Sequoia/Map? Guild"),
             "https://wynncraft.com/stats/guild/Sequoia%2FMap%3F%20Guild"
+        );
+    }
+
+    #[test]
+    fn player_card_url_encodes_the_player_query_parameter() {
+        assert_eq!(
+            player_card_url("theoplegends"),
+            "https://seqwawa.com/statistics/player/playercard?player=theoplegends"
+        );
+        assert_eq!(
+            player_card_url("Odd Name&x"),
+            "https://seqwawa.com/statistics/player/playercard?player=Odd%20Name%26x"
         );
     }
 }

@@ -16,3 +16,8 @@ services/sequoia-ingest/*.db-wal
 services/sequoia-ingest/*.db-shm
 mods/wynn-iris/run/mods/ares-probe*.jar
 .omx/
+services/sequoia-fake-backend/*
+scripts/capture-fake-territories.py
+justfile.local
+docker-compose.fake.yml
+
