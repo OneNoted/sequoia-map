@@ -367,10 +367,11 @@ fn grouped_queue(queues: &[WarQueueEntry]) -> Vec<(QueueStatus, Vec<WarQueueEntr
 /// The ETA column: time remaining until the war is expected to be won, and an em-dash for the
 /// rows that have none.
 ///
-/// In practice only `STARTED` rows tick - nothing in the feed predicts when a war that has not
-/// begun will be won, so [`WarQueueEntry::eta_secs`] gives the other stages no ETA at all.
-/// The ETA is seconds remaining as of `feed_timestamp`, so the elapsed time since that
-/// snapshot is subtracted to keep the column moving between polls.
+/// Every stage ticks: a `STARTED` row counts down to its war being won, a `QUEUED` or
+/// `ENTERED` row to its war starting - see [`WarQueueEntry::eta_secs`]. The em-dash is for
+/// rows the backend sent no usable stamp for. The ETA is seconds remaining as of
+/// `feed_timestamp`, so the elapsed time since that snapshot is subtracted to keep the column
+/// moving between polls.
 pub(crate) fn format_eta(eta: Option<i64>, feed_timestamp: i64, now: i64) -> String {
     let Some(eta) = eta.filter(|seconds| *seconds >= 0) else {
         return "\u{2014}".to_string();
