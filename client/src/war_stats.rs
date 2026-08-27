@@ -117,7 +117,7 @@ pub(crate) fn build_war_boxes(state: &WarControllerState) -> Vec<WarBox> {
                     QueueStatus::from_api_status(&entry.status) == Some(QueueStatus::Entered)
                         && !at_war.contains(&entry.territory)
                 })
-                .map(|entry| entered_box(entry, &members)),
+                .map(|entry| entered_box(entry, &members, state.timestamp)),
         )
         .collect();
 
@@ -207,13 +207,18 @@ fn war_box(
     }
 }
 
-fn entered_box(entry: &WarQueueEntry, members: &HashMap<&str, Vec<WarBoxMember>>) -> WarBox {
+fn entered_box(
+    entry: &WarQueueEntry,
+    members: &HashMap<&str, Vec<WarBoxMember>>,
+    feed_timestamp: i64,
+) -> WarBox {
     let (roster, extra_members) = take_members(members, &entry.territory);
     WarBox {
         territory: entry.territory.clone(),
         difficulty: entry.difficulty.clone(),
-        // Nothing in the feed predicts when a war that has not started will be won.
-        eta: None,
+        // Counts down to the war starting rather than to it being won - the card is for a
+        // territory that has been entered but is not yet fighting.
+        eta: entry.eta_secs(feed_timestamp),
         members: roster,
         extra_members,
         health: None,
@@ -957,9 +962,22 @@ mod tests {
     }
 
     #[test]
-    fn entered_only_boxes_have_no_eta() {
+    fn entered_only_boxes_count_down_to_their_war_starting() {
+        // The card is for a territory entered but not yet fighting, so its ETA is the wait
+        // until the war begins - the stamp the backend sends for that stage.
         let boxes = build_war_boxes(&state(
             vec![queue("Waiting", "ENTERED", 1_180)],
+            vec![],
+            vec![],
+        ));
+
+        assert_eq!(boxes[0].eta, Some(180));
+    }
+
+    #[test]
+    fn an_entered_box_whose_stamp_has_passed_has_no_eta() {
+        let boxes = build_war_boxes(&state(
+            vec![queue("Waiting", "ENTERED", 900)],
             vec![],
             vec![],
         ));

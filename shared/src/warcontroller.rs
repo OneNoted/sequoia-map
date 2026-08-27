@@ -81,14 +81,13 @@ pub struct WarQueueEntry {
     pub difficulty: Option<String>,
     /// Queue stage, e.g. `QUEUED`. Parse with [`QueueStatus::from_api_status`].
     pub status: String,
-    /// Unix seconds - but of *what* depends on [`Self::status`].
+    /// Unix seconds at which this entry is expected to advance: the instant a `STARTED` war
+    /// is expected to be won, and the instant a `QUEUED` or `ENTERED` territory is expected
+    /// to start fighting. It is how the ETA reaches us at every stage - the field is always
+    /// in the future, never the instant the entry entered its current status. Read it
+    /// through [`Self::eta_secs`] rather than subtracting by hand.
     ///
-    /// For `QUEUED` and `ENTERED` it is the instant the entry entered that status. For
-    /// `STARTED` the backend overwrites it with the instant the war is expected to be won,
-    /// which is how the ETA actually reaches us. Read it through [`Self::eta_secs`] rather
-    /// than subtracting by hand.
-    ///
-    /// `None` when the backend sends no stamp, which leaves a `STARTED` entry with no ETA.
+    /// `None` when the backend sends no stamp, which leaves that entry with no ETA.
     #[serde(default, deserialize_with = "deserialize_optional_lenient_timestamp")]
     pub timestamp: Option<i64>,
     /// Seconds until the war is expected to be won, counted from [`WarControllerState::timestamp`].
@@ -100,28 +99,34 @@ pub struct WarQueueEntry {
 }
 
 impl WarQueueEntry {
-    /// Seconds until the war is expected to be won, relative to
-    /// [`WarControllerState::timestamp`], or `None` when this entry carries no ETA.
+    /// Seconds until this entry is expected to advance, relative to
+    /// [`WarControllerState::timestamp`], or `None` when it carries no ETA.
     ///
-    /// A `STARTED` entry's [`Self::timestamp`] *is* the expected win instant, so the time
-    /// remaining is that instant minus the snapshot the payload was built at. The explicit
-    /// [`Self::eta`] field wins when present, since a backend that starts sending it means it
-    /// deliberately. `QUEUED` and `ENTERED` entries have no ETA at all - nothing in the feed
-    /// predicts when a war that has not started yet will be won.
+    /// [`Self::timestamp`] is a future instant at every stage, so the time remaining is that
+    /// instant minus the snapshot the payload was built at - what a `STARTED` row counts down
+    /// to is the war being won, what a `QUEUED` or `ENTERED` row counts down to is its war
+    /// starting. Every stage therefore has an ETA; gating this on `STARTED` left every other
+    /// row showing an em-dash even though the stamp to count down was right there. The
+    /// explicit [`Self::eta`] field still wins when present, since a backend that starts
+    /// sending it means it deliberately.
     ///
-    /// Floored at zero: a war can overrun its predicted win time, and the browser clock the
-    /// caller counts down against can sit either side of the feed's timestamps.
+    /// A `STARTED` row floors at zero: a war can overrun its predicted win time, and the
+    /// browser clock the caller counts down against can sit either side of the feed's
+    /// timestamps. A row that has *not* started gets no such floor - a stamp that is not in
+    /// the future is one whose meaning we cannot vouch for, and an honest em-dash beats a
+    /// countdown pinned at `0:00`.
     ///
-    /// A `STARTED` entry the backend sent no [`Self::timestamp`] for has nothing to subtract
-    /// from, so it reports no ETA rather than one measured against the epoch.
+    /// An entry the backend sent no [`Self::timestamp`] for has nothing to subtract from, so
+    /// it reports no ETA rather than one measured against the epoch.
     pub fn eta_secs(&self, feed_timestamp: i64) -> Option<i64> {
         if let Some(eta) = self.eta.filter(|seconds| *seconds >= 0) {
             return Some(eta);
         }
-        if QueueStatus::from_api_status(&self.status)? != QueueStatus::Started {
-            return None;
+        let remaining = self.timestamp? - feed_timestamp;
+        match QueueStatus::from_api_status(&self.status)? {
+            QueueStatus::Started => Some(remaining.max(0)),
+            QueueStatus::Queued | QueueStatus::Entered => (remaining > 0).then_some(remaining),
         }
-        Some((self.timestamp? - feed_timestamp).max(0))
     }
 }
 
@@ -641,9 +646,11 @@ mod tests {
     }
 
     #[test]
-    fn a_started_entry_without_a_stamp_has_no_derived_eta() {
+    fn an_entry_without_a_stamp_has_no_derived_eta() {
         // Nothing to subtract from - reporting one would count down against the epoch.
         assert_eq!(queue_entry("STARTED", None, None).eta_secs(1_000), None);
+        assert_eq!(queue_entry("ENTERED", None, None).eta_secs(1_000), None);
+        assert_eq!(queue_entry("QUEUED", None, None).eta_secs(1_000), None);
     }
 
     #[test]
@@ -676,14 +683,28 @@ mod tests {
     }
 
     #[test]
-    fn queued_and_entered_entries_have_no_eta() {
-        // Nothing in the feed predicts when a war that has not started will be won, and their
-        // timestamps mean something else entirely - the instant they entered that status.
+    fn queued_and_entered_entries_count_down_too() {
+        // Their stamps sit past the snapshot exactly as a STARTED one does - the backend
+        // sends the instant each is expected to advance, not the instant it entered the
+        // stage. Reading them as entry times left every non-STARTED row showing an em-dash.
         let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
         assert_eq!(state.queues[1].status, "ENTERED");
-        assert_eq!(state.queues[1].eta_secs(state.timestamp), None);
+        assert_eq!(state.queues[1].eta_secs(state.timestamp), Some(41));
         assert_eq!(state.queues[2].status, "QUEUED");
-        assert_eq!(state.queues[2].eta_secs(state.timestamp), None);
+        assert_eq!(state.queues[2].eta_secs(state.timestamp), Some(69));
+    }
+
+    #[test]
+    fn a_not_yet_started_entry_whose_stamp_has_passed_reports_no_eta() {
+        // Only a STARTED row floors at zero, where an overrun war genuinely reads "any moment
+        // now". A QUEUED stamp in the past is a stamp we cannot vouch for, so it gets the
+        // em-dash rather than a countdown frozen at 0:00.
+        assert_eq!(queue_entry("QUEUED", Some(900), None).eta_secs(1_000), None);
+        assert_eq!(queue_entry("ENTERED", Some(1_000), None).eta_secs(1_000), None);
+        assert_eq!(
+            queue_entry("QUEUED", Some(1_180), None).eta_secs(1_000),
+            Some(180)
+        );
     }
 
     #[test]
@@ -691,7 +712,7 @@ mod tests {
         // A backend that starts sending `eta` alongside the timestamp means it.
         let entry = queue_entry("STARTED", Some(1_000_000), Some(42));
         assert_eq!(entry.eta_secs(999_000), Some(42));
-        // And it carries stages that have no derived ETA of their own.
+        // And it wins over a stamp that would derive nothing on its own.
         assert_eq!(
             queue_entry("QUEUED", Some(0), Some(90)).eta_secs(0),
             Some(90)
