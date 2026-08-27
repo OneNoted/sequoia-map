@@ -497,7 +497,7 @@ mod tests {
             queues: Vec::new(),
             wars: vec![sequoia_shared::ActiveWar {
                 territory: "Entrance to Olux".to_string(),
-                difficulty: "VERY_HIGH".to_string(),
+                difficulty: Some("VERY_HIGH".to_string()),
                 health: 0.5,
                 start: cleared.timestamp - 60,
                 ehp: None,

@@ -63,9 +63,10 @@ pub(crate) struct WarBoxMember {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WarBox {
     pub territory: String,
-    /// Raw Wynncraft difficulty tier, e.g. `VERY_HIGH`; the card's dot colour. Kept unparsed
+    /// Raw Wynncraft difficulty tier, e.g. `VERY_HIGH`; the card's dot colour. `None` on a
+    /// territory the backend has not classified, which dots the card neutrally. Kept unparsed
     /// so an unrecognised tier still round-trips instead of collapsing into a default.
-    pub difficulty: String,
+    pub difficulty: Option<String>,
     /// Seconds remaining as of the feed snapshot, via [`WarQueueEntry::eta_secs`].
     pub eta: Option<i64>,
     /// Already truncated to [`MAX_MEMBERS`].
@@ -140,6 +141,8 @@ fn index_queues(queues: &[WarQueueEntry]) -> HashMap<&str, &WarQueueEntry> {
         index
             .entry(entry.territory.as_str())
             .and_modify(|existing| {
+                // A stamped entry beats an unstamped one, since `Some` outranks `None`; two
+                // unstamped duplicates keep the first, there being nothing to choose between.
                 if entry.timestamp > existing.timestamp {
                     *existing = entry;
                 }
@@ -466,7 +469,7 @@ fn WarStatsCard(
     let dot_color = Memo::new(move |_| {
         war.with(|war| {
             war.as_ref()
-                .map(|war| difficulty_color(&war.difficulty))
+                .map(|war| difficulty_color(war.difficulty.as_deref()))
                 .unwrap_or("#6f748f")
         })
     });
@@ -610,7 +613,7 @@ mod tests {
     fn war(territory: &str, health: f32, ehp: Option<i64>, dps: Option<i64>) -> ActiveWar {
         ActiveWar {
             territory: territory.to_string(),
-            difficulty: "VERY_HIGH".to_string(),
+            difficulty: Some("VERY_HIGH".to_string()),
             health,
             start: 1_000,
             ehp,
@@ -621,9 +624,9 @@ mod tests {
     fn queue(territory: &str, status: &str, timestamp: i64) -> WarQueueEntry {
         WarQueueEntry {
             territory: territory.to_string(),
-            difficulty: "VERY_HIGH".to_string(),
+            difficulty: Some("VERY_HIGH".to_string()),
             status: status.to_string(),
-            timestamp,
+            timestamp: Some(timestamp),
             eta: None,
         }
     }

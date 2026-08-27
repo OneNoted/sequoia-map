@@ -165,8 +165,8 @@ fn WarQueueSection(
                     let territory = entry.territory.clone();
                     // The square is the territory's difficulty, not its queue stage - the
                     // section header above already says the stage.
-                    let color = difficulty_color(&entry.difficulty);
-                    let title = row_title(&entry.territory, &entry.difficulty);
+                    let color = difficulty_color(entry.difficulty.as_deref());
+                    let title = row_title(&entry.territory, entry.difficulty.as_deref());
                     // The whole entry rides into the ETA closure: a STARTED entry ships its
                     // ETA in `timestamp`, so the remaining time has to be re-derived against
                     // whichever snapshot is current, not frozen at render time.
@@ -311,8 +311,8 @@ fn WarPanelToggle(panel_open: RwSignal<bool>) -> impl IntoView {
 /// Shared with [`crate::war_stats`], whose cards dot the same tiers the same way. Note this
 /// is deliberately *not* [`TreasuryLevel::color_rgb`]: that is the Minecraft treasury palette,
 /// where High is green and Very High is cyan, which would read as backwards here.
-pub(crate) fn difficulty_color(raw: &str) -> &'static str {
-    match TreasuryLevel::from_api_tier(raw) {
+pub(crate) fn difficulty_color(raw: Option<&str>) -> &'static str {
+    match raw.and_then(TreasuryLevel::from_api_tier) {
         Some(TreasuryLevel::VeryLow) => "#8ce99a",
         Some(TreasuryLevel::Low) => "#50c878",
         Some(TreasuryLevel::Medium) => "#f5c542",
@@ -325,9 +325,10 @@ pub(crate) fn difficulty_color(raw: &str) -> &'static str {
 /// Row tooltip: the full territory name, plus the difficulty its square stands for.
 ///
 /// Long names are ellipsized in the row, so the untruncated one has to live here anyway; the
-/// tier is what makes the colour decodable without a legend.
-fn row_title(territory: &str, difficulty: &str) -> String {
-    match TreasuryLevel::from_api_tier(difficulty) {
+/// tier is what makes the colour decodable without a legend. An unclassified territory gets
+/// the bare name, matching the neutral square [`difficulty_color`] gives it.
+fn row_title(territory: &str, difficulty: Option<&str>) -> String {
+    match difficulty.and_then(TreasuryLevel::from_api_tier) {
         Some(level) => format!("{territory} \u{2014} {}", level.label()),
         None => territory.to_string(),
     }
@@ -339,8 +340,9 @@ fn row_title(territory: &str, difficulty: &str) -> String {
 /// first is the useful order under both. For `QUEUED` and `ENTERED` it is the instant the
 /// entry reached that stage, so the section lists territories in the order they will start;
 /// for `STARTED` it is the expected win instant, so that section leads with the war expected
-/// to finish soonest. Entries whose status the backend has since renamed are dropped rather
-/// than guessed at.
+/// to finish soonest. Entries the backend sent no stamp for have no place in that order, so
+/// they trail their section. Entries whose status the backend has since renamed are dropped
+/// rather than guessed at.
 fn grouped_queue(queues: &[WarQueueEntry]) -> Vec<(QueueStatus, Vec<WarQueueEntry>)> {
     SECTIONS
         .iter()
@@ -353,7 +355,10 @@ fn grouped_queue(queues: &[WarQueueEntry]) -> Vec<(QueueStatus, Vec<WarQueueEntr
             if entries.is_empty() {
                 return None;
             }
-            entries.sort_by_key(|entry| entry.timestamp);
+            // Unstamped entries sink to the bottom of their section: there is nothing to
+            // order them by, and floating them above a `STARTED` section would displace the
+            // war expected to be won soonest from the top.
+            entries.sort_by_key(|entry| (entry.timestamp.is_none(), entry.timestamp));
             Some((*status, entries))
         })
         .collect()
@@ -391,9 +396,14 @@ mod tests {
     use super::*;
 
     fn entry(territory: &str, status: &str, timestamp: i64) -> WarQueueEntry {
+        unstamped_entry(territory, status, Some(timestamp))
+    }
+
+    /// The same, for the entries the backend sends without a stamp.
+    fn unstamped_entry(territory: &str, status: &str, timestamp: Option<i64>) -> WarQueueEntry {
         WarQueueEntry {
             territory: territory.to_string(),
-            difficulty: "VERY_LOW".to_string(),
+            difficulty: Some("VERY_LOW".to_string()),
             status: status.to_string(),
             timestamp,
             eta: None,
@@ -478,13 +488,34 @@ mod tests {
     }
 
     #[test]
+    fn an_unstamped_entry_sorts_after_the_stamped_ones_in_its_section() {
+        // Nothing orders an entry the backend sent no stamp for, and floating it to the top
+        // of STARTED would displace the war expected to be won soonest.
+        let grouped = grouped_queue(&[
+            unstamped_entry("Mangled Lake", "STARTED", None),
+            entry("Entrance to Olux", "STARTED", 3),
+            entry("Overtaken Outpost", "STARTED", 1),
+        ]);
+        let (status, entries) = &grouped[0];
+        assert_eq!(*status, QueueStatus::Started);
+        let order: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.territory.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            ["Overtaken Outpost", "Entrance to Olux", "Mangled Lake"]
+        );
+    }
+
+    #[test]
     fn every_difficulty_tier_has_its_own_square_colour() {
         let colors = [
-            difficulty_color("VERY_LOW"),
-            difficulty_color("LOW"),
-            difficulty_color("MEDIUM"),
-            difficulty_color("HIGH"),
-            difficulty_color("VERY_HIGH"),
+            difficulty_color(Some("VERY_LOW")),
+            difficulty_color(Some("LOW")),
+            difficulty_color(Some("MEDIUM")),
+            difficulty_color(Some("HIGH")),
+            difficulty_color(Some("VERY_HIGH")),
         ];
         assert_eq!(
             colors,
@@ -498,9 +529,9 @@ mod tests {
     #[test]
     fn difficulty_colour_tolerates_the_tier_labels_spelling() {
         // `from_api_tier` normalizes case and separators; the palette inherits that.
-        assert_eq!(difficulty_color("very high"), "#8b1a1a");
-        assert_eq!(difficulty_color("Very-Low"), "#8ce99a");
-        assert_eq!(difficulty_color(" medium "), "#f5c542");
+        assert_eq!(difficulty_color(Some("very high")), "#8b1a1a");
+        assert_eq!(difficulty_color(Some("Very-Low")), "#8ce99a");
+        assert_eq!(difficulty_color(Some(" medium ")), "#f5c542");
     }
 
     #[test]
@@ -510,36 +541,39 @@ mod tests {
         // must read differently when their difficulties differ - the reverse of the old
         // stage-coloured square.
         let mut low_queued = entry("Mangled Lake", "QUEUED", 1);
-        low_queued.difficulty = "VERY_LOW".to_string();
+        low_queued.difficulty = Some("VERY_LOW".to_string());
         let mut low_started = entry("Overtaken Outpost", "STARTED", 2);
-        low_started.difficulty = "VERY_LOW".to_string();
+        low_started.difficulty = Some("VERY_LOW".to_string());
         let mut high_started = entry("Entrance to Olux", "STARTED", 3);
-        high_started.difficulty = "VERY_HIGH".to_string();
+        high_started.difficulty = Some("VERY_HIGH".to_string());
 
         assert_eq!(
-            difficulty_color(&low_queued.difficulty),
-            difficulty_color(&low_started.difficulty)
+            difficulty_color(low_queued.difficulty.as_deref()),
+            difficulty_color(low_started.difficulty.as_deref())
         );
         assert_ne!(
-            difficulty_color(&high_started.difficulty),
-            difficulty_color(&low_started.difficulty)
+            difficulty_color(high_started.difficulty.as_deref()),
+            difficulty_color(low_started.difficulty.as_deref())
         );
     }
 
     #[test]
     fn an_unknown_difficulty_falls_back_to_neutral() {
         // A tier the backend renames must not silently read as "very low".
-        assert_eq!(difficulty_color("EXTREME"), "#6f748f");
-        assert_eq!(difficulty_color(""), "#6f748f");
+        assert_eq!(difficulty_color(Some("EXTREME")), "#6f748f");
+        assert_eq!(difficulty_color(Some("")), "#6f748f");
+        // And so must a territory the backend never classified at all.
+        assert_eq!(difficulty_color(None), "#6f748f");
+        assert_eq!(row_title("Mangled Lake", None), "Mangled Lake");
     }
 
     #[test]
     fn the_row_tooltip_names_the_difficulty_behind_the_square() {
         assert_eq!(
-            row_title("Entrance to Olux", "VERY_HIGH"),
+            row_title("Entrance to Olux", Some("VERY_HIGH")),
             "Entrance to Olux \u{2014} Very High"
         );
         // Nothing to explain when the tier did not parse, so just the name.
-        assert_eq!(row_title("Mangled Lake", "EXTREME"), "Mangled Lake");
+        assert_eq!(row_title("Mangled Lake", Some("EXTREME")), "Mangled Lake");
     }
 }
