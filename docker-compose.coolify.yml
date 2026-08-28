@@ -26,6 +26,8 @@ services:
       retries: 5
       start_period: 10s
     logging: *default-logging
+    ports:
+      - "5435:5432"
 
   server:
     image: ${SEQUOIA_SERVER_IMAGE:-ghcr.io/sequoiawynncraft/sequoia-map-server:main}
