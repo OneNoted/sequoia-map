@@ -166,6 +166,10 @@ pub(crate) struct ReadableFont(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowMinimap(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowWarQueue(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct ShowWarStats(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
 pub(crate) struct LabelScaleMaster(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct LabelScaleStatic(pub RwSignal<f64>);
@@ -414,6 +418,10 @@ struct SettingsV2 {
     war_panel_open: bool,
     #[serde(default = "default_war_panel_width")]
     war_panel_width: f64,
+    #[serde(default = "default_true")]
+    show_war_queue: bool,
+    #[serde(default = "default_true")]
+    show_war_stats: bool,
     resource_highlight: bool,
     #[serde(default)]
     defense_highlight: bool,
@@ -580,6 +588,8 @@ impl Default for SettingsV2 {
             sidebar_open: false,
             war_panel_open: true,
             war_panel_width: default_war_panel_width(),
+            show_war_queue: true,
+            show_war_stats: true,
             resource_highlight: false,
             defense_highlight: false,
             map_intel_enabled: false,
@@ -707,6 +717,8 @@ impl From<LegacySettings> for SettingsV2 {
             sidebar_open: value.sidebar_open,
             war_panel_open: true,
             war_panel_width: default_war_panel_width(),
+            show_war_queue: true,
+            show_war_stats: true,
             resource_highlight: value.resource_highlight,
             defense_highlight: value.defense_highlight,
             map_intel_enabled: value.map_intel_enabled,
@@ -909,6 +921,8 @@ pub fn MapPage() -> impl IntoView {
     let war_panel_open: RwSignal<bool> = RwSignal::new(saved.war_panel_open);
     let war_panel_width: RwSignal<f64> =
         RwSignal::new(clamp_war_panel_width(saved.war_panel_width));
+    let show_war_queue: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
+    let show_war_stats: RwSignal<bool> = RwSignal::new(saved.show_war_stats);
     let sidebar_transient: RwSignal<bool> = RwSignal::new(false);
     let sidebar_ready: RwSignal<bool> = RwSignal::new(false);
     let sidebar_loaded: RwSignal<bool> = RwSignal::new(saved.sidebar_open);
@@ -1047,6 +1061,8 @@ pub fn MapPage() -> impl IntoView {
     provide_context(SidebarOpen(sidebar_open));
     provide_context(WarPanelOpen(war_panel_open));
     provide_context(WarPanelWidth(war_panel_width));
+    provide_context(ShowWarQueue(show_war_queue));
+    provide_context(ShowWarStats(show_war_stats));
     provide_context(SidebarWidth(sidebar_width));
     provide_context(SidebarTransient(sidebar_transient));
     provide_context(SidebarIndex(sidebar_index));
@@ -1222,6 +1238,8 @@ pub fn MapPage() -> impl IntoView {
         heat_selected_season_id.set(defaults.heat_selected_season_id);
         readable_font.set(defaults.readable_font);
         show_minimap.set(defaults.show_minimap);
+        show_war_queue.set(defaults.show_war_queue);
+        show_war_stats.set(defaults.show_war_stats);
         name_color.set(defaults.name_color);
         tag_color.set(defaults.tag_color);
         label_scale_master.set(clamp_label_scale_master(defaults.label_scale_master));
@@ -1725,6 +1743,8 @@ pub fn MapPage() -> impl IntoView {
             sidebar_open: sidebar_open.get(),
             war_panel_open: war_panel_open.get(),
             war_panel_width: clamp_war_panel_width(war_panel_width.get()),
+            show_war_queue: show_war_queue.get(),
+            show_war_stats: show_war_stats.get(),
             resource_highlight: resource_highlight.get(),
             defense_highlight: defense_highlight.get(),
             map_intel_enabled: map_intel_enabled.get(),
@@ -3189,6 +3209,19 @@ mod tests {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(parsed.war_panel_open);
         assert_eq!(parsed.war_panel_width, DEFAULT_WAR_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn settings_without_war_visibility_show_both_war_overlays() {
+        // Same reasoning as the war panel above: these post-date every saved blob, so on
+        // is a serde default rather than a defaults-version migration.
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(parsed.show_war_queue);
+        assert!(parsed.show_war_stats);
+
+        let defaults = SettingsV2::default();
+        assert!(defaults.show_war_queue);
+        assert!(defaults.show_war_stats);
     }
 
     #[test]

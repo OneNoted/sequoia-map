@@ -12,8 +12,8 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::app::{
-    CurrentMode, IsMobile, MapMode, ShowMinimap, SidebarOpen, SidebarWidth, WarControllerData,
-    WarFeedVisible, WindowWidth,
+    CurrentMode, IsMobile, MapMode, ShowMinimap, ShowWarStats, SidebarOpen, SidebarWidth,
+    WarControllerData, WarFeedVisible, WindowWidth,
 };
 use crate::icons::class_icon_url;
 use crate::warcontroller::{difficulty_color, format_eta};
@@ -353,9 +353,13 @@ pub(crate) fn WarStatsStrip() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarWidth(sidebar_width) = expect_context();
     let WindowWidth(window_width) = expect_context();
+    let ShowWarStats(show_war_stats) = expect_context();
 
     let visible = Memo::new(move |_| {
-        war_feed_visible.get() && map_mode.get() == MapMode::Live && !is_mobile.get()
+        show_war_stats.get()
+            && war_feed_visible.get()
+            && map_mode.get() == MapMode::Live
+            && !is_mobile.get()
     });
 
     // `PartialEq` on `WarBox` is load-bearing here: the feed re-broadcasts every few seconds,

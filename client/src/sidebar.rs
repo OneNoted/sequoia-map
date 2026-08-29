@@ -28,10 +28,10 @@ use crate::app::{
     ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
-    ShowTerritoryOrnaments, SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient,
-    TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders, canvas_dimensions,
-    clamp_connection_opacity_scale, clamp_connection_thickness_scale, clamp_label_scale_group,
-    clamp_label_scale_master,
+    ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, SidebarIndex, SidebarItems, SidebarOpen,
+    SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
+    WarFeedVisible, canvas_dimensions, clamp_connection_opacity_scale,
+    clamp_connection_thickness_scale, clamp_label_scale_group, clamp_label_scale_master,
 };
 use crate::colors::rgba_css;
 use crate::defense::defense_tier_display;
@@ -588,6 +588,10 @@ fn SettingsPanel() -> impl IntoView {
     let NameColorSetting(name_color) = expect_context();
     let TagColorSetting(tag_color) = expect_context();
     let ShowMinimap(show_minimap) = expect_context();
+    let ShowWarQueue(show_war_queue) = expect_context();
+    let ShowWarStats(show_war_stats) = expect_context();
+    let WarFeedVisible(war_feed_visible) = expect_context();
+    let IsMobile(is_mobile) = expect_context();
     let LabelScaleMaster(label_scale_master) = expect_context();
     let LabelScaleStatic(label_scale_static_tag) = expect_context();
     let LabelScaleStaticName(label_scale_static_name) = expect_context();
@@ -750,6 +754,18 @@ fn SettingsPanel() -> impl IntoView {
                             {move || heat_window_label.get()}
                         </div>
                     </div>
+                </Show>
+
+                // Only for viewers who can actually see the war feed - the same rule the
+                // panels themselves follow. For everyone else these would be dead toggles.
+                <Show when=move || war_feed_visible.get()>
+                    <SettingsSectionHeader title="War" />
+                    <SettingsToggleRow label="War Queue" shortcut="" active=show_war_queue />
+                    // Desktop only: `WarStatsStrip` never renders on a phone, so on mobile
+                    // this would be another dead toggle.
+                    <Show when=move || !is_mobile.get()>
+                        <SettingsToggleRow label="War Stats" shortcut="" active=show_war_stats />
+                    </Show>
                 </Show>
 
                 <SettingsSectionHeader title="Season Rating" />

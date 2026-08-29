@@ -16,8 +16,8 @@ use sequoia_shared::{QueueStatus, TreasuryLevel, WarControllerState, WarQueueEnt
 use wasm_bindgen::JsCast;
 
 use crate::app::{
-    CurrentMode, IsMobile, MapMode, WarControllerData, WarFeedVisible, WarPanelOpen, WarPanelWidth,
-    clamp_war_panel_width,
+    CurrentMode, IsMobile, MapMode, ShowWarQueue, WarControllerData, WarFeedVisible, WarPanelOpen,
+    WarPanelWidth, clamp_war_panel_width,
 };
 
 const WARCONTROLLER_ENDPOINT: &str = "/api/warcontroller";
@@ -60,10 +60,14 @@ pub(crate) fn WarQueuePanel() -> impl IntoView {
     let WarPanelWidth(panel_width) = expect_context();
     let IsMobile(is_mobile) = expect_context();
     let CurrentMode(map_mode) = expect_context();
+    let ShowWarQueue(show_war_queue) = expect_context();
 
     // The feed describes right now, so it must never be shown against a past snapshot -
-    // the same rule the tooltip's "In War" line follows.
-    let visible = Memo::new(move |_| war_feed_visible.get() && map_mode.get() == MapMode::Live);
+    // the same rule the tooltip's "In War" line follows. The setting sits on top of that:
+    // it hides the panel outright, chevron included, unlike the collapse toggle.
+    let visible = Memo::new(move |_| {
+        show_war_queue.get() && war_feed_visible.get() && map_mode.get() == MapMode::Live
+    });
 
     let rows = Memo::new(move |_| {
         warcontroller_state.with(|state| {
