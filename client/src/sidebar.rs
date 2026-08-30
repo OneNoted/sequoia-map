@@ -23,15 +23,17 @@ use crate::app::{
     LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
     LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
     LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapIntelModeEnabled, MapMode,
-    NameColor, NameColorSetting, NeedsLiveResync, PlaybackActive, ReadableFont,
+    NameColor, NameColorSetting, NeedsLiveResync, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN,
+    PlaybackActive, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize, ReadableFont,
     ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild, ShowClaimLabels,
     ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
-    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowResourceIcons, ShowSettings,
-    ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, SidebarIndex, SidebarItems, SidebarOpen,
-    SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
+    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
+    ShowSettings, ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, SidebarIndex, SidebarItems,
+    SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
     WarFeedVisible, canvas_dimensions, clamp_connection_opacity_scale,
     clamp_connection_thickness_scale, clamp_label_scale_group, clamp_label_scale_master,
+    clamp_player_head_size,
 };
 use crate::colors::rgba_css;
 use crate::defense::defense_tier_display;
@@ -590,6 +592,10 @@ fn SettingsPanel() -> impl IntoView {
     let ShowMinimap(show_minimap) = expect_context();
     let ShowWarQueue(show_war_queue) = expect_context();
     let ShowWarStats(show_war_stats) = expect_context();
+    let ShowPlayerHeads(show_player_heads) = expect_context();
+    let PlayerHeadRenderHead(player_head_render_head) = expect_context();
+    let PlayerHeadRenderLabel(player_head_render_label) = expect_context();
+    let PlayerHeadSize(player_head_size) = expect_context();
     let WarFeedVisible(war_feed_visible) = expect_context();
     let IsMobile(is_mobile) = expect_context();
     let LabelScaleMaster(label_scale_master) = expect_context();
@@ -765,6 +771,21 @@ fn SettingsPanel() -> impl IntoView {
                     // this would be another dead toggle.
                     <Show when=move || !is_mobile.get()>
                         <SettingsToggleRow label="War Stats" shortcut="" active=show_war_stats />
+                    </Show>
+                    <SettingsToggleRow label="Teammate Heads" shortcut="" active=show_player_heads />
+                    // Nested under the master toggle: with heads off these three decide
+                    // nothing, and the panel is long enough already.
+                    <Show when=move || show_player_heads.get()>
+                        <SettingsToggleRow label="Render Head" shortcut="" active=player_head_render_head />
+                        <SettingsToggleRow label="Render Label" shortcut="" active=player_head_render_label />
+                        <SettingsScaleRow
+                            label="Head Size"
+                            value=player_head_size
+                            min=PLAYER_HEAD_SIZE_MIN
+                            max=PLAYER_HEAD_SIZE_MAX
+                            step=1.0
+                            clamp=clamp_player_head_size
+                        />
                     </Show>
                 </Show>
 

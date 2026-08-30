@@ -503,7 +503,7 @@ async fn fetch_map_intel_overlay() -> Result<MapIntelPayload, String> {
         .map_err(|error| format!("decode failed: {error}"))
 }
 
-fn canvas_context(
+pub(crate) fn canvas_context(
     canvas: &HtmlCanvasElement,
     cached_ctx: &Rc<RefCell<Option<CanvasRenderingContext2d>>>,
 ) -> Option<(CanvasRenderingContext2d, f64, f64)> {
@@ -980,7 +980,7 @@ fn node_radius(scale: f64) -> f64 {
     (1.4 + scale * 0.9).clamp(NODE_MIN_RADIUS, NODE_MAX_RADIUS)
 }
 
-fn in_screen_bounds(x: f64, y: f64, width: f64, height: f64, margin: f64) -> bool {
+pub(crate) fn in_screen_bounds(x: f64, y: f64, width: f64, height: f64, margin: f64) -> bool {
     x >= -margin && y >= -margin && x <= width + margin && y <= height + margin
 }
 
