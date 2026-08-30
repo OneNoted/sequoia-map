@@ -10,6 +10,7 @@ mod icons;
 mod map_intel;
 mod navbar;
 mod playback;
+mod players;
 mod render_loop;
 mod renderer;
 mod season_scalar;

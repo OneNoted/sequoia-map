@@ -170,6 +170,14 @@ pub(crate) struct ShowWarQueue(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowWarStats(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowPlayerHeads(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct PlayerHeadRenderHead(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct PlayerHeadRenderLabel(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct PlayerHeadSize(pub RwSignal<f64>);
+#[derive(Clone, Copy)]
 pub(crate) struct LabelScaleMaster(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct LabelScaleStatic(pub RwSignal<f64>);
@@ -422,6 +430,14 @@ struct SettingsV2 {
     show_war_queue: bool,
     #[serde(default = "default_true")]
     show_war_stats: bool,
+    #[serde(default = "default_true")]
+    show_player_heads: bool,
+    #[serde(default = "default_true")]
+    player_head_render_head: bool,
+    #[serde(default)]
+    player_head_render_label: bool,
+    #[serde(default = "default_player_head_size")]
+    player_head_size: f64,
     resource_highlight: bool,
     #[serde(default)]
     defense_highlight: bool,
@@ -535,6 +551,10 @@ const fn default_sidebar_width() -> f64 {
     DEFAULT_SIDEBAR_WIDTH
 }
 
+const fn default_player_head_size() -> f64 {
+    DEFAULT_PLAYER_HEAD_SIZE
+}
+
 pub(crate) const DEFAULT_LABEL_SCALE_MASTER: f64 = 1.0;
 pub(crate) const DEFAULT_LABEL_SCALE_GROUP: f64 = 1.0;
 pub(crate) const DEFAULT_LABEL_SCALE_STATIC_TAG: f64 = 1.0;
@@ -549,6 +569,12 @@ pub(crate) const LABEL_SCALE_MASTER_MIN: f64 = 1.0;
 pub(crate) const LABEL_SCALE_MASTER_MAX: f64 = 2.25;
 pub(crate) const LABEL_SCALE_GROUP_MIN: f64 = 0.60;
 pub(crate) const LABEL_SCALE_GROUP_MAX: f64 = 1.80;
+/// On-screen edge length of a teammate head, in CSS pixels. Screen-space rather than
+/// world-space on purpose: the head stays legible at every zoom, the way the map intel
+/// markers do, instead of shrinking to nothing when you zoom out to the whole province.
+pub(crate) const PLAYER_HEAD_SIZE_MIN: f64 = 8.0;
+pub(crate) const PLAYER_HEAD_SIZE_MAX: f64 = 48.0;
+pub(crate) const DEFAULT_PLAYER_HEAD_SIZE: f64 = 20.0;
 
 pub(crate) fn clamp_connection_opacity_scale(value: f64) -> f64 {
     value.clamp(CONNECTION_OPACITY_SCALE_MIN, CONNECTION_OPACITY_SCALE_MAX)
@@ -559,6 +585,16 @@ pub(crate) fn clamp_connection_thickness_scale(value: f64) -> f64 {
         CONNECTION_THICKNESS_SCALE_MIN,
         CONNECTION_THICKNESS_SCALE_MAX,
     )
+}
+
+/// Unlike the other clamps this one guards `NaN`: the value reaches us from a persisted
+/// JSON blob a user can hand-edit, and a `NaN` size would silently draw nothing at all
+/// rather than being pinned to a bound.
+pub(crate) fn clamp_player_head_size(value: f64) -> f64 {
+    if value.is_nan() {
+        return DEFAULT_PLAYER_HEAD_SIZE;
+    }
+    value.clamp(PLAYER_HEAD_SIZE_MIN, PLAYER_HEAD_SIZE_MAX)
 }
 
 pub(crate) fn clamp_label_scale_master(value: f64) -> f64 {
@@ -590,6 +626,10 @@ impl Default for SettingsV2 {
             war_panel_width: default_war_panel_width(),
             show_war_queue: true,
             show_war_stats: true,
+            show_player_heads: true,
+            player_head_render_head: true,
+            player_head_render_label: false,
+            player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
             resource_highlight: false,
             defense_highlight: false,
             map_intel_enabled: false,
@@ -719,6 +759,10 @@ impl From<LegacySettings> for SettingsV2 {
             war_panel_width: default_war_panel_width(),
             show_war_queue: true,
             show_war_stats: true,
+            show_player_heads: true,
+            player_head_render_head: true,
+            player_head_render_label: false,
+            player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
             resource_highlight: value.resource_highlight,
             defense_highlight: value.defense_highlight,
             map_intel_enabled: value.map_intel_enabled,
@@ -923,6 +967,11 @@ pub fn MapPage() -> impl IntoView {
         RwSignal::new(clamp_war_panel_width(saved.war_panel_width));
     let show_war_queue: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
     let show_war_stats: RwSignal<bool> = RwSignal::new(saved.show_war_stats);
+    let show_player_heads: RwSignal<bool> = RwSignal::new(saved.show_player_heads);
+    let player_head_render_head: RwSignal<bool> = RwSignal::new(saved.player_head_render_head);
+    let player_head_render_label: RwSignal<bool> = RwSignal::new(saved.player_head_render_label);
+    let player_head_size: RwSignal<f64> =
+        RwSignal::new(clamp_player_head_size(saved.player_head_size));
     let sidebar_transient: RwSignal<bool> = RwSignal::new(false);
     let sidebar_ready: RwSignal<bool> = RwSignal::new(false);
     let sidebar_loaded: RwSignal<bool> = RwSignal::new(saved.sidebar_open);
@@ -1063,6 +1112,10 @@ pub fn MapPage() -> impl IntoView {
     provide_context(WarPanelWidth(war_panel_width));
     provide_context(ShowWarQueue(show_war_queue));
     provide_context(ShowWarStats(show_war_stats));
+    provide_context(ShowPlayerHeads(show_player_heads));
+    provide_context(PlayerHeadRenderHead(player_head_render_head));
+    provide_context(PlayerHeadRenderLabel(player_head_render_label));
+    provide_context(PlayerHeadSize(player_head_size));
     provide_context(SidebarWidth(sidebar_width));
     provide_context(SidebarTransient(sidebar_transient));
     provide_context(SidebarIndex(sidebar_index));
@@ -1240,6 +1293,10 @@ pub fn MapPage() -> impl IntoView {
         show_minimap.set(defaults.show_minimap);
         show_war_queue.set(defaults.show_war_queue);
         show_war_stats.set(defaults.show_war_stats);
+        show_player_heads.set(defaults.show_player_heads);
+        player_head_render_head.set(defaults.player_head_render_head);
+        player_head_render_label.set(defaults.player_head_render_label);
+        player_head_size.set(clamp_player_head_size(defaults.player_head_size));
         name_color.set(defaults.name_color);
         tag_color.set(defaults.tag_color);
         label_scale_master.set(clamp_label_scale_master(defaults.label_scale_master));
@@ -1745,6 +1802,10 @@ pub fn MapPage() -> impl IntoView {
             war_panel_width: clamp_war_panel_width(war_panel_width.get()),
             show_war_queue: show_war_queue.get(),
             show_war_stats: show_war_stats.get(),
+            show_player_heads: show_player_heads.get(),
+            player_head_render_head: player_head_render_head.get(),
+            player_head_render_label: player_head_render_label.get(),
+            player_head_size: clamp_player_head_size(player_head_size.get()),
             resource_highlight: resource_highlight.get(),
             defense_highlight: defense_highlight.get(),
             map_intel_enabled: map_intel_enabled.get(),
@@ -2349,6 +2410,7 @@ pub fn MapPage() -> impl IntoView {
                 </div>
                 <DefenseLegend />
                 <MapIntelOverlay />
+                <crate::players::PlayerHeadsOverlay />
                 <crate::warcontroller::WarQueuePanel />
                 <crate::war_stats::WarStatsStrip />
                 // Mobile HUD buttons — bottom-right stack
@@ -3180,9 +3242,10 @@ fn TerritoryPeekCard() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_SIDEBAR_WIDTH, DEFAULT_WAR_PANEL_WIDTH, LegacySettings, MapMode, NameColor,
-        SETTINGS_DEFAULTS_VERSION, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, SettingsV2,
-        WAR_PANEL_WIDTH_MAX, WAR_PANEL_WIDTH_MIN, canonical_path_for_mode, clamp_sidebar_width,
+        DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_SIDEBAR_WIDTH, DEFAULT_WAR_PANEL_WIDTH, LegacySettings,
+        MapMode, NameColor, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN, SETTINGS_DEFAULTS_VERSION,
+        SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, SettingsV2, WAR_PANEL_WIDTH_MAX, WAR_PANEL_WIDTH_MIN,
+        canonical_path_for_mode, clamp_player_head_size, clamp_sidebar_width,
         clamp_war_panel_width, map_mode_from_path, normalize_heat_selected_season_id,
         should_wait_for_history_probe,
     };
@@ -3222,6 +3285,33 @@ mod tests {
         let defaults = SettingsV2::default();
         assert!(defaults.show_war_queue);
         assert!(defaults.show_war_stats);
+    }
+
+    #[test]
+    fn settings_without_player_head_fields_default_to_heads_on_labels_off() {
+        // Same reasoning as the war visibility toggles above: these post-date every saved
+        // blob, so serde defaults carry them rather than a defaults-version migration.
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(parsed.show_player_heads);
+        assert!(parsed.player_head_render_head);
+        assert!(!parsed.player_head_render_label);
+        assert_eq!(parsed.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
+
+        let defaults = SettingsV2::default();
+        assert!(defaults.show_player_heads);
+        assert!(defaults.player_head_render_head);
+        assert!(!defaults.player_head_render_label);
+        assert_eq!(defaults.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
+    }
+
+    #[test]
+    fn player_head_size_clamps_to_its_bounds_and_survives_nan() {
+        assert_eq!(clamp_player_head_size(0.0), PLAYER_HEAD_SIZE_MIN);
+        assert_eq!(clamp_player_head_size(1000.0), PLAYER_HEAD_SIZE_MAX);
+        assert_eq!(clamp_player_head_size(24.0), 24.0);
+        // A hand-edited blob can carry `NaN`, which would draw nothing at all rather than
+        // being pinned to a bound.
+        assert_eq!(clamp_player_head_size(f64::NAN), DEFAULT_PLAYER_HEAD_SIZE);
     }
 
     #[test]
