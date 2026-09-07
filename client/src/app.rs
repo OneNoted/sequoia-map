@@ -5,7 +5,7 @@ use leptos_router::hooks::{use_location, use_navigate};
 use wasm_bindgen::JsCast;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub(crate) const DEFAULT_SIDEBAR_WIDTH: f64 = 420.0;
@@ -15,6 +15,14 @@ const LEGACY_DEFAULT_SIDEBAR_WIDTH: f64 = 380.0;
 
 pub(crate) fn clamp_sidebar_width(value: f64) -> f64 {
     value.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)
+}
+
+pub(crate) const DEFAULT_WAR_PANEL_WIDTH: f64 = 278.0;
+pub(crate) const WAR_PANEL_WIDTH_MIN: f64 = 220.0;
+pub(crate) const WAR_PANEL_WIDTH_MAX: f64 = 460.0;
+
+pub(crate) fn clamp_war_panel_width(value: f64) -> f64 {
+    value.clamp(WAR_PANEL_WIDTH_MIN, WAR_PANEL_WIDTH_MAX)
 }
 
 fn migrate_sidebar_width(value: f64) -> f64 {
@@ -91,7 +99,9 @@ thread_local! {
 use sequoia_shared::history::{
     HistoryGuildSrEntry, HistoryHeat, HistoryHeatMeta, HistoryHeatSource,
 };
-use sequoia_shared::{Region, Resources, SeasonScalarSample, TerritoryChange, TreasuryLevel};
+use sequoia_shared::{
+    Region, Resources, SeasonScalarSample, TerritoryChange, TreasuryLevel, WarControllerState,
+};
 
 /// Newtype wrappers to give `hovered` and `selected` distinct types for Leptos context.
 /// (Both are `RwSignal<Option<String>>` — without wrappers, `provide_context` overwrites one.)
@@ -156,6 +166,18 @@ pub(crate) struct ReadableFont(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowMinimap(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ShowWarQueue(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct ShowWarStats(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct ShowPlayerHeads(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct PlayerHeadRenderHead(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct PlayerHeadRenderLabel(pub RwSignal<bool>);
+#[derive(Clone, Copy)]
+pub(crate) struct PlayerHeadSize(pub RwSignal<f64>);
+#[derive(Clone, Copy)]
 pub(crate) struct LabelScaleMaster(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct LabelScaleStatic(pub RwSignal<f64>);
@@ -183,6 +205,12 @@ pub(crate) struct ShowSettings(pub RwSignal<bool>);
 pub(crate) struct ShowDebugInfo(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct IsMobile(pub RwSignal<bool>);
+/// Viewport width in CSS pixels, refreshed by the window resize listener.
+///
+/// [`IsMobile`] only carries the breakpoint; an overlay that has to fit a computed number of
+/// fixed-width children needs the width itself, as a signal rather than a one-shot read.
+#[derive(Clone, Copy)]
+pub(crate) struct WindowWidth(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct PeekTerritory(pub RwSignal<Option<String>>);
 #[derive(Clone, Copy)]
@@ -228,6 +256,19 @@ pub(crate) struct HeatWindowLabel(pub RwSignal<String>);
 pub(crate) struct HeatMetaState(pub RwSignal<Option<HistoryHeatMeta>>);
 
 pub(crate) const MOBILE_BREAKPOINT: f64 = 768.0;
+/// Longest wait between website session probe attempts.
+///
+/// Doubling from a second, then held here for as long as the probe keeps failing. The loop
+/// deliberately does not give up: it used to, after about half a minute, which is shorter than
+/// a redeploy - and a member whose probe gave up kept the war feed hidden until the
+/// [`VIEWER_PROBE_REFRESH`] sweep came round up to five minutes later, long after the server
+/// had started serving them again. The server re-probes a stream every 30s
+/// (`WAR_FEED_RETRY`); this is the display side of the same policy, at a comparable cadence.
+const VIEWER_PROBE_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(16);
+/// Wait before the first session probe retry, doubling towards [`VIEWER_PROBE_MAX_BACKOFF`].
+const FIRST_PROBE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+/// How often an open map re-checks the session behind the war feed.
+const VIEWER_PROBE_REFRESH: std::time::Duration = std::time::Duration::from_secs(300);
 const GUILD_ONLINE_POLL_INTERVAL_SECS: u64 = 120;
 const GUILD_ONLINE_BOOTSTRAP_RETRY_SECS: u64 = 3;
 const GUILD_ONLINE_ERROR_RETRY_SECS: u64 = 15;
@@ -309,6 +350,28 @@ pub(crate) struct LiveSeasonScalarSample(pub RwSignal<Option<SeasonScalarSample>
 pub(crate) struct HistorySeasonScalarSample(pub RwSignal<Option<SeasonScalarSample>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HistorySeasonLeaderboard(pub RwSignal<Option<Vec<HistoryGuildSrEntry>>>);
+#[derive(Clone, Copy)]
+pub(crate) struct WarControllerData(pub RwSignal<Option<WarControllerState>>);
+/// Names of the territories with a war in progress, derived from [`WarControllerData`].
+///
+/// A `Memo` rather than a derived closure on purpose: the war feed re-broadcasts every few
+/// seconds as tower health moves, but the set of names rarely changes, and the memo's equality
+/// check keeps those no-op updates from rebuilding the GPU instance buffer.
+#[derive(Clone, Copy)]
+pub(crate) struct TerritoriesInWar(pub Memo<HashSet<String>>);
+/// Whether the viewer may see the war feed at all: signed in *and* in Sequoia.
+///
+/// The server is the real gate - it refuses `/api/warcontroller` and withholds the SSE
+/// `warcontroller` frames from everyone else. This is the display side of the same rule,
+/// covering the war queue panel and, through [`TerritoriesInWar`], the at-war highlight.
+#[derive(Clone, Copy)]
+pub(crate) struct WarFeedVisible(pub Memo<bool>);
+/// Whether the top-left war queue overview is expanded.
+#[derive(Clone, Copy)]
+pub(crate) struct WarPanelOpen(pub RwSignal<bool>);
+/// Width of the war queue overview, drag-resizable like the sidebar's.
+#[derive(Clone, Copy)]
+pub(crate) struct WarPanelWidth(pub RwSignal<f64>);
 
 #[derive(Clone, Debug)]
 pub(crate) struct BufferedUpdate {
@@ -327,14 +390,10 @@ pub(crate) struct TerritoryGeometryStore(pub StoredValue<TerritoryGeometryMap>);
 #[derive(Clone, Copy)]
 pub(crate) struct GuildColorStore(pub StoredValue<GuildColorMap>);
 
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum NameColor {
-    White,  // rgba(220, 218, 210, 0.88) — current default
-    Guild,  // per-territory guild color (brightened), same as tag line
-    Gold,   // rgba(245, 197, 66, 0.88) — matches app accent
-    Copper, // rgba(181, 103, 39, 0.88) — warm copper
-    Muted,  // rgba(120, 116, 112, 0.78) — subtle/subdued
-}
+// Defined in the engine crate so the renderer can name it without depending on
+// the UI. Re-exported here to keep `crate::app::NameColor` paths working; its
+// serde form is PascalCase and is persisted in localStorage.
+pub(crate) use sequoia_map_engine::settings::NameColor;
 
 use gloo_storage::Storage;
 
@@ -363,6 +422,22 @@ struct SettingsV2 {
     #[serde(default = "default_connection_thickness_scale")]
     connection_thickness_scale: f64,
     sidebar_open: bool,
+    #[serde(default = "default_true")]
+    war_panel_open: bool,
+    #[serde(default = "default_war_panel_width")]
+    war_panel_width: f64,
+    #[serde(default = "default_true")]
+    show_war_queue: bool,
+    #[serde(default = "default_true")]
+    show_war_stats: bool,
+    #[serde(default = "default_true")]
+    show_player_heads: bool,
+    #[serde(default = "default_true")]
+    player_head_render_head: bool,
+    #[serde(default)]
+    player_head_render_label: bool,
+    #[serde(default = "default_player_head_size")]
+    player_head_size: f64,
     resource_highlight: bool,
     #[serde(default)]
     defense_highlight: bool,
@@ -468,8 +543,16 @@ const fn default_label_scale_static_name() -> f64 {
     DEFAULT_LABEL_SCALE_STATIC_NAME
 }
 
+const fn default_war_panel_width() -> f64 {
+    DEFAULT_WAR_PANEL_WIDTH
+}
+
 const fn default_sidebar_width() -> f64 {
     DEFAULT_SIDEBAR_WIDTH
+}
+
+const fn default_player_head_size() -> f64 {
+    DEFAULT_PLAYER_HEAD_SIZE
 }
 
 pub(crate) const DEFAULT_LABEL_SCALE_MASTER: f64 = 1.0;
@@ -486,6 +569,12 @@ pub(crate) const LABEL_SCALE_MASTER_MIN: f64 = 1.0;
 pub(crate) const LABEL_SCALE_MASTER_MAX: f64 = 2.25;
 pub(crate) const LABEL_SCALE_GROUP_MIN: f64 = 0.60;
 pub(crate) const LABEL_SCALE_GROUP_MAX: f64 = 1.80;
+/// On-screen edge length of a teammate head, in CSS pixels. Screen-space rather than
+/// world-space on purpose: the head stays legible at every zoom, the way the map intel
+/// markers do, instead of shrinking to nothing when you zoom out to the whole province.
+pub(crate) const PLAYER_HEAD_SIZE_MIN: f64 = 8.0;
+pub(crate) const PLAYER_HEAD_SIZE_MAX: f64 = 48.0;
+pub(crate) const DEFAULT_PLAYER_HEAD_SIZE: f64 = 20.0;
 
 pub(crate) fn clamp_connection_opacity_scale(value: f64) -> f64 {
     value.clamp(CONNECTION_OPACITY_SCALE_MIN, CONNECTION_OPACITY_SCALE_MAX)
@@ -496,6 +585,16 @@ pub(crate) fn clamp_connection_thickness_scale(value: f64) -> f64 {
         CONNECTION_THICKNESS_SCALE_MIN,
         CONNECTION_THICKNESS_SCALE_MAX,
     )
+}
+
+/// Unlike the other clamps this one guards `NaN`: the value reaches us from a persisted
+/// JSON blob a user can hand-edit, and a `NaN` size would silently draw nothing at all
+/// rather than being pinned to a bound.
+pub(crate) fn clamp_player_head_size(value: f64) -> f64 {
+    if value.is_nan() {
+        return DEFAULT_PLAYER_HEAD_SIZE;
+    }
+    value.clamp(PLAYER_HEAD_SIZE_MIN, PLAYER_HEAD_SIZE_MAX)
 }
 
 pub(crate) fn clamp_label_scale_master(value: f64) -> f64 {
@@ -523,6 +622,14 @@ impl Default for SettingsV2 {
             connection_opacity_scale: default_connection_opacity_scale(),
             connection_thickness_scale: default_connection_thickness_scale(),
             sidebar_open: false,
+            war_panel_open: true,
+            war_panel_width: default_war_panel_width(),
+            show_war_queue: true,
+            show_war_stats: true,
+            show_player_heads: true,
+            player_head_render_head: true,
+            player_head_render_label: false,
+            player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
             resource_highlight: false,
             defense_highlight: false,
             map_intel_enabled: false,
@@ -648,6 +755,14 @@ impl From<LegacySettings> for SettingsV2 {
             connection_opacity_scale: default_connection_opacity_scale(),
             connection_thickness_scale: default_connection_thickness_scale(),
             sidebar_open: value.sidebar_open,
+            war_panel_open: true,
+            war_panel_width: default_war_panel_width(),
+            show_war_queue: true,
+            show_war_stats: true,
+            show_player_heads: true,
+            player_head_render_head: true,
+            player_head_render_label: false,
+            player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
             resource_highlight: value.resource_highlight,
             defense_highlight: value.defense_highlight,
             map_intel_enabled: value.map_intel_enabled,
@@ -696,6 +811,7 @@ use crate::heat::{self, HeatFetchInput};
 use crate::history;
 use crate::icons::{self, ResourceAtlas};
 use crate::map_intel::MapIntelOverlay;
+use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::sse::{self, ConnectionStatus};
@@ -704,6 +820,7 @@ use crate::tiles::{self, LoadedTile};
 use crate::time_format::format_hms;
 use crate::timeline::Timeline;
 use crate::viewport::Viewport;
+use crate::warcontroller;
 
 /// Format a resource value for compact display (e.g. 9000 -> "9.0k").
 fn format_resource_compact(val: i32) -> String {
@@ -845,6 +962,16 @@ pub fn MapPage() -> impl IntoView {
         saved.sidebar_width,
     )));
     let sidebar_open: RwSignal<bool> = RwSignal::new(saved.sidebar_open);
+    let war_panel_open: RwSignal<bool> = RwSignal::new(saved.war_panel_open);
+    let war_panel_width: RwSignal<f64> =
+        RwSignal::new(clamp_war_panel_width(saved.war_panel_width));
+    let show_war_queue: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
+    let show_war_stats: RwSignal<bool> = RwSignal::new(saved.show_war_stats);
+    let show_player_heads: RwSignal<bool> = RwSignal::new(saved.show_player_heads);
+    let player_head_render_head: RwSignal<bool> = RwSignal::new(saved.player_head_render_head);
+    let player_head_render_label: RwSignal<bool> = RwSignal::new(saved.player_head_render_label);
+    let player_head_size: RwSignal<f64> =
+        RwSignal::new(clamp_player_head_size(saved.player_head_size));
     let sidebar_transient: RwSignal<bool> = RwSignal::new(false);
     let sidebar_ready: RwSignal<bool> = RwSignal::new(false);
     let sidebar_loaded: RwSignal<bool> = RwSignal::new(saved.sidebar_open);
@@ -864,6 +991,7 @@ pub fn MapPage() -> impl IntoView {
 
     // Mobile detection
     let is_mobile: RwSignal<bool> = RwSignal::new(canvas_dimensions().0 < MOBILE_BREAKPOINT);
+    let window_width: RwSignal<f64> = RwSignal::new(canvas_dimensions().0);
     let peek_territory: RwSignal<Option<String>> = RwSignal::new(None);
     let selected_guild: RwSignal<Option<String>> = RwSignal::new(None);
     let detail_return_guild: RwSignal<Option<String>> = RwSignal::new(None);
@@ -908,6 +1036,29 @@ pub fn MapPage() -> impl IntoView {
     let history_season_leaderboard: RwSignal<Option<Vec<HistoryGuildSrEntry>>> =
         RwSignal::new(None);
     let route_mode_sync_in_flight: RwSignal<bool> = RwSignal::new(false);
+    let warcontroller_state: RwSignal<Option<WarControllerState>> = RwSignal::new(None);
+    // Website session, resolved on mount below. Declared here because the war feed is
+    // gated on it: the server refuses that feed to anyone outside Sequoia, and the map
+    // must not render it - or reserve space for it - either.
+    let viewer = RwSignal::new(None::<crate::auth::Viewer>);
+    let war_feed_visible: Memo<bool> = Memo::new(move |_| {
+        viewer.with(|current| {
+            current
+                .as_ref()
+                .is_some_and(crate::auth::Viewer::is_guild_member)
+        })
+    });
+    let territories_in_war: Memo<HashSet<String>> = Memo::new(move |_| {
+        if !war_feed_visible.get() {
+            return HashSet::new();
+        }
+        warcontroller_state.with(|state| {
+            state
+                .as_ref()
+                .map(WarControllerState::territories_at_war)
+                .unwrap_or_default()
+        })
+    });
     let territory_geometry: StoredValue<TerritoryGeometryMap> = StoredValue::new(HashMap::new());
     let guild_colors: StoredValue<GuildColorMap> = StoredValue::new(HashMap::new());
 
@@ -957,6 +1108,14 @@ pub fn MapPage() -> impl IntoView {
     provide_context(LabelScaleDynamic(label_scale_dynamic));
     provide_context(LabelScaleIcons(label_scale_icons));
     provide_context(SidebarOpen(sidebar_open));
+    provide_context(WarPanelOpen(war_panel_open));
+    provide_context(WarPanelWidth(war_panel_width));
+    provide_context(ShowWarQueue(show_war_queue));
+    provide_context(ShowWarStats(show_war_stats));
+    provide_context(ShowPlayerHeads(show_player_heads));
+    provide_context(PlayerHeadRenderHead(player_head_render_head));
+    provide_context(PlayerHeadRenderLabel(player_head_render_label));
+    provide_context(PlayerHeadSize(player_head_size));
     provide_context(SidebarWidth(sidebar_width));
     provide_context(SidebarTransient(sidebar_transient));
     provide_context(SidebarIndex(sidebar_index));
@@ -981,12 +1140,96 @@ pub fn MapPage() -> impl IntoView {
     provide_context(SseSeqGapDetectedCount(sse_seq_gap_detected_count));
     provide_context(HistoryBufferSizeMax(history_buffer_size_max));
     provide_context(LiveSeasonScalarSample(live_season_scalar_sample));
+    provide_context(WarControllerData(warcontroller_state));
+    provide_context(TerritoriesInWar(territories_in_war));
+    provide_context(WarFeedVisible(war_feed_visible));
     provide_context(HistorySeasonScalarSample(history_season_scalar_sample));
     provide_context(HistorySeasonLeaderboard(history_season_leaderboard));
     provide_context(TerritoryGeometryStore(territory_geometry));
     provide_context(GuildColorStore(guild_colors));
     provide_context(crate::tower::TowerState::new());
     provide_context(IsMobile(is_mobile));
+    provide_context(WindowWidth(window_width));
+
+    // Website session, resolved on mount (the signal itself is declared alongside the war
+    // feed above). The navbar shows who is signed in, and the war feed is gated on
+    // Sequoia membership, so a failure here leaves the bar reading "Sign in" and the war
+    // overview hidden - which is the safe way round for internal data.
+    provide_context(CurrentViewer(viewer));
+    // The retry loop below never terminates on its own, so a second caller - `pageshow` after
+    // a back-forward restore, while the first is still backing off - would leave two loops
+    // probing forever. One at a time.
+    let probe_in_flight = RwSignal::new(false);
+    let refresh_viewer = move || {
+        if probe_in_flight.get_untracked() {
+            return;
+        }
+        probe_in_flight.set(true);
+        wasm_bindgen_futures::spawn_local(async move {
+            // Retried on failure, and only on failure: a signed-out answer is final, but a
+            // transport blip used to read the same way and left a member without the war feed
+            // for the rest of the page's life. An existing viewer is kept while retrying, so a
+            // hiccup never blanks a session that is still good.
+            let mut backoff = FIRST_PROBE_BACKOFF;
+            loop {
+                match crate::auth::fetch_viewer().await {
+                    Ok(resolved) => {
+                        viewer.set(resolved);
+                        probe_in_flight.set(false);
+                        return;
+                    }
+                    Err(error) => {
+                        // Once per outage, not once per attempt: this loop runs until it
+                        // succeeds, and a backend that stays down would otherwise fill the
+                        // console every few seconds for the life of the page.
+                        if backoff == FIRST_PROBE_BACKOFF {
+                            web_sys::console::warn_1(
+                                &format!("website session probe failed, retrying: {error}").into(),
+                            );
+                        }
+                        gloo_timers::future::sleep(backoff).await;
+                        backoff = (backoff * 2).min(VIEWER_PROBE_MAX_BACKOFF);
+                    }
+                }
+            }
+        });
+    };
+    refresh_viewer();
+    // Membership can be revoked, and a session can expire, while the map stays open for hours.
+    // The server mutes the war feed on its own schedule; this is the display side of that, so
+    // the panel and the at-war highlight cannot outlive the access they depend on.
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            gloo_timers::future::sleep(VIEWER_PROBE_REFRESH).await;
+            if let Ok(resolved) = crate::auth::fetch_viewer().await {
+                viewer.set(resolved);
+            }
+        }
+    });
+    // Signing in and out are full page loads, so the mount above normally sees
+    // the new session - except on a back-forward cache restore, which replays
+    // the old DOM without re-running any of this. Re-probe on a persisted
+    // `pageshow` so the chip cannot outlive the session it describes.
+    {
+        let handler =
+            wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::PageTransitionEvent)>::new(
+                move |event: web_sys::PageTransitionEvent| {
+                    if event.persisted() {
+                        refresh_viewer();
+                    }
+                },
+            );
+        if let Some(window) = web_sys::window() {
+            let _ = window.add_event_listener_with_callback(
+                "pageshow",
+                wasm_bindgen::JsCast::unchecked_ref(handler.as_ref()),
+            );
+        }
+        // The listener lives as long as the page does; the map is never
+        // unmounted, so leaking it is the correct lifetime here.
+        handler.forget();
+    }
+
     provide_context(PeekTerritory(peek_territory));
     provide_context(SelectedGuild(selected_guild));
     provide_context(DetailReturnGuild(detail_return_guild));
@@ -1048,6 +1291,12 @@ pub fn MapPage() -> impl IntoView {
         heat_selected_season_id.set(defaults.heat_selected_season_id);
         readable_font.set(defaults.readable_font);
         show_minimap.set(defaults.show_minimap);
+        show_war_queue.set(defaults.show_war_queue);
+        show_war_stats.set(defaults.show_war_stats);
+        show_player_heads.set(defaults.show_player_heads);
+        player_head_render_head.set(defaults.player_head_render_head);
+        player_head_render_label.set(defaults.player_head_render_label);
+        player_head_size.set(clamp_player_head_size(defaults.player_head_size));
         name_color.set(defaults.name_color);
         tag_color.set(defaults.tag_color);
         label_scale_master.set(clamp_label_scale_master(defaults.label_scale_master));
@@ -1391,6 +1640,34 @@ pub fn MapPage() -> impl IntoView {
         }
     });
 
+    // Seed war controller state once the viewer resolves to a Sequoia member; the SSE
+    // stream keeps it current afterwards. Fetching before that would be a guaranteed 403,
+    // and anything already held has to go the moment membership lapses.
+    Effect::new(move |_| {
+        if !war_feed_visible.get() {
+            if warcontroller_state.with_untracked(Option::is_some) {
+                warcontroller_state.set(None);
+            }
+            return;
+        }
+        wasm_bindgen_futures::spawn_local(async move {
+            match warcontroller::fetch_warcontroller().await {
+                // The SSE stream may already have delivered something newer while this was in
+                // flight - including the empty payload this endpoint falls back to.
+                Ok(state) => warcontroller_state.maybe_update(|current| {
+                    if !state.supersedes(current.as_ref()) {
+                        return false;
+                    }
+                    *current = Some(state);
+                    true
+                }),
+                Err(e) => {
+                    web_sys::console::warn_1(&format!("war controller fetch failed: {e}").into());
+                }
+            }
+        });
+    });
+
     // Poll shared server-side scalar estimate while in live mode.
     wasm_bindgen_futures::spawn_local(async move {
         loop {
@@ -1521,6 +1798,14 @@ pub fn MapPage() -> impl IntoView {
                 connection_thickness_scale.get(),
             ),
             sidebar_open: sidebar_open.get(),
+            war_panel_open: war_panel_open.get(),
+            war_panel_width: clamp_war_panel_width(war_panel_width.get()),
+            show_war_queue: show_war_queue.get(),
+            show_war_stats: show_war_stats.get(),
+            show_player_heads: show_player_heads.get(),
+            player_head_render_head: player_head_render_head.get(),
+            player_head_render_label: player_head_render_label.get(),
+            player_head_size: clamp_player_head_size(player_head_size.get()),
             resource_highlight: resource_highlight.get(),
             defense_highlight: defense_highlight.get(),
             map_intel_enabled: map_intel_enabled.get(),
@@ -1578,6 +1863,11 @@ pub fn MapPage() -> impl IntoView {
 
             let cb = Closure::<dyn Fn()>::new(move || {
                 let (w, _) = canvas_dimensions();
+                // Whole pixels only: sub-pixel and DPR resize noise must not wake the
+                // overlays that derive their layout from this.
+                if (w - window_width.get_untracked()).abs() >= 1.0 {
+                    window_width.set(w);
+                }
                 let mobile = w < MOBILE_BREAKPOINT;
                 if mobile != is_mobile.get_untracked() {
                     is_mobile.set(mobile);
@@ -2094,8 +2384,9 @@ pub fn MapPage() -> impl IntoView {
 
     view! {
         <div style="width: 100%; height: 100%; position: relative;">
-            <div style="width: 100%; height: 100%; position: relative; overflow: hidden; background: #0c0e17;">
+            <div style="width: 100%; height: 100%; position: relative; overflow: hidden; background: var(--bg-page);">
                 <MapCanvas />
+                <SiteNavbar />
                 // Minimap backdrop frame (desktop only)
                 <div
                     style:display=move || if is_mobile.get() || !show_minimap.get() { "none" } else { "block" }
@@ -2103,7 +2394,7 @@ pub fn MapPage() -> impl IntoView {
                     style="position: absolute; left: 16px; z-index: 6; width: 200px; height: 280px; pointer-events: none; border: 1px solid rgba(58,63,92,0.6); border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.12), inset 0 0 0 1px rgba(255,255,255,0.03);"
                 >
                     // "MAP" label
-                    <div style="position: absolute; top: 6px; left: 8px; font-family: 'Silkscreen', monospace; font-size: 0.62rem; color: rgba(245,197,66,0.5); letter-spacing: 0.1em;">"MAP"</div>
+                    <div style="position: absolute; top: 6px; left: 8px; font-family: var(--font-display); font-size: 0.62rem; color: rgba(245,197,66,0.5); letter-spacing: 0.1em;">"MAP"</div>
                     // Gold corner marks — top-left
                     <div style="position: absolute; top: 0; left: 0; width: 8px; height: 1px; background: rgba(245,197,66,0.3);" />
                     <div style="position: absolute; top: 0; left: 0; width: 1px; height: 8px; background: rgba(245,197,66,0.3);" />
@@ -2119,6 +2410,9 @@ pub fn MapPage() -> impl IntoView {
                 </div>
                 <DefenseLegend />
                 <MapIntelOverlay />
+                <crate::players::PlayerHeadsOverlay />
+                <crate::warcontroller::WarQueuePanel />
+                <crate::war_stats::WarStatsStrip />
                 // Mobile HUD buttons — bottom-right stack
                 <MobileHistoryToggle />
                 // Mobile FAB — opens sidebar
@@ -2127,7 +2421,7 @@ pub fn MapPage() -> impl IntoView {
                     style:display=move || {
                         if is_mobile.get() && !sidebar_open.get() { "flex" } else { "none" }
                     }
-                    style="position: absolute; bottom: 16px; right: 16px; z-index: 20; width: 48px; height: 48px; border-radius: 12px; background: #13161f; border: 1px solid #3a3f5c; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.15); color: #f5c542; font-size: 1.4rem; font-family: 'JetBrains Mono', monospace; touch-action: manipulation;"
+                    style="position: absolute; bottom: 16px; right: 16px; z-index: 20; width: 48px; height: 48px; border-radius: 12px; background: var(--color-deep); border: 1px solid var(--color-border-accent); align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.15); color: var(--color-gold); font-size: 1.4rem; font-family: var(--font-mono); touch-action: manipulation;"
                     on:click=move |_| {
                         sidebar_open.set(true);
                         sidebar_transient.set(false);
@@ -2209,7 +2503,7 @@ fn SidebarToggle() -> impl IntoView {
         <button
             class="sidebar-toggle"
             title=move || if sidebar_open.get() { "Hide sidebar" } else { "Show sidebar" }
-            style="position: absolute; top: 16px; left: -44px; z-index: 11; width: 32px; height: 32px; background: #13161f; border: 1px solid #282c3e; border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; color: #5a5860; font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; line-height: 1;"
+            style="position: absolute; top: 16px; left: -44px; z-index: 11; width: 32px; height: 32px; background: var(--color-deep); border: 1px solid var(--color-border-subtle); border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; color: var(--color-text-dim); font-family: var(--font-mono); font-size: 1.1rem; line-height: 1;"
             on:click=move |_| {
                 sidebar_open.update(|v| *v = !*v);
                 sidebar_transient.set(false);
@@ -2217,15 +2511,15 @@ fn SidebarToggle() -> impl IntoView {
             on:mouseenter=move |e| {
                 if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
                     el.style().set_property("border-color", "rgba(245,197,66,0.4)").ok();
-                    el.style().set_property("color", "#f5c542").ok();
-                    el.style().set_property("background", "#1a1d2a").ok();
+                    el.style().set_property("color", "var(--color-gold)").ok();
+                    el.style().set_property("background", "var(--color-surface)").ok();
                 }
             }
             on:mouseleave=move |e| {
                 if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("border-color", "#282c3e").ok();
-                    el.style().set_property("color", "#5a5860").ok();
-                    el.style().set_property("background", "#13161f").ok();
+                    el.style().set_property("border-color", "var(--color-border-subtle)").ok();
+                    el.style().set_property("color", "var(--color-text-dim)").ok();
+                    el.style().set_property("background", "var(--color-deep)").ok();
                 }
             }
         >
@@ -2412,9 +2706,9 @@ fn MobileHistoryToggle() -> impl IntoView {
                 }
             }
             style:bottom=move || if is_history() { "76px" } else { "72px" }
-            style:background=move || if is_history() { "#f5c542" } else { "#13161f" }
-            style:color=move || if is_history() { "#13161f" } else { "#9a9590" }
-            style:border-color=move || if is_history() { "#f5c542" } else { "#3a3f5c" }
+            style:background=move || if is_history() { "var(--color-gold)" } else { "var(--color-deep)" }
+            style:color=move || if is_history() { "var(--color-deep)" } else { "var(--color-text-secondary)" }
+            style:border-color=move || if is_history() { "var(--color-gold)" } else { "var(--color-border-accent)" }
             style:box-shadow=move || {
                 if is_history() {
                     "0 0 12px rgba(245,197,66,0.4), 0 4px 16px rgba(0,0,0,0.5)"
@@ -2482,6 +2776,7 @@ struct TooltipInfo {
     resources_from_live: bool,
     defense_tier: Option<String>,
     is_headquarters: bool,
+    is_at_war: bool,
     live_production_rates: Option<Resources>,
     live_storage_capacity: Option<Resources>,
     takes_in_window: Option<u64>,
@@ -2508,15 +2803,15 @@ fn DefenseLegend() -> impl IntoView {
                     "16px".to_string()
                 }
             }
-            style="position: absolute; top: 16px; z-index: 8; pointer-events: none; padding: 8px 9px; border: 1px solid rgba(58,63,92,0.78); border-radius: 4px; background: rgba(19,22,31,0.92); box-shadow: 0 8px 24px rgba(0,0,0,0.34);"
+            style="position: absolute; top: calc(var(--nav-height) + 16px); z-index: 8; pointer-events: none; padding: 8px 9px; border: 1px solid rgba(58,63,92,0.78); border-radius: 4px; background: rgba(19,22,31,0.92); box-shadow: 0 8px 24px rgba(0,0,0,0.34);"
         >
-            <div style="font-family: 'Silkscreen', monospace; font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: #9a9590; margin-bottom: 6px;">
+            <div style="font-family: var(--font-display); font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-secondary); margin-bottom: 6px;">
                 "Defense"
             </div>
             <div style="display: grid; grid-template-columns: auto auto; gap: 4px 8px; align-items: center;">
                 {DEFENSE_TIERS.iter().map(|(label, color)| view! {
                     <span style={format!("width: 10px; height: 10px; border-radius: 2px; background: {color}; border: 1px solid rgba(255,255,255,0.18);")} />
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.64rem; color: #d8d5cb; white-space: nowrap;">
+                    <span style="font-family: var(--font-mono); font-size: 0.64rem; color: #d8d5cb; white-space: nowrap;">
                         {*label}
                     </span>
                 }).collect_view()}
@@ -2536,6 +2831,7 @@ fn Tooltip() -> impl IntoView {
     let HistoryTimestamp(history_timestamp) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
+    let TerritoriesInWar(territories_in_war) = expect_context();
 
     let tooltip_info = Memo::new(move |_| {
         let reference_secs = if mode.get() == MapMode::History {
@@ -2565,6 +2861,10 @@ fn Tooltip() -> impl IntoView {
         let is_headquarters = runtime
             .and_then(|runtime| runtime.headquarters)
             .unwrap_or(false);
+        // Matches the red map border: the war feed is live-only, so it must not be
+        // reported against a past snapshot.
+        let is_at_war = mode.get() != MapMode::History
+            && territories_in_war.with(|in_war| in_war.contains(&name));
         let takes_in_window = if heat_mode_enabled.get() {
             Some(
                 heat_entries_by_territory
@@ -2602,6 +2902,7 @@ fn Tooltip() -> impl IntoView {
             resources_from_live,
             defense_tier,
             is_headquarters,
+            is_at_war,
             live_production_rates,
             live_storage_capacity,
             takes_in_window,
@@ -2622,8 +2923,8 @@ fn Tooltip() -> impl IntoView {
                 let (label, color) = defense_tier_display(tier);
                 view! {
                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                        <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Defense"</span>
-                        <span style={format!("color: {color}; font-size: 0.78rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;")}>{label}</span>
+                        <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Defense"</span>
+                        <span style={format!("color: {color}; font-size: 0.78rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;")}>{label}</span>
                     </div>
                 }
             });
@@ -2642,7 +2943,7 @@ fn Tooltip() -> impl IntoView {
                 view! {
                     <div style="padding: 7px 0 3px; border-top: 1px solid rgba(40,44,62,0.6);">
                         <div style={format!(
-                            "font-family: 'Silkscreen', monospace; font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.10em; color: {title_color}; margin-bottom: 5px;"
+                            "font-family: var(--font-display); font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.10em; color: {title_color}; margin-bottom: 5px;"
                         )}>
                             {title.to_string()}
                         </div>
@@ -2657,11 +2958,11 @@ fn Tooltip() -> impl IntoView {
                                     )}>
                                         <span style={icon_style} />
                                         {(is_double).then(|| view! { <span style={double_style} /> })}
-                                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.70rem; color: #e2e0d8; font-variant-numeric: tabular-nums;">
+                                        <span style="font-family: var(--font-mono); font-size: 0.70rem; color: var(--color-text-primary); font-variant-numeric: tabular-nums;">
                                             {amount}
                                         </span>
                                         <span style={format!(
-                                            "font-family: 'Inter', system-ui, sans-serif; font-size: 0.60rem; color: #aeb7c7;"
+                                            "font-family: var(--font-body); font-size: 0.60rem; color: #aeb7c7;"
                                         )}>
                                             {label}
                                         </span>
@@ -2718,7 +3019,7 @@ fn Tooltip() -> impl IntoView {
                     class="tooltip-animate"
                     style:left=format!("{}px", x + 16.0)
                     style:top=format!("{}px", y - 8.0)
-                    style="position: fixed; pointer-events: none; z-index: 100; min-width: 280px; max-width: 340px; background: #13161f; border: 1px solid #282c3e; border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.02) inset; backdrop-filter: blur(2px); display: flex; flex-direction: row;"
+                    style="position: fixed; pointer-events: none; z-index: 100; min-width: 280px; max-width: 340px; background: var(--color-deep); border: 1px solid var(--color-border-subtle); border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.02) inset; backdrop-filter: blur(2px); display: flex; flex-direction: row;"
                 >
                     <div style={format!(
                         "width: 4px; flex-shrink: 0; background: linear-gradient(180deg, {} 0%, {} 100%);",
@@ -2733,11 +3034,16 @@ fn Tooltip() -> impl IntoView {
                                 rgba_css(r, g, b, 0.75),
                                 rgba_css(r, g, b, 0.25),
                             )} />
-                            <div style="font-size: 0.92rem; font-weight: 700; color: #e2e0d8; font-family: 'Silkscreen', monospace; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
+                            <div style="font-size: 0.92rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
                                 {info.name.clone()}
                             </div>
+                            {info.is_at_war.then(|| view! {
+                                <span style="font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; color: #ff4545; flex-shrink: 0;">
+                                    "In War"
+                                </span>
+                            })}
                             {info.is_headquarters.then(|| view! {
-                                <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: #f5c542; flex-shrink: 0;">
+                                <span style="font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); flex-shrink: 0;">
                                     "[HQ]"
                                 </span>
                             })}
@@ -2749,29 +3055,29 @@ fn Tooltip() -> impl IntoView {
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 title="Open Wynncraft guild stats"
-                                style="font-size: 0.78rem; color: #f5c542; font-family: 'Inter', system-ui, sans-serif; text-decoration: none; pointer-events: auto;"
+                                style="font-size: 0.78rem; color: var(--color-gold); font-family: var(--font-body); text-decoration: none; pointer-events: auto;"
                             >
                                 {info.guild_name.clone()}
                             </a>
-                            <span style="font-size: 0.70rem; color: #9a9590; font-family: 'JetBrains Mono', monospace;">"[" {info.guild_prefix.clone()} "]"</span>
+                            <span style="font-size: 0.70rem; color: var(--color-text-secondary); font-family: var(--font-mono);">"[" {info.guild_prefix.clone()} "]"</span>
                         </div>
 
                         // Key-value rows
                         <div style="display: flex; flex-direction: column;">
                             <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Held"</span>
-                                <span style="color: #e2e0d8; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{info.held.clone()}</span>
+                                <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Held"</span>
+                                <span style="color: var(--color-text-primary); font-size: 0.82rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{info.held.clone()}</span>
                             </div>
                             {match info.cooldown.clone() {
                                 Some((remaining, frac)) => view! {
                                     <div style="padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
                                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                                            <span style="color: #f5c542; font-size: 0.72rem; font-family: 'Silkscreen', monospace;">"Cooldown"</span>
-                                            <span style="color: #f5c542; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{remaining}</span>
+                                            <span style="color: var(--color-gold); font-size: 0.72rem; font-family: var(--font-display);">"Cooldown"</span>
+                                            <span style="color: var(--color-gold); font-size: 0.82rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{remaining}</span>
                                         </div>
                                         <div style="height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;">
                                             <div style={format!(
-                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, #f5c542, #d4a030); border-radius: 2px; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
+                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, var(--color-gold), #d4a030); border-radius: 2px; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
                                                 frac * 100.0
                                             )} />
                                         </div>
@@ -2779,18 +3085,18 @@ fn Tooltip() -> impl IntoView {
                                 }.into_any(),
                                 None => view! {
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Cooldown"</span>
-                                        <span style="color: #50c878; font-size: 0.82rem; font-family: 'JetBrains Mono', monospace;">"Ready"</span>
+                                        <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Cooldown"</span>
+                                        <span style="color: var(--color-emerald); font-size: 0.82rem; font-family: var(--font-mono);">"Ready"</span>
                                     </div>
                                 }.into_any(),
                             }}
                             <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Treasury"</span>
+                                <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Treasury"</span>
                                 <span style="display: inline-flex; align-items: center; gap: 5px;">
-                                    <span style={format!("color: {}; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
+                                    <span style={format!("color: {}; font-family: var(--font-mono); font-size: 0.78rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
                                     {(buff > 0).then(|| view! {
                                         <span style={format!(
-                                            "font-size: 0.65rem; font-family: 'JetBrains Mono', monospace; color: {}; background: {}; padding: 1px 5px; border-radius: 3px;",
+                                            "font-size: 0.65rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;",
                                             rgba_css(tr, tg, tb, 0.9),
                                             rgba_css(tr, tg, tb, 0.08),
                                         )}>{format!("+{}%", buff)}</span>
@@ -2800,8 +3106,8 @@ fn Tooltip() -> impl IntoView {
                             {defense_row}
                             {info.takes_in_window.map(|count| view! {
                                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: #9a9590; font-size: 0.72rem; font-family: 'Inter', system-ui, sans-serif;">"Takes in window"</span>
-                                    <span style="color: #e2e0d8; font-size: 0.78rem; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{count}</span>
+                                    <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Takes in window"</span>
+                                    <span style="color: var(--color-text-primary); font-size: 0.78rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{count}</span>
                                 </div>
                             })}
                         </div>
@@ -2890,34 +3196,34 @@ fn TerritoryPeekCard() -> impl IntoView {
                 <div
                     class="peek-card-animate"
                     style:bottom=format!("{}px", bottom_px)
-                    style="position: fixed; left: 16px; right: 16px; z-index: 90; background: #161921; border: 1px solid #282c3e; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
+                    style="position: fixed; left: 16px; right: 16px; z-index: 90; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
                 >
                     <div style={format!("width: 4px; flex-shrink: 0; background: {};", rgba_css(r, g, b, 0.85))} />
                     <div style="padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 4px;">
-                        <div style="font-size: 0.85rem; font-weight: 700; color: #e2e0d8; font-family: 'Silkscreen', monospace; line-height: 1.3;">
-                            <span style="color: #9a9590; font-weight: 400;">"[" {info.2.clone()} "] "</span>
+                        <div style="font-size: 0.85rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.3;">
+                            <span style="color: var(--color-text-secondary); font-weight: 400;">"[" {info.2.clone()} "] "</span>
                             {info.1}
                         </div>
-                        <div style="font-size: 0.72rem; color: #9a9590; font-family: 'JetBrains Mono', monospace;">
+                        <div style="font-size: 0.72rem; color: var(--color-text-secondary); font-family: var(--font-mono);">
                             {info.0.clone()}
                         </div>
                         <div style="font-size: 0.68rem; display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 2px;">
-                            <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Held"</span>
-                            <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{info.3}</span>
+                            <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Held"</span>
+                            <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{info.3}</span>
                         </div>
                         {takes_in_window.map(|count| view! {
                             <div style="font-size: 0.68rem; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                                <span style="color: #9a9590; font-family: 'Inter', system-ui, sans-serif;">"Takes in window"</span>
-                                <span style="color: #e2e0d8; font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums;">{count}</span>
+                                <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Takes in window"</span>
+                                <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{count}</span>
                             </div>
                         })}
-                        <div style="font-size: 0.68rem; font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 4px;">
+                        <div style="font-size: 0.68rem; font-family: var(--font-mono); display: flex; align-items: center; gap: 4px;">
                             <span style={format!("color: {}; font-size: 0.52rem;", rgba_css(tr, tg, tb, 1.0))}>{"\u{25C6}"}</span>
                             <span style={format!("color: {};", rgba_css(tr, tg, tb, 0.9))}>{treasury.label()}</span>
                         </div>
                     </div>
                     <button
-                        style="align-self: center; margin-right: 14px; min-height: 44px; min-width: 44px; padding: 8px 16px; background: #1a1d2a; border: 1px solid #3a3f5c; border-radius: 6px; color: #f5c542; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; cursor: pointer; touch-action: manipulation; white-space: nowrap;"
+                        style="align-self: center; margin-right: 14px; min-height: 44px; min-width: 44px; padding: 8px 16px; background: var(--color-surface); border: 1px solid var(--color-border-accent); border-radius: 6px; color: var(--color-gold); font-family: var(--font-mono); font-size: 0.72rem; cursor: pointer; touch-action: manipulation; white-space: nowrap;"
                         on:click=move |_| {
                             detail_return_guild.set(None);
                             selected.set(Some(name.clone()));
@@ -2936,9 +3242,11 @@ fn TerritoryPeekCard() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_SIDEBAR_WIDTH, LegacySettings, MapMode, NameColor, SETTINGS_DEFAULTS_VERSION,
-        SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, SettingsV2, canonical_path_for_mode,
-        clamp_sidebar_width, map_mode_from_path, normalize_heat_selected_season_id,
+        DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_SIDEBAR_WIDTH, DEFAULT_WAR_PANEL_WIDTH, LegacySettings,
+        MapMode, NameColor, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN, SETTINGS_DEFAULTS_VERSION,
+        SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, SettingsV2, WAR_PANEL_WIDTH_MAX, WAR_PANEL_WIDTH_MIN,
+        canonical_path_for_mode, clamp_player_head_size, clamp_sidebar_width,
+        clamp_war_panel_width, map_mode_from_path, normalize_heat_selected_season_id,
         should_wait_for_history_probe,
     };
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
@@ -2948,6 +3256,62 @@ mod tests {
         assert_eq!(clamp_sidebar_width(240.0), SIDEBAR_WIDTH_MIN);
         assert_eq!(clamp_sidebar_width(420.0), 420.0);
         assert_eq!(clamp_sidebar_width(900.0), SIDEBAR_WIDTH_MAX);
+    }
+
+    #[test]
+    fn clamp_war_panel_width_enforces_limits() {
+        assert_eq!(clamp_war_panel_width(120.0), WAR_PANEL_WIDTH_MIN);
+        assert_eq!(clamp_war_panel_width(300.0), 300.0);
+        assert_eq!(clamp_war_panel_width(900.0), WAR_PANEL_WIDTH_MAX);
+    }
+
+    #[test]
+    fn settings_without_a_war_panel_open_the_overview_by_default() {
+        // Everyone's saved settings predate the war panel, so its defaults have to come
+        // from serde rather than from a defaults-version migration.
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(parsed.war_panel_open);
+        assert_eq!(parsed.war_panel_width, DEFAULT_WAR_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn settings_without_war_visibility_show_both_war_overlays() {
+        // Same reasoning as the war panel above: these post-date every saved blob, so on
+        // is a serde default rather than a defaults-version migration.
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(parsed.show_war_queue);
+        assert!(parsed.show_war_stats);
+
+        let defaults = SettingsV2::default();
+        assert!(defaults.show_war_queue);
+        assert!(defaults.show_war_stats);
+    }
+
+    #[test]
+    fn settings_without_player_head_fields_default_to_heads_on_labels_off() {
+        // Same reasoning as the war visibility toggles above: these post-date every saved
+        // blob, so serde defaults carry them rather than a defaults-version migration.
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(parsed.show_player_heads);
+        assert!(parsed.player_head_render_head);
+        assert!(!parsed.player_head_render_label);
+        assert_eq!(parsed.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
+
+        let defaults = SettingsV2::default();
+        assert!(defaults.show_player_heads);
+        assert!(defaults.player_head_render_head);
+        assert!(!defaults.player_head_render_label);
+        assert_eq!(defaults.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
+    }
+
+    #[test]
+    fn player_head_size_clamps_to_its_bounds_and_survives_nan() {
+        assert_eq!(clamp_player_head_size(0.0), PLAYER_HEAD_SIZE_MIN);
+        assert_eq!(clamp_player_head_size(1000.0), PLAYER_HEAD_SIZE_MAX);
+        assert_eq!(clamp_player_head_size(24.0), 24.0);
+        // A hand-edited blob can carry `NaN`, which would draw nothing at all rather than
+        // being pinned to a bound.
+        assert_eq!(clamp_player_head_size(f64::NAN), DEFAULT_PLAYER_HEAD_SIZE);
     }
 
     #[test]

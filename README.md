@@ -50,6 +50,8 @@ just dev
 - Server: `http://127.0.0.1:3000`
 - Repo-local Postgres: `postgres://sequoia:sequoia@127.0.0.1:55432/sequoia`
 - `just dev-full` also starts the claims client and ingest service without Docker
+- Territory data comes from the Wynncraft API; the war controller feed comes from the Sequoia
+  backend and stays dormant until `SEQUOIA_BACKEND_BASE_URL` is set
 - `just pg-start`, `just pg-stop`, `just pg-status`, and `just pg-reset` manage the repo-local Postgres cluster under `.data/postgres`
 - `just native-env` prints the default local environment variables
 - `just server`, `just client`, `just claims-client`, and `just ingest` run the pieces individually
@@ -233,6 +235,14 @@ Notes:
 |----------|-------------|---------|
 | `DATABASE_URL` | PostgreSQL connection string | *(required)* |
 | `RUST_LOG` | Tracing filter directive | `info` |
+| `TERRITORY_POLL_INTERVAL_SECS` | How often the server polls the upstream territory API | `10` |
+| `WARCONTROLLER_POLL_INTERVAL_SECS` | How often the server polls the Sequoia backend war controller feed | `5` |
+| `WARCONTROLLER_MAX_STALENESS_SECS` | How long a cached war controller payload stays servable after the backend stops responding; past it the cache is dropped and clients are told there are no known wars. `0` disables expiry | `60` |
+| `WYNNCRAFT_TERRITORY_URL` | Upstream territory source | `https://api.wynncraft.com/v3/guild/list/territory` |
+| `SEQUOIA_BACKEND_BASE_URL` | Sequoia backend base URL; unset disables the war controller poller | *(empty)* |
+| `SEQUOIA_BACKEND_PUBLIC_BASE_URL` | Backend origin as the browser reaches it, for sign-in redirects; only needed for split deploys | *(falls back to `SEQUOIA_BACKEND_BASE_URL`)* |
+| `SEQUOIA_BACKEND_WARCONTROLLER_PATH` | Path appended to the backend base URL for the war controller feed. The backend mounts internal endpoints at `/internal/*`, `/api/*`, and `/public/*`, enforcing the bearer token only on `/internal/*`. | `/internal/warcontroller` |
+| `SEQUOIA_BACKEND_INTERNAL_TOKEN` | Bearer token sent to the Sequoia backend (>=24 chars; placeholders rejected) | *(empty)* |
 | `DB_MAX_CONNECTIONS` | SQLx PostgreSQL pool max connections | `10` |
 | `SSE_BROADCAST_BUFFER` | In-memory SSE broadcast channel capacity | `256` |
 | `INTERNAL_INGEST_TOKEN` | Shared secret for ingest -> server internal routes (>=24 chars; placeholders rejected) | *(required for ingest)* |
@@ -245,7 +255,10 @@ Notes:
 | `SEQ_LIVE_HANDOFF_V1` | Enable sequence-aware live-state handoff | `true` |
 | `GUILDS_ONLINE_CACHE_TTL_SECS` | Cache freshness threshold used by `/api/guilds/online` | `120` |
 | `GUILDS_ONLINE_MAX_CONCURRENCY` | Max concurrent upstream guild fetches in `/api/guilds/online` | `8` |
+| `GUILD_SEASONS_CACHE_TTL_SECS` | Cache freshness threshold for the Wynncraft `/guild/seasons` definitions used by `/api/season/*`. A failed refresh serves the last good value. | `130` |
 | `MAP_DOMAIN` | Public HTTPS domain routed to Sequoia server by Caddy | `map.example.com` |
+| `SEQUOIA_BACKEND_BASE_URL` | Sequoia backend origin used for website sign-in (`/api/auth/*`) and internal season data. Without it the map renders every visitor as signed out and `/api/auth/login` returns 503. | *(empty; production uses `https://api.seqwawa.com`)* |
+| `SEQUOIA_BACKEND_INTERNAL_TOKEN` | Shared secret for internal Sequoia backend calls | *(empty)* |
 | `IRIS_DOMAIN` | Public HTTPS domain routed to ingest by Caddy | `iris.example.com` |
 | `ACME_EMAIL` | Email used for ACME certificate registration in Caddy | *(empty)* |
 | `INGEST_TRUSTED_PROXY_CIDRS` | Comma-separated trusted reverse proxy CIDRs for `X-Forwarded-For` | *(empty in service; prod/coolify compose defaults to loopback + RFC1918 private ranges)* |

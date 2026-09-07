@@ -2876,6 +2876,8 @@ impl GpuRenderer {
         heat_mode_enabled: bool,
         heat_entries: &HashMap<String, u64>,
         heat_max_take_count: u64,
+        territories_in_war: &HashSet<String>,
+        history_mode: bool,
     ) {
         let start_ms = self.start_time_ms;
         let start_secs = start_ms / 1000.0;
@@ -2931,8 +2933,13 @@ impl GpuRenderer {
                     .as_ref()
                     .and_then(|runtime| runtime.headquarters)
                     .unwrap_or(false);
-                let flags =
-                    (is_hovered as u32) + (is_selected as u32) * 2 + (is_headquarters as u32) * 4;
+                // The war feed is live-only, so replaying history must not paint today's
+                // wars onto a past snapshot.
+                let is_at_war = !history_mode && territories_in_war.contains(name);
+                let flags = (is_hovered as u32)
+                    + (is_selected as u32) * 2
+                    + (is_headquarters as u32) * 4
+                    + (is_at_war as u32) * 8;
 
                 let acquired_rel_secs = if self.suppress_cooldown_visuals {
                     -1_000_000.0_f32
@@ -4183,6 +4190,7 @@ impl GpuRenderer {
             heat_mode_enabled,
             heat_entries,
             heat_max_take_count,
+            territories_in_war,
         } = frame;
         let frame_start_ms = now;
         let mut draw_calls: u32 = 0;
@@ -4227,6 +4235,8 @@ impl GpuRenderer {
                 heat_mode_enabled,
                 heat_entries,
                 heat_max_take_count,
+                territories_in_war,
+                history_mode,
             );
             bytes_uploaded +=
                 (self.instance_count as u64) * std::mem::size_of::<TerritoryInstance>() as u64;

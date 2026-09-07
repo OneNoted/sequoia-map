@@ -87,6 +87,26 @@ pub fn calc_stat(base: f64, is_hq: bool, connections: u32, externals: u32) -> f6
     }
 }
 
+/// Compute the min/max DPS band for given damage level & attack rate level with multipliers.
+///
+/// The `* 2.0` is deliberate, not a leftover from extracting this out of [`calc_dps`]: a
+/// tower attack lands two hits, so a tower's real output is twice the per-hit figure in
+/// [`DAMAGES`]. Dropping it halves every DPS number the calculator shows.
+pub fn calc_dps_range(
+    damage_level: usize,
+    attack_level: usize,
+    is_hq: bool,
+    connections: u32,
+    externals: u32,
+) -> (f64, f64) {
+    let dmg = &DAMAGES[damage_level.min(11)];
+    let rate = ATTACK_RATES[attack_level.min(11)];
+    (
+        calc_stat(dmg.start * 2.0 * rate, is_hq, connections, externals),
+        calc_stat(dmg.end * 2.0 * rate, is_hq, connections, externals),
+    )
+}
+
 /// Compute average DPS for given damage level & attack rate level with multipliers.
 pub fn calc_dps(
     damage_level: usize,
@@ -95,11 +115,8 @@ pub fn calc_dps(
     connections: u32,
     externals: u32,
 ) -> f64 {
-    let dmg = &DAMAGES[damage_level.min(11)];
-    let avg_dmg = (dmg.start + dmg.end) / 2.0;
-    let rate = ATTACK_RATES[attack_level.min(11)];
-    let base_dps = avg_dmg * rate;
-    calc_stat(base_dps, is_hq, connections, externals)
+    let (lo, hi) = calc_dps_range(damage_level, attack_level, is_hq, connections, externals);
+    (lo + hi) / 2.0
 }
 
 /// Compute effective HP for given health & defense levels with multipliers.
@@ -303,8 +320,8 @@ pub fn format_stat(val: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ATTACK_RATES, DefenseRating, HEALTHS, calc_defense_index, calc_dps, calc_ehp, calc_stat,
-        count_guild_connections, find_externals, format_stat,
+        ATTACK_RATES, DefenseRating, HEALTHS, calc_defense_index, calc_dps, calc_dps_range,
+        calc_ehp, calc_stat, count_guild_connections, find_externals, format_stat,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -525,7 +542,7 @@ mod tests {
     #[test]
     fn calc_dps_base_case() {
         let dps = calc_dps(0, 0, false, 0, 0);
-        assert_close(dps, 625.0);
+        assert_close(dps, 1250.0);
     }
 
     #[test]
@@ -545,6 +562,27 @@ mod tests {
         let clamped = calc_dps(99, 42, false, 0, 0);
         let max_level = calc_dps(11, 11, false, 0, 0);
         assert_close(clamped, max_level);
+    }
+
+    #[test]
+    fn calc_dps_range_base_case() {
+        let (lo, hi) = calc_dps_range(0, 0, false, 0, 0);
+        assert_close(lo, 1000.0);
+        assert_close(hi, 1500.0);
+    }
+
+    #[test]
+    fn calc_dps_is_midpoint_of_range() {
+        let (lo, hi) = calc_dps_range(5, 7, true, 4, 12);
+        assert_close(calc_dps(5, 7, true, 4, 12), (lo + hi) / 2.0);
+    }
+
+    #[test]
+    fn calc_dps_range_clamps_level_above_11() {
+        let (clamped_lo, clamped_hi) = calc_dps_range(99, 42, false, 0, 0);
+        let (max_lo, max_hi) = calc_dps_range(11, 11, false, 0, 0);
+        assert_close(clamped_lo, max_lo);
+        assert_close(clamped_hi, max_hi);
     }
 
     #[test]

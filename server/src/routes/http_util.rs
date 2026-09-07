@@ -26,6 +26,18 @@ pub fn json_bytes_response(
     response
 }
 
+/// A JSON body that belongs to one session only.
+///
+/// `Vary: Cookie` on top of `private, no-store` so no shared cache can key this response
+/// on its path alone and hand one visitor another viewer's answer.
+pub fn private_json_bytes_response(body: Bytes) -> Response {
+    let mut response = json_bytes_response(body, "private, no-store", None);
+    response
+        .headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Cookie"));
+    response
+}
+
 pub fn not_modified_response(cache_control: &'static str, etag: Option<&str>) -> Response {
     let mut response = StatusCode::NOT_MODIFIED.into_response();
     let headers = response.headers_mut();

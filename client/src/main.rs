@@ -1,31 +1,35 @@
-mod animation;
 mod app;
 mod assets;
+mod auth;
 mod canvas;
-mod claim_labels;
-mod colors;
-mod defense;
 #[cfg(target_arch = "wasm32")]
 mod gpu;
 mod heat;
 mod history;
 mod icons;
-mod label_layout;
 mod map_intel;
-mod overlay_sizing;
+mod navbar;
 mod playback;
+mod players;
 mod render_loop;
 mod renderer;
 mod season_scalar;
 mod sidebar;
-mod spatial;
+mod site_nav;
 mod sse;
-mod territory;
 mod tiles;
-mod time_format;
 mod timeline;
 mod tower;
-mod viewport;
+mod war_stats;
+mod warcontroller;
+
+// Render/math core. These modules moved to `sequoia-map-engine`; they are
+// re-exported at the crate root so existing `crate::<module>` paths resolve
+// unchanged while the Leptos UI is migrated away.
+pub(crate) use sequoia_map_engine::{
+    animation, claim_labels, colors, defense, label_layout, overlay_sizing, spatial, territory,
+    time_format, viewport,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu {
@@ -110,6 +114,7 @@ mod gpu {
                 frame.heat_mode_enabled,
                 frame.heat_entries,
                 frame.heat_max_take_count,
+                frame.territories_in_war,
             );
             false
         }
@@ -129,6 +134,10 @@ thread_local! {
 
 pub(crate) const SEQUOIA_WEBSITE_URL: &str = "https://seqwawa.com";
 pub(crate) const IRIS_RELEASES_URL: &str = "https://github.com/OneNoted/sequoia-map/releases";
+
+/// Our guild's Wynncraft tag. Members of this guild get seqwawa playercards
+/// instead of Wynncraft stats pages, since playercards only cover our roster.
+pub(crate) const SEQUOIA_GUILD_PREFIX: &str = "SEQ";
 
 fn encode_uri_component_fallback(input: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -162,25 +171,32 @@ fn encode_uri_component_fallback(input: &str) -> String {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn encode_guild_name_for_url(guild_name: &str) -> String {
-    js_sys::encode_uri_component(guild_name)
+pub(crate) fn encode_uri_component(value: &str) -> String {
+    js_sys::encode_uri_component(value)
         .as_string()
-        .unwrap_or_else(|| encode_uri_component_fallback(guild_name))
+        .unwrap_or_else(|| encode_uri_component_fallback(value))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn encode_guild_name_for_url(guild_name: &str) -> String {
-    encode_uri_component_fallback(guild_name)
+pub(crate) fn encode_uri_component(value: &str) -> String {
+    encode_uri_component_fallback(value)
 }
 
 pub(crate) fn guild_stats_url(guild_name: &str) -> String {
-    let encoded = encode_guild_name_for_url(guild_name);
+    let encoded = encode_uri_component(guild_name);
     format!("https://wynncraft.com/stats/guild/{encoded}")
+}
+
+/// A player's card on the Sequoia website. Only our own members have one, so
+/// gate callers on [`SEQUOIA_GUILD_PREFIX`] before linking here.
+pub(crate) fn player_card_url(username: &str) -> String {
+    let encoded = encode_uri_component(username);
+    format!("{SEQUOIA_WEBSITE_URL}/statistics/player/playercard?player={encoded}")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_uri_component_fallback, guild_stats_url};
+    use super::{encode_uri_component_fallback, guild_stats_url, player_card_url};
 
     #[test]
     fn fallback_uri_encoder_escapes_reserved_characters() {
@@ -192,6 +208,18 @@ mod tests {
         assert_eq!(
             guild_stats_url("Sequoia/Map? Guild"),
             "https://wynncraft.com/stats/guild/Sequoia%2FMap%3F%20Guild"
+        );
+    }
+
+    #[test]
+    fn player_card_url_encodes_the_player_query_parameter() {
+        assert_eq!(
+            player_card_url("theoplegends"),
+            "https://seqwawa.com/statistics/player/playercard?player=theoplegends"
+        );
+        assert_eq!(
+            player_card_url("Odd Name&x"),
+            "https://seqwawa.com/statistics/player/playercard?player=Odd%20Name%26x"
         );
     }
 }

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sequoia_shared::{
     ClaimDocumentV1, GuildRef, LiveState, MapIntelOverlay, MapIntelSummary, Resources,
-    SeasonScalarSample, TerritoryMap, TerritoryRuntimeData,
+    SeasonScalarSample, TerritoryMap, TerritoryRuntimeData, WarControllerState,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -20,6 +20,7 @@ use crate::config::{
     max_history_sr_sample_rows, max_ingest_updates_per_request, seq_live_handoff_v1_enabled,
     sse_broadcast_buffer, upstream_connect_timeout, upstream_http_timeout,
 };
+use crate::services::wynncraft_api::GuildSeasonDefinition;
 
 pub type GuildColor = (u8, u8, u8);
 pub type GuildColorMap = HashMap<String, GuildColor>;
@@ -94,9 +95,35 @@ pub fn lookup_guild_color(
 /// Pre-serialized SSE event — serialized once by the poller, shared by all clients via Arc.
 #[derive(Debug, Clone)]
 pub enum PreSerializedEvent {
-    Snapshot { seq: u64, json: Arc<Bytes> },
-    Update { seq: u64, json: Arc<Bytes> },
-    RuntimeUpdate { seq: u64, json: Arc<Bytes> },
+    Snapshot {
+        seq: u64,
+        json: Arc<Bytes>,
+    },
+    Update {
+        seq: u64,
+        json: Arc<Bytes>,
+    },
+    RuntimeUpdate {
+        seq: u64,
+        json: Arc<Bytes>,
+    },
+    /// War controller state. Deliberately carries no `seq`: it rides the same SSE
+    /// connection as territory events but is not part of their sequence stream, so it
+    /// must never influence client-side gap detection or live resync.
+    WarController {
+        /// The payload's own `timestamp`, so a receiver can drop a frame older than what it
+        /// has already emitted - seeds, lag replays and live frames can otherwise interleave.
+        timestamp: i64,
+        /// Whether this is a clear this server generated on its *own* clock, rather than a
+        /// frame the backend stamped - today, the poller's staleness expiry. Every real
+        /// frame carries the backend's clock, so a clear cannot be ordered against them:
+        /// if the backend runs even slightly ahead, the drop loses the comparison and every
+        /// connected client keeps rendering the war the cache was deliberately dropped for.
+        /// A receiver must let these through unconditionally and never adopt the stamp as a
+        /// watermark. An empty state the *backend* sent is ordinary data, and is `false`.
+        clears: bool,
+        json: Arc<Bytes>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -162,8 +189,12 @@ pub struct AppState {
     pub guild_catalog_cache: Arc<RwLock<Option<CachedGuildCatalog>>>,
     pub season_leaderboard_cache: Arc<RwLock<Option<CachedSeasonLeaderboard>>>,
     pub season_leaderboard_fetch_lock: Arc<Mutex<()>>,
+    pub guild_seasons_cache: Arc<RwLock<Option<CachedGuildSeasons>>>,
+    pub guild_seasons_fetch_lock: Arc<Mutex<()>>,
     pub map_intel_cache: Arc<RwLock<Option<CachedMapIntel>>>,
     pub map_intel_fetch_lock: Arc<Mutex<()>>,
+    /// Latest war controller state from the Sequoia backend, with its pre-serialized payload.
+    pub warcontroller_cache: Arc<RwLock<Option<CachedWarController>>>,
     /// Extra territory data (resources, connections) from bundled and supplemental sources.
     pub extra_terr: Arc<RwLock<HashMap<String, ExtraTerrInfo>>>,
     pub extra_data_dirty: Arc<AtomicBool>,
@@ -222,10 +253,30 @@ pub struct CachedSeasonLeaderboard {
     pub fetched_at: DateTime<Utc>,
 }
 
+/// Wynncraft season definitions. Near-static, so this is cached to keep the
+/// season endpoints off the upstream on every request; a failed refresh reuses
+/// the last good value rather than dropping every API-sourced window.
+#[derive(Debug, Clone)]
+pub struct CachedGuildSeasons {
+    pub seasons: HashMap<String, GuildSeasonDefinition>,
+    pub fetched_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedMapIntel {
     pub summary: MapIntelSummary,
     pub overlay: MapIntelOverlay,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedWarController {
+    pub state: WarControllerState,
+    pub json: Arc<Bytes>,
+    /// When this server last saw the backend confirm this payload - not when the payload last
+    /// changed, so a quiet feed does not age out. Deliberately not
+    /// [`WarControllerState::timestamp`]: staleness has to be measured on a clock this process
+    /// controls, or a backend running fast would keep a dead cache looking fresh.
     pub fetched_at: DateTime<Utc>,
 }
 
@@ -401,8 +452,11 @@ impl AppState {
             guild_catalog_cache: Arc::new(RwLock::new(None)),
             season_leaderboard_cache: Arc::new(RwLock::new(None)),
             season_leaderboard_fetch_lock: Arc::new(Mutex::new(())),
+            guild_seasons_cache: Arc::new(RwLock::new(None)),
+            guild_seasons_fetch_lock: Arc::new(Mutex::new(())),
             map_intel_cache: Arc::new(RwLock::new(None)),
             map_intel_fetch_lock: Arc::new(Mutex::new(())),
+            warcontroller_cache: Arc::new(RwLock::new(None)),
             extra_terr: Arc::new(RwLock::new(HashMap::new())),
             extra_data_dirty: Arc::new(AtomicBool::new(true)),
             guild_colors: Arc::new(RwLock::new(HashMap::new())),

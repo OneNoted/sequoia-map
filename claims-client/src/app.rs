@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use sequoia_shared::TerritoryChange;
+use sequoia_shared::{TerritoryChange, WarControllerState};
 
 use crate::claims::ClaimsPage;
 
@@ -153,6 +153,12 @@ pub(crate) struct LiveResyncInFlight(pub RwSignal<bool>);
 pub(crate) struct SseSeqGapDetectedCount(pub RwSignal<u64>);
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryBufferSizeMax(pub RwSignal<usize>);
+/// Declared for the shared `sse.rs`, which this app includes but never connects.
+#[derive(Clone, Copy)]
+pub(crate) struct WarControllerData(pub RwSignal<Option<WarControllerState>>);
+/// Declared for the shared `canvas.rs`, which this app includes but never mounts.
+#[derive(Clone, Copy)]
+pub(crate) struct TerritoriesInWar(pub Memo<HashSet<String>>);
 
 #[derive(Clone, Debug)]
 pub(crate) struct BufferedUpdate {

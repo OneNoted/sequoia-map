@@ -1,5 +1,5 @@
 [workspace]
-members = ["shared", "server", "client", "claims-client"]
+members = ["shared", "server", "wasm", "client", "claims-client"]
 resolver = "2"
 
 [workspace.package]
@@ -38,5 +38,12 @@ opt-level = 1
 debug = 0
 
 [profile.dev.package."sequoia-claims-client"]
+opt-level = 1
+debug = 0
+
+[profile.release.package."sequoia-map-engine"]
+opt-level = 3
+
+[profile.dev.package."sequoia-map-engine"]
 opt-level = 1
 debug = 0

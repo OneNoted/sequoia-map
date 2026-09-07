@@ -106,6 +106,7 @@ RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registr
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
+COPY wasm/ wasm/
 COPY client/ client/
 COPY claims-client/ claims-client/
 # Need a stub server crate so workspace resolves
@@ -136,6 +137,7 @@ FROM rust:1.88-bookworm AS server-build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
+COPY wasm/ wasm/
 COPY server/ server/
 # Need a stub client crate so workspace resolves
 COPY client/Cargo.toml client/Cargo.toml
