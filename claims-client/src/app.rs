@@ -156,7 +156,6 @@ pub(crate) struct HistoryBufferSizeMax(pub RwSignal<usize>);
 /// Declared for the shared `sse.rs`, which this app includes but never connects.
 #[derive(Clone, Copy)]
 pub(crate) struct WarControllerData(pub RwSignal<Option<WarControllerState>>);
-/// Declared for the shared `canvas.rs`, which this app includes but never mounts.
 #[derive(Clone, Copy)]
 pub(crate) struct TerritoriesInWar(pub Memo<HashSet<String>>);
 
@@ -234,7 +233,7 @@ fn ClaimsEntryShell(title: &'static str) -> impl IntoView {
                         {title}
                     </h1>
                     <p style="margin: 0; color: #9aa6c4; font-size: 0.82rem; line-height: 1.85;">
-                        "Mounting the lightweight claims shell first so the editor can bootstrap route data without trapping the page behind the static HTML loader."
+                        "Loading the claims editor."
                     </p>
                 </div>
             </div>

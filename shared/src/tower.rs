@@ -313,7 +313,7 @@ pub fn format_stat(val: f64) -> String {
     } else if val >= 1_000.0 {
         format!("{:.0}k", val / 1_000.0)
     } else {
-        format!("{:.0}", val)
+        format!("{val:.0}")
     }
 }
 

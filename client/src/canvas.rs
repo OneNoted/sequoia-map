@@ -288,7 +288,7 @@ fn diagnostics_token(message: &str) -> String {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    format!("GPUX-{:016x}", hash)
+    format!("GPUX-{hash:016x}")
 }
 
 fn render_stats_enabled() -> bool {
@@ -1170,7 +1170,7 @@ pub fn MapCanvas() -> impl IntoView {
                         let mut hits = territories.with_untracked(|territory_map| {
                             territory_map
                                 .iter()
-                                .filter_map(|(name, territory)| {
+                                .filter(|(_, territory)| {
                                     territory_overlaps_world_rect(
                                         territory,
                                         world_left,
@@ -1178,8 +1178,8 @@ pub fn MapCanvas() -> impl IntoView {
                                         world_right,
                                         world_bottom,
                                     )
-                                    .then(|| name.clone())
                                 })
+                                .map(|(name, _)| name.clone())
                                 .collect::<Vec<_>>()
                         });
                         hits.sort();

@@ -684,10 +684,6 @@ fn line_units_with_tracking(
     units
 }
 
-fn line_units(text: &str, glyphs: &HashMap<char, GlyphMeta>, kerning: &HashMap<u32, f32>) -> f32 {
-    line_units_with_tracking(text, glyphs, kerning, 0.0)
-}
-
 fn fit_text_to_units_with_tracking(
     text: &str,
     max_units: f32,
@@ -734,15 +730,6 @@ fn fit_text_to_units_with_tracking(
         out.push_str(ellipsis);
         out
     }
-}
-
-fn fit_text_to_units(
-    text: &str,
-    max_units: f32,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
-) -> String {
-    fit_text_to_units_with_tracking(text, max_units, glyphs, kerning, 0.0)
 }
 
 fn push_text_line_with_tracking(
@@ -809,33 +796,6 @@ fn push_text_line_with_tracking(
     }
 }
 
-fn push_text_line(
-    out: &mut Vec<TextInstance>,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
-    line_height: f32,
-    text: &str,
-    cx: f32,
-    cy: f32,
-    font_height_world: f32,
-    max_width_world: f32,
-    color: [f32; 4],
-) {
-    push_text_line_with_tracking(
-        out,
-        glyphs,
-        kerning,
-        line_height,
-        text,
-        cx,
-        cy,
-        font_height_world,
-        max_width_world,
-        0.0,
-        color,
-    );
-}
-
 fn push_text_line_dual_with_tracking(
     fill_out: &mut Vec<TextInstance>,
     halo_out: &mut Vec<TextInstance>,
@@ -876,37 +836,6 @@ fn push_text_line_dual_with_tracking(
         max_width_world,
         tracking_units,
         fill_color,
-    );
-}
-
-fn push_text_line_dual(
-    fill_out: &mut Vec<TextInstance>,
-    halo_out: &mut Vec<TextInstance>,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
-    line_height: f32,
-    text: &str,
-    cx: f32,
-    cy: f32,
-    font_height_world: f32,
-    max_width_world: f32,
-    fill_color: [f32; 4],
-    halo_color: [f32; 4],
-) {
-    push_text_line_dual_with_tracking(
-        fill_out,
-        halo_out,
-        glyphs,
-        kerning,
-        line_height,
-        text,
-        cx,
-        cy,
-        font_height_world,
-        max_width_world,
-        0.0,
-        fill_color,
-        halo_color,
     );
 }
 
@@ -2345,9 +2274,9 @@ impl GpuRenderer {
             return None;
         }
         let font = if readable_font {
-            format!("{}px 'Inter', system-ui, sans-serif", GLYPH_ATLAS_FONT_PX)
+            format!("{GLYPH_ATLAS_FONT_PX}px 'Inter', system-ui, sans-serif")
         } else {
-            format!("{}px 'SilkscreenLocal', monospace", GLYPH_ATLAS_FONT_PX)
+            format!("{GLYPH_ATLAS_FONT_PX}px 'SilkscreenLocal', monospace")
         };
         ctx.set_font(&font);
         ctx.set_text_align("left");
@@ -2622,33 +2551,6 @@ impl GpuRenderer {
         ))
     }
 
-    /// Mark instance data as needing a rebuild (territory/hover/select/settings changed).
-    #[allow(dead_code)]
-    pub fn mark_instance_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::Geometry);
-    }
-
-    /// Mark static label instances as needing a rebuild.
-    #[allow(dead_code)]
-    pub fn mark_text_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::StaticLabel);
-    }
-
-    #[allow(dead_code)]
-    pub fn mark_dynamic_text_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::DynamicLabel);
-    }
-
-    #[allow(dead_code)]
-    pub fn mark_icon_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::Resources);
-    }
-
-    #[allow(dead_code)]
-    pub fn mark_connection_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::Resources);
-    }
-
     pub fn mark_dirty(&mut self, reason: InvalidationReason) {
         match reason {
             InvalidationReason::Geometry => self.instance_dirty = true,
@@ -2671,11 +2573,6 @@ impl GpuRenderer {
 
     pub fn frame_metrics(&self) -> FrameMetrics {
         self.frame_metrics
-    }
-
-    #[allow(dead_code)]
-    pub fn supports_static_gpu_labels(&self) -> bool {
-        self.text_renderer.is_some()
     }
 
     /// Resize the surface when the canvas size changes.
@@ -3485,7 +3382,7 @@ impl GpuRenderer {
             let glyphs = &text_renderer.glyphs;
             let kerning = &text_renderer.kerning;
             let line_height = text_renderer.line_height;
-            for (_name, ct) in territories {
+            for ct in territories.values() {
                 let loc = &ct.territory.location;
                 let ww = loc.width() as f32;
                 let hh = loc.height() as f32;
@@ -3777,7 +3674,7 @@ impl GpuRenderer {
         }
 
         let scale = vp.scale as f32;
-        for (_name, ct) in territories {
+        for ct in territories.values() {
             let loc = &ct.territory.location;
             let ww = loc.width() as f32;
             let hh = loc.height() as f32;
@@ -4262,10 +4159,9 @@ impl GpuRenderer {
         } else if self.use_full_gpu_text
             && let Some(icon_set) = icons.as_ref()
             && self.icon_renderer.is_none()
+            && self.ensure_icon_renderer(icon_set)
         {
-            if self.ensure_icon_renderer(icon_set) {
-                self.icon_dirty = true;
-            }
+            self.icon_dirty = true;
         }
 
         let static_zoom_bucket = Self::static_zoom_bucket(vp.scale);

@@ -1342,9 +1342,8 @@ async fn authenticate(
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get("authorization")?.to_str().ok()?;
-    let mut parts = raw.splitn(2, ' ');
-    let scheme = parts.next()?;
-    let token = parts.next()?;
+    let (scheme, token) = raw.split_once(' ')?;
+
     if !scheme.eq_ignore_ascii_case("bearer") || token.trim().is_empty() {
         return None;
     }
@@ -2158,8 +2157,7 @@ async fn evaluate_territory_claim(
             .iter()
             .rev()
             .find(|claim| claim.claim_hash == claim_hash)
-            .map(|claim| claim.update.runtime.clone())
-            .flatten()
+            .and_then(|claim| claim.update.runtime.clone())
         {
             accepted.runtime = Some(runtime);
         }
@@ -3441,14 +3439,6 @@ mod tests {
         reporter_count: u16,
     ) -> TerritoryRuntimeData {
         TerritoryRuntimeData {
-            headquarters: None,
-            held_resources: None,
-            production_rates: None,
-            storage_capacity: None,
-            defense_tier: None,
-            contested: None,
-            active_war: None,
-            extra_scrapes: None,
             provenance: Some(DataProvenance {
                 source: "fabric_reporter".to_string(),
                 visibility: sequoia_shared::VisibilityClass::Public,
@@ -3460,6 +3450,7 @@ mod tests {
                 menu_sr_per_hour: Some(30301),
                 menu_observed_at: Some(menu_observed_at.to_string()),
             }),
+            ..TerritoryRuntimeData::default()
         }
     }
 

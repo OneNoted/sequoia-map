@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -13,111 +16,37 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: sequoia
+          POSTGRES_DB: sequoia_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd="pg_isready -U postgres -d sequoia"
+          --health-cmd="pg_isready -U postgres -d sequoia_test"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
-
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sequoia
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/sequoia_test
       RUST_BACKTRACE: 1
-
     steps:
-      - name: Checkout
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init .
-          if git remote get-url origin >/dev/null 2>&1; then
-            git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          else
-            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          fi
-          git fetch --no-tags --prune origin "+${GITHUB_REF}:refs/remotes/origin/workflow-checkout"
-          git checkout --force "${GITHUB_SHA}"
-          git clean -ffdx
-
-      - name: Install Rust Toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup update stable
-          rustup default stable
-          rustup target add wasm32-unknown-unknown
-
-      - name: Cache Cargo Artifacts
-        uses: actions/cache@v4
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/git/db/
-            ~/.cargo/registry/cache/
-            ~/.cargo/registry/index/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          workspaces: |
+            . -> target
+            services/sequoia-ingest -> target
+      - run: mise run verify
 
-      - name: Build And Test
-        run: |
-          cargo check -p sequoia-server
-          cargo check -p sequoia-client
-          cargo check -p sequoia-client --target wasm32-unknown-unknown
-          cargo check -p sequoia-claims-client
-          cargo check -p sequoia-claims-client --target wasm32-unknown-unknown
-          cargo test -p sequoia-shared -- --nocapture
-          cargo test -p sequoia-server -- --nocapture
-          cargo test -p sequoia-client -- --nocapture
-
-      - name: Install Client Build Tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends binaryen brotli gzip
-          if command -v trunk >/dev/null 2>&1; then
-            trunk --version
-          else
-            cargo install trunk --locked
-          fi
-
-      - name: Enforce Client WASM Size Budget
-        working-directory: client
-        run: |
-          rm -rf dist
-          trunk build --release
-
-          wasm_file="$(find dist -type f -name '*_bg.wasm' | head -n 1)"
-          if [ -z "$wasm_file" ]; then
-            echo "Failed to find wasm output in dist/"
-            exit 1
-          fi
-
-          wasm-opt -Oz "$wasm_file" -o "$wasm_file"
-          brotli -f -q 11 "$wasm_file" -o "$wasm_file.br"
-          gzip -f -k -9 "$wasm_file"
-
-          wasm_raw_bytes="$(stat -c%s "$wasm_file")"
-          wasm_br_bytes="$(stat -c%s "$wasm_file.br")"
-          wasm_gz_bytes="$(stat -c%s "$wasm_file.gz")"
-
-          echo "Optimized wasm size (raw): ${wasm_raw_bytes} bytes"
-          echo "Optimized wasm size (brotli): ${wasm_br_bytes} bytes"
-          echo "Optimized wasm size (gzip): ${wasm_gz_bytes} bytes"
-
-          if [ "$wasm_br_bytes" -gt 1900000 ]; then
-            echo "Brotli-compressed wasm exceeds budget (1,900,000 bytes)."
-            exit 1
-          fi
-          if [ "$wasm_gz_bytes" -gt 2800000 ]; then
-            echo "Gzip-compressed wasm exceeds budget (2,800,000 bytes)."
-            exit 1
-          fi
-
-      - name: Build Claims Client
-        working-directory: claims-client
-        run: |
-          dist_dir="$(mktemp -d)"
-          trunk build --release --config Trunk.toml --dist "$dist_dir"
+  iris:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ['1.21.4', '1.21.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+        with:
+          install: false
+      - uses: gradle/actions/setup-gradle@v4
+      - run: mise run iris:build "${{ matrix.profile }}"

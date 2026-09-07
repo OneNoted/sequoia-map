@@ -147,7 +147,7 @@ struct TerritoryNode {
 }
 
 pub fn claim_label_zoom_active(scale: f64) -> bool {
-    scale >= CLAIM_LABEL_MIN_SCALE && scale <= CLAIM_LABEL_MAX_SCALE
+    (CLAIM_LABEL_MIN_SCALE..=CLAIM_LABEL_MAX_SCALE).contains(&scale)
 }
 
 pub fn build_claim_clusters(territories: &ClientTerritoryMap) -> Vec<ClaimCluster> {

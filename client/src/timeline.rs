@@ -151,8 +151,8 @@ pub fn Timeline() -> impl IntoView {
     let is_visible = move || mode.get() == MapMode::History;
     let slider_ref = NodeRef::<leptos::html::Input>::new();
     let overview_ref = NodeRef::<leptos::html::Input>::new();
-    let slider_ref_sync = slider_ref.clone();
-    let overview_ref_sync = overview_ref.clone();
+    let slider_ref_sync = slider_ref;
+    let overview_ref_sync = overview_ref;
     let fetch_ctx = history::HistoryFetchContext {
         mode,
         history_fetch_nonce,

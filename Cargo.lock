@@ -2946,19 +2946,10 @@ dependencies = [
 name = "sequoia-map-engine"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "chrono",
- "console_error_panic_hook",
- "futures",
- "js-sys",
  "sequoia-shared",
  "serde",
- "serde-wasm-bindgen",
  "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wgpu",
 ]
 
 [[package]]

@@ -1,30 +1,30 @@
 plugins {
     id 'fabric-loom' version '1.15.4'
-    id 'maven-publish'
 }
 
-version = project.mod_version
+def targetProfile = providers.gradleProperty("minecraft_profile").get()
+if (!(targetProfile ==~ /\d+\.\d+\.\d+/)) {
+    throw new GradleException("Invalid Minecraft profile: ${targetProfile}")
+}
+def profileFile = file("profiles/${targetProfile}.properties")
+if (!profileFile.isFile()) {
+    throw new GradleException("Unknown Minecraft profile: ${targetProfile}; see profiles/")
+}
+def profile = new Properties()
+profileFile.withInputStream { profile.load(it) }
+["minecraft_version", "yarn_mappings", "loader_version", "fabric_version"].each { key ->
+    def value = profile.getProperty(key)
+    if (!value) {
+        throw new GradleException("Missing ${key} in ${profileFile}")
+    }
+    project.ext.set(key, value)
+}
+
+version = "${project.mod_version}+${targetProfile.replace('.', '_')}"
 group = project.maven_group
 
 base {
-    archivesName = project.archives_base_name
-}
-
-def liveReloadEnabled = providers.gradleProperty("liveReload")
-    .map { value ->
-        value == "1" ||
-            value.equalsIgnoreCase("true") ||
-            value.equalsIgnoreCase("yes") ||
-            value.equalsIgnoreCase("on")
-    }
-    .orElse(false)
-
-configurations {
-    liveReloadAgent {
-        canBeConsumed = false
-        canBeResolved = true
-        visible = false
-    }
+    archivesName = "wynn-iris-mc${project.minecraft_version}"
 }
 
 repositories {
@@ -37,7 +37,6 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-    liveReloadAgent "org.hotswapagent:hotswap-agent-core:2.0.2"
     testImplementation "org.junit.jupiter:junit-jupiter:5.11.4"
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
 }
@@ -64,29 +63,6 @@ tasks.withType(JavaCompile).configureEach {
     it.options.release = 21
 }
 
-tasks.named("runClient").configure {
-    doFirst {
-        if (!liveReloadEnabled.get()) {
-            return
-        }
-
-        def agentJar = configurations.liveReloadAgent.singleFile
-        jvmArgs("-javaagent:${agentJar}", "-Dhotswapagent.autoHotswap=true")
-        logger.lifecycle("Live reload enabled: HotswapAgent is active for this run.")
-    }
-}
-
 tasks.named("test").configure {
     useJUnitPlatform()
-}
-
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            from components.java
-        }
-    }
-
-    repositories {
-    }
 }

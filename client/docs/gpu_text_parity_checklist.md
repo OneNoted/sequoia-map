@@ -1,33 +1,43 @@
-# GPU Text Parity Checklist
+# Renderer checks
 
-Use this checklist before widening rollout beyond `Settings -> Font -> Font Renderer -> GPU`.
+Use this checklist when changing `client/src/gpu`, canvas behavior or shared
+label layout. The current canvas enables GPU text during renderer initialization;
+there is no separate font-renderer rollout setting. These are manual checks,
+not coverage provided by `mise run verify`.
 
-## Screenshot Scenarios
+## Visual coverage
 
-- [ ] Tag-only compact territories at zoomed-out view.
-- [ ] Tag + time in medium-size territories.
-- [ ] Tag + name + time in large territories.
-- [ ] Cooldown countdown urgency colors (green/yellow/orange/red).
-- [ ] Name truncation and abbreviation behavior.
-- [ ] Resource icon placement for single, double, and all-resource territories.
-- [ ] Hover and selection interactions near labels/icons.
-- [ ] History mode and live mode parity at the same timestamp.
+Compare the same territory data, timestamp, viewport and settings before and
+after the change. Capture the browser/OS, device pixel ratio and zoom level.
+Check both the map and claims editor where the behavior is shared.
 
-## Performance Gates
+- Compact tag-only territories at far zoom.
+- Tag, name and time layouts on medium and large territories.
+- Cooldown urgency colors and time formatting.
+- Truncation, abbreviation and long guild or territory names.
+- Single, multiple and all-resource icons.
+- Hover and selection near labels and icons.
+- Live and history views of the same state.
+- Claims labels and their layout while panning and zooming.
 
-- [ ] 240Hz environment: p95 delivered FPS >= 90% of refresh while continuously panning in live mode.
-- [ ] 60Hz baseline environment: p95 delivered FPS >= 90% of refresh for the same pan scenario.
-- [ ] Pan-only runs show `pan_zero_rebuild_frames > 0` with no static/dynamic/icon rebuild churn.
-- [ ] Zoom stress runs show bounded rebuilds tied to zoom-bucket/layout threshold transitions.
+## Performance
 
-## Required Logs
+Use a release build for performance comparisons. Record display refresh rate,
+frame-time percentiles and the interaction used. Cover continuous panning,
+zooming, idle time progression and settings/data changes. Compare with the base
+revision on the same machine rather than treating an unmeasured FPS target as
+a passed gate.
 
-Capture diagnostics from the browser console:
+GPU diagnostics are opt-in: `window.__SEQUOIA_GPU_DIAG__` must be `true` **before**
+the renderer initializes. For a local diagnostic build, set it in an early
+script in `client/index.html`; do not commit the temporary instrumentation.
+The console emits:
 
-- `gpu-diag static_rebuilds=... dynamic_rebuilds=... icon_rebuilds=... pan_zero_rebuild_frames=...`
+```text
+gpu-diag static_rebuilds=... dynamic_rebuilds=... icon_rebuilds=... pan_zero_rebuild_frames=...
+```
 
-Expected trend:
-
-- Pan-only interaction: high `pan_zero_rebuild_frames`, low rebuild counts.
-- Time progression: dynamic rebuild count increments at content-boundary cadence.
-- Static rebuild count changes primarily on settings/data changes.
+Pan-only frames should usually reuse labels and icons. Time changes should
+rebuild dynamic content at content boundaries; static labels should rebuild
+for data or settings changes. Counters are reported and reset on rebuilds, so
+an interval with no rebuild does not immediately produce a log line.

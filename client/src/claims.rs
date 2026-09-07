@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -430,7 +430,7 @@ fn set_effective_resources(
             .document
             .territory_state_overrides
             .entry(territory.to_string())
-            .or_insert_with(ClaimTerritoryStateOverride::default);
+            .or_default();
         entry.resources = Some(next_resources);
         if entry.is_empty() {
             session.document.territory_state_overrides.remove(territory);
@@ -1442,6 +1442,12 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
     }
 }
 
+fn provide_claims_war_context() {
+    // SSE still consumes war-controller updates, but claims boards have no live war overlays.
+    provide_context(crate::app::WarControllerData(RwSignal::new(None)));
+    provide_context(crate::app::TerritoriesInWar(Memo::new(|_| HashSet::new())));
+}
+
 #[component]
 fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     let ClaimsEditorInit {
@@ -1542,6 +1548,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         status_message.set(Some(LIVE_SYNC_PENDING_MESSAGE.to_string()));
     }
 
+    provide_claims_war_context();
     provide_context(effective_territories);
     provide_context(viewport);
     provide_context(Hovered(hovered));
@@ -1813,11 +1820,11 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     });
 
     Effect::new(move || {
-        let _ = gloo_storage::LocalStorage::set(PRESET_STORAGE_KEY, &local_presets.get());
+        let _ = gloo_storage::LocalStorage::set(PRESET_STORAGE_KEY, local_presets.get());
     });
 
     Effect::new(move || {
-        let _ = gloo_storage::LocalStorage::set(MACRO_LIBRARY_STORAGE_KEY, &macro_library.get());
+        let _ = gloo_storage::LocalStorage::set(MACRO_LIBRARY_STORAGE_KEY, macro_library.get());
     });
 
     Effect::new(move || {
@@ -2118,7 +2125,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     };
 
     let file_input_ref = NodeRef::<html::Input>::new();
-    let file_input_change_ref = file_input_ref.clone();
+    let file_input_change_ref = file_input_ref;
     let on_file_change = move |_| {
         let Some(input) = file_input_change_ref.get() else {
             return;
@@ -2736,7 +2743,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                             .into_any()
                         }
                         ClaimTab::Share => {
-                            let import_input_ref = file_input_ref.clone();
+                            let import_input_ref = file_input_ref;
                             view! {
                                 <div style="display: flex; flex-direction: column; gap: 10px;">
                                     <button class="btn"
@@ -2880,7 +2887,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                         "Export JSON"
                                     </button>
                                     <button class="btn"
-                                        on:click=move |_| trigger_import_picker(import_input_ref.clone())
+                                        on:click=move |_| trigger_import_picker(import_input_ref)
                                     >
                                         "Import JSON"
                                     </button>
@@ -2973,6 +2980,26 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claims_provides_war_contexts_for_shared_canvas_and_sse() {
+        let owner = Owner::new();
+        owner.with(|| {
+            provide_claims_war_context();
+            assert!(
+                expect_context::<crate::app::WarControllerData>()
+                    .0
+                    .get_untracked()
+                    .is_none()
+            );
+            assert!(
+                expect_context::<crate::app::TerritoriesInWar>()
+                    .0
+                    .get_untracked()
+                    .is_empty()
+            );
+        });
+    }
 
     #[test]
     fn parse_claims_route_handles_root_and_saved_paths() {

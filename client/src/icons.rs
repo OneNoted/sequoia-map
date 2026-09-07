@@ -142,7 +142,7 @@ pub fn load_resource_atlas(signal: RwSignal<Option<ResourceAtlas>>) {
         resource_image.set_src(&atlas_src);
         if let Err(err) = wasm_bindgen_futures::JsFuture::from(resource_image.decode()).await {
             signal.set(None);
-            warn_atlas_once(&format!("Failed to decode resource atlas: {:?}", err));
+            warn_atlas_once(&format!("Failed to decode resource atlas: {err:?}"));
             return;
         }
 
