@@ -1,8 +1,10 @@
 # Server configuration
 
 `DATABASE_URL` is required. The server applies committed SQL migrations at
-startup and exits unsuccessfully if configuration, database connection,
-migrations or listener binding fail.
+startup and exits unsuccessfully if `DATABASE_URL` is missing, the database
+connection or migrations fail, or the listener cannot bind. This is not blanket
+configuration validation: invalid tokens are treated as unset, and many malformed
+numeric settings fall back to defaults.
 
 ## Backend integration
 
@@ -15,9 +17,9 @@ migrations or listener binding fail.
 - `SEQUOIA_BACKEND_INTERNAL_TOKEN`: bearer token for backend calls.
 - `INTERNAL_INGEST_TOKEN`: shared secret for gateway-to-server ingestion.
 
-Both tokens must contain at least 24 characters; known placeholders are rejected.
-Use separate secrets for these two integrations. The server must remain behind
-an edge that blocks public access to `/api/internal/ingest/*`.
+Both tokens must contain at least 24 characters; the ingest token also rejects
+known placeholders. Use separate secrets for these two integrations. The server
+must remain behind an edge that blocks public access to `/api/internal/ingest/*`.
 
 ## Runtime settings
 
