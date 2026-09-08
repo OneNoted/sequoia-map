@@ -426,12 +426,8 @@ struct WorldAttestation {
 struct IdentityRecord {
     reporter_id: String,
     device_pubkey_hash: String,
-    device_pubkey_b64: String,
-    device_key_id: String,
     mojang_uuid: String,
-    mojang_username: String,
     status: String,
-    registered_at: DateTime<Utc>,
     last_attested_at: DateTime<Utc>,
     last_seen: DateTime<Utc>,
 }
@@ -451,9 +447,6 @@ struct AttestationChallengeRecord {
 struct ProvisionalOwnershipClaim {
     territory: String,
     claimed_guild_uuid: Option<String>,
-    claimed_guild_name: Option<String>,
-    claimed_acquired: Option<String>,
-    first_seen: Instant,
     expires_at: Instant,
 }
 
@@ -483,10 +476,11 @@ struct AppState {
 struct AttestChallengeRequest {
     #[serde(default)]
     device_pubkey: String,
-    #[serde(default)]
-    minecraft_version: String,
-    #[serde(default)]
-    mod_version: String,
+    // Validate the wire types, but do not trust client metadata for attestation.
+    #[serde(default, rename = "minecraft_version")]
+    _minecraft_version: String,
+    #[serde(default, rename = "mod_version")]
+    _mod_version: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1165,7 +1159,6 @@ async fn report_territory(
         .await;
 
         let ownership_claim = update.guild.clone().map(|guild| (guild.uuid, guild.name));
-        let acquired_claim = update.acquired.clone();
 
         let decision = evaluate_territory_claim(
             &state,
@@ -1188,7 +1181,7 @@ async fn report_territory(
                     provenance.observed_at = Utc::now().to_rfc3339();
                 }
                 if was_degraded {
-                    provenance.confidence = provenance.confidence.min(0.55).max(0.35);
+                    provenance.confidence = degraded_confidence(provenance.confidence);
                 } else if was_quorum {
                     provenance.confidence = provenance.confidence.max(0.75);
                 }
@@ -1205,10 +1198,13 @@ async fn report_territory(
                         .provenance
                         .clone()
                         .unwrap_or_else(default_provenance);
-                    provenance.confidence = provenance.confidence.min(0.55).max(0.35);
+                    provenance.confidence = degraded_confidence(provenance.confidence);
                     runtime.provenance = Some(provenance);
                 }
-                let (guild_uuid, guild_name) = ownership_claim.clone().unwrap_or_default();
+                let guild_uuid = ownership_claim
+                    .as_ref()
+                    .map(|(uuid, _)| uuid.clone())
+                    .unwrap_or_default();
                 register_provisional_ownership(
                     &state,
                     &accepted_update.territory,
@@ -1217,12 +1213,6 @@ async fn report_territory(
                     } else {
                         Some(guild_uuid)
                     },
-                    if guild_name.is_empty() {
-                        None
-                    } else {
-                        Some(guild_name)
-                    },
-                    acquired_claim.clone(),
                 )
                 .await;
                 state
@@ -1413,6 +1403,10 @@ fn build_signed_message(
     format!("{method}\n{path}\n{ts}\n{nonce}\n{body_hash_hex}\n{reporter_id}")
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep signed HTTP data and expected identity/key inputs explicit at the authentication boundary."
+)]
 async fn verify_signed_request(
     state: &Arc<AppState>,
     headers: &HeaderMap,
@@ -2482,12 +2476,18 @@ async fn schedule_retry(state: &AppState, job: &mut ForwardJob) {
     queue.push_back(job.clone());
 }
 
+fn degraded_confidence(confidence: f32) -> f32 {
+    if confidence.is_nan() {
+        0.55
+    } else {
+        confidence.clamp(0.35, 0.55)
+    }
+}
+
 async fn register_provisional_ownership(
     state: &Arc<AppState>,
     territory: &str,
     claimed_guild_uuid: Option<String>,
-    claimed_guild_name: Option<String>,
-    claimed_acquired: Option<String>,
 ) {
     let now = Instant::now();
     let expires_at = now + Duration::from_secs(state.cfg.owner_corroboration_window_secs);
@@ -2497,9 +2497,6 @@ async fn register_provisional_ownership(
         ProvisionalOwnershipClaim {
             territory: territory.to_string(),
             claimed_guild_uuid,
-            claimed_guild_name,
-            claimed_acquired,
-            first_seen: now,
             expires_at,
         },
     );
@@ -3008,16 +3005,12 @@ async fn bootstrap_reporters(state: &AppState) -> Result<(), sqlx::Error> {
         bootstrapped_identities.push(IdentityRecord {
             reporter_id: reporter_id.clone(),
             device_pubkey_hash: token_hash(&device_pubkey_b64),
-            device_pubkey_b64,
-            device_key_id: key_id,
             mojang_uuid,
-            mojang_username,
             status: if revoked != 0 {
                 "revoked".to_string()
             } else {
                 "active".to_string()
             },
-            registered_at: last_seen,
             last_attested_at,
             last_seen,
         });
@@ -3074,6 +3067,10 @@ async fn bootstrap_reporters(state: &AppState) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Arguments map directly to the reporter upsert; no additional persistence object is retained."
+)]
 async fn persist_reporter(
     state: &AppState,
     reporter_id: &str,
@@ -3139,6 +3136,10 @@ async fn persist_reporter(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Arguments map directly to the identity upsert, including separate registration/attestation/seen times."
+)]
 async fn persist_identity(
     state: &Arc<AppState>,
     reporter_id: &str,
@@ -3187,12 +3188,8 @@ async fn persist_identity(
         IdentityRecord {
             reporter_id: reporter_id.to_string(),
             device_pubkey_hash: device_pubkey_hash.to_string(),
-            device_pubkey_b64: device_pubkey_b64.to_string(),
-            device_key_id: key_id,
             mojang_uuid: mojang_uuid.to_string(),
-            mojang_username: mojang_username.to_string(),
             status: status.to_string(),
-            registered_at,
             last_attested_at,
             last_seen,
         },
@@ -3298,8 +3295,8 @@ async fn persist_challenge_used_at(
 }
 
 async fn bootstrap_identities(state: &AppState) -> Result<(), sqlx::Error> {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String, String, String, String)>(
-        "SELECT reporter_id, device_pubkey_hash, device_pubkey_b64, device_key_id, mojang_uuid, mojang_username, status, registered_at, last_attested_at, last_seen FROM reporter_identities",
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
+        "SELECT reporter_id, device_pubkey_hash, mojang_uuid, status, registered_at, last_attested_at, last_seen FROM reporter_identities",
     )
     .fetch_all(&state.db)
     .await?;
@@ -3311,10 +3308,7 @@ async fn bootstrap_identities(state: &AppState) -> Result<(), sqlx::Error> {
     for (
         reporter_id,
         device_pubkey_hash,
-        device_pubkey_b64,
-        device_key_id,
         mojang_uuid,
-        mojang_username,
         status,
         registered_at,
         last_attested_at,
@@ -3335,12 +3329,8 @@ async fn bootstrap_identities(state: &AppState) -> Result<(), sqlx::Error> {
             IdentityRecord {
                 reporter_id,
                 device_pubkey_hash,
-                device_pubkey_b64,
-                device_key_id,
                 mojang_uuid,
-                mojang_username,
                 status,
-                registered_at,
                 last_attested_at,
                 last_seen,
             },
@@ -3432,6 +3422,80 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tokio::sync::RwLock;
+
+    #[test]
+    fn degraded_confidence_preserves_bounds_and_nan_policy() {
+        for (input, expected) in [
+            (0.0, 0.35),
+            (0.35, 0.35),
+            (0.45, 0.45),
+            (0.55, 0.55),
+            (1.0, 0.55),
+            (f32::NEG_INFINITY, 0.35),
+            (f32::INFINITY, 0.55),
+            (f32::NAN, 0.55),
+        ] {
+            assert_eq!(super::degraded_confidence(input), expected);
+        }
+    }
+
+    #[test]
+    fn challenge_metadata_is_optional_but_keeps_string_validation() {
+        use super::AttestChallengeRequest;
+        assert!(serde_json::from_value::<AttestChallengeRequest>(serde_json::json!({})).is_ok());
+        assert!(
+            serde_json::from_value::<AttestChallengeRequest>(serde_json::json!({
+                "minecraft_version": "1.21.4", "mod_version": "0.1.0"
+            }))
+            .is_ok()
+        );
+        for field in ["minecraft_version", "mod_version"] {
+            assert!(
+                serde_json::from_value::<AttestChallengeRequest>(serde_json::json!({field: 42}))
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_cache_round_trip_preserves_persisted_metadata() {
+        let state = test_state_with_active_reporters(false, 0, 2, 1).await;
+        initialize_db(&state.db).await.unwrap();
+        let now = Utc::now();
+        super::persist_identity(
+            &state,
+            "reporter",
+            "key-hash",
+            "public-key",
+            "uuid",
+            "Player",
+            "active",
+            now,
+            now,
+            now,
+        )
+        .await;
+        state.identities.write().await.clear();
+        super::bootstrap_identities(&state).await.unwrap();
+        let identities = state.identities.read().await;
+        let identity = identities.get("reporter").unwrap();
+        assert_eq!(identity.device_pubkey_hash, "key-hash");
+        assert_eq!(identity.mojang_uuid, "uuid");
+        assert_eq!(identity.status, "active");
+        assert_eq!(identity.last_attested_at, now);
+        assert_eq!(identity.last_seen, now);
+        let metadata: (String, String, String) = sqlx::query_as(
+            "SELECT device_pubkey_b64, mojang_username, registered_at FROM reporter_identities WHERE reporter_id = ?"
+        ).bind("reporter").fetch_one(&state.db).await.unwrap();
+        assert_eq!(
+            metadata,
+            (
+                "public-key".to_string(),
+                "Player".to_string(),
+                now.to_rfc3339()
+            )
+        );
+    }
 
     fn runtime_with_scalar_provenance(
         observed_at: &str,

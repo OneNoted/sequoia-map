@@ -15,7 +15,7 @@ use crate::app::{
     CurrentMode, IsMobile, MapMode, ShowMinimap, ShowWarStats, SidebarOpen, SidebarWidth,
     WarControllerData, WarFeedVisible, WindowWidth,
 };
-use crate::icons::class_icon_url;
+use crate::ui_icons::class_icon_url;
 use crate::warcontroller::{difficulty_color, format_eta};
 use leptos::prelude::*;
 use sequoia_shared::tower::format_stat;

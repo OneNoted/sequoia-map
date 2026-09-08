@@ -8,8 +8,6 @@ mod claims;
 #[cfg(target_arch = "wasm32")]
 #[path = "../../client/src/gpu/mod.rs"]
 mod gpu;
-#[path = "../../client/src/heat.rs"]
-mod heat;
 mod history;
 #[path = "../../client/src/icons.rs"]
 mod icons;
@@ -23,10 +21,11 @@ mod sse;
 mod tiles;
 
 // Shared map math and state helpers, also used by the other browser client.
-pub(crate) use sequoia_map_engine::{
-    claim_labels, colors, defense, label_layout, overlay_sizing, spatial, territory, time_format,
-    viewport,
-};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use sequoia_map_engine::{claim_labels, label_layout, overlay_sizing};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use sequoia_map_engine::{colors, defense, time_format};
+pub(crate) use sequoia_map_engine::{spatial, territory, viewport};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../../client/src/gpu/native.rs"]

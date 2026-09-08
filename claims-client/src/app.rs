@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use sequoia_shared::{TerritoryChange, WarControllerState};
+use sequoia_shared::WarControllerState;
 
 use crate::claims::ClaimsPage;
 
@@ -138,8 +138,6 @@ pub(crate) struct CurrentMode(pub RwSignal<MapMode>);
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryTimestamp(pub RwSignal<Option<i64>>);
 #[derive(Clone, Copy)]
-pub(crate) struct HistoryFetchNonce(pub RwSignal<u64>);
-#[derive(Clone, Copy)]
 pub(crate) struct LastLiveSeq(pub RwSignal<Option<u64>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryBufferedUpdates(pub RwSignal<Vec<BufferedUpdate>>);
@@ -159,11 +157,7 @@ pub(crate) struct WarControllerData(pub RwSignal<Option<WarControllerState>>);
 #[derive(Clone, Copy)]
 pub(crate) struct TerritoriesInWar(pub Memo<HashSet<String>>);
 
-#[derive(Clone, Debug)]
-pub(crate) struct BufferedUpdate {
-    pub seq: u64,
-    pub changes: Vec<TerritoryChange>,
-}
+pub(crate) use sequoia_map_engine::territory::BufferedUpdate;
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum NameColor {

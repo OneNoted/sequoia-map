@@ -12,3 +12,5 @@ pub mod spatial;
 pub mod territory;
 pub mod time_format;
 pub mod viewport;
+
+pub mod icon_atlas;

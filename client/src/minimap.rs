@@ -9,7 +9,7 @@ use crate::app::{
     CurrentMode, HeatEntriesByTerritory, HeatMaxTakeCount, HeatModeEnabled, IsMobile, MapMode,
     Selected, SidebarOpen, canvas_dimensions,
 };
-use crate::heat::heat_color_for_count;
+use sequoia_map_engine::colors::heat_color_for_count;
 use crate::canvas::render_scale;
 use crate::render_loop::RenderScheduler;
 use crate::territory::ClientTerritoryMap;

@@ -105,9 +105,9 @@ run = [
 [tasks.lint]
 description = "Run Clippy for native crates and browser targets"
 run = [
-  "cargo clippy --locked --workspace --all-targets",
-  "cargo clippy --locked -p sequoia-client -p sequoia-claims-client --target wasm32-unknown-unknown",
-  "cargo clippy --locked --manifest-path services/sequoia-ingest/Cargo.toml --all-targets",
+  "cargo clippy --locked --workspace --all-targets -- -D warnings",
+  "cargo clippy --locked -p sequoia-client -p sequoia-claims-client --target wasm32-unknown-unknown -- -D warnings",
+  "cargo clippy --locked --manifest-path services/sequoia-ingest/Cargo.toml --all-targets -- -D warnings",
 ]
 
 [tasks.test]

@@ -41,15 +41,15 @@ dependencies {
     testRuntimeOnly "org.junit.platform:junit-platform-launcher"
 }
 
-processResources {
-    inputs.property "version", project.version
-    inputs.property "minecraft_version", project.minecraft_version
+def resourceProperties = [
+    version: project.version.toString(),
+    minecraft_version: project.minecraft_version.toString()
+]
 
+processResources {
+    inputs.properties(resourceProperties)
     filesMatching("fabric.mod.json") {
-        expand(
-            "version": project.version,
-            "minecraft_version": project.minecraft_version
-        )
+        expand(resourceProperties)
     }
 }
 
@@ -61,6 +61,7 @@ java {
 
 tasks.withType(JavaCompile).configureEach {
     it.options.release = 21
+    it.options.compilerArgs.add("-Werror")
 }
 
 tasks.named("test").configure {

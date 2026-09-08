@@ -16,8 +16,7 @@ use crate::claim_labels::{
 };
 use crate::colors::brighten;
 use crate::defense::defense_tier_overlay_data;
-use crate::heat::heat_color_for_count;
-use crate::icons::{ICON_COUNT, ResourceAtlas};
+use crate::icons::ResourceAtlas;
 use crate::label_layout::{
     IconKind, abbreviate_name, compute_label_layout_metrics, cooldown_color,
     dynamic_label_next_update_age, dynamic_text_state, resource_icon_sequence,
@@ -35,6 +34,8 @@ use crate::territory::{ClientTerritoryMap, is_sequoia_guild, is_unclaimed_guild}
 use crate::tiles::{LoadedTile, TileQuality};
 use crate::time_format::write_hms;
 use crate::viewport::Viewport;
+use sequoia_map_engine::colors::heat_color_for_count;
+use sequoia_map_engine::icon_atlas::ICON_COUNT;
 
 pub type RenderFrameInput<'a> = SceneSnapshot<'a>;
 
@@ -143,6 +144,15 @@ struct GlyphMeta {
     draw_width: f32,
     draw_offset_y: f32,
     draw_height: f32,
+}
+
+struct GlyphAtlas {
+    bind_group_layout: wgpu::BindGroupLayout,
+    fill_bind_group: wgpu::BindGroup,
+    halo_bind_group: wgpu::BindGroup,
+    glyphs: HashMap<char, GlyphMeta>,
+    kerning: HashMap<u32, f32>,
+    line_height: f32,
 }
 
 struct GpuTextRenderer {
@@ -307,6 +317,10 @@ fn hq_normal_crown_layout(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit geometry and font metrics keep the crown/tag layout calculation stateless."
+)]
 fn hq_normal_static_tag_y(
     territory_top: f32,
     territory_width: f32,
@@ -335,6 +349,10 @@ fn hq_normal_static_tag_y(
     .unwrap_or(base_y)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit geometry and display settings keep this label bounds calculation stateless."
+)]
 fn hq_normal_static_label_bottom_bound(
     territory_top: f32,
     territory_width: f32,
@@ -732,6 +750,10 @@ fn fit_text_to_units_with_tracking(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Low-level glyph emission takes borrowed atlas data, output and per-line geometry/style."
+)]
 fn push_text_line_with_tracking(
     out: &mut Vec<TextInstance>,
     glyphs: &HashMap<char, GlyphMeta>,
@@ -796,6 +818,10 @@ fn push_text_line_with_tracking(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Fill and halo share line geometry but retain distinct output buffers and colors."
+)]
 fn push_text_line_dual_with_tracking(
     fill_out: &mut Vec<TextInstance>,
     halo_out: &mut Vec<TextInstance>,
@@ -1769,14 +1795,14 @@ impl GpuRenderer {
         vertex_layout: &wgpu::VertexBufferLayout<'_>,
         readable_font: bool,
     ) -> Option<GpuTextRenderer> {
-        let Some((
-            text_bind_group_layout,
+        let Some(GlyphAtlas {
+            bind_group_layout: text_bind_group_layout,
             fill_bind_group,
             halo_bind_group,
             glyphs,
             kerning,
             line_height,
-        )) = Self::build_glyph_atlas(device, queue, readable_font)
+        }) = Self::build_glyph_atlas(device, queue, readable_font)
         else {
             web_sys::console::warn_1(
                 &"GPU text labels disabled: failed to build dual glyph atlases".into(),
@@ -2253,14 +2279,7 @@ impl GpuRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         readable_font: bool,
-    ) -> Option<(
-        wgpu::BindGroupLayout,
-        wgpu::BindGroup,
-        wgpu::BindGroup,
-        HashMap<char, GlyphMeta>,
-        HashMap<u32, f32>,
-        f32,
-    )> {
+    ) -> Option<GlyphAtlas> {
         let document = web_sys::window()?.document()?;
         let canvas = document
             .create_element("canvas")
@@ -2541,14 +2560,14 @@ impl GpuRenderer {
                 },
             ],
         });
-        Some((
+        Some(GlyphAtlas {
             bind_group_layout,
             fill_bind_group,
             halo_bind_group,
             glyphs,
             kerning,
-            line_height_px as f32,
-        ))
+            line_height: line_height_px as f32,
+        })
     }
 
     pub fn mark_dirty(&mut self, reason: InvalidationReason) {
@@ -2763,6 +2782,10 @@ impl GpuRenderer {
     /// Animation color interpolation is handled GPU-side: we encode
     /// from_color + timing in the instance data once, and the shader
     /// computes the interpolated color every frame at zero CPU cost.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A rebuild consumes a snapshot of independently owned map overlays rather than retaining reactive state."
+    )]
     fn update_instances(
         &mut self,
         territories: &ClientTerritoryMap,

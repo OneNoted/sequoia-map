@@ -55,7 +55,6 @@ mise run iris:build  # default Minecraft profile; pass another profile as an arg
 - [Deployment and operations](docs/deployment.md): Compose, Coolify, backups and monitoring.
 - [Iris gateway](services/sequoia-ingest/README.md): enrollment, quorum and ingest settings.
 - [Iris reporter](mods/wynn-iris/README.md): Minecraft profiles and reporter behavior.
-- [Renderer checks](client/docs/gpu_text_parity_checklist.md): manual browser coverage.
 
 ## License
 

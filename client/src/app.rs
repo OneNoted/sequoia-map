@@ -99,9 +99,7 @@ thread_local! {
 use sequoia_shared::history::{
     HistoryGuildSrEntry, HistoryHeat, HistoryHeatMeta, HistoryHeatSource,
 };
-use sequoia_shared::{
-    Region, Resources, SeasonScalarSample, TerritoryChange, TreasuryLevel, WarControllerState,
-};
+use sequoia_shared::{Region, Resources, SeasonScalarSample, TreasuryLevel, WarControllerState};
 
 /// Newtype wrappers to give `hovered` and `selected` distinct types for Leptos context.
 /// (Both are `RwSignal<Option<String>>` — without wrappers, `provide_context` overwrites one.)
@@ -373,11 +371,7 @@ pub(crate) struct WarPanelOpen(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct WarPanelWidth(pub RwSignal<f64>);
 
-#[derive(Clone, Debug)]
-pub(crate) struct BufferedUpdate {
-    pub seq: u64,
-    pub changes: Vec<TerritoryChange>,
-}
+pub(crate) use sequoia_map_engine::territory::BufferedUpdate;
 
 pub(crate) type TerritoryGeometry = (Region, Resources, Vec<String>);
 pub(crate) type TerritoryGeometryMap = HashMap<String, TerritoryGeometry>;
@@ -2949,7 +2943,7 @@ fn Tooltip() -> impl IntoView {
                         </div>
                         <div style="display: flex; flex-wrap: wrap; gap: 4px;">
                             {chips.into_iter().map(|(val, is_double, icon, label)| {
-                                let icon_style = icons::sprite_style(icon, 12).unwrap_or_default();
+                                let icon_style = crate::ui_icons::sprite_style(icon, 12).unwrap_or_default();
                                 let double_style = icon_style.clone();
                                 let amount = format_resource_compact(val);
                                 view! {

@@ -38,7 +38,6 @@ use crate::app::{
 use crate::colors::rgba_css;
 use crate::defense::defense_tier_display;
 use crate::history;
-use crate::icons;
 use crate::season_scalar::{ScalarSource, effective_scalar};
 use crate::sse::ConnectionStatus;
 use crate::territory::ClientTerritoryMap;
@@ -2527,7 +2526,7 @@ fn DetailPanel() -> impl IntoView {
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {res_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
+                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
                                                         <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
@@ -2549,7 +2548,7 @@ fn DetailPanel() -> impl IntoView {
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {held_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
+                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
                                                         <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
@@ -2571,7 +2570,7 @@ fn DetailPanel() -> impl IntoView {
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {prod_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
+                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
                                                         <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
@@ -2593,7 +2592,7 @@ fn DetailPanel() -> impl IntoView {
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {cap_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
+                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
                                                         <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />

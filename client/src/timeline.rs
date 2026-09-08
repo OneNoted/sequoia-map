@@ -88,9 +88,9 @@ fn normalize_focus_window(
     }
 
     let margin = (span / 8).max(60).min(span / 2);
-    if selected_ts <= current.0.saturating_add(margin) && current.0 > earliest {
-        center_focus_window(bounds, selected_ts, Some(span))
-    } else if selected_ts >= current.1.saturating_sub(margin) && current.1 < latest {
+    if (selected_ts <= current.0.saturating_add(margin) && current.0 > earliest)
+        || (selected_ts >= current.1.saturating_sub(margin) && current.1 < latest)
+    {
         center_focus_window(bounds, selected_ts, Some(span))
     } else {
         current

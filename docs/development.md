@@ -87,7 +87,10 @@ mise run iris:build 1.21.11
 runs both Rust workspaces' tests; builds both browser clients in release mode;
 and enforces the map's compressed WASM budget. CI runs the same task. The
 separately locked ingest workspace is included, rather than relying on the
-root Cargo workspace to find it.
+root Cargo workspace to find it. Clippy rejects warnings on native, WASM and ingest
+targets. Intentional argument-count exceptions use function-local `#[expect]`
+with a reason; Clippy reports expectations that are no longer needed. Do not
+add crate-wide warning suppression or change API shapes solely to silence lints.
 
 `mise run test` starts the local container and creates **`sequoia_test`**, separate
 from the development database. Some integration tests truncate tables.
@@ -98,13 +101,12 @@ some database integration coverage and is not a substitute for `mise run test`.
 
 The map size check optimizes a temporary copy of the release WASM, then measures
 Brotli and gzip sizes. It does not overwrite Trunk's hashed assets or their
-integrity metadata. Browser rendering still needs the
-[manual renderer checks](../client/docs/gpu_text_parity_checklist.md).
+integrity metadata.
 
 Iris uses Minecraft-specific dependency profiles and is tested separately; see
 [the reporter guide](../mods/wynn-iris/README.md). `mise run iris:dev` launches the
 Fabric development client. It does not install or overwrite mods in a personal
-Minecraft instance.
+Minecraft instance. Java compiler warnings and Gradle deprecations fail the build.
 
 ## Browser smoke test
 
@@ -121,6 +123,14 @@ are written to `.data/browser-smoke/`. It uses software rendering, not a GPU
 performance benchmark. Set `SEQUOIA_BROWSER_EXECUTABLE` to use an existing Chromium
 binary instead of the Playwright download. Linux still needs Chromium's shared
 libraries; Playwright reports missing host dependencies on startup.
+
+For renderer changes, also compare the map and claims editor at the same data,
+zoom and viewport: labels, resource icons, selection, panning and live/history
+transitions. The smoke test detects startup and resource failures, not visual
+parity. Use release builds on the same machine for performance comparisons.
+Set `window.__SEQUOIA_GPU_DIAG__ = true` before renderer initialization for
+`gpu-diag` rebuild counters; pan-only frames should normally reuse labels/icons.
+Do not commit temporary diagnostic instrumentation.
 
 ## Containers
 
