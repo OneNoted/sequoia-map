@@ -48,7 +48,7 @@ pub const DEFAULT_DB_MAX_CONNECTIONS: u32 = 10;
 pub const DEFAULT_UPSTREAM_HTTP_TIMEOUT_SECS: u64 = 10;
 pub const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECS: u64 = 3;
 pub const DEFAULT_MAP_DOMAIN: &str = "map.example.com";
-pub const SERVER_PORT: u16 = 3000;
+pub const DEFAULT_SERVER_BIND: &str = "0.0.0.0:3000";
 pub const DEFAULT_CANONICAL_OVERRIDE_TTL_SECS: u64 = 180;
 pub const DEFAULT_API_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 pub const DEFAULT_MAX_INGEST_UPDATES_PER_REQUEST: usize = 1024;
@@ -91,6 +91,10 @@ pub struct SeasonScalarOverridePoint {
     pub season_id: i32,
     pub starts_at: DateTime<Utc>,
     pub scalar_weighted: f64,
+}
+
+pub fn server_bind() -> String {
+    std::env::var("SEQUOIA_SERVER_BIND").unwrap_or_else(|_| DEFAULT_SERVER_BIND.to_string())
 }
 
 pub fn seq_live_handoff_v1_enabled() -> bool {
@@ -664,6 +668,16 @@ mod tests {
                     super::DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS
                 ))
             );
+        });
+    }
+
+    #[test]
+    fn server_bind_defaults_to_container_interface_and_accepts_override() {
+        temp_env::with_var("SEQUOIA_SERVER_BIND", None::<&str>, || {
+            assert_eq!(super::server_bind(), "0.0.0.0:3000");
+        });
+        temp_env::with_var("SEQUOIA_SERVER_BIND", Some("127.0.0.1:3000"), || {
+            assert_eq!(super::server_bind(), "127.0.0.1:3000");
         });
     }
 

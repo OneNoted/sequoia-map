@@ -88,9 +88,9 @@ fn normalize_focus_window(
     }
 
     let margin = (span / 8).max(60).min(span / 2);
-    if selected_ts <= current.0.saturating_add(margin) && current.0 > earliest {
-        center_focus_window(bounds, selected_ts, Some(span))
-    } else if selected_ts >= current.1.saturating_sub(margin) && current.1 < latest {
+    if (selected_ts <= current.0.saturating_add(margin) && current.0 > earliest)
+        || (selected_ts >= current.1.saturating_sub(margin) && current.1 < latest)
+    {
         center_focus_window(bounds, selected_ts, Some(span))
     } else {
         current
@@ -151,8 +151,8 @@ pub fn Timeline() -> impl IntoView {
     let is_visible = move || mode.get() == MapMode::History;
     let slider_ref = NodeRef::<leptos::html::Input>::new();
     let overview_ref = NodeRef::<leptos::html::Input>::new();
-    let slider_ref_sync = slider_ref.clone();
-    let overview_ref_sync = overview_ref.clone();
+    let slider_ref_sync = slider_ref;
+    let overview_ref_sync = overview_ref;
     let fetch_ctx = history::HistoryFetchContext {
         mode,
         history_fetch_nonce,

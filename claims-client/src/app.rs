@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
-use sequoia_shared::{TerritoryChange, WarControllerState};
+use sequoia_shared::WarControllerState;
 
 use crate::claims::ClaimsPage;
 
@@ -138,8 +138,6 @@ pub(crate) struct CurrentMode(pub RwSignal<MapMode>);
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryTimestamp(pub RwSignal<Option<i64>>);
 #[derive(Clone, Copy)]
-pub(crate) struct HistoryFetchNonce(pub RwSignal<u64>);
-#[derive(Clone, Copy)]
 pub(crate) struct LastLiveSeq(pub RwSignal<Option<u64>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryBufferedUpdates(pub RwSignal<Vec<BufferedUpdate>>);
@@ -156,15 +154,10 @@ pub(crate) struct HistoryBufferSizeMax(pub RwSignal<usize>);
 /// Declared for the shared `sse.rs`, which this app includes but never connects.
 #[derive(Clone, Copy)]
 pub(crate) struct WarControllerData(pub RwSignal<Option<WarControllerState>>);
-/// Declared for the shared `canvas.rs`, which this app includes but never mounts.
 #[derive(Clone, Copy)]
 pub(crate) struct TerritoriesInWar(pub Memo<HashSet<String>>);
 
-#[derive(Clone, Debug)]
-pub(crate) struct BufferedUpdate {
-    pub seq: u64,
-    pub changes: Vec<TerritoryChange>,
-}
+pub(crate) use sequoia_map_engine::territory::BufferedUpdate;
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum NameColor {
@@ -234,7 +227,7 @@ fn ClaimsEntryShell(title: &'static str) -> impl IntoView {
                         {title}
                     </h1>
                     <p style="margin: 0; color: #9aa6c4; font-size: 0.82rem; line-height: 1.85;">
-                        "Mounting the lightweight claims shell first so the editor can bootstrap route data without trapping the page behind the static HTML loader."
+                        "Loading the claims editor."
                     </p>
                 </div>
             </div>

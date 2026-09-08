@@ -140,6 +140,10 @@ pub fn calc_ehp(
 ///
 /// HQ bonus:
 /// `13 + (6 * connections) + (2 * externals)` if `is_hq`, otherwise `0`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Inputs mirror the independent tower upgrades and connection bonuses in the game formula."
+)]
 pub fn calc_defense_index(
     damage_level: usize,
     attack_level: usize,
@@ -313,7 +317,7 @@ pub fn format_stat(val: f64) -> String {
     } else if val >= 1_000.0 {
         format!("{:.0}k", val / 1_000.0)
     } else {
-        format!("{:.0}", val)
+        format!("{val:.0}")
     }
 }
 

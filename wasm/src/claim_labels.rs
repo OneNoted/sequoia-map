@@ -147,7 +147,7 @@ struct TerritoryNode {
 }
 
 pub fn claim_label_zoom_active(scale: f64) -> bool {
-    scale >= CLAIM_LABEL_MIN_SCALE && scale <= CLAIM_LABEL_MAX_SCALE
+    (CLAIM_LABEL_MIN_SCALE..=CLAIM_LABEL_MAX_SCALE).contains(&scale)
 }
 
 pub fn build_claim_clusters(territories: &ClientTerritoryMap) -> Vec<ClaimCluster> {
@@ -225,11 +225,11 @@ where
         let mut component = Vec::new();
         while let Some(idx) = stack.pop() {
             component.push(idx);
-            for next in 0..len {
-                if visited[next] || !are_connected(idx, next) {
+            for (next, seen) in visited.iter_mut().enumerate() {
+                if *seen || !are_connected(idx, next) {
                     continue;
                 }
-                visited[next] = true;
+                *seen = true;
                 stack.push(next);
             }
         }
@@ -253,8 +253,7 @@ where
     }
 
     let mut candidates = Vec::new();
-    let mut clusters_by_guild: BTreeMap<(String, String, (u8, u8, u8)), Vec<&ClaimCluster>> =
-        BTreeMap::new();
+    let mut clusters_by_guild = BTreeMap::new();
     for cluster in clusters {
         clusters_by_guild
             .entry((
@@ -262,7 +261,7 @@ where
                 cluster.guild_prefix.clone(),
                 cluster.guild_color,
             ))
-            .or_default()
+            .or_insert_with(Vec::new)
             .push(cluster);
     }
 

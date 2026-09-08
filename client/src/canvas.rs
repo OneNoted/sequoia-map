@@ -63,32 +63,6 @@ pub enum ClaimTool {
 }
 
 impl ClaimTool {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            ClaimTool::View => "View",
-            ClaimTool::Paint => "Paint",
-            ClaimTool::EraseToNeutral => "Erase",
-            ClaimTool::Select => "Select",
-            ClaimTool::Eyedropper => "Pick",
-        }
-    }
-
-    pub(crate) fn tooltip(self) -> &'static str {
-        match self {
-            ClaimTool::View => "View mode \u{2014} click territories to inspect them",
-            ClaimTool::Paint => {
-                "Paint mode \u{2014} click territories to claim them for the active guild"
-            }
-            ClaimTool::EraseToNeutral => {
-                "Erase mode \u{2014} click territories to reset them to neutral"
-            }
-            ClaimTool::Select => {
-                "Select mode \u{2014} drag to select, shift-click to toggle individual territories"
-            }
-            ClaimTool::Eyedropper => "Eyedropper \u{2014} click a territory to copy its guild",
-        }
-    }
-
     pub(crate) fn uses_canvas_edits(self) -> bool {
         !matches!(self, ClaimTool::View)
     }
@@ -288,7 +262,7 @@ fn diagnostics_token(message: &str) -> String {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    format!("GPUX-{:016x}", hash)
+    format!("GPUX-{hash:016x}")
 }
 
 fn render_stats_enabled() -> bool {
@@ -872,7 +846,6 @@ pub fn MapCanvas() -> impl IntoView {
         let claim_last_hit = claim_last_hit.clone();
         let claim_box_pointer_id = claim_box_pointer_id.clone();
         let claim_box_origin = claim_box_origin.clone();
-        let claim_box_rect = claim_box_rect;
         let interaction_deadline = interaction_deadline.clone();
         let scheduler = scheduler.clone();
         let jump_from_minimap = jump_from_minimap.clone();
@@ -995,7 +968,6 @@ pub fn MapCanvas() -> impl IntoView {
         let claim_last_hit = claim_last_hit.clone();
         let claim_box_pointer_id = claim_box_pointer_id.clone();
         let claim_box_origin = claim_box_origin.clone();
-        let claim_box_rect = claim_box_rect;
         let interaction_deadline = interaction_deadline.clone();
         let scheduler = scheduler.clone();
         let claim_canvas = claim_canvas.clone();
@@ -1090,14 +1062,10 @@ pub fn MapCanvas() -> impl IntoView {
         let claim_dragging = claim_dragging.clone();
         let claim_drag_pointer_id = claim_drag_pointer_id.clone();
         let claim_box_pointer_id = claim_box_pointer_id.clone();
-        let claim_box_rect = claim_box_rect;
         let claim_last_hit = claim_last_hit.clone();
         let pinch_last_dist = pinch_last_dist.clone();
         let spatial_grid = spatial_grid.clone();
         let claim_canvas = claim_canvas.clone();
-        let territories = territories;
-        let viewport = viewport;
-        let selected = selected;
         let interaction_deadline = interaction_deadline.clone();
         let scheduler = scheduler.clone();
 
@@ -1170,7 +1138,7 @@ pub fn MapCanvas() -> impl IntoView {
                         let mut hits = territories.with_untracked(|territory_map| {
                             territory_map
                                 .iter()
-                                .filter_map(|(name, territory)| {
+                                .filter(|(_, territory)| {
                                     territory_overlaps_world_rect(
                                         territory,
                                         world_left,
@@ -1178,8 +1146,8 @@ pub fn MapCanvas() -> impl IntoView {
                                         world_right,
                                         world_bottom,
                                     )
-                                    .then(|| name.clone())
                                 })
+                                .map(|(name, _)| name.clone())
                                 .collect::<Vec<_>>()
                         });
                         hits.sort();

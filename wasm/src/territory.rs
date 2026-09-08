@@ -213,3 +213,9 @@ mod tests {
         assert!(!is_unclaimed_guild("", "Sequoia", "NONE"));
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct BufferedUpdate {
+    pub seq: u64,
+    pub changes: Vec<sequoia_shared::TerritoryChange>,
+}

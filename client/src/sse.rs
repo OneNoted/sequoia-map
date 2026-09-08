@@ -334,11 +334,8 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
             && seq < last_seq
         {
             web_sys::console::info_1(
-                &format!(
-                    "stale_sse_snapshot_ignored (last_seq={}, snapshot_seq={})",
-                    last_seq, seq
-                )
-                .into(),
+                &format!("stale_sse_snapshot_ignored (last_seq={last_seq}, snapshot_seq={seq})")
+                    .into(),
             );
             return;
         }
@@ -417,8 +414,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
                 });
                 web_sys::console::warn_1(
                     &format!(
-                        "sse_seq_gap_detected_count={} (last_seq={}, incoming_seq={})",
-                        gap_count, last_seq, seq
+                        "sse_seq_gap_detected_count={gap_count} (last_seq={last_seq}, incoming_seq={seq})"
                     )
                     .into(),
                 );
@@ -496,8 +492,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
                 });
                 web_sys::console::warn_1(
                     &format!(
-                        "sse_seq_gap_detected_count={} (last_seq={}, incoming_seq={})",
-                        gap_count, last_seq, seq
+                        "sse_seq_gap_detected_count={gap_count} (last_seq={last_seq}, incoming_seq={seq})"
                     )
                     .into(),
                 );

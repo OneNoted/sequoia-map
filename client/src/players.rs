@@ -290,14 +290,13 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
                 // well as for a label-only - or all-off - configuration, which would
                 // otherwise leave the master toggle looking broken.
                 let drew_head = with_head
-                    && face_image(&faces, &point.username, repaint.clone())
-                        .is_some_and(|image| {
-                            let ready = image_ready(&image);
-                            if ready {
-                                draw_head(&ctx, &image, sx, sy, size);
-                            }
-                            ready
-                        });
+                    && face_image(&faces, &point.username, repaint.clone()).is_some_and(|image| {
+                        let ready = image_ready(&image);
+                        if ready {
+                            draw_head(&ctx, &image, sx, sy, size);
+                        }
+                        ready
+                    });
                 if !drew_head {
                     draw_dot(&ctx, sx, sy);
                 }

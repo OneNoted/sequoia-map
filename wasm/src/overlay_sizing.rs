@@ -158,6 +158,10 @@ pub fn compute_far_zoom_tag_sizing(
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "This pure layout calculation takes independent geometry, scale and visibility inputs."
+)]
 pub fn static_name_bottom_bound(
     use_static_gpu_labels: bool,
     static_show_names: bool,

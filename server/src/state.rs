@@ -206,7 +206,7 @@ pub struct AppState {
     /// Latest computed season scalar sample and pre-serialized API payload.
     pub latest_scalar_sample: Arc<RwLock<Option<CachedScalarSample>>>,
     pub http_client: reqwest::Client,
-    /// PostgreSQL pool for history persistence. None if DATABASE_URL is not set.
+    /// PostgreSQL history pool; tests may omit persistence.
     pub db: Option<PgPool>,
     pub seq_live_handoff_v1: bool,
     pub internal_ingest_token: Option<String>,

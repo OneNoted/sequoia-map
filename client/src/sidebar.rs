@@ -38,7 +38,6 @@ use crate::app::{
 use crate::colors::rgba_css;
 use crate::defense::defense_tier_display;
 use crate::history;
-use crate::icons;
 use crate::season_scalar::{ScalarSource, effective_scalar};
 use crate::sse::ConnectionStatus;
 use crate::territory::ClientTerritoryMap;
@@ -70,7 +69,7 @@ fn format_resource(val: i32) -> String {
     if val >= 1000 {
         format!("{:.1}k", val as f64 / 1000.0)
     } else {
-        format!("{}", val)
+        format!("{val}")
     }
 }
 
@@ -78,11 +77,11 @@ fn format_sr_rate(val: f64) -> String {
     if val >= 1000.0 {
         format!("{:.1}k", val / 1000.0)
     } else if val >= 100.0 {
-        format!("{:.0}", val)
+        format!("{val:.0}")
     } else if val >= 10.0 {
-        format!("{:.1}", val)
+        format!("{val:.1}")
     } else {
-        format!("{:.2}", val)
+        format!("{val:.2}")
     }
 }
 
@@ -110,19 +109,19 @@ fn format_relative_time(rfc3339: &str, reference_secs: i64) -> String {
     }
     let mins = secs / 60;
     if mins < 60 {
-        return format!("{}m ago", mins);
+        return format!("{mins}m ago");
     }
     let hours = secs / 3600;
     if hours < 24 {
-        return format!("{}h ago", hours);
+        return format!("{hours}h ago");
     }
     let days = secs / 86_400;
     if days < 7 {
-        return format!("{}d ago", days);
+        return format!("{days}d ago");
     }
     if days < 30 {
         let weeks = days / 7;
-        return format!("{}w ago", weeks);
+        return format!("{weeks}w ago");
     }
     // Fallback to short date
     dt.format("%b %d, %Y").to_string()
@@ -193,7 +192,7 @@ pub fn Sidebar() -> impl IntoView {
         let Ok(scroll_el) = scroll_el.dyn_into::<web_sys::HtmlElement>() else {
             return;
         };
-        let Ok(Some(item_el)) = scroll_el.query_selector(&format!("[data-sidebar-idx='{}']", idx))
+        let Ok(Some(item_el)) = scroll_el.query_selector(&format!("[data-sidebar-idx='{idx}']"))
         else {
             return;
         };
@@ -834,7 +833,7 @@ fn SettingsNameColorRow(
                                     "display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: {}; cursor: pointer; border: 2px solid {}; transition: border-color 0.15s, box-shadow 0.15s;{}",
                                     css_color,
                                     if selected { "var(--color-text-primary)" } else { "#2a2e40" },
-                                    if selected { format!(" box-shadow: 0 0 5px {}80;", css_color) } else { String::new() },
+                                    if selected { format!(" box-shadow: 0 0 5px {css_color}80;") } else { String::new() },
                                 )
                             }
                             on:click=on_click
@@ -901,7 +900,7 @@ fn SettingsScaleRow(
     clamp: fn(f64) -> f64,
 ) -> impl IntoView {
     let slider_ref = NodeRef::<leptos::html::Input>::new();
-    let slider_ref_sync = slider_ref.clone();
+    let slider_ref_sync = slider_ref;
     let local_value: RwSignal<f64> = RwSignal::new(clamp(value.get_untracked()));
     let dragging: RwSignal<bool> = RwSignal::new(false);
 
@@ -1556,8 +1555,7 @@ fn LeaderboardPanel() -> impl IntoView {
                         } else {
                             let delay_ms = computed_rank * 30;
                             format!(
-                                "display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; transition: background 0.15s, box-shadow 0.15s; animation: fade-in-up 0.3s ease-out {}ms both;",
-                                delay_ms
+                                "display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; transition: background 0.15s, box-shadow 0.15s; animation: fade-in-up 0.3s ease-out {delay_ms}ms both;"
                             )
                         };
                         // Top 3 get a subtle left accent
@@ -2365,12 +2363,10 @@ fn DetailPanel() -> impl IntoView {
                                     let reporter_count = provenance.reporter_count;
                                     (
                                         format!(
-                                            "{} source \u{00b7} {} \u{00b7} conf {}",
-                                            visibility, source, confidence
+                                            "{visibility} source \u{00b7} {source} \u{00b7} conf {confidence}"
                                         ),
                                         format!(
-                                            "Observed {} \u{00b7} reporters {}",
-                                            observed_label, reporter_count
+                                            "Observed {observed_label} \u{00b7} reporters {reporter_count}"
                                         ),
                                     )
                                 })
@@ -2430,7 +2426,7 @@ fn DetailPanel() -> impl IntoView {
                                     <span style="display: flex; align-items: center; gap: 6px;">
                                         <span style={format!("color: {}; font-family: var(--font-mono); font-size: 0.905rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
                                         {(buff > 0).then(|| view! {
-                                            <span style={format!("font-size: 0.754rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;", rgba_css(tr, tg, tb, 0.9), rgba_css(tr, tg, tb, 0.08))}>{format!("+{}%", buff)}</span>
+                                            <span style={format!("font-size: 0.754rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;", rgba_css(tr, tg, tb, 0.9), rgba_css(tr, tg, tb, 0.08))}>{format!("+{buff}%")}</span>
                                         })}
                                     </span>
                                 </div>
@@ -2518,7 +2514,7 @@ fn DetailPanel() -> impl IntoView {
                                 <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
                                     <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Connections"</span>
                                     <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;">
-                                        {move || guild_counts.get().map(|(gc, tc, _)| format!("{}/{}", gc, tc)).unwrap_or_else(|| format!("{}", conn_count))}
+                                        {move || guild_counts.get().map(|(gc, tc, _)| format!("{gc}/{tc}")).unwrap_or_else(|| format!("{conn_count}"))}
                                     </span>
                                 </div>
                                 {(!resources.is_empty()).then(|| {
@@ -2530,7 +2526,7 @@ fn DetailPanel() -> impl IntoView {
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {res_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
+                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
                                                         <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
@@ -2552,7 +2548,7 @@ fn DetailPanel() -> impl IntoView {
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {held_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
+                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
                                                         <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
@@ -2574,7 +2570,7 @@ fn DetailPanel() -> impl IntoView {
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {prod_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
+                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
                                                         <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />
@@ -2596,7 +2592,7 @@ fn DetailPanel() -> impl IntoView {
                                             </div>
                                             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                                                 {cap_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = icons::sprite_style(icon_name, 14).unwrap_or_default();
+                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
                                                     view! {
                                                         <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                                             <span style={icon_style} />

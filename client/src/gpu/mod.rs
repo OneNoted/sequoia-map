@@ -16,8 +16,7 @@ use crate::claim_labels::{
 };
 use crate::colors::brighten;
 use crate::defense::defense_tier_overlay_data;
-use crate::heat::heat_color_for_count;
-use crate::icons::{ICON_COUNT, ResourceAtlas};
+use crate::icons::ResourceAtlas;
 use crate::label_layout::{
     IconKind, abbreviate_name, compute_label_layout_metrics, cooldown_color,
     dynamic_label_next_update_age, dynamic_text_state, resource_icon_sequence,
@@ -35,6 +34,8 @@ use crate::territory::{ClientTerritoryMap, is_sequoia_guild, is_unclaimed_guild}
 use crate::tiles::{LoadedTile, TileQuality};
 use crate::time_format::write_hms;
 use crate::viewport::Viewport;
+use sequoia_map_engine::colors::heat_color_for_count;
+use sequoia_map_engine::icon_atlas::ICON_COUNT;
 
 pub type RenderFrameInput<'a> = SceneSnapshot<'a>;
 
@@ -143,6 +144,15 @@ struct GlyphMeta {
     draw_width: f32,
     draw_offset_y: f32,
     draw_height: f32,
+}
+
+struct GlyphAtlas {
+    bind_group_layout: wgpu::BindGroupLayout,
+    fill_bind_group: wgpu::BindGroup,
+    halo_bind_group: wgpu::BindGroup,
+    glyphs: HashMap<char, GlyphMeta>,
+    kerning: HashMap<u32, f32>,
+    line_height: f32,
 }
 
 struct GpuTextRenderer {
@@ -307,6 +317,10 @@ fn hq_normal_crown_layout(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit geometry and font metrics keep the crown/tag layout calculation stateless."
+)]
 fn hq_normal_static_tag_y(
     territory_top: f32,
     territory_width: f32,
@@ -335,6 +349,10 @@ fn hq_normal_static_tag_y(
     .unwrap_or(base_y)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Explicit geometry and display settings keep this label bounds calculation stateless."
+)]
 fn hq_normal_static_label_bottom_bound(
     territory_top: f32,
     territory_width: f32,
@@ -684,10 +702,6 @@ fn line_units_with_tracking(
     units
 }
 
-fn line_units(text: &str, glyphs: &HashMap<char, GlyphMeta>, kerning: &HashMap<u32, f32>) -> f32 {
-    line_units_with_tracking(text, glyphs, kerning, 0.0)
-}
-
 fn fit_text_to_units_with_tracking(
     text: &str,
     max_units: f32,
@@ -736,15 +750,10 @@ fn fit_text_to_units_with_tracking(
     }
 }
 
-fn fit_text_to_units(
-    text: &str,
-    max_units: f32,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
-) -> String {
-    fit_text_to_units_with_tracking(text, max_units, glyphs, kerning, 0.0)
-}
-
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Low-level glyph emission takes borrowed atlas data, output and per-line geometry/style."
+)]
 fn push_text_line_with_tracking(
     out: &mut Vec<TextInstance>,
     glyphs: &HashMap<char, GlyphMeta>,
@@ -809,33 +818,10 @@ fn push_text_line_with_tracking(
     }
 }
 
-fn push_text_line(
-    out: &mut Vec<TextInstance>,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
-    line_height: f32,
-    text: &str,
-    cx: f32,
-    cy: f32,
-    font_height_world: f32,
-    max_width_world: f32,
-    color: [f32; 4],
-) {
-    push_text_line_with_tracking(
-        out,
-        glyphs,
-        kerning,
-        line_height,
-        text,
-        cx,
-        cy,
-        font_height_world,
-        max_width_world,
-        0.0,
-        color,
-    );
-}
-
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Fill and halo share line geometry but retain distinct output buffers and colors."
+)]
 fn push_text_line_dual_with_tracking(
     fill_out: &mut Vec<TextInstance>,
     halo_out: &mut Vec<TextInstance>,
@@ -876,37 +862,6 @@ fn push_text_line_dual_with_tracking(
         max_width_world,
         tracking_units,
         fill_color,
-    );
-}
-
-fn push_text_line_dual(
-    fill_out: &mut Vec<TextInstance>,
-    halo_out: &mut Vec<TextInstance>,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
-    line_height: f32,
-    text: &str,
-    cx: f32,
-    cy: f32,
-    font_height_world: f32,
-    max_width_world: f32,
-    fill_color: [f32; 4],
-    halo_color: [f32; 4],
-) {
-    push_text_line_dual_with_tracking(
-        fill_out,
-        halo_out,
-        glyphs,
-        kerning,
-        line_height,
-        text,
-        cx,
-        cy,
-        font_height_world,
-        max_width_world,
-        0.0,
-        fill_color,
-        halo_color,
     );
 }
 
@@ -1840,14 +1795,14 @@ impl GpuRenderer {
         vertex_layout: &wgpu::VertexBufferLayout<'_>,
         readable_font: bool,
     ) -> Option<GpuTextRenderer> {
-        let Some((
-            text_bind_group_layout,
+        let Some(GlyphAtlas {
+            bind_group_layout: text_bind_group_layout,
             fill_bind_group,
             halo_bind_group,
             glyphs,
             kerning,
             line_height,
-        )) = Self::build_glyph_atlas(device, queue, readable_font)
+        }) = Self::build_glyph_atlas(device, queue, readable_font)
         else {
             web_sys::console::warn_1(
                 &"GPU text labels disabled: failed to build dual glyph atlases".into(),
@@ -2324,14 +2279,7 @@ impl GpuRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         readable_font: bool,
-    ) -> Option<(
-        wgpu::BindGroupLayout,
-        wgpu::BindGroup,
-        wgpu::BindGroup,
-        HashMap<char, GlyphMeta>,
-        HashMap<u32, f32>,
-        f32,
-    )> {
+    ) -> Option<GlyphAtlas> {
         let document = web_sys::window()?.document()?;
         let canvas = document
             .create_element("canvas")
@@ -2345,9 +2293,9 @@ impl GpuRenderer {
             return None;
         }
         let font = if readable_font {
-            format!("{}px 'Inter', system-ui, sans-serif", GLYPH_ATLAS_FONT_PX)
+            format!("{GLYPH_ATLAS_FONT_PX}px 'Inter', system-ui, sans-serif")
         } else {
-            format!("{}px 'SilkscreenLocal', monospace", GLYPH_ATLAS_FONT_PX)
+            format!("{GLYPH_ATLAS_FONT_PX}px 'SilkscreenLocal', monospace")
         };
         ctx.set_font(&font);
         ctx.set_text_align("left");
@@ -2612,41 +2560,14 @@ impl GpuRenderer {
                 },
             ],
         });
-        Some((
+        Some(GlyphAtlas {
             bind_group_layout,
             fill_bind_group,
             halo_bind_group,
             glyphs,
             kerning,
-            line_height_px as f32,
-        ))
-    }
-
-    /// Mark instance data as needing a rebuild (territory/hover/select/settings changed).
-    #[allow(dead_code)]
-    pub fn mark_instance_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::Geometry);
-    }
-
-    /// Mark static label instances as needing a rebuild.
-    #[allow(dead_code)]
-    pub fn mark_text_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::StaticLabel);
-    }
-
-    #[allow(dead_code)]
-    pub fn mark_dynamic_text_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::DynamicLabel);
-    }
-
-    #[allow(dead_code)]
-    pub fn mark_icon_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::Resources);
-    }
-
-    #[allow(dead_code)]
-    pub fn mark_connection_dirty(&mut self) {
-        self.mark_dirty(InvalidationReason::Resources);
+            line_height: line_height_px as f32,
+        })
     }
 
     pub fn mark_dirty(&mut self, reason: InvalidationReason) {
@@ -2671,11 +2592,6 @@ impl GpuRenderer {
 
     pub fn frame_metrics(&self) -> FrameMetrics {
         self.frame_metrics
-    }
-
-    #[allow(dead_code)]
-    pub fn supports_static_gpu_labels(&self) -> bool {
-        self.text_renderer.is_some()
     }
 
     /// Resize the surface when the canvas size changes.
@@ -2866,6 +2782,10 @@ impl GpuRenderer {
     /// Animation color interpolation is handled GPU-side: we encode
     /// from_color + timing in the instance data once, and the shader
     /// computes the interpolated color every frame at zero CPU cost.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "A rebuild consumes a snapshot of independently owned map overlays rather than retaining reactive state."
+    )]
     fn update_instances(
         &mut self,
         territories: &ClientTerritoryMap,
@@ -3485,7 +3405,7 @@ impl GpuRenderer {
             let glyphs = &text_renderer.glyphs;
             let kerning = &text_renderer.kerning;
             let line_height = text_renderer.line_height;
-            for (_name, ct) in territories {
+            for ct in territories.values() {
                 let loc = &ct.territory.location;
                 let ww = loc.width() as f32;
                 let hh = loc.height() as f32;
@@ -3777,7 +3697,7 @@ impl GpuRenderer {
         }
 
         let scale = vp.scale as f32;
-        for (_name, ct) in territories {
+        for ct in territories.values() {
             let loc = &ct.territory.location;
             let ww = loc.width() as f32;
             let hh = loc.height() as f32;
@@ -4262,10 +4182,9 @@ impl GpuRenderer {
         } else if self.use_full_gpu_text
             && let Some(icon_set) = icons.as_ref()
             && self.icon_renderer.is_none()
+            && self.ensure_icon_renderer(icon_set)
         {
-            if self.ensure_icon_renderer(icon_set) {
-                self.icon_dirty = true;
-            }
+            self.icon_dirty = true;
         }
 
         let static_zoom_bucket = Self::static_zoom_bucket(vp.scale);

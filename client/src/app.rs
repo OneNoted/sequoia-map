@@ -99,9 +99,7 @@ thread_local! {
 use sequoia_shared::history::{
     HistoryGuildSrEntry, HistoryHeat, HistoryHeatMeta, HistoryHeatSource,
 };
-use sequoia_shared::{
-    Region, Resources, SeasonScalarSample, TerritoryChange, TreasuryLevel, WarControllerState,
-};
+use sequoia_shared::{Region, Resources, SeasonScalarSample, TreasuryLevel, WarControllerState};
 
 /// Newtype wrappers to give `hovered` and `selected` distinct types for Leptos context.
 /// (Both are `RwSignal<Option<String>>` — without wrappers, `provide_context` overwrites one.)
@@ -373,11 +371,7 @@ pub(crate) struct WarPanelOpen(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct WarPanelWidth(pub RwSignal<f64>);
 
-#[derive(Clone, Debug)]
-pub(crate) struct BufferedUpdate {
-    pub seq: u64,
-    pub changes: Vec<TerritoryChange>,
-}
+pub(crate) use sequoia_map_engine::territory::BufferedUpdate;
 
 pub(crate) type TerritoryGeometry = (Region, Resources, Vec<String>);
 pub(crate) type TerritoryGeometryMap = HashMap<String, TerritoryGeometry>;
@@ -1756,7 +1750,7 @@ pub fn MapPage() -> impl IntoView {
                 let names: Vec<String> = sorted.into_iter().map(|(name, _)| name).collect();
                 if !names.is_empty() {
                     let query = encoded_names_query(names);
-                    let url = format!("/api/guilds/online?names={}", query);
+                    let url = format!("/api/guilds/online?names={query}");
                     match gloo_net::http::Request::get(&url).send().await {
                         Ok(resp) if resp.ok() => {
                             if let Ok(raw) = resp.json::<HashMap<String, serde_json::Value>>().await
@@ -2647,7 +2641,7 @@ fn BottomSheetHandle() -> impl IntoView {
                     .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
                 {
                     target.style().set_property("transition", "none").ok();
-                    target.style().set_property("transform", &format!("translateY({}px)", delta)).ok();
+                    target.style().set_property("transform", &format!("translateY({delta}px)")).ok();
                 }
             }
             on:pointerup=move |e: web_sys::PointerEvent| {
@@ -2949,21 +2943,17 @@ fn Tooltip() -> impl IntoView {
                         </div>
                         <div style="display: flex; flex-wrap: wrap; gap: 4px;">
                             {chips.into_iter().map(|(val, is_double, icon, label)| {
-                                let icon_style = icons::sprite_style(icon, 12).unwrap_or_default();
+                                let icon_style = crate::ui_icons::sprite_style(icon, 12).unwrap_or_default();
                                 let double_style = icon_style.clone();
                                 let amount = format_resource_compact(val);
                                 view! {
-                                    <div style={format!(
-                                        "display: flex; align-items: center; gap: 4px; background: #111722; padding: 3px 7px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);"
-                                    )}>
+                                    <div style="display: flex; align-items: center; gap: 4px; background: #111722; padding: 3px 7px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
                                         <span style={icon_style} />
                                         {(is_double).then(|| view! { <span style={double_style} /> })}
                                         <span style="font-family: var(--font-mono); font-size: 0.70rem; color: var(--color-text-primary); font-variant-numeric: tabular-nums;">
                                             {amount}
                                         </span>
-                                        <span style={format!(
-                                            "font-family: var(--font-body); font-size: 0.60rem; color: #aeb7c7;"
-                                        )}>
+                                        <span style="font-family: var(--font-body); font-size: 0.60rem; color: #aeb7c7;">
                                             {label}
                                         </span>
                                     </div>
@@ -3099,7 +3089,7 @@ fn Tooltip() -> impl IntoView {
                                             "font-size: 0.65rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;",
                                             rgba_css(tr, tg, tb, 0.9),
                                             rgba_css(tr, tg, tb, 0.08),
-                                        )}>{format!("+{}%", buff)}</span>
+                                        )}>{format!("+{buff}%")}</span>
                                     })}
                                 </span>
                             </div>

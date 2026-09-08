@@ -700,7 +700,10 @@ mod tests {
         // now". A QUEUED stamp in the past is a stamp we cannot vouch for, so it gets the
         // em-dash rather than a countdown frozen at 0:00.
         assert_eq!(queue_entry("QUEUED", Some(900), None).eta_secs(1_000), None);
-        assert_eq!(queue_entry("ENTERED", Some(1_000), None).eta_secs(1_000), None);
+        assert_eq!(
+            queue_entry("ENTERED", Some(1_000), None).eta_secs(1_000),
+            None
+        );
         assert_eq!(
             queue_entry("QUEUED", Some(1_180), None).eta_secs(1_000),
             Some(180)

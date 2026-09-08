@@ -1,4 +1,0 @@
-[target.wasm32-unknown-unknown]
-# wgpu 24 vendors its own WebGPU bindings — no need for web_sys_unstable_apis.
-# Removing it fixes glow 0.16 / web-sys 0.3.86+ VideoFrame method name mismatch.
-rustflags = []

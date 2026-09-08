@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -11,24 +11,24 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 use sequoia_shared::{
-    ClaimDocumentBase, ClaimDocumentV1, ClaimMacro, ClaimOwner, ClaimTerritoryStateOverride,
-    ClaimValidationError, ClaimViewState, ClaimsBootstrapGeometry, ClaimsTerritoryGeometry,
-    GuildRef, LiveState, Resources, Territory, TerritoryMap, compact_claim_overrides,
-    compute_claim_metrics, validate_claim_document,
+    ClaimDocumentBase, ClaimDocumentV1, ClaimMacro, ClaimOwner, ClaimValidationError,
+    ClaimViewState, ClaimsBootstrapGeometry, ClaimsTerritoryGeometry, GuildRef, LiveState,
+    Resources, Territory, TerritoryMap, compact_claim_overrides, compute_claim_metrics,
+    validate_claim_document,
 };
 
 use crate::app::{
     AbbreviateNames, BoldConnections, ConnectionOpacityScale, ConnectionThicknessScale,
     ConnectionZoomFadeEnd, ConnectionZoomFadeStart, CurrentMode, DetailReturnGuild, FillAlphaBoost,
     HeatEntriesByTerritory, HeatMaxTakeCount, HeatModeEnabled, HeatWindowLabel,
-    HistoryBufferModeActive, HistoryBufferSizeMax, HistoryBufferedUpdates, HistoryFetchNonce,
-    HistoryTimestamp, Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster,
-    LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LiveResyncInFlight, MapMode, NameColor,
-    NameColorSetting, NeedsLiveResync, PeekTerritory, ReadableFont, ResourceHighlight, Selected,
-    ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowFarZoomTerritoryTags,
-    ShowGranularMapTime, ShowMinimap, ShowNames, ShowSettings, ShowTerritoryOrnaments, SidebarOpen,
-    SidebarTransient, SseSeqGapDetectedCount, SuppressCooldownVisuals, TagColorSetting,
-    ThickCooldownBorders, canvas_dimensions,
+    HistoryBufferModeActive, HistoryBufferSizeMax, HistoryBufferedUpdates, HistoryTimestamp,
+    Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
+    LabelScaleStaticName, LastLiveSeq, LiveResyncInFlight, MapMode, NameColor, NameColorSetting,
+    NeedsLiveResync, PeekTerritory, ReadableFont, ResourceHighlight, Selected, ShowClaimLabels,
+    ShowCompoundMapTime, ShowCountdown, ShowFarZoomTerritoryTags, ShowGranularMapTime, ShowMinimap,
+    ShowNames, ShowSettings, ShowTerritoryOrnaments, SidebarOpen, SidebarTransient,
+    SseSeqGapDetectedCount, SuppressCooldownVisuals, TagColorSetting, ThickCooldownBorders,
+    canvas_dimensions,
 };
 use crate::canvas::{ClaimCanvasController, ClaimTool, MapCanvas};
 use crate::history;
@@ -52,6 +52,34 @@ const BOOTSTRAP_STORAGE_VERSION: u8 = 1;
 const LIVE_SYNC_PENDING_MESSAGE: &str = "Live ownership is still syncing. The board is usable now and will reconcile in the background.";
 
 const NEUTRAL_GUILD_UUID: &str = "__neutral__";
+
+impl ClaimTool {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            ClaimTool::View => "View",
+            ClaimTool::Paint => "Paint",
+            ClaimTool::EraseToNeutral => "Erase",
+            ClaimTool::Select => "Select",
+            ClaimTool::Eyedropper => "Pick",
+        }
+    }
+
+    pub(crate) fn tooltip(self) -> &'static str {
+        match self {
+            ClaimTool::View => "View mode \u{2014} click territories to inspect them",
+            ClaimTool::Paint => {
+                "Paint mode \u{2014} click territories to claim them for the active guild"
+            }
+            ClaimTool::EraseToNeutral => {
+                "Erase mode \u{2014} click territories to reset them to neutral"
+            }
+            ClaimTool::Select => {
+                "Select mode \u{2014} drag to select, shift-click to toggle individual territories"
+            }
+            ClaimTool::Eyedropper => "Eyedropper \u{2014} click a territory to copy its guild",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClaimTab {
@@ -430,7 +458,7 @@ fn set_effective_resources(
             .document
             .territory_state_overrides
             .entry(territory.to_string())
-            .or_insert_with(ClaimTerritoryStateOverride::default);
+            .or_default();
         entry.resources = Some(next_resources);
         if entry.is_empty() {
             session.document.territory_state_overrides.remove(territory);
@@ -900,30 +928,6 @@ fn validate_document_against_geometry(
     validate_claim_document(document, geometry.territories.keys().map(String::as_str))
 }
 
-fn editor_init(
-    geometry: ClaimsBootstrapGeometry,
-    live_state: Option<LiveState>,
-    document: ClaimDocumentV1,
-    follow_live: bool,
-    dirty: bool,
-    selection: Vec<String>,
-    source_snapshot_id: Option<String>,
-    source_snapshot_url: Option<String>,
-    active_owner: ClaimOwner,
-) -> ClaimsEditorInit {
-    ClaimsEditorInit {
-        geometry,
-        live_state,
-        document,
-        follow_live,
-        dirty,
-        selection,
-        source_snapshot_id,
-        source_snapshot_url,
-        active_owner,
-    }
-}
-
 fn hash_import_boot_payload(
     geometry: ClaimsBootstrapGeometry,
     live_state: Option<LiveState>,
@@ -934,17 +938,17 @@ fn hash_import_boot_payload(
         .active_owner
         .clone()
         .unwrap_or_else(neutral_owner);
-    ClaimsBootPayload::Import(editor_init(
+    ClaimsBootPayload::Import(ClaimsEditorInit {
         geometry,
         live_state,
         document,
-        false,
-        false,
-        Vec::new(),
-        None,
-        None,
+        follow_live: false,
+        dirty: false,
+        selection: Vec::new(),
+        source_snapshot_id: None,
+        source_snapshot_url: None,
         active_owner,
-    ))
+    })
 }
 
 fn apply_live_state(
@@ -971,6 +975,10 @@ fn validate_document_against_live(
     validate_claim_document(document, territory_names)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Independent Leptos signals stay independently owned; this operation coordinates their update."
+)]
 fn apply_document_to_session(
     active_owner: RwSignal<ClaimOwner>,
     viewport: RwSignal<Viewport>,
@@ -1180,6 +1188,10 @@ fn documents_match_for_saved_snapshot(
     current_document == saved_document
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The save response is checked against independent live/editor signals before updating the session."
+)]
 fn apply_saved_snapshot_if_current(
     session: RwSignal<Option<ClaimWorkingSession>>,
     live_territories: RwSignal<ClientTerritoryMap>,
@@ -1236,17 +1248,17 @@ async fn resolve_boot_payload(
         ClaimsRoute::Root => {
             Err("Open /claims to choose a claims session from the launcher.".to_string())
         }
-        ClaimsRoute::NewBlank => Ok(ClaimsBootPayload::Blank(editor_init(
+        ClaimsRoute::NewBlank => Ok(ClaimsBootPayload::Blank(ClaimsEditorInit {
             geometry,
-            read_staged_live_bootstrap(),
-            ClaimDocumentV1::blank(),
-            false,
-            false,
-            Vec::new(),
-            None,
-            None,
-            neutral_owner(),
-        ))),
+            live_state: read_staged_live_bootstrap(),
+            document: ClaimDocumentV1::blank(),
+            follow_live: false,
+            dirty: false,
+            selection: Vec::new(),
+            source_snapshot_id: None,
+            source_snapshot_url: None,
+            active_owner: neutral_owner(),
+        })),
         ClaimsRoute::NewLive => {
             boot_status.set("Resolving live ownership snapshot...".to_string());
             let live_state = match read_staged_live_bootstrap() {
@@ -1259,17 +1271,17 @@ async fn resolve_boot_payload(
                 live_state.seq,
                 live_owner_map_from_state(&live_state),
             );
-            Ok(ClaimsBootPayload::Live(editor_init(
+            Ok(ClaimsBootPayload::Live(ClaimsEditorInit {
                 geometry,
-                Some(live_state),
+                live_state: Some(live_state),
                 document,
-                false,
-                false,
-                Vec::new(),
-                None,
-                None,
-                neutral_owner(),
-            )))
+                follow_live: false,
+                dirty: false,
+                selection: Vec::new(),
+                source_snapshot_id: None,
+                source_snapshot_url: None,
+                active_owner: neutral_owner(),
+            }))
         }
         ClaimsRoute::Draft => {
             boot_status.set("Loading local draft payload...".to_string());
@@ -1277,17 +1289,17 @@ async fn resolve_boot_payload(
                 .ok_or_else(|| "No local draft was found in this browser.".to_string())?;
             validate_document_against_geometry(&draft.document, &geometry)
                 .map_err(|error| format!("{error:?}"))?;
-            Ok(ClaimsBootPayload::Draft(editor_init(
+            Ok(ClaimsBootPayload::Draft(ClaimsEditorInit {
                 geometry,
-                read_staged_live_bootstrap(),
-                draft.document,
-                draft.follow_live,
-                draft.dirty,
-                draft.selection,
-                draft.source_snapshot_id,
-                draft.source_snapshot_url,
-                draft.active_owner,
-            )))
+                live_state: read_staged_live_bootstrap(),
+                document: draft.document,
+                follow_live: draft.follow_live,
+                dirty: draft.dirty,
+                selection: draft.selection,
+                source_snapshot_id: draft.source_snapshot_id,
+                source_snapshot_url: draft.source_snapshot_url,
+                active_owner: draft.active_owner,
+            }))
         }
         ClaimsRoute::Import => {
             boot_status.set("Reading staged import handoff...".to_string());
@@ -1296,34 +1308,34 @@ async fn resolve_boot_payload(
             })?;
             validate_document_against_geometry(&handoff.document, &geometry)
                 .map_err(|error| format!("{error:?}"))?;
-            Ok(ClaimsBootPayload::Import(editor_init(
+            Ok(ClaimsBootPayload::Import(ClaimsEditorInit {
                 geometry,
-                read_staged_live_bootstrap(),
-                handoff.document.clone(),
-                handoff.follow_live,
-                false,
-                handoff.selection,
-                handoff.source_snapshot_id,
-                handoff.source_snapshot_url,
-                document_active_owner(&handoff.document),
-            )))
+                live_state: read_staged_live_bootstrap(),
+                document: handoff.document.clone(),
+                follow_live: handoff.follow_live,
+                dirty: false,
+                selection: handoff.selection,
+                source_snapshot_id: handoff.source_snapshot_id,
+                source_snapshot_url: handoff.source_snapshot_url,
+                active_owner: document_active_owner(&handoff.document),
+            }))
         }
         ClaimsRoute::Saved(snapshot_id) => {
             boot_status.set("Loading saved snapshot payload...".to_string());
             let payload = fetch_saved_claim_document(&snapshot_id).await?;
             validate_document_against_geometry(&payload.document, &geometry)
                 .map_err(|error| format!("{error:?}"))?;
-            Ok(ClaimsBootPayload::Saved(editor_init(
+            Ok(ClaimsBootPayload::Saved(ClaimsEditorInit {
                 geometry,
-                read_staged_live_bootstrap(),
-                payload.document.clone(),
-                false,
-                false,
-                Vec::new(),
-                Some(snapshot_id.clone()),
-                Some(saved_claim_url(&snapshot_id)),
-                document_active_owner(&payload.document),
-            )))
+                live_state: read_staged_live_bootstrap(),
+                document: payload.document.clone(),
+                follow_live: false,
+                dirty: false,
+                selection: Vec::new(),
+                source_snapshot_id: Some(snapshot_id.clone()),
+                source_snapshot_url: Some(saved_claim_url(&snapshot_id)),
+                active_owner: document_active_owner(&payload.document),
+            }))
         }
     }
 }
@@ -1442,6 +1454,12 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
     }
 }
 
+fn provide_claims_war_context() {
+    // SSE still consumes war-controller updates, but claims boards have no live war overlays.
+    provide_context(crate::app::WarControllerData(RwSignal::new(None)));
+    provide_context(crate::app::TerritoriesInWar(Memo::new(|_| HashSet::new())));
+}
+
 #[component]
 fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     let ClaimsEditorInit {
@@ -1529,7 +1547,6 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         RwSignal::new(Vec::new());
     let history_buffer_mode_active: RwSignal<bool> = RwSignal::new(false);
     let history_buffer_size_max: RwSignal<usize> = RwSignal::new(0);
-    let history_fetch_nonce: RwSignal<u64> = RwSignal::new(0);
     let last_live_seq: RwSignal<Option<u64>> = RwSignal::new(initial_last_live_seq);
     let needs_live_resync: RwSignal<bool> = RwSignal::new(false);
     let live_resync_in_flight: RwSignal<bool> = RwSignal::new(false);
@@ -1542,6 +1559,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         status_message.set(Some(LIVE_SYNC_PENDING_MESSAGE.to_string()));
     }
 
+    provide_claims_war_context();
     provide_context(effective_territories);
     provide_context(viewport);
     provide_context(Hovered(hovered));
@@ -1594,7 +1612,6 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     provide_context(HistoryBufferedUpdates(history_buffered_updates));
     provide_context(HistoryBufferModeActive(history_buffer_mode_active));
     provide_context(HistoryBufferSizeMax(history_buffer_size_max));
-    provide_context(HistoryFetchNonce(history_fetch_nonce));
     provide_context(LastLiveSeq(last_live_seq));
     provide_context(NeedsLiveResync(needs_live_resync));
     provide_context(LiveResyncInFlight(live_resync_in_flight));
@@ -1813,11 +1830,11 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     });
 
     Effect::new(move || {
-        let _ = gloo_storage::LocalStorage::set(PRESET_STORAGE_KEY, &local_presets.get());
+        let _ = gloo_storage::LocalStorage::set(PRESET_STORAGE_KEY, local_presets.get());
     });
 
     Effect::new(move || {
-        let _ = gloo_storage::LocalStorage::set(MACRO_LIBRARY_STORAGE_KEY, &macro_library.get());
+        let _ = gloo_storage::LocalStorage::set(MACRO_LIBRARY_STORAGE_KEY, macro_library.get());
     });
 
     Effect::new(move || {
@@ -2118,7 +2135,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     };
 
     let file_input_ref = NodeRef::<html::Input>::new();
-    let file_input_change_ref = file_input_ref.clone();
+    let file_input_change_ref = file_input_ref;
     let on_file_change = move |_| {
         let Some(input) = file_input_change_ref.get() else {
             return;
@@ -2736,7 +2753,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                             .into_any()
                         }
                         ClaimTab::Share => {
-                            let import_input_ref = file_input_ref.clone();
+                            let import_input_ref = file_input_ref;
                             view! {
                                 <div style="display: flex; flex-direction: column; gap: 10px;">
                                     <button class="btn"
@@ -2880,7 +2897,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                         "Export JSON"
                                     </button>
                                     <button class="btn"
-                                        on:click=move |_| trigger_import_picker(import_input_ref.clone())
+                                        on:click=move |_| trigger_import_picker(import_input_ref)
                                     >
                                         "Import JSON"
                                     </button>
@@ -2973,6 +2990,26 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claims_provides_war_contexts_for_shared_canvas_and_sse() {
+        let owner = Owner::new();
+        owner.with(|| {
+            provide_claims_war_context();
+            assert!(
+                expect_context::<crate::app::WarControllerData>()
+                    .0
+                    .get_untracked()
+                    .is_none()
+            );
+            assert!(
+                expect_context::<crate::app::TerritoriesInWar>()
+                    .0
+                    .get_untracked()
+                    .is_empty()
+            );
+        });
+    }
 
     #[test]
     fn parse_claims_route_handles_root_and_saved_paths() {
