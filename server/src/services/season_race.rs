@@ -117,10 +117,15 @@ pub async fn build_race_response(
     let season_windows = season_data::list_resolved_windows(state)
         .await
         .map_err(map_season_data_error)?;
-    let window = season_data::resolve_requested_window(state, requested_season_id)
-        .await
-        .map_err(map_season_data_error)?
-        .ok_or(SeasonRaceError::Unavailable)?;
+    // Select from the list already resolved above; resolving again would repeat
+    // the upstream season fetch and both DB aggregates for the same answer.
+    let window = season_data::select_window(
+        season_windows.clone(),
+        requested_season_id,
+        season_data::active_window_from_config().map_err(map_season_data_error)?,
+    )
+    .map_err(map_season_data_error)?
+    .ok_or(SeasonRaceError::Unavailable)?;
     let scalar_override_points =
         config::season_scalar_override_points().map_err(|_| SeasonRaceError::Internal)?;
     let lookback_hours = config::season_race_lookback_hours();

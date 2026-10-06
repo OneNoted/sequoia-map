@@ -118,6 +118,37 @@ fn hatch_overlay(uv: vec2<f32>, size_px: vec2<f32>, base: vec3<f32>) -> vec3<f32
     return mix(base, min(base + vec3<f32>(0.45), vec3<f32>(1.0)), stripe * 0.8);
 }
 
+// Luma-weighted RGB distance — a cheap stand-in for perceptual difference, so a
+// swap in green counts for more than the same swap in blue.
+fn perceptual_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
+    let d = a - b;
+    return sqrt(d.r * d.r * 0.30 + d.g * d.g * 0.59 + d.b * d.b * 0.11);
+}
+
+// The war marker is red, but a red guild would swallow it. When the guild color sits
+// too close to that red, fall back to whichever of dark red / pink reads better —
+// both stay unmistakably "war", neither disappears into the fill. The fallback is
+// scored against the guild fill (inside the border) and against the dark map
+// (outside it), so a dark red is only picked when the fill is light enough to frame it.
+fn war_accent_color(guild: vec3<f32>) -> vec3<f32> {
+    let bright_red = vec3<f32>(1.0, 0.271, 0.271);   // #ff4545
+    let dark_red = vec3<f32>(0.290, 0.024, 0.024);   // #4a0606
+    let pink = vec3<f32>(1.0, 0.369, 0.784);         // #ff5ec8
+    let backdrop = vec3<f32>(0.10, 0.11, 0.14);      // typical dark map terrain
+
+    if perceptual_distance(guild, bright_red) >= 0.25 {
+        return bright_red;
+    }
+    let dark_score = perceptual_distance(dark_red, guild) * 0.65
+        + perceptual_distance(dark_red, backdrop) * 0.35;
+    let pink_score = perceptual_distance(pink, guild) * 0.65
+        + perceptual_distance(pink, backdrop) * 0.35;
+    if dark_score >= pink_score {
+        return dark_red;
+    }
+    return pink;
+}
+
 fn count_bits_5(mask: u32) -> u32 {
     var m = mask & 31u;
     var c = 0u;
@@ -223,6 +254,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let is_hovered = (u32(flags) & 1u) != 0u;
     let is_selected = (u32(flags) & 2u) != 0u;
     let is_headquarters = (u32(flags) & 4u) != 0u;
+    let is_at_war = (u32(flags) & 8u) != 0u;
 
     // GPU-side color animation
     var base_color = in.color.rgb;
@@ -275,13 +307,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         b_alpha = border_alpha;
     }
-    if is_headquarters {
+    if is_headquarters || is_at_war {
         b_alpha = max(b_alpha, 0.88);
     }
 
     // Fill zone — compute color and alpha with all effects
     var fill_color = compute_resource_fill(in.resource_data, in.uv, in.size_px, base_color);
-    if is_headquarters {
+    // War is transient and urgent, so it overrides the HQ gold while it lasts.
+    let war_color = war_accent_color(base_color);
+    if is_at_war {
+        fill_color = mix(fill_color, war_color, 0.06);
+    } else if is_headquarters {
         let hq_tint = vec3<f32>(0.973, 0.831, 0.275);
         fill_color = mix(fill_color, hq_tint, 0.06);
     }
@@ -367,7 +403,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Blend border and fill with anti-aliased transition
     var border_color = base_color;
-    if is_headquarters {
+    if is_at_war {
+        // Distinct from the cooldown/defense reds, which only ever tint the fill. Mixed
+        // hard toward the accent so a same-hue guild color can't wash it back out.
+        border_color = mix(base_color, war_color, 0.92);
+    } else if is_headquarters {
         border_color = mix(base_color, vec3<f32>(0.973, 0.831, 0.275), 0.8);
     }
     var color = mix(fill_color, border_color, border_t);
