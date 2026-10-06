@@ -1100,6 +1100,8 @@ pub fn MapPage() -> impl IntoView {
             selected: selected.into(),
             settings: render_settings.into(),
             clock_secs: map_clock.into(),
+            // Paused history holds `map_clock` still; cooldown pulses keep animating.
+            animation_tick: Some(tick.into()),
             heat: Some(HeatLayer {
                 enabled: heat_mode_enabled.into(),
                 take_counts: heat_entries_by_territory.into(),

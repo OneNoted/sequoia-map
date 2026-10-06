@@ -1577,8 +1577,9 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
             territories: effective_territories.into(),
             selected: selected.into(),
             settings: render_settings.into(),
-            // Claims boards draw no timers, so the clock never needs to advance.
+            // Claims boards draw no timers or cooldowns, so nothing needs to advance.
             clock_secs: Signal::stored(Utc::now().timestamp()),
+            animation_tick: None,
             heat: None,
             wars: None,
             minimap_inset: Signal::stored((!is_mobile).then_some(MINIMAP_INSET)),
