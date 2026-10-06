@@ -1,3 +1,6 @@
+//! The live territory feed shared by both browser clients: the REST snapshot and the
+//! `/api/events` SSE stream that keeps a territory map current.
+
 use std::cell::{Cell, RefCell};
 
 use leptos::prelude::*;
@@ -6,16 +9,12 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{EventSource, MessageEvent};
 
-use sequoia_shared::{TerritoryEvent, WarControllerState};
-
-use crate::app::{
-    BufferedUpdate, CurrentMode, HistoryBufferModeActive, HistoryBufferSizeMax,
-    HistoryBufferedUpdates, LastLiveSeq, LiveResyncInFlight, MapMode, NeedsLiveResync,
-    SseSeqGapDetectedCount, WarControllerData,
+use sequoia_map_engine::territory::{
+    BufferedUpdate, ClientTerritoryMap, apply_changes, apply_runtime_updates, from_snapshot,
 };
-use crate::history;
-use crate::territory::{ClientTerritoryMap, apply_changes, apply_runtime_updates, from_snapshot};
+use sequoia_shared::{LiveState, TerritoryEvent, WarControllerState};
 
+const MAX_BUFFERED_UPDATES: usize = 20_000;
 const LIVE_RESYNC_RETRY_BASE_MS: f64 = 500.0;
 const LIVE_RESYNC_RETRY_MAX_MS: f64 = 10_000.0;
 const RECONNECT_EVENT_TIMEOUT_MS: i32 = 4_000;
@@ -25,6 +24,116 @@ pub enum ConnectionStatus {
     Connecting,
     Live,
     Reconnecting,
+}
+
+/// The signals the feed keeps current.
+#[derive(Clone, Copy)]
+pub struct LiveFeed {
+    pub territories: RwSignal<ClientTerritoryMap>,
+    pub connection: RwSignal<ConnectionStatus>,
+    /// While set, the map shows the past: updates are buffered for replay, not applied.
+    pub history_mode: Signal<bool>,
+    pub last_live_seq: RwSignal<Option<u64>>,
+    pub buffered_updates: RwSignal<Vec<BufferedUpdate>>,
+    /// Buffer updates even outside history mode (during the hand-off back to live).
+    pub buffer_mode_active: RwSignal<bool>,
+    pub buffer_size_max: RwSignal<usize>,
+    pub needs_resync: RwSignal<bool>,
+    pub resync_in_flight: RwSignal<bool>,
+    pub seq_gap_count: RwSignal<u64>,
+    /// Receives the war controller frames that ride the same stream, if wanted.
+    pub war_controller: Option<RwSignal<Option<WarControllerState>>>,
+}
+
+impl LiveFeed {
+    pub fn new(territories: RwSignal<ClientTerritoryMap>, history_mode: Signal<bool>) -> Self {
+        Self {
+            territories,
+            connection: RwSignal::new(ConnectionStatus::Connecting),
+            history_mode,
+            last_live_seq: RwSignal::new(None),
+            buffered_updates: RwSignal::new(Vec::new()),
+            buffer_mode_active: RwSignal::new(false),
+            buffer_size_max: RwSignal::new(0),
+            needs_resync: RwSignal::new(false),
+            resync_in_flight: RwSignal::new(false),
+            seq_gap_count: RwSignal::new(0),
+            war_controller: None,
+        }
+    }
+
+    fn buffering(&self) -> bool {
+        self.history_mode.get_untracked() || self.buffer_mode_active.get_untracked()
+    }
+}
+
+/// Fetch a gap-free live snapshot with sequence.
+pub async fn fetch_live_state() -> Result<LiveState, String> {
+    let resp = gloo_net::http::Request::get("/api/live/state")
+        .send()
+        .await
+        .map_err(|e| format!("fetch error: {e}"))?;
+
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    resp.json::<LiveState>()
+        .await
+        .map_err(|e| format!("parse error: {e}"))
+}
+
+fn has_seq_gap(last_live_seq: Option<u64>, incoming_seq: u64) -> bool {
+    if incoming_seq == 0 {
+        return false;
+    }
+
+    match last_live_seq {
+        Some(last_seq) => incoming_seq != last_seq.saturating_add(1),
+        None => false,
+    }
+}
+
+/// Buffer one incoming live update while history mode is active.
+fn buffer_history_update(feed: LiveFeed, update: BufferedUpdate) {
+    let mut overflowed = false;
+    let mut new_len = 0;
+
+    feed.buffered_updates.update(|buffer| {
+        if buffer.iter().any(|existing| existing.seq == update.seq) {
+            new_len = buffer.len();
+            return;
+        }
+
+        buffer.push(update);
+        buffer.sort_by_key(|item| item.seq);
+
+        if buffer.len() > MAX_BUFFERED_UPDATES {
+            let overflow = buffer.len() - MAX_BUFFERED_UPDATES;
+            buffer.drain(0..overflow);
+            overflowed = true;
+        }
+
+        new_len = buffer.len();
+    });
+
+    if overflowed {
+        feed.needs_resync.set(true);
+        web_sys::console::warn_1(
+            &"history buffer overflowed; forcing live resync on handoff".into(),
+        );
+    }
+
+    let mut updated_max = None;
+    feed.buffer_size_max.update(|current_max| {
+        if new_len > *current_max {
+            *current_max = new_len;
+            updated_max = Some(new_len);
+        }
+    });
+    if let Some(max_size) = updated_max {
+        web_sys::console::info_1(&format!("history_buffer_size_max={max_size}").into());
+    }
 }
 
 struct SseConnection {
@@ -145,13 +254,7 @@ fn clear_reconnect_watchdog() {
     });
 }
 
-fn arm_reconnect_watchdog(
-    mode: RwSignal<MapMode>,
-    resync_in_flight: RwSignal<bool>,
-    needs_live_resync: RwSignal<bool>,
-    last_live_seq: RwSignal<Option<u64>>,
-    territories: RwSignal<ClientTerritoryMap>,
-) {
+fn arm_reconnect_watchdog(feed: LiveFeed) {
     clear_reconnect_watchdog();
     POST_RECONNECT_AWAITING_EVENT.with(|awaiting| awaiting.set(true));
 
@@ -170,14 +273,8 @@ fn arm_reconnect_watchdog(
         if !should_trigger {
             return;
         }
-        needs_live_resync.set(true);
-        trigger_live_resync(
-            mode,
-            resync_in_flight,
-            needs_live_resync,
-            last_live_seq,
-            territories,
-        );
+        feed.needs_resync.set(true);
+        trigger_live_resync(feed);
     });
 
     let Ok(timeout_id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -209,14 +306,8 @@ fn mark_post_reconnect_event_received() {
     }
 }
 
-fn trigger_live_resync(
-    mode: RwSignal<MapMode>,
-    resync_in_flight: RwSignal<bool>,
-    needs_live_resync: RwSignal<bool>,
-    last_live_seq: RwSignal<Option<u64>>,
-    territories: RwSignal<ClientTerritoryMap>,
-) {
-    if mode.get_untracked() != MapMode::Live || resync_in_flight.get_untracked() {
+fn trigger_live_resync(feed: LiveFeed) {
+    if feed.history_mode.get_untracked() || feed.resync_in_flight.get_untracked() {
         return;
     }
 
@@ -225,24 +316,24 @@ fn trigger_live_resync(
         return;
     }
 
-    resync_in_flight.set(true);
+    feed.resync_in_flight.set(true);
     spawn_local(async move {
-        let result = history::fetch_live_state().await;
-        resync_in_flight.set(false);
+        let result = fetch_live_state().await;
+        feed.resync_in_flight.set(false);
 
-        if mode.get_untracked() != MapMode::Live {
+        if feed.history_mode.get_untracked() {
             return;
         }
 
         match result {
             Ok(live_state) => {
-                territories.set(from_snapshot(live_state.territories));
-                last_live_seq.set(Some(live_state.seq));
-                needs_live_resync.set(false);
+                feed.territories.set(from_snapshot(live_state.territories));
+                feed.last_live_seq.set(Some(live_state.seq));
+                feed.needs_resync.set(false);
                 reset_live_resync_retry();
             }
             Err(e) => {
-                needs_live_resync.set(true);
+                feed.needs_resync.set(true);
                 let (attempt, backoff_ms) = mark_live_resync_failure(js_sys::Date::now());
                 web_sys::console::warn_1(
                     &format!(
@@ -257,7 +348,15 @@ fn trigger_live_resync(
 }
 
 /// Connect to the SSE endpoint and reactively update territory state.
-pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<ConnectionStatus>) {
+pub fn connect(feed: LiveFeed) {
+    let LiveFeed {
+        territories,
+        connection,
+        last_live_seq,
+        needs_resync: needs_live_resync,
+        seq_gap_count: sse_seq_gap_detected_count,
+        ..
+    } = feed;
     clear_reconnect_watchdog();
     POST_RECONNECT_AWAITING_EVENT.with(|awaiting| awaiting.set(false));
     connection.set(ConnectionStatus::Connecting);
@@ -270,22 +369,6 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         }
     };
 
-    let CurrentMode(mode) = leptos::prelude::expect_context::<CurrentMode>();
-    let HistoryBufferedUpdates(history_buffered_updates) =
-        leptos::prelude::expect_context::<HistoryBufferedUpdates>();
-    let HistoryBufferModeActive(buffer_mode_active) =
-        leptos::prelude::expect_context::<HistoryBufferModeActive>();
-    let HistoryBufferSizeMax(history_buffer_size_max) =
-        leptos::prelude::expect_context::<HistoryBufferSizeMax>();
-    let LastLiveSeq(last_live_seq) = leptos::prelude::expect_context::<LastLiveSeq>();
-    let NeedsLiveResync(needs_live_resync) = leptos::prelude::expect_context::<NeedsLiveResync>();
-    let LiveResyncInFlight(resync_in_flight) =
-        leptos::prelude::expect_context::<LiveResyncInFlight>();
-    let SseSeqGapDetectedCount(sse_seq_gap_detected_count) =
-        leptos::prelude::expect_context::<SseSeqGapDetectedCount>();
-    let WarControllerData(warcontroller_state) =
-        leptos::prelude::expect_context::<WarControllerData>();
-
     // On open
     let conn = connection;
     let on_open = Closure::<dyn Fn()>::new(move || {
@@ -293,14 +376,8 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         if conn.get_untracked() != ConnectionStatus::Live {
             conn.set(ConnectionStatus::Live);
         }
-        if was_reconnecting && mode.get_untracked() == MapMode::Live {
-            arm_reconnect_watchdog(
-                mode,
-                resync_in_flight,
-                needs_live_resync,
-                last_live_seq,
-                territories,
-            );
+        if was_reconnecting && !feed.history_mode.get_untracked() {
+            arm_reconnect_watchdog(feed);
         }
     });
     es.set_onopen(Some(on_open.as_ref().unchecked_ref()));
@@ -322,7 +399,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         };
         mark_post_reconnect_event_received();
 
-        if mode.get_untracked() == MapMode::History || buffer_mode_active.get_untracked() {
+        if feed.buffering() {
             if seq > 0 {
                 needs_live_resync.set(true);
             }
@@ -366,14 +443,9 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         };
         mark_post_reconnect_event_received();
 
-        if mode.get_untracked() == MapMode::History || buffer_mode_active.get_untracked() {
+        if feed.buffering() {
             if seq > 0 {
-                history::buffer_history_update(
-                    history_buffered_updates,
-                    history_buffer_size_max,
-                    needs_live_resync,
-                    BufferedUpdate { seq, changes },
-                );
+                buffer_history_update(feed, BufferedUpdate { seq, changes });
             } else {
                 needs_live_resync.set(true);
             }
@@ -381,13 +453,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         }
 
         if needs_live_resync.get_untracked() {
-            trigger_live_resync(
-                mode,
-                resync_in_flight,
-                needs_live_resync,
-                last_live_seq,
-                terr,
-            );
+            trigger_live_resync(feed);
             return;
         }
 
@@ -406,7 +472,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
                 return;
             }
 
-            if history::has_seq_gap(Some(last_seq), seq) {
+            if has_seq_gap(Some(last_seq), seq) {
                 let mut gap_count = 0;
                 sse_seq_gap_detected_count.update(|count| {
                     *count = count.saturating_add(1);
@@ -419,13 +485,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
                     .into(),
                 );
                 needs_live_resync.set(true);
-                trigger_live_resync(
-                    mode,
-                    resync_in_flight,
-                    needs_live_resync,
-                    last_live_seq,
-                    terr,
-                );
+                trigger_live_resync(feed);
                 return;
             }
         }
@@ -453,7 +513,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         };
         mark_post_reconnect_event_received();
 
-        if mode.get_untracked() == MapMode::History || buffer_mode_active.get_untracked() {
+        if feed.buffering() {
             if seq > 0 {
                 needs_live_resync.set(true);
             }
@@ -461,13 +521,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         }
 
         if needs_live_resync.get_untracked() {
-            trigger_live_resync(
-                mode,
-                resync_in_flight,
-                needs_live_resync,
-                last_live_seq,
-                terr,
-            );
+            trigger_live_resync(feed);
             return;
         }
 
@@ -484,7 +538,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
                 return;
             }
 
-            if history::has_seq_gap(Some(last_seq), seq) {
+            if has_seq_gap(Some(last_seq), seq) {
                 let mut gap_count = 0;
                 sse_seq_gap_detected_count.update(|count| {
                     *count = count.saturating_add(1);
@@ -497,13 +551,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
                     .into(),
                 );
                 needs_live_resync.set(true);
-                trigger_live_resync(
-                    mode,
-                    resync_in_flight,
-                    needs_live_resync,
-                    last_live_seq,
-                    terr,
-                );
+                trigger_live_resync(feed);
                 return;
             }
         }
@@ -530,13 +578,17 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
             // older payload must never overwrite a newer one.
             // `maybe_update` so a dropped frame does not notify: the feed re-broadcasts often
             // enough that a needless wake would ripple through every war memo.
-            Ok(state) => warcontroller_state.maybe_update(|current| {
-                if !state.supersedes(current.as_ref()) {
-                    return false;
+            Ok(state) => {
+                if let Some(war_controller) = feed.war_controller {
+                    war_controller.maybe_update(|current| {
+                        if !state.supersedes(current.as_ref()) {
+                            return false;
+                        }
+                        *current = Some(state);
+                        true
+                    });
                 }
-                *current = Some(state);
-                true
-            }),
+            }
             Err(error) => {
                 web_sys::console::warn_1(
                     &format!("war controller event decode failed: {error}").into(),
@@ -575,4 +627,17 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
             warcontroller_handler,
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_seq_gap;
+
+    #[test]
+    fn detects_sequence_gap() {
+        assert!(!has_seq_gap(Some(10), 11));
+        assert!(has_seq_gap(Some(10), 12));
+        assert!(!has_seq_gap(None, 7));
+        assert!(!has_seq_gap(Some(10), 0));
+    }
 }

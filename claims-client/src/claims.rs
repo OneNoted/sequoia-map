@@ -1,5 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
 
 use chrono::Utc;
 use gloo_storage::Storage;
@@ -17,25 +16,13 @@ use sequoia_shared::{
     validate_claim_document,
 };
 
-use crate::app::{
-    AbbreviateNames, BoldConnections, ConnectionOpacityScale, ConnectionThicknessScale,
-    ConnectionZoomFadeEnd, ConnectionZoomFadeStart, CurrentMode, DetailReturnGuild, FillAlphaBoost,
-    HeatEntriesByTerritory, HeatMaxTakeCount, HeatModeEnabled, HeatWindowLabel,
-    HistoryBufferModeActive, HistoryBufferSizeMax, HistoryBufferedUpdates, HistoryTimestamp,
-    Hovered, IsMobile, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
-    LabelScaleStaticName, LastLiveSeq, LiveResyncInFlight, MapMode, NameColor, NameColorSetting,
-    NeedsLiveResync, PeekTerritory, ReadableFont, ResourceHighlight, Selected, ShowClaimLabels,
-    ShowCompoundMapTime, ShowCountdown, ShowFarZoomTerritoryTags, ShowGranularMapTime, ShowMinimap,
-    ShowNames, ShowSettings, ShowTerritoryOrnaments, SidebarOpen, SidebarTransient,
-    SseSeqGapDetectedCount, SuppressCooldownVisuals, TagColorSetting, ThickCooldownBorders,
-    canvas_dimensions,
-};
-use crate::canvas::{ClaimCanvasController, ClaimTool, MapCanvas};
-use crate::history;
-use crate::sse::{self, ConnectionStatus};
-use crate::territory::{ClientTerritory, ClientTerritoryMap};
-use crate::tiles::{self, LoadedTile};
-use crate::viewport::Viewport;
+use sequoia_browser_map::live_feed::{self, LiveFeed};
+use sequoia_browser_map::{BrowserMap, EditMode, MapCamera, MapCanvas, MapEvent, MapInputs};
+use sequoia_map_engine::settings::{LabelScales, NameColor, RenderSettings};
+use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap};
+use sequoia_map_engine::viewport::Viewport;
+
+use crate::app::{MOBILE_BREAKPOINT, canvas_dimensions};
 
 const DRAFT_STORAGE_KEY: &str = "sequoia_claim_draft_v1";
 const PRESET_STORAGE_KEY: &str = "sequoia_claim_presets_v1";
@@ -52,8 +39,28 @@ const BOOTSTRAP_STORAGE_VERSION: u8 = 1;
 const LIVE_SYNC_PENDING_MESSAGE: &str = "Live ownership is still syncing. The board is usable now and will reconcile in the background.";
 
 const NEUTRAL_GUILD_UUID: &str = "__neutral__";
+/// Gap below the minimap, in CSS pixels.
+const MINIMAP_INSET: f32 = 16.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimTool {
+    View,
+    Paint,
+    EraseToNeutral,
+    Select,
+    Eyedropper,
+}
 
 impl ClaimTool {
+    fn edit_mode(self) -> EditMode {
+        match self {
+            ClaimTool::View => EditMode::Navigate,
+            ClaimTool::Paint | ClaimTool::EraseToNeutral => EditMode::Stroke,
+            ClaimTool::Select => EditMode::Select,
+            ClaimTool::Eyedropper => EditMode::Pick,
+        }
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             ClaimTool::View => "View",
@@ -918,7 +925,7 @@ fn territory_map_from_geometry(geometry: &ClaimsBootstrapGeometry) -> TerritoryM
 }
 
 fn client_map_from_geometry(geometry: &ClaimsBootstrapGeometry) -> ClientTerritoryMap {
-    crate::territory::from_snapshot(territory_map_from_geometry(geometry))
+    sequoia_map_engine::territory::from_snapshot(territory_map_from_geometry(geometry))
 }
 
 fn validate_document_against_geometry(
@@ -962,7 +969,9 @@ fn apply_live_state(
     stage_live_bootstrap(&state);
     live_seq.set(state.seq);
     last_live_seq.set(Some(state.seq));
-    live_territories.set(crate::territory::from_snapshot(state.territories));
+    live_territories.set(sequoia_map_engine::territory::from_snapshot(
+        state.territories,
+    ));
     live_bootstrap_pending.set(false);
     live_bootstrap_error.set(None);
 }
@@ -981,7 +990,7 @@ fn validate_document_against_live(
 )]
 fn apply_document_to_session(
     active_owner: RwSignal<ClaimOwner>,
-    viewport: RwSignal<Viewport>,
+    camera: MapCamera,
     selected: RwSignal<Option<String>>,
     session: RwSignal<Option<ClaimWorkingSession>>,
     tab: RwSignal<ClaimTab>,
@@ -998,7 +1007,7 @@ fn apply_document_to_session(
         .clone()
         .unwrap_or_else(neutral_owner);
     active_owner.set(active);
-    viewport.set(Viewport {
+    camera.set(Viewport {
         offset_x: document.view.offset_x,
         offset_y: document.view.offset_y,
         scale: document.view.scale.max(0.05),
@@ -1196,7 +1205,7 @@ fn apply_saved_snapshot_if_current(
     session: RwSignal<Option<ClaimWorkingSession>>,
     live_territories: RwSignal<ClientTerritoryMap>,
     live_seq: RwSignal<u64>,
-    viewport: RwSignal<Viewport>,
+    camera: MapCamera,
     active_owner: RwSignal<ClaimOwner>,
     snapshot_id: String,
     snapshot_url: String,
@@ -1209,7 +1218,7 @@ fn apply_saved_snapshot_if_current(
                 state,
                 &live_territories.get_untracked(),
                 live_seq.get_untracked(),
-                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
+                default_view_from(&camera.get_untracked(), &active_owner.get_untracked()),
             );
             if !documents_match_for_saved_snapshot(&current_document, saved_document) {
                 return;
@@ -1263,7 +1272,7 @@ async fn resolve_boot_payload(
             boot_status.set("Resolving live ownership snapshot...".to_string());
             let live_state = match read_staged_live_bootstrap() {
                 Some(state) => state,
-                None => history::fetch_live_state().await?,
+                None => live_feed::fetch_live_state().await?,
             };
             stage_live_bootstrap(&live_state);
             let document = ClaimDocumentV1::frozen_live(
@@ -1454,10 +1463,39 @@ pub fn ClaimsPage(initial_path: String) -> impl IntoView {
     }
 }
 
-fn provide_claims_war_context() {
-    // SSE still consumes war-controller updates, but claims boards have no live war overlays.
-    provide_context(crate::app::WarControllerData(RwSignal::new(None)));
-    provide_context(crate::app::TerritoriesInWar(Memo::new(|_| HashSet::new())));
+/// How claims boards draw the map: ownership at a glance, no timers or cooldowns.
+fn claims_render_settings(resource_highlight: bool) -> RenderSettings {
+    RenderSettings {
+        thick_cooldown_borders: false,
+        suppress_cooldown_visuals: true,
+        resource_highlight,
+        defense_highlight: false,
+        fill_alpha_boost: 0.12,
+        show_connections: true,
+        bold_connections: true,
+        connection_opacity_scale: 0.35,
+        connection_thickness_scale: 0.7,
+        connection_zoom_fade: (0.10, 0.30),
+        show_names: false,
+        abbreviate_names: true,
+        show_claim_labels: false,
+        show_far_zoom_territory_tags: true,
+        name_color: NameColor::Guild,
+        tag_color: NameColor::Guild,
+        readable_font: false,
+        show_countdown: false,
+        granular_map_time: false,
+        compound_map_time: false,
+        show_resource_icons: false,
+        show_territory_ornaments: false,
+        label_scales: LabelScales {
+            master: 1.0,
+            static_tag: 1.0,
+            static_name: 1.0,
+            dynamic: 1.0,
+            icons: 1.0,
+        },
+    }
 }
 
 #[component]
@@ -1475,7 +1513,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     } = boot.into_editor_init();
     let initial_live_territories = initial_live_state
         .as_ref()
-        .map(|state| crate::territory::from_snapshot(state.territories.clone()))
+        .map(|state| sequoia_map_engine::territory::from_snapshot(state.territories.clone()))
         .unwrap_or_else(|| client_map_from_geometry(&geometry));
     let initial_live_seq = initial_live_state
         .as_ref()
@@ -1520,202 +1558,155 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     let local_presets: RwSignal<Vec<StoredClaimPreset>> = RwSignal::new(read_local_presets());
     let macro_library: RwSignal<Vec<ClaimMacro>> = RwSignal::new(read_macro_library());
 
-    let viewport: RwSignal<Viewport> = RwSignal::new(Viewport {
-        offset_x: initial_document.view.offset_x,
-        offset_y: initial_document.view.offset_y,
-        scale: initial_document.view.scale.max(0.05),
-    });
-    let hovered: RwSignal<Option<String>> = RwSignal::new(None);
     let selected: RwSignal<Option<String>> = RwSignal::new(initial_selected);
-    let peek_territory: RwSignal<Option<String>> = RwSignal::new(None);
-    let mouse_pos: RwSignal<(f64, f64)> = RwSignal::new((0.0, 0.0));
-    let loaded_tiles: RwSignal<Vec<LoadedTile>> = RwSignal::new(Vec::new());
-    let loaded_icons: RwSignal<Option<crate::icons::ResourceAtlas>> = RwSignal::new(None);
-    let tick: RwSignal<i64> = RwSignal::new(Utc::now().timestamp());
-    let is_mobile: RwSignal<bool> =
-        RwSignal::new(canvas_dimensions().0 < crate::app::MOBILE_BREAKPOINT);
-    let tile_fetch_scheduled: RwSignal<bool> = RwSignal::new(false);
     let resource_highlight: RwSignal<bool> = RwSignal::new(false);
-    let defense_highlight: RwSignal<bool> = RwSignal::new(false);
-    let show_resource_icons: RwSignal<bool> = RwSignal::new(false);
-    let show_territory_ornaments: RwSignal<bool> = RwSignal::new(false);
-
-    let current_mode: RwSignal<MapMode> = RwSignal::new(MapMode::Live);
-    let connection: RwSignal<ConnectionStatus> = RwSignal::new(ConnectionStatus::Connecting);
-    let history_timestamp: RwSignal<Option<i64>> = RwSignal::new(None);
-    let history_buffered_updates: RwSignal<Vec<crate::app::BufferedUpdate>> =
-        RwSignal::new(Vec::new());
-    let history_buffer_mode_active: RwSignal<bool> = RwSignal::new(false);
-    let history_buffer_size_max: RwSignal<usize> = RwSignal::new(0);
-    let last_live_seq: RwSignal<Option<u64>> = RwSignal::new(initial_last_live_seq);
-    let needs_live_resync: RwSignal<bool> = RwSignal::new(false);
-    let live_resync_in_flight: RwSignal<bool> = RwSignal::new(false);
-    let sse_seq_gap_detected_count: RwSignal<u64> = RwSignal::new(0);
+    let tile_fetch_scheduled: RwSignal<bool> = RwSignal::new(false);
     let editor_stage_started: RwSignal<bool> = RwSignal::new(false);
     let background_live_bootstrap_started: RwSignal<bool> = RwSignal::new(false);
     let health_poll_started: RwSignal<bool> = RwSignal::new(false);
+
+    // Claims boards follow live ownership but never replay history.
+    let feed = LiveFeed::new(live_territories, Signal::stored(false));
+    feed.last_live_seq.set(initial_last_live_seq);
+    let last_live_seq = feed.last_live_seq;
+
+    let render_settings = Memo::new(move |_| claims_render_settings(resource_highlight.get()));
+    let is_mobile = canvas_dimensions().0 < MOBILE_BREAKPOINT;
+    let map = BrowserMap::new(
+        MapInputs {
+            territories: effective_territories.into(),
+            selected: selected.into(),
+            settings: render_settings.into(),
+            // Claims boards draw no timers, so the clock never needs to advance.
+            clock_secs: Signal::stored(Utc::now().timestamp()),
+            heat: None,
+            wars: None,
+            minimap_inset: Signal::stored((!is_mobile).then_some(MINIMAP_INSET)),
+            edit: Signal::derive(move || tool.get().edit_mode()),
+        },
+        Viewport {
+            offset_x: initial_document.view.offset_x,
+            offset_y: initial_document.view.offset_y,
+            scale: initial_document.view.scale.max(0.05),
+        },
+    );
+    let camera = map.camera();
 
     if initial_live_state.is_none() {
         status_message.set(Some(LIVE_SYNC_PENDING_MESSAGE.to_string()));
     }
 
-    provide_claims_war_context();
-    provide_context(effective_territories);
-    provide_context(viewport);
-    provide_context(Hovered(hovered));
-    provide_context(Selected(selected));
-    provide_context(CurrentMode(current_mode));
-    provide_context(HistoryTimestamp(history_timestamp));
-    provide_context(IsMobile(is_mobile));
-    provide_context(PeekTerritory(peek_territory));
-    provide_context(DetailReturnGuild(RwSignal::new(None)));
-    provide_context(mouse_pos);
-    provide_context(loaded_tiles);
-    provide_context(loaded_icons);
-    provide_context(tick);
-    provide_context(RwSignal::new(true));
-    provide_context(AbbreviateNames(RwSignal::new(true)));
-    provide_context(ShowCountdown(RwSignal::new(false)));
-    provide_context(ShowGranularMapTime(RwSignal::new(false)));
-    provide_context(ShowCompoundMapTime(RwSignal::new(false)));
-    provide_context(ShowNames(RwSignal::new(false)));
-    provide_context(ShowClaimLabels(RwSignal::new(false)));
-    provide_context(ShowFarZoomTerritoryTags(RwSignal::new(true)));
-    provide_context(ThickCooldownBorders(RwSignal::new(false)));
-    provide_context(BoldConnections(RwSignal::new(true)));
-    provide_context(ConnectionOpacityScale(RwSignal::new(0.35)));
-    provide_context(ConnectionThicknessScale(RwSignal::new(0.7)));
-    provide_context(ConnectionZoomFadeStart(RwSignal::new(0.10)));
-    provide_context(ConnectionZoomFadeEnd(RwSignal::new(0.30)));
-    provide_context(SuppressCooldownVisuals(RwSignal::new(true)));
-    provide_context(FillAlphaBoost(RwSignal::new(0.12)));
-    provide_context(ResourceHighlight(resource_highlight));
-    provide_context(crate::app::DefenseHighlight(defense_highlight));
-    provide_context(crate::app::ShowResourceIcons(show_resource_icons));
-    provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
-    provide_context(ReadableFont(RwSignal::new(false)));
-    provide_context(NameColorSetting(RwSignal::new(NameColor::Guild)));
-    provide_context(TagColorSetting(RwSignal::new(NameColor::Guild)));
-    provide_context(ShowMinimap(RwSignal::new(true)));
-    provide_context(HeatModeEnabled(RwSignal::new(false)));
-    provide_context(HeatEntriesByTerritory(RwSignal::new(HashMap::new())));
-    provide_context(HeatMaxTakeCount(RwSignal::new(0)));
-    provide_context(HeatWindowLabel(RwSignal::new(String::new())));
-    provide_context(LabelScaleMaster(RwSignal::new(1.0)));
-    provide_context(LabelScaleStatic(RwSignal::new(1.0)));
-    provide_context(LabelScaleStaticName(RwSignal::new(1.0)));
-    provide_context(LabelScaleDynamic(RwSignal::new(1.0)));
-    provide_context(LabelScaleIcons(RwSignal::new(1.0)));
-    provide_context(SidebarOpen(RwSignal::new(false)));
-    provide_context(SidebarTransient(RwSignal::new(false)));
-    provide_context(ShowSettings(RwSignal::new(false)));
-    provide_context(HistoryBufferedUpdates(history_buffered_updates));
-    provide_context(HistoryBufferModeActive(history_buffer_mode_active));
-    provide_context(HistoryBufferSizeMax(history_buffer_size_max));
-    provide_context(LastLiveSeq(last_live_seq));
-    provide_context(NeedsLiveResync(needs_live_resync));
-    provide_context(LiveResyncInFlight(live_resync_in_flight));
-    provide_context(SseSeqGapDetectedCount(sse_seq_gap_detected_count));
-
-    let apply_hit = Arc::new({
-        move |territory_name: String, shift_held: bool| {
-            let live_owners = current_live_owner_map(&live_territories.get_untracked());
-            let current_active_owner = active_owner.get_untracked();
-            session.update(|session_state| {
-                let Some(session_state) = session_state.as_mut() else {
-                    return;
-                };
-                match tool.get_untracked() {
-                    ClaimTool::View => {}
-                    ClaimTool::Paint => {
-                        push_undo_state(session_state, &current_active_owner);
-                        if !set_effective_owner(
-                            session_state,
-                            &territory_name,
-                            current_active_owner.clone(),
-                            &live_owners,
-                        ) {
-                            let _ = session_state.undo_stack.pop();
-                        }
-                    }
-                    ClaimTool::EraseToNeutral => {
-                        push_undo_state(session_state, &current_active_owner);
-                        if !set_effective_owner(
-                            session_state,
-                            &territory_name,
-                            ClaimOwner::Neutral,
-                            &live_owners,
-                        ) {
-                            let _ = session_state.undo_stack.pop();
-                        }
-                    }
-                    ClaimTool::Select => {
-                        if shift_held {
-                            if let Some(pos) = session_state
-                                .selection
-                                .iter()
-                                .position(|n| n == &territory_name)
-                            {
-                                session_state.selection.remove(pos);
-                            } else {
-                                session_state.selection.push(territory_name.clone());
-                            }
-                        } else {
-                            session_state.selection = vec![territory_name.clone()];
-                        }
-                        selected.set(selection_focus(
-                            &session_state.selection,
-                            Some(&territory_name),
-                        ));
-                        session_state.dirty = true;
-                    }
-                    ClaimTool::Eyedropper => {
-                        active_owner.set(effective_owner_for_session(
-                            session_state,
-                            &live_owners,
-                            &territory_name,
-                        ));
+    let apply_hit = move |territory_name: String, shift_held: bool| {
+        let live_owners = current_live_owner_map(&live_territories.get_untracked());
+        let current_active_owner = active_owner.get_untracked();
+        session.update(|session_state| {
+            let Some(session_state) = session_state.as_mut() else {
+                return;
+            };
+            match tool.get_untracked() {
+                ClaimTool::View => {}
+                ClaimTool::Paint => {
+                    push_undo_state(session_state, &current_active_owner);
+                    if !set_effective_owner(
+                        session_state,
+                        &territory_name,
+                        current_active_owner.clone(),
+                        &live_owners,
+                    ) {
+                        let _ = session_state.undo_stack.pop();
                     }
                 }
-            });
-            if tool.get_untracked() != ClaimTool::Select {
-                selected.set(Some(territory_name));
-            }
-        }
-    });
-    let apply_box_select = Arc::new({
-        move |territory_names: Vec<String>, shift_held: bool| {
-            session.update(|session_state| {
-                let Some(session_state) = session_state.as_mut() else {
-                    return;
-                };
-                let next_selection = if shift_held {
-                    let mut merged = session_state.selection.clone();
-                    for name in &territory_names {
-                        if !merged.contains(name) {
-                            merged.push(name.clone());
-                        }
+                ClaimTool::EraseToNeutral => {
+                    push_undo_state(session_state, &current_active_owner);
+                    if !set_effective_owner(
+                        session_state,
+                        &territory_name,
+                        ClaimOwner::Neutral,
+                        &live_owners,
+                    ) {
+                        let _ = session_state.undo_stack.pop();
                     }
-                    merged
-                } else {
-                    territory_names.clone()
-                };
-                selected.set(selection_focus(
-                    &next_selection,
-                    territory_names.last().map(String::as_str),
-                ));
-                if session_state.selection != next_selection {
-                    session_state.selection = next_selection;
+                }
+                ClaimTool::Select => {
+                    if shift_held {
+                        if let Some(pos) = session_state
+                            .selection
+                            .iter()
+                            .position(|n| n == &territory_name)
+                        {
+                            session_state.selection.remove(pos);
+                        } else {
+                            session_state.selection.push(territory_name.clone());
+                        }
+                    } else {
+                        session_state.selection = vec![territory_name.clone()];
+                    }
+                    selected.set(selection_focus(
+                        &session_state.selection,
+                        Some(&territory_name),
+                    ));
                     session_state.dirty = true;
                 }
-            });
+                ClaimTool::Eyedropper => {
+                    active_owner.set(effective_owner_for_session(
+                        session_state,
+                        &live_owners,
+                        &territory_name,
+                    ));
+                }
+            }
+        });
+        if tool.get_untracked() != ClaimTool::Select {
+            selected.set(Some(territory_name));
         }
-    });
-    provide_context(ClaimCanvasController {
-        tool,
-        handle_hit: apply_hit,
-        handle_box_select: apply_box_select,
-    });
+    };
+    let apply_box_select = move |territory_names: Vec<String>, shift_held: bool| {
+        session.update(|session_state| {
+            let Some(session_state) = session_state.as_mut() else {
+                return;
+            };
+            let next_selection = if shift_held {
+                let mut merged = session_state.selection.clone();
+                for name in &territory_names {
+                    if !merged.contains(name) {
+                        merged.push(name.clone());
+                    }
+                }
+                merged
+            } else {
+                territory_names.clone()
+            };
+            selected.set(selection_focus(
+                &next_selection,
+                territory_names.last().map(String::as_str),
+            ));
+            if session_state.selection != next_selection {
+                session_state.selection = next_selection;
+                session_state.dirty = true;
+            }
+        });
+    };
+    let on_map_event = move |event: MapEvent| match event {
+        MapEvent::Tap { territory, .. } => {
+            if tool.get_untracked() == ClaimTool::View {
+                selected.set(territory);
+            }
+        }
+        MapEvent::Stroke(territory) => apply_hit(territory, false),
+        MapEvent::Pick { territory, shift } => apply_hit(territory, shift),
+        MapEvent::BoxSelect { territories, shift } => {
+            selected.set(territories.last().cloned());
+            apply_box_select(territories, shift);
+        }
+        MapEvent::SelectTap { territory, shift } => {
+            selected.set(territory.clone());
+            match territory {
+                Some(territory) => apply_hit(territory, shift),
+                None => apply_box_select(Vec::new(), false),
+            }
+        }
+        MapEvent::Hover(_) => {}
+    };
 
     let metrics = Memo::new(move |_| {
         if !matches!(tab.get(), ClaimTab::Summary | ClaimTab::Compare) {
@@ -1815,7 +1806,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     Effect::new(move || {
         if let Some(session_state) = session.get() {
             let mut document = session_state.document.clone();
-            document.view = default_view_from(&viewport.get(), &active_owner.get());
+            document.view = default_view_from(&camera.get(), &active_owner.get());
             let draft = StoredClaimDraft {
                 document,
                 follow_live: session_state.follow_live,
@@ -1874,22 +1865,14 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         tile_fetch_scheduled.set(true);
 
         let Some(window) = web_sys::window() else {
-            let (canvas_w, canvas_h) = canvas_dimensions();
-            let context =
-                tiles::TileFetchContext::new(viewport.get_untracked(), canvas_w, canvas_h);
-            tiles::fetch_tiles(loaded_tiles, context);
+            map.load_tiles();
             return;
         };
 
         let run_tile_fetch = {
             let window = window.clone();
             wasm_bindgen::closure::Closure::once(move || {
-                let callback = wasm_bindgen::closure::Closure::once(move || {
-                    let (canvas_w, canvas_h) = canvas_dimensions();
-                    let context =
-                        tiles::TileFetchContext::new(viewport.get_untracked(), canvas_w, canvas_h);
-                    tiles::fetch_tiles(loaded_tiles, context);
-                });
+                let callback = wasm_bindgen::closure::Closure::once(move || map.load_tiles());
 
                 let mut scheduled = false;
                 if let Ok(idle_fn) =
@@ -1922,14 +1905,14 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     });
 
     on_cleanup(|| {
-        sse::disconnect();
+        live_feed::disconnect();
     });
 
     Effect::new(move || {
         if !deferred_editor_work_ready.get() {
             return;
         }
-        sse::connect(live_territories, connection);
+        live_feed::connect(feed);
     });
 
     Effect::new(move || {
@@ -1985,7 +1968,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
         background_live_bootstrap_started.set(true);
         spawn_local(async move {
             loop {
-                match history::fetch_live_state().await {
+                match live_feed::fetch_live_state().await {
                     Ok(state) => {
                         apply_live_state(
                             live_territories,
@@ -2123,7 +2106,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
             &session_state,
             &live_territories.get_untracked(),
             live_seq.get_untracked(),
-            default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
+            default_view_from(&camera.get_untracked(), &active_owner.get_untracked()),
         );
         session.update(|state| {
             if let Some(state) = state.as_mut() {
@@ -2165,7 +2148,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                             }
                             apply_document_to_session(
                                 active_owner,
-                                viewport,
+                                camera,
                                 selected,
                                 session,
                                 tab,
@@ -2196,7 +2179,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                 style="display: none;"
                 on:change=on_file_change
             />
-            <MapCanvas />
+            <MapCanvas map on_event=on_map_event />
             {move || {
                 if !editor_canvas_ready.get() {
                     view! {
@@ -2219,7 +2202,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                 let Some(session_state) = session.get() else {
                     return ().into_any();
                 };
-                let vp = viewport.get();
+                let vp = camera.get();
                 let territories = effective_territories.get();
                 session_state
                     .selection
@@ -2778,7 +2761,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
-                                                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
+                                                default_view_from(&camera.get_untracked(), &active_owner.get_untracked()),
                                             );
                                             let saved_document = document.clone();
                                             snapshot_save_in_flight.set(true);
@@ -2792,7 +2775,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                             session,
                                                             live_territories,
                                                             live_seq,
-                                                            viewport,
+                                                            camera,
                                                             active_owner,
                                                             payload.id.clone(),
                                                             share_url.clone(),
@@ -2830,7 +2813,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
-                                                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
+                                                default_view_from(&camera.get_untracked(), &active_owner.get_untracked()),
                                             );
                                             let saved_document = document.clone();
                                             snapshot_save_in_flight.set(true);
@@ -2844,7 +2827,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                             session,
                                                             live_territories,
                                                             live_seq,
-                                                            viewport,
+                                                            camera,
                                                             active_owner,
                                                             payload.id.clone(),
                                                             share_url,
@@ -2879,7 +2862,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
-                                                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
+                                                default_view_from(&camera.get_untracked(), &active_owner.get_untracked()),
                                             );
                                             if let Ok(json) = serde_json::to_string_pretty(&document)
                                                 && let Some(window) = web_sys::window()
@@ -2919,7 +2902,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                 &session_state,
                                                 &live_territories.get_untracked(),
                                                 live_seq.get_untracked(),
-                                                default_view_from(&viewport.get_untracked(), &active_owner.get_untracked()),
+                                                default_view_from(&camera.get_untracked(), &active_owner.get_untracked()),
                                             );
                                             local_presets.update(|presets| {
                                                 presets.push(StoredClaimPreset {
@@ -2944,7 +2927,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                                                     on:click=move |_| {
                                                         apply_document_to_session(
                                                             active_owner,
-                                                            viewport,
+                                                            camera,
                                                             selected,
                                                             session,
                                                             tab,
@@ -2990,26 +2973,6 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn claims_provides_war_contexts_for_shared_canvas_and_sse() {
-        let owner = Owner::new();
-        owner.with(|| {
-            provide_claims_war_context();
-            assert!(
-                expect_context::<crate::app::WarControllerData>()
-                    .0
-                    .get_untracked()
-                    .is_none()
-            );
-            assert!(
-                expect_context::<crate::app::TerritoriesInWar>()
-                    .0
-                    .get_untracked()
-                    .is_empty()
-            );
-        });
-    }
 
     #[test]
     fn parse_claims_route_handles_root_and_saved_paths() {

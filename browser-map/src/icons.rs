@@ -15,7 +15,7 @@ pub struct ResourceAtlas {
     pub sequoia_territory_ornament_image: HtmlImageElement,
 }
 
-pub(crate) const ATLAS_PATH: &str = "icons/territory-resources-atlas.webp";
+pub const ATLAS_PATH: &str = "icons/territory-resources-atlas.webp";
 const HQ_CROWN_PATH: &str = "icons/crown_icon.webp";
 const TERRITORY_ORNAMENT_PATH: &str = "icons/territory-ornament.webp";
 const SEQUOIA_TERRITORY_ORNAMENT_PATH: &str = "icons/seq-border-v1.webp";

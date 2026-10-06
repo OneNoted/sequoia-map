@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 sequoia-shared = { path = "../shared" }
 sequoia-map-engine = { path = "../wasm" }
+sequoia-browser-map = { path = "../browser-map" }
 leptos = { version = "0.8.17", default-features = false, features = ["csr"] }
 leptos_router = { version = "0.8.12", default-features = false }
 web-sys = { version = "0.3", features = [
@@ -26,8 +27,6 @@ web-sys = { version = "0.3", features = [
     "TextMetrics",
     "Window",
 ] }
-wgpu = { version = "24.0", default-features = false, features = ["wgsl", "webgl"] }
-bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 futures = "0.3"

@@ -21,9 +21,9 @@ use crate::app::{
     ShowPlayerHeads, WarControllerData, WarFeedVisible, clamp_player_head_size,
 };
 use crate::map_intel::{canvas_context, in_screen_bounds};
-use crate::render_loop::RenderScheduler;
 use crate::territory::ClientTerritoryMap;
-use crate::viewport::Viewport;
+use sequoia_browser_map::BrowserMap;
+use sequoia_browser_map::render_loop::RenderScheduler;
 
 /// Edge length of the face we ask the skin renderer for, in pixels. Fixed rather than
 /// derived from the size setting so dragging the slider rescales what is already cached
@@ -211,7 +211,7 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
     let WarFeedVisible(war_feed_visible) = expect_context();
     let CurrentMode(map_mode) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let viewport: RwSignal<Viewport> = expect_context();
+    let camera = expect_context::<BrowserMap>().camera();
 
     // The feed describes right now, so the heads must never be drawn over a past snapshot,
     // and never for a viewer the war feed is closed to - the same rule `WarQueuePanel`
@@ -220,9 +220,37 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
         show_heads.get() && war_feed_visible.get() && map_mode.get() == MapMode::Live
     });
 
+    // World positions only move with the feed or the territories teammates stand in; a pan
+    // just re-projects them.
+    let points = Memo::new(move |_| {
+        if !visible.get() {
+            return Vec::new();
+        }
+        warcontroller_state.with(|state| {
+            state.as_ref().map_or_else(Vec::new, |state| {
+                territories.with(|map| resolve_player_points(&state.players, map))
+            })
+        })
+    });
+
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let cached_ctx: Rc<RefCell<Option<CanvasRenderingContext2d>>> = Rc::new(RefCell::new(None));
     let faces: FaceCache = Rc::new(RefCell::new(HashMap::new()));
+
+    // Faces are cached per username; drop the ones no longer in the feed so a session left
+    // open all evening does not accumulate every teammate who logged on at some point.
+    // Nothing on screen means nothing worth keeping warm either.
+    Effect::new({
+        let faces = faces.clone();
+        move || {
+            points.with(|points| {
+                let live: HashSet<&str> = points.iter().map(|p| p.username.as_str()).collect();
+                faces
+                    .borrow_mut()
+                    .retain(|username, _| live.contains(username.as_str()));
+            });
+        }
+    });
 
     // The render closure needs to schedule frames of its own - a face that finishes
     // loading has to bring one back - and the scheduler owns that closure. It therefore
@@ -254,57 +282,45 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
             };
             ctx.clear_rect(0.0, 0.0, width, height);
             if !visible.get_untracked() {
-                // Nothing on screen means nothing worth keeping warm either.
-                faces.borrow_mut().clear();
                 return false;
             }
 
             let size = clamp_player_head_size(head_size.get_untracked());
-            let points = warcontroller_state.with_untracked(|state| {
-                state.as_ref().map_or_else(Vec::new, |state| {
-                    territories.with_untracked(|map| resolve_player_points(&state.players, map))
-                })
-            });
-
-            // Faces are cached per username; drop the ones no longer in the feed so a
-            // session left open all evening does not accumulate every teammate who logged
-            // on at some point.
-            let live: HashSet<&str> = points.iter().map(|p| p.username.as_str()).collect();
-            faces
-                .borrow_mut()
-                .retain(|username, _| live.contains(username.as_str()));
-
-            let vp = viewport.get_untracked();
+            let vp = camera.get_untracked();
             let with_head = render_head.get_untracked();
             let with_label = render_label.get_untracked() && vp.scale >= LABEL_MIN_SCALE;
 
             ctx.set_image_smoothing_enabled(false);
             let fan_radius = size * FAN_RADIUS_FACTOR;
-            for point in &points {
-                let (sx, sy) = vp.world_to_screen(point.x, point.z);
-                let (sx, sy) = (sx + point.fan.0 * fan_radius, sy + point.fan.1 * fan_radius);
-                if !in_screen_bounds(sx, sy, width, height, size + 16.0) {
-                    continue;
+            points.with_untracked(|points| {
+                for point in points {
+                    let (sx, sy) = vp.world_to_screen(point.x, point.z);
+                    let (sx, sy) = (sx + point.fan.0 * fan_radius, sy + point.fan.1 * fan_radius);
+                    if !in_screen_bounds(sx, sy, width, height, size + 16.0) {
+                        continue;
+                    }
+                    // The dot stands in for a face that is still loading or never arrived, as
+                    // well as for a label-only - or all-off - configuration, which would
+                    // otherwise leave the master toggle looking broken.
+                    let drew_head = with_head
+                        && face_image(&faces, &point.username, repaint.clone()).is_some_and(
+                            |image| {
+                                let ready = image_ready(&image);
+                                if ready {
+                                    draw_head(&ctx, &image, sx, sy, size);
+                                }
+                                ready
+                            },
+                        );
+                    if !drew_head {
+                        draw_dot(&ctx, sx, sy);
+                    }
+                    if with_label {
+                        let anchor = if drew_head { size / 2.0 } else { DOT_RADIUS };
+                        draw_name(&ctx, sx, sy + anchor + 11.0, &point.username);
+                    }
                 }
-                // The dot stands in for a face that is still loading or never arrived, as
-                // well as for a label-only - or all-off - configuration, which would
-                // otherwise leave the master toggle looking broken.
-                let drew_head = with_head
-                    && face_image(&faces, &point.username, repaint.clone()).is_some_and(|image| {
-                        let ready = image_ready(&image);
-                        if ready {
-                            draw_head(&ctx, &image, sx, sy, size);
-                        }
-                        ready
-                    });
-                if !drew_head {
-                    draw_dot(&ctx, sx, sy);
-                }
-                if with_label {
-                    let anchor = if drew_head { size / 2.0 } else { DOT_RADIUS };
-                    draw_name(&ctx, sx, sy + anchor + 11.0, &point.username);
-                }
-            }
+            });
             ctx.set_image_smoothing_enabled(true);
             false
         }
@@ -315,9 +331,8 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
         let scheduler = scheduler.clone();
         move || {
             visible.track();
-            viewport.track();
-            warcontroller_state.track();
-            territories.track();
+            camera.track();
+            points.track();
             head_size.track();
             render_head.track();
             render_label.track();
