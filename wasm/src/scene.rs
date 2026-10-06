@@ -21,11 +21,6 @@ fn static_label_bucket(scale: f64) -> i32 {
     (scale * 320.0).floor() as i32
 }
 
-/// Connection lines are re-weighted every 1/20 of scale.
-fn connection_bucket(scale: f64) -> i32 {
-    (scale * 20.0).floor() as i32
-}
-
 /// The cached layers the renderer rebuilds before drawing a frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rebuild {
@@ -203,7 +198,8 @@ fn scale_change(previous: f64, scale: f64) -> Rebuild {
         (previous >= TIMER_VISIBILITY_MIN_SCALE) != (scale >= TIMER_VISIBILITY_MIN_SCALE);
     Rebuild {
         territories: false,
-        connections: connection_bucket(previous) != connection_bucket(scale),
+        // Connection width and fade are baked into vertices at the exact scale.
+        connections: true,
         static_labels: timers_toggled
             || static_label_bucket(previous) != static_label_bucket(scale),
         // Timer text and icons honour on-screen pixel minimums at the exact scale.
@@ -258,10 +254,11 @@ mod tests {
     #[test]
     fn zooming_refits_labels_by_scale_bucket_and_threshold() {
         let mut planner = settled(0.5, 100, 200);
-        // Within one static bucket: only the pixel-thresholded layers.
+        // Within one static bucket: only the exact-scale layers.
         assert_eq!(
             planner.plan(&at(0.5001), &settings(), 100, true),
             only(|r| {
+                r.connections = true;
                 r.dynamic_labels = true;
                 r.icons = true;
             })
@@ -272,13 +269,27 @@ mod tests {
                 .plan(&at(0.51), &settings(), 100, true)
                 .static_labels
         );
-        // Across a connection bucket.
-        assert!(planner.plan(&at(0.56), &settings(), 100, true).connections);
         // Crossing the timer threshold within one bucket still refits static labels.
         let mut planner = settled(0.3101, 100, 200);
         let crossed = planner.plan(&at(0.3099), &settings(), 100, true);
         assert!(crossed.static_labels && crossed.dynamic_labels && crossed.icons);
         assert!(!crossed.territories);
+    }
+
+    #[test]
+    fn zooming_within_a_coarse_bucket_refreshes_connection_width_and_fade() {
+        let mut planner = settled(0.25, 100, 200);
+        for scale in [0.263, 0.277, 0.290] {
+            assert!(planner.plan(&at(scale), &settings(), 100, true).connections);
+        }
+        // A repaint or translation at the same scale still reuses the connection buffer.
+        assert_eq!(
+            planner.plan(&at(0.290), &settings(), 100, false),
+            Rebuild::NONE
+        );
+        let mut camera = at(0.290);
+        camera.pan(120.0, 40.0);
+        assert_eq!(planner.plan(&camera, &settings(), 100, true), Rebuild::NONE);
     }
 
     #[test]
