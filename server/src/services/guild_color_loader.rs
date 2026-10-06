@@ -9,17 +9,20 @@ use tracing::{info, warn};
 use crate::config::{ATHENA_REFRESH_SECS, ATHENA_TERRITORY_URL};
 use crate::state::AppState;
 
-#[derive(Deserialize)]
-struct AthenaResponse {
-    territories: HashMap<String, AthenaTerritory>,
-}
-
+/// One entry of Athena's territory list, keyed by territory name at the top
+/// level. Unclaimed territories carry `"guild": null`.
 #[derive(Deserialize)]
 struct AthenaTerritory {
     #[serde(default)]
-    guild: Option<String>,
-    #[serde(default, rename = "guildColor")]
-    guild_color: Option<String>,
+    guild: Option<AthenaGuild>,
+}
+
+#[derive(Deserialize)]
+struct AthenaGuild {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
 }
 
 pub async fn run(state: AppState) {
@@ -71,32 +74,49 @@ async fn fetch_guild_colors(
     let status = resp.status();
     let bytes = resp.bytes().await?;
     if !status.is_success() {
-        let preview = String::from_utf8_lossy(&bytes)
-            .chars()
-            .take(200)
-            .collect::<String>();
-        return Err(format!("upstream status {status}; body preview: {preview}").into());
+        return Err(format!(
+            "upstream status {status}; body preview: {}",
+            body_preview(&bytes)
+        )
+        .into());
     }
 
-    parse_athena_guild_colors_payload(bytes.as_ref())
-        .map_err(|e| format!("failed to decode Athena payload: {e}").into())
+    parse_athena_guild_colors_payload(bytes.as_ref()).map_err(|e| {
+        // A schema change upstream surfaces only as this one line, so carry
+        // enough of the body to tell what Athena actually sent.
+        format!(
+            "failed to decode Athena payload: {e}; body preview: {}",
+            body_preview(&bytes)
+        )
+        .into()
+    })
+}
+
+fn body_preview(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .take(200)
+        .collect::<String>()
 }
 
 fn parse_athena_guild_colors_payload(
     bytes: &[u8],
 ) -> Result<HashMap<String, (u8, u8, u8)>, serde_json::Error> {
-    let data: AthenaResponse = serde_json::from_slice(bytes)?;
+    let territories: HashMap<String, AthenaTerritory> = serde_json::from_slice(bytes)?;
     let mut colors = HashMap::new();
-    for entry in data.territories.values() {
-        let Some(guild_name) = entry
-            .guild
+    for entry in territories.values() {
+        let Some(guild) = entry.guild.as_ref() else {
+            continue;
+        };
+        let Some(guild_name) = guild
+            .name
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty())
         else {
             continue;
         };
-        let Some(guild_color_hex) = entry.guild_color.as_deref() else {
+        let Some(guild_color_hex) = guild.color.as_deref() else {
             continue;
         };
         if let Some(rgb) = parse_hex_color(guild_color_hex) {
@@ -235,31 +255,65 @@ mod tests {
         assert_eq!(parse_hex_color("50c878"), Some((80, 200, 120)));
     }
 
+    /// Shaped after the live `cache/get/territoryList` body: a flat map keyed by
+    /// territory, whose `guild` is an object carrying the color.
     #[test]
-    fn parse_athena_payload_tolerates_null_guild_rows() {
+    fn parse_athena_payload_reads_nested_guild_colors() {
         let payload = r##"{
-            "territories": {
-                "Lion Lair": {
-                    "territory": "Lion Lair",
-                    "guild": null,
-                    "guildPrefix": null,
-                    "guildColor": "#ffffff",
-                    "acquired": "2026-02-26T22:13:13.493000Z",
-                    "location": {"startX": 890, "startZ": -2140, "endX": 790, "endZ": -2320}
+            "Apprentice Huts": {
+                "guild": {
+                    "uuid": "0dd24dcc-370c-4e27-a1b4-2dfa92e76667",
+                    "name": "Aequitas",
+                    "prefix": "Aeq",
+                    "hq": "Nivla Woods Exit",
+                    "color": "#ffd700"
                 },
-                "Ragni": {
-                    "territory": "Ragni",
-                    "guild": "Aequitas",
-                    "guildPrefix": "Aeq",
-                    "guildColor": "#ffd700",
-                    "acquired": "2026-02-26T17:20:41.785000Z",
-                    "location": {"startX": -955, "startZ": -1415, "endX": -756, "endZ": -1748}
-                }
+                "acquired": "2026-08-20T09:49:31.591000Z",
+                "location": {"start": [-600, -610], "end": [-670, -780]},
+                "hq": false
+            },
+            "Jofash Tunnel": {
+                "guild": {
+                    "uuid": "cef53bae-dc42-46aa-8ccf-1b10d282b420",
+                    "name": "Titans Valor",
+                    "prefix": "ANO",
+                    "hq": "Nodguj Nation",
+                    "color": "#ffffff"
+                },
+                "acquired": "2026-08-18T01:20:00.714000Z",
+                "location": {"start": [-140, -3560], "end": [-260, -3700]},
+                "hq": false
             }
         }"##;
 
         let colors = parse_athena_guild_colors_payload(payload.as_bytes())
-            .expect("payload should decode despite null guild rows");
+            .expect("the live Athena schema should decode");
+        assert_eq!(colors.len(), 2);
+        assert_eq!(colors.get("Aequitas"), Some(&(255, 215, 0)));
+        assert_eq!(colors.get("Titans Valor"), Some(&(255, 255, 255)));
+    }
+
+    #[test]
+    fn parse_athena_payload_skips_rows_without_a_named_guild() {
+        let payload = r##"{
+            "Lion Lair": {
+                "guild": null,
+                "acquired": "2026-02-26T22:13:13.493000Z",
+                "location": {"start": [890, -2140], "end": [790, -2320]}
+            },
+            "Nameless Quarry": {
+                "guild": {"uuid": "0dd2", "name": "   ", "color": "#123456"}
+            },
+            "Colorless Bluff": {
+                "guild": {"uuid": "0dd2", "name": "Nerfuria"}
+            },
+            "Ragni": {
+                "guild": {"uuid": "0dd2", "name": "Aequitas", "color": "#ffd700"}
+            }
+        }"##;
+
+        let colors = parse_athena_guild_colors_payload(payload.as_bytes())
+            .expect("payload should decode despite null and partial guild rows");
         assert_eq!(colors.len(), 1);
         assert_eq!(colors.get("Aequitas"), Some(&(255, 215, 0)));
     }

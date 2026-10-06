@@ -157,27 +157,6 @@ public final class ReporterRuntime {
         reconcilePendingUpdateJobOnStartup();
     }
 
-    public String statusLine() {
-        return "enrolled=" + (config.token != null && !config.token.isBlank())
-            + " queue=" + queue.size()
-            + " last_upload=" + config.lastUploadStatus
-            + " validity=" + validityGate.stateId()
-            + " last=" + lastStatus
-            + " reason=" + lastStatusReason;
-    }
-
-    public String togglesLine() {
-        return "share_owner=" + config.shareOwner
-            + " share_headquarters=" + config.shareHeadquarters
-            + " share_held_resources=" + config.shareHeldResources
-            + " share_production_rates=" + config.shareProductionRates
-            + " share_storage_capacity=" + config.shareStorageCapacity
-            + " share_defense_tier=" + config.shareDefenseTier
-            + " share_trading_routes=" + config.shareTradingRoutes
-            + " share_legacy_capture_signals=" + config.shareLegacyCaptureSignals
-            + " share_legacy_war_signals=" + config.shareLegacyWarSignals;
-    }
-
     public String ingestBaseUrl() {
         return config.ingestBaseUrl;
     }

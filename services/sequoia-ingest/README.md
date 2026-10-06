@@ -1,34 +1,22 @@
-# Sequoia Ingest Gateway
+# Sequoia ingest gateway
 
-Standalone gateway for live reporter submissions (`/v1/*`) with:
+The gateway accepts Iris territory reports, authenticates reporters and forwards
+accepted updates to the map server's private ingest route. SQLite stores hashed
+reporter tokens, identities and retained raw reports. Quorum and ownership
+corroboration checks decide which observations become canonical updates.
 
-- reporter enrollment + rotating bearer tokens
-- challenge-based enrollment attestation (`/v1/attest/challenge`)
-- signed heartbeat/report envelopes (`X-Iris-*` headers) with replay rejection
-- single-active reporter identity enforcement (optional)
-- world/session attestation checks for no-interaction account binding
-- SHA-256 token hashing at rest in SQLite (legacy plaintext tokens auto-migrated on startup)
-- per-IP and per-reporter rate limits
-- duplicate suppression + temporary quarantine for malformed spam
-- quorum/degraded decisioning before canonical emit
-- provisional ownership corroboration + optional auto-revert from Wynncraft API
-- raw report persistence (SQLite) with retention purge
-- async forwarding to Sequoia internal territory ingest route
+## Run locally
 
-## Data Policy
+From the repository root, use `mise run dev:full` for the whole stack or `mise run ingest`
+for the gateway alone. See [development](../../docs/development.md) for setup,
+local credentials and SQLite storage. `mise run test` includes this workspace's
+tests; the root Cargo workspace does not.
 
-- Territory-only ingest in this phase
-- No war/timer/tower collection route is active
-- `guild_opt_in` fields are accepted as backward-compatible no-op inputs for one phase
-
-## Run
-
-```bash
-cd services/sequoia-ingest
-cargo run
-```
-
-Default bind: `0.0.0.0:3010`.
+Outside the dev task, the gateway binds to `0.0.0.0:3010` and requires a shared
+internal ingest token. Enrollment receives the reporter's account identity and
+Minecraft session token; do not describe it as anonymous territory collection.
+There are no separate war, timer or tower collection routes. `guild_opt_in`
+is accepted but has no effect.
 
 ## Environment
 
@@ -43,7 +31,7 @@ Default bind: `0.0.0.0:3010`.
 - `INGEST_MAX_RATE_LIMIT_KEYS` (default: `20000`)
 - `INGEST_QUORUM_MIN_REPORTERS` (default: `2`)
 - `INGEST_QUORUM_MIN_DISTINCT_ORIGINS` (default: `1`; capped to `INGEST_QUORUM_MIN_REPORTERS`; set to `2` to require cross-origin corroboration when reporter quorum is at least `2`)
-- `INGEST_DEGRADED_SINGLE_REPORTER_ENABLED` (default: `false`; prod/coolify compose defaults to `false`, dev compose defaults to `true`)
+- `INGEST_DEGRADED_SINGLE_REPORTER_ENABLED` (default: `false`)
 - `INGEST_TRUSTED_PROXY_CIDRS` (default: empty in service; prod/coolify compose defaults to loopback + RFC1918 private ranges)
 - `INGEST_RAW_RETENTION_DAYS` (default: `7`)
 - `INGEST_REPORTER_RETENTION_DAYS` (default: `30`)
@@ -82,8 +70,9 @@ Default bind: `0.0.0.0:3010`.
 - `GET /health`
 - `GET /metrics`
 
-Reporter endpoints require `Authorization: Bearer <token>` (except `/v1/attest/challenge` and `/v1/enroll`).
-
+`/v1/heartbeat` and `/v1/report/territory` require an `Authorization` header
+with a `Bearer <token>` value. Challenge and enrollment do not require an
+existing reporter token.
 Signed endpoints (`/v1/heartbeat`, `/v1/report/territory`) also require:
 
 - `X-Iris-Key-Id`
@@ -91,7 +80,7 @@ Signed endpoints (`/v1/heartbeat`, `/v1/report/territory`) also require:
 - `X-Iris-Nonce`
 - `X-Iris-Sig`
 
-## Production Security Guidance
+## Production security
 
 - Run ingest behind HTTPS termination (Caddy/Nginx/Traefik/etc.).
 - Do not expose server internal ingest routes (`/api/internal/ingest/*`) publicly.
@@ -104,7 +93,7 @@ Signed endpoints (`/v1/heartbeat`, `/v1/report/territory`) also require:
 - Keep `INGEST_SINGLE_REPORTER_MODE=false` for normal multi-observer deployments; only enable it for intentional single-reporter operation.
 - Set `INGEST_ALLOWED_SERVER_HOST_SUFFIXES` to your Wynncraft host allowlist.
 
-## Reporter Field Toggles
+## Reporter field toggles
 
 The gateway stores and enforces per-reporter toggles for:
 

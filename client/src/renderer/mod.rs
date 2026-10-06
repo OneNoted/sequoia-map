@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::icons::ResourceAtlas;
 use crate::territory::ClientTerritoryMap;
@@ -55,6 +55,8 @@ pub struct SceneSnapshot<'a> {
     pub heat_mode_enabled: bool,
     pub heat_entries: &'a HashMap<String, u64>,
     pub heat_max_take_count: u64,
+    /// Names of the territories with a war in progress; drives the red territory border.
+    pub territories_in_war: &'a HashSet<String>,
 }
 
 /// Lightweight metadata emitted alongside each built scene snapshot.

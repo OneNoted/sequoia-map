@@ -114,8 +114,15 @@ pub(crate) fn build_app(state: AppState) -> Router {
             "/api/internal/ingest/heartbeat",
             axum::routing::post(routes::ingest::heartbeat),
         )
+        .route("/api/auth/me", axum::routing::get(routes::auth::me))
+        .route("/api/auth/login", axum::routing::get(routes::auth::login))
+        .route("/api/auth/logout", axum::routing::get(routes::auth::logout))
         .route("/api/health", axum::routing::get(routes::api::health))
         .route("/api/metrics", axum::routing::get(routes::api::metrics))
+        .route(
+            "/api/warcontroller",
+            axum::routing::get(routes::api::get_warcontroller),
+        )
         .route(
             "/api/history/at",
             axum::routing::get(routes::history::history_at),

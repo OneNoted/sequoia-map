@@ -1,0 +1,12 @@
+[package]
+name = "sequoia-map-engine"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+sequoia-shared = { path = "../shared" }
+serde = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

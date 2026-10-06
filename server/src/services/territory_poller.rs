@@ -14,7 +14,7 @@ use sequoia_shared::{
 use sqlx::{Postgres, QueryBuilder};
 use tracing::{info, warn};
 
-use crate::config::{POLL_INTERVAL_SECS, WYNNCRAFT_TERRITORY_URL, canonical_override_ttl};
+use crate::config::{canonical_override_ttl, territory_poll_interval, wynncraft_territory_url};
 use crate::state::{
     AppState, ExtraTerrInfo, GuildColorMap, IngestTerritoryOverride, PreSerializedEvent,
     build_guild_color_lookup, lookup_guild_color,
@@ -28,7 +28,8 @@ const UNCLAIMED_GUILD_NAME: &str = "Unclaimed";
 const UNCLAIMED_GUILD_PREFIX: &str = "NONE";
 
 pub async fn run(state: AppState) {
-    let mut interval = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
+    let mut interval = tokio::time::interval(territory_poll_interval());
+    let territory_url = wynncraft_territory_url();
     let mut cached_extra: HashMap<String, ExtraTerrInfo> = HashMap::new();
     let mut cached_colors: GuildColorMap = HashMap::new();
     let mut cached_colors_normalized: GuildColorMap = HashMap::new();
@@ -37,7 +38,7 @@ pub async fn run(state: AppState) {
     loop {
         interval.tick().await;
 
-        match fetch_territories(&state.http_client).await {
+        match fetch_territories(&state.http_client, &territory_url).await {
             Ok(mut new_map) => {
                 let mut supplemental_changed = false;
                 let cached_ingest_overrides = state.ingest_overrides.read().await.clone();
@@ -623,9 +624,9 @@ fn split_color(color: Option<(u8, u8, u8)>) -> (Option<i16>, Option<i16>, Option
     }
 }
 
-async fn fetch_territories(client: &reqwest::Client) -> Result<TerritoryMap, String> {
+async fn fetch_territories(client: &reqwest::Client, url: &str) -> Result<TerritoryMap, String> {
     let resp = client
-        .get(WYNNCRAFT_TERRITORY_URL)
+        .get(url)
         .send()
         .await
         .map_err(|e| format!("request failed: {e}"))?;

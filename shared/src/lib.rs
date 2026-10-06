@@ -8,6 +8,7 @@ pub mod season_rating;
 pub mod territory;
 pub mod tower;
 pub mod treasury;
+pub mod warcontroller;
 
 pub use claims::*;
 pub use colors::guild_color;
@@ -17,3 +18,4 @@ pub use map_intel::*;
 pub use season_rating::*;
 pub use territory::*;
 pub use treasury::TreasuryLevel;
+pub use warcontroller::*;

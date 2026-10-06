@@ -262,6 +262,19 @@ pub async fn resolve_requested_window(
     requested_season_id: Option<i32>,
 ) -> Result<Option<ResolvedSeasonWindow>, SeasonDataError> {
     let windows = list_resolved_windows(state).await?;
+    select_window(windows, requested_season_id, active_window_from_config()?)
+}
+
+/// Picks one window out of an already-resolved list.
+///
+/// Split out of `resolve_requested_window` so a caller that already holds the
+/// window list - `season_race` does - can select from it instead of resolving a
+/// second time, which cost another upstream fetch and two more DB queries.
+pub(crate) fn select_window(
+    windows: Vec<ResolvedSeasonWindow>,
+    requested_season_id: Option<i32>,
+    active: Option<ResolvedSeasonWindow>,
+) -> Result<Option<ResolvedSeasonWindow>, SeasonDataError> {
     if windows.is_empty() {
         return Ok(None);
     }
@@ -276,17 +289,14 @@ pub async fn resolve_requested_window(
         return Ok(window);
     }
 
-    Ok(select_default_window(windows, active_window_from_config()?))
+    Ok(select_default_window(windows, active))
 }
 
 pub async fn list_resolved_windows(
     state: &AppState,
 ) -> Result<Vec<ResolvedSeasonWindow>, SeasonDataError> {
     let active = active_window_from_config()?;
-    let api_windows = wynncraft_api::fetch_guild_seasons(&state.http_client)
-        .await
-        .map(api_season_windows)
-        .unwrap_or_default();
+    let api_windows = api_season_windows(wynncraft_api::cached_guild_seasons(state).await);
     let Some(pool) = state.db.as_ref() else {
         return Ok(merge_windows(Vec::new(), Vec::new(), active, api_windows));
     };
@@ -314,7 +324,7 @@ pub async fn list_resolved_windows(
     Ok(windows)
 }
 
-fn active_window_from_config() -> Result<Option<ResolvedSeasonWindow>, SeasonDataError> {
+pub(crate) fn active_window_from_config() -> Result<Option<ResolvedSeasonWindow>, SeasonDataError> {
     Ok(config::active_season_race_config()
         .map_err(|_| SeasonDataError::Internal)?
         .map(|active| ResolvedSeasonWindow {
@@ -524,8 +534,8 @@ impl ResolvedSeasonWindow {
 #[cfg(test)]
 mod tests {
     use super::{
-        ResolvedSeasonWindow, SeasonWindowSource, merge_windows, normalize_requested_guild_names,
-        select_default_window,
+        ResolvedSeasonWindow, SeasonDataError, SeasonWindowSource, merge_windows,
+        normalize_requested_guild_names, select_default_window, select_window,
     };
     use chrono::{DateTime, Utc};
 
@@ -748,6 +758,49 @@ mod tests {
                 "".to_string(),
             ]),
             vec!["sequoia".to_string(), "aequitas".to_string()]
+        );
+    }
+
+    fn window(season_id: i32) -> ResolvedSeasonWindow {
+        ResolvedSeasonWindow {
+            season_id,
+            label: None,
+            start_at: ts("2026-03-01T00:00:00Z"),
+            end_at: ts("2026-03-26T00:00:00Z"),
+            source: SeasonWindowSource::Inferred,
+            territory_holding_sr_per_hour: None,
+            sr_per_war: None,
+        }
+    }
+
+    #[test]
+    fn select_window_returns_none_for_an_empty_list() {
+        assert_eq!(select_window(Vec::new(), None, None), Ok(None));
+        assert_eq!(select_window(Vec::new(), Some(30), None), Ok(None));
+    }
+
+    #[test]
+    fn select_window_finds_the_requested_season() {
+        assert_eq!(
+            select_window(vec![window(29), window(30)], Some(29), None),
+            Ok(Some(window(29)))
+        );
+    }
+
+    #[test]
+    fn select_window_rejects_an_unknown_requested_season() {
+        assert_eq!(
+            select_window(vec![window(29), window(30)], Some(99), None),
+            Err(SeasonDataError::BadRequest)
+        );
+    }
+
+    #[test]
+    fn select_window_without_a_request_falls_back_to_the_default() {
+        let windows = vec![window(29), window(30)];
+        assert_eq!(
+            select_window(windows.clone(), None, None),
+            Ok(select_default_window(windows, None))
         );
     }
 }

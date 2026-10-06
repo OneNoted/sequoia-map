@@ -1,17 +1,24 @@
 [build]
 target = "index.html"
 dist = "dist"
-release = true
-
-[tools]
-tailwindcss = "4.2.0"
+locked = true
 
 [serve]
-addresses = ["0.0.0.0"]
+addresses = ["127.0.0.1"]
+port = 8081
 
 [watch]
-watch = ["src", "index.html", "input.css"]
+watch = ["src", "../shared/src", "../wasm/src", "../Cargo.toml", "../Cargo.lock", "index.html", "input.css", "public"]
 
 [[proxy]]
-backend = "http://localhost:3000/api/"
+backend = "http://127.0.0.1:3000/api/"
 rewrite = "/api/"
+
+# Claims pages are rendered by the API; their bundles come from the claims build.
+[[proxy]]
+backend = "http://127.0.0.1:3000/claims"
+rewrite = "/claims"
+
+[[proxy]]
+backend = "http://127.0.0.1:3000/claims-app/"
+rewrite = "/claims-app/"

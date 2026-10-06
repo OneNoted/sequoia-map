@@ -76,7 +76,7 @@ async fn fetch_history_at_with_abort(
 ) -> Result<HistorySnapshot, String> {
     let dt = chrono::DateTime::from_timestamp(timestamp_secs, 0).ok_or("invalid timestamp")?;
     let t = dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let url = format!("/api/history/at?t={}", t);
+    let url = format!("/api/history/at?t={t}");
 
     let resp = gloo_net::http::Request::get(&url)
         .abort_signal(abort_signal)
@@ -608,8 +608,7 @@ fn parse_history_time(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     // Accept PostgreSQL text format seen in history API: "YYYY-MM-DD HH:MM:SS.sss+00"
     let mut normalized = raw.replace(' ', "T");
     if normalized.len() >= 3 {
-        let tail = &normalized[normalized.len() - 3..];
-        let tail_bytes = tail.as_bytes();
+        let tail_bytes = &normalized.as_bytes()[normalized.len() - 3..];
         if (tail_bytes[0] == b'+' || tail_bytes[0] == b'-')
             && tail_bytes[1].is_ascii_digit()
             && tail_bytes[2].is_ascii_digit()
@@ -620,10 +619,6 @@ fn parse_history_time(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(&normalized)
         .ok()
         .map(|dt| dt.with_timezone(&chrono::Utc))
-}
-
-pub fn rekindled_world_release_secs() -> i64 {
-    REKINDLED_WORLD_RELEASE_SECS
 }
 
 pub fn timestamp_uses_legacy_geometry(timestamp_secs: i64) -> bool {
@@ -638,6 +633,27 @@ mod tests {
         BufferedUpdate {
             seq,
             changes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn history_time_accepts_rfc3339_and_postgres_offsets() {
+        let expected = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        for input in [
+            "2026-01-01T12:30:00Z",
+            "2026-01-01 12:30:00+00",
+            "2026-01-01 14:30:00+02",
+        ] {
+            assert_eq!(parse_history_time(input), Some(expected));
+        }
+    }
+
+    #[test]
+    fn history_time_rejects_malformed_unicode_without_panicking() {
+        for input in ["", "é", "🙂", "invalid🙂", "2026-01-01 12:30:00é"] {
+            assert_eq!(parse_history_time(input), None);
         }
     }
 

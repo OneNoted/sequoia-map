@@ -1,0 +1,181 @@
+[tools]
+rust = { version = "1.88.0", profile = "minimal", components = [
+  "clippy",
+  "rustfmt",
+], targets = [
+  "wasm32-unknown-unknown",
+] }
+"github:trunk-rs/trunk" = "0.21.14"
+"aqua:tailwindlabs/tailwindcss" = "4.2.0"
+"aqua:WebAssembly/binaryen" = "126"
+watchexec = "2.7.2"
+python = "3.13.12"
+uv = "0.12.10"
+
+[env]
+NO_COLOR = "true"
+CARGO_PROFILE_DEV_DEBUG = "0"
+
+[tasks.default]
+description = "List development tasks"
+run = "mise tasks"
+
+[tasks."db:start"]
+description = "Start persistent, loopback-only PostgreSQL in rootless Podman"
+run = "bash scripts/postgres.sh start"
+
+[tasks."db:stop"]
+description = "Stop local PostgreSQL (keep its data)"
+run = "bash scripts/postgres.sh stop"
+
+[tasks."db:status"]
+description = "Check local PostgreSQL readiness"
+run = "bash scripts/postgres.sh status"
+
+[tasks."db:url"]
+description = "Print the local development DATABASE_URL"
+run = "bash scripts/postgres.sh url"
+
+[tasks.server]
+description = "Watch and run the API on 127.0.0.1:3000"
+env.SEQUOIA_SERVER_BIND = "127.0.0.1:3000"
+env.MAP_DOMAIN = "http://127.0.0.1:8081"
+env.INTERNAL_INGEST_TOKEN = "{{env.INTERNAL_INGEST_TOKEN | default(value='local-sequoia-internal-token-1234567890')}}"
+run = '''
+set -eu
+if [ -z "${DATABASE_URL:-}" ]; then
+  mise run db:start
+  DATABASE_URL="$(bash scripts/postgres.sh url)"
+  export DATABASE_URL
+fi
+watchexec --restart --watch server --watch shared --watch Cargo.toml --watch Cargo.lock -- cargo run --locked -p sequoia-server
+'''
+
+[tasks.client]
+description = "Watch and serve the map on http://127.0.0.1:8081"
+dir = "client"
+run = "trunk serve"
+
+[tasks.claims]
+description = "Watch and serve claims on http://127.0.0.1:8082/claims/new/blank"
+dir = "claims-client"
+run = "trunk serve"
+
+[tasks.ingest]
+description = "Watch and run the Iris gateway on 127.0.0.1:3010"
+env.SEQUOIA_INGEST_BIND = "127.0.0.1:3010"
+env.SEQUOIA_INTERNAL_INGEST_TOKEN = "{{env.INTERNAL_INGEST_TOKEN | default(value='local-sequoia-internal-token-1234567890')}}"
+env.SEQUOIA_INGEST_DB_URL = "sqlite://{{config_root}}/.data/sequoia-ingest.db?mode=rwc"
+run = '''
+set -eu
+mkdir -p .data
+watchexec --restart --watch services/sequoia-ingest/src --watch services/sequoia-ingest/Cargo.toml --watch services/sequoia-ingest/Cargo.lock --watch shared -- cargo run --locked --manifest-path services/sequoia-ingest/Cargo.toml
+'''
+
+[tasks.dev]
+description = "Run map and API with hot reload"
+run = "mise run --jobs 2 server ::: client"
+
+[tasks."dev:full"]
+description = "Run map, claims, API and Iris gateway with hot reload"
+run = "mise run --jobs 4 server ::: client ::: claims ::: ingest"
+
+[tasks.fmt]
+description = "Format both Rust workspaces"
+run = [
+  "cargo fmt --all",
+  "cargo fmt --manifest-path services/sequoia-ingest/Cargo.toml",
+]
+
+[tasks."fmt:check"]
+description = "Check Rust formatting"
+run = [
+  "cargo fmt --all --check",
+  "cargo fmt --manifest-path services/sequoia-ingest/Cargo.toml --check",
+]
+
+[tasks.check]
+description = "Check all native crates and both browser targets"
+run = [
+  "cargo check --locked --workspace --all-targets",
+  "cargo check --locked -p sequoia-client -p sequoia-claims-client --target wasm32-unknown-unknown",
+  "cargo check --locked --manifest-path services/sequoia-ingest/Cargo.toml --all-targets",
+]
+
+[tasks.lint]
+description = "Run Clippy for native crates and browser targets"
+run = [
+  "cargo clippy --locked --workspace --all-targets -- -D warnings",
+  "cargo clippy --locked -p sequoia-client -p sequoia-claims-client --target wasm32-unknown-unknown -- -D warnings",
+  "cargo clippy --locked --manifest-path services/sequoia-ingest/Cargo.toml --all-targets -- -D warnings",
+]
+
+[tasks.test]
+description = "Run Rust tests with a separate PostgreSQL test database"
+run = '''
+set -eu
+DATABASE_URL="${TEST_DATABASE_URL:-$(bash scripts/postgres.sh test-url)}"
+export DATABASE_URL
+cargo test --locked --workspace
+cargo test --locked --manifest-path services/sequoia-ingest/Cargo.toml
+'''
+
+[tasks."build:client"]
+description = "Build the release map client"
+dir = "client"
+run = "trunk build --release --locked"
+
+[tasks."build:claims"]
+description = "Build the release claims client"
+dir = "claims-client"
+run = "trunk build --release --locked"
+
+[tasks."build:server"]
+description = "Build the release API server"
+run = "cargo build --release --locked -p sequoia-server"
+
+[tasks."build:ingest"]
+description = "Build the release Iris gateway"
+run = "cargo build --release --locked --manifest-path services/sequoia-ingest/Cargo.toml"
+
+[tasks."size:client"]
+description = "Check compressed release WASM against the client size budget"
+depends = ["build:client"]
+run = "uv run --script scripts/check-wasm-size.py"
+
+[tasks.verify]
+description = "Run the Rust CI checks, tests and browser release builds"
+run = [
+  { task = "fmt:check" },
+  { task = "lint" },
+  { task = "test" },
+  { task = "size:client" },
+  { task = "build:claims" },
+]
+
+[tasks."iris:test"]
+description = "Run Fabric reporter tests"
+dir = "mods/wynn-iris"
+tools.java = "temurin-21.0.11+10.0.LTS"
+run = "./gradlew --no-daemon test"
+
+[tasks."iris:build"]
+description = "Build a Fabric reporter profile (default 1.21.11)"
+dir = "mods/wynn-iris"
+tools.java = "temurin-21.0.11+10.0.LTS"
+usage = 'arg "[profile]" default="1.21.11"'
+run = './gradlew --no-daemon clean build -Pminecraft_profile="$usage_profile"'
+
+[tasks."iris:dev"]
+description = "Launch the Fabric development client"
+dir = "mods/wynn-iris"
+tools.java = "temurin-21.0.11+10.0.LTS"
+run = "./gradlew runClient"
+
+[tasks."smoke:install"]
+description = "Install Chromium for the browser smoke test"
+run = "uv run --script scripts/smoke-browser.py --install"
+
+[tasks.smoke]
+description = "Smoke-test the running dev:full stack in Chromium"
+run = "uv run --script scripts/smoke-browser.py"

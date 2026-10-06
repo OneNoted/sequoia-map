@@ -6,12 +6,12 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{EventSource, MessageEvent};
 
-use sequoia_shared::TerritoryEvent;
+use sequoia_shared::{TerritoryEvent, WarControllerState};
 
 use crate::app::{
     BufferedUpdate, CurrentMode, HistoryBufferModeActive, HistoryBufferSizeMax,
     HistoryBufferedUpdates, LastLiveSeq, LiveResyncInFlight, MapMode, NeedsLiveResync,
-    SseSeqGapDetectedCount,
+    SseSeqGapDetectedCount, WarControllerData,
 };
 use crate::history;
 use crate::territory::{ClientTerritoryMap, apply_changes, apply_runtime_updates, from_snapshot};
@@ -34,6 +34,7 @@ struct SseConnection {
     snapshot_handler: Closure<dyn Fn(MessageEvent)>,
     update_handler: Closure<dyn Fn(MessageEvent)>,
     runtime_update_handler: Closure<dyn Fn(MessageEvent)>,
+    warcontroller_handler: Closure<dyn Fn(MessageEvent)>,
 }
 
 struct ReconnectWatchdog {
@@ -64,6 +65,12 @@ impl SseConnection {
             .remove_event_listener_with_callback(
                 "runtime_update",
                 self.runtime_update_handler.as_ref().unchecked_ref(),
+            )
+            .ok();
+        self.es
+            .remove_event_listener_with_callback(
+                "warcontroller",
+                self.warcontroller_handler.as_ref().unchecked_ref(),
             )
             .ok();
         self.es.close();
@@ -276,6 +283,8 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
         leptos::prelude::expect_context::<LiveResyncInFlight>();
     let SseSeqGapDetectedCount(sse_seq_gap_detected_count) =
         leptos::prelude::expect_context::<SseSeqGapDetectedCount>();
+    let WarControllerData(warcontroller_state) =
+        leptos::prelude::expect_context::<WarControllerData>();
 
     // On open
     let conn = connection;
@@ -325,11 +334,8 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
             && seq < last_seq
         {
             web_sys::console::info_1(
-                &format!(
-                    "stale_sse_snapshot_ignored (last_seq={}, snapshot_seq={})",
-                    last_seq, seq
-                )
-                .into(),
+                &format!("stale_sse_snapshot_ignored (last_seq={last_seq}, snapshot_seq={seq})")
+                    .into(),
             );
             return;
         }
@@ -408,8 +414,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
                 });
                 web_sys::console::warn_1(
                     &format!(
-                        "sse_seq_gap_detected_count={} (last_seq={}, incoming_seq={})",
-                        gap_count, last_seq, seq
+                        "sse_seq_gap_detected_count={gap_count} (last_seq={last_seq}, incoming_seq={seq})"
                     )
                     .into(),
                 );
@@ -487,8 +492,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
                 });
                 web_sys::console::warn_1(
                     &format!(
-                        "sse_seq_gap_detected_count={} (last_seq={}, incoming_seq={})",
-                        gap_count, last_seq, seq
+                        "sse_seq_gap_detected_count={gap_count} (last_seq={last_seq}, incoming_seq={seq})"
                     )
                     .into(),
                 );
@@ -515,6 +519,37 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
     )
     .ok();
 
+    // War controller state rides this connection but is outside the territory sequence
+    // stream, so it must not touch last_live_seq or needs_live_resync.
+    let warcontroller_handler = Closure::<dyn Fn(MessageEvent)>::new(move |e: MessageEvent| {
+        let Some(data) = e.data().as_string() else {
+            return;
+        };
+        match serde_json::from_str::<WarControllerState>(&data) {
+            // Seeds, lag replays and live frames all arrive here and can interleave, so an
+            // older payload must never overwrite a newer one.
+            // `maybe_update` so a dropped frame does not notify: the feed re-broadcasts often
+            // enough that a needless wake would ripple through every war memo.
+            Ok(state) => warcontroller_state.maybe_update(|current| {
+                if !state.supersedes(current.as_ref()) {
+                    return false;
+                }
+                *current = Some(state);
+                true
+            }),
+            Err(error) => {
+                web_sys::console::warn_1(
+                    &format!("war controller event decode failed: {error}").into(),
+                );
+            }
+        }
+    });
+    es.add_event_listener_with_callback(
+        "warcontroller",
+        warcontroller_handler.as_ref().unchecked_ref(),
+    )
+    .ok();
+
     // On error
     let conn = connection;
     let on_error = Closure::<dyn Fn()>::new(move || {
@@ -537,6 +572,7 @@ pub fn connect(territories: RwSignal<ClientTerritoryMap>, connection: RwSignal<C
             snapshot_handler,
             update_handler,
             runtime_update_handler,
+            warcontroller_handler,
         });
     });
 }

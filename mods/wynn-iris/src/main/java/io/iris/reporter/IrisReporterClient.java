@@ -251,7 +251,11 @@ public final class IrisReporterClient implements ClientModInitializer {
 
     private static int showPrivacy() {
         sendSection("Privacy");
-        sendKeyValue("source", Text.literal("advancement/map text only (public territory data)").formatted(Formatting.GREEN));
+        sendKeyValue("source", Text.literal("territory observations and visible guild-menu season hints").formatted(Formatting.GREEN));
+        sendKeyValue("authentication", Text.literal("account UUID, username and session token are sent to the configured gateway")
+            .formatted(Formatting.YELLOW));
+        sendKeyValue("credentials", Text.literal("use only a trusted gateway; do not share config/wynn-iris.json")
+            .formatted(Formatting.YELLOW));
         sendKeyValue("not_shared_default", Text.literal("legacy chat-derived signals and route metadata remain off unless enabled").formatted(Formatting.YELLOW));
         sendKeyValue("extras", Text.literal("optional legacy scrapes are sent as runtime metadata only and are ignored by map logic")
             .formatted(Formatting.YELLOW));

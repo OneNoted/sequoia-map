@@ -415,7 +415,7 @@ fn deduplicate_scalar_points(points: &mut Vec<ScalarPointInternal>) {
     *points = deduped;
 }
 
-fn weighted_median(values: &mut Vec<(f64, f64)>) -> Option<f64> {
+fn weighted_median(values: &mut [(f64, f64)]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
@@ -435,7 +435,7 @@ fn weighted_median(values: &mut Vec<(f64, f64)>) -> Option<f64> {
     values.last().map(|(value, _)| *value)
 }
 
-fn median(values: &mut Vec<f64>) -> Option<f64> {
+fn median(values: &mut [f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
@@ -569,12 +569,16 @@ mod tests {
         let window_a = season_window(29, "2026-02-27T00:00:00Z", "2026-03-27T00:00:00Z");
         let window_b = season_window(28, "2026-01-27T00:00:00Z", "2026-02-27T00:00:00Z");
         let mut curves = HashMap::new();
-        let mut curve_a = SeasonScalarCurve::default();
-        curve_a.bucket_values = vec![Some(1.0); PROGRESS_BUCKETS];
+        let mut curve_a = SeasonScalarCurve {
+            bucket_values: vec![Some(1.0); PROGRESS_BUCKETS],
+            ..Default::default()
+        };
         curve_a.bucket_values[bucket_index(0.2)] = Some(1.5);
         curve_a.bucket_values[bucket_index(0.6)] = Some(3.0);
-        let mut curve_b = SeasonScalarCurve::default();
-        curve_b.bucket_values = vec![Some(1.0); PROGRESS_BUCKETS];
+        let mut curve_b = SeasonScalarCurve {
+            bucket_values: vec![Some(1.0); PROGRESS_BUCKETS],
+            ..Default::default()
+        };
         curve_b.bucket_values[bucket_index(0.3)] = Some(1.5);
         curve_b.bucket_values[bucket_index(0.8)] = Some(3.0);
         curves.insert(29, curve_a);

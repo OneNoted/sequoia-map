@@ -1,2 +1,8 @@
-﻿license: Public Domain
-link: https://www.fontspace.com/minecraft-font-f28180
+minecraft-*: Public Domain
+  link: https://www.fontspace.com/minecraft-font-f28180
+  The .otf files feed the WebGL glyph atlas; the .woff2 files are the
+  re-hinted faces seqwawa.com serves, used for the site navbar so the pixel
+  stems rasterize identically across the two sites.
+
+inter-variable.woff2: SIL Open Font License 1.1, see OFL-Inter.txt
+  Copied from sequoia-web/frontend/static/assets/fonts.

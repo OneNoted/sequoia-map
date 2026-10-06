@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 sequoia-shared = { path = "../shared" }
+sequoia-map-engine = { path = "../wasm" }
 leptos = { version = "0.7", default-features = false, features = ["csr"] }
 web-sys = { version = "0.3", features = [
     "AbortController",
