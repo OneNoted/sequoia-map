@@ -181,13 +181,17 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         }
     });
 
-    // Everything else only needs a repaint; the scene planner decides what is stale.
+    // Everything else only needs a repaint; the scene planner decides what is stale. The
+    // animation tick never reaches the planner, so its frames only advance shader time.
     Effect::new({
         let scheduler = scheduler.clone();
         move || {
             map.camera.track();
             inputs.settings.track();
             inputs.clock_secs.track();
+            if let Some(tick) = inputs.animation_tick {
+                tick.track();
+            }
             inputs.minimap_inset.track();
             map.tiles.track();
             scheduler.mark_dirty();

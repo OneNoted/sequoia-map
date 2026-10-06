@@ -40,6 +40,10 @@ pub struct MapInputs {
     pub settings: Signal<RenderSettings>,
     /// Seconds territory timers count against: now, or a history timestamp.
     pub clock_secs: Signal<i64>,
+    /// A wall-clock tick that repaints time-animated effects, such as cooldown pulses,
+    /// without rebuilding any cached layer. Needed when `clock_secs` can hold still while
+    /// cooldowns are on screen, as in paused history; `None` when nothing animates.
+    pub animation_tick: Option<Signal<i64>>,
     pub heat: Option<HeatLayer>,
     /// Territories to outline as being at war.
     pub wars: Option<Signal<HashSet<String>>>,

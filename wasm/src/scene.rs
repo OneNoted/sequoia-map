@@ -359,6 +359,26 @@ mod tests {
     }
 
     #[test]
+    fn repaints_at_a_paused_history_clock_reuse_every_layer() {
+        // Animation-only repaints arrive every second while the history clock holds still.
+        let mut planner = settled(0.5, 5_000, 5_001);
+        for _ in 0..10 {
+            assert_eq!(
+                planner.plan(&at(0.5), &settings(), 5_000, false),
+                Rebuild::NONE
+            );
+        }
+        // Scrubbing the timeline moves the clock and refreshes the timers.
+        assert_eq!(
+            planner.plan(&at(0.5), &settings(), 5_030, false),
+            only(|r| {
+                r.dynamic_labels = true;
+                r.icons = true;
+            })
+        );
+    }
+
+    #[test]
     fn stepping_back_in_time_rebuilds_timers() {
         let mut planner = settled(0.5, 1_000, i64::MAX);
         assert_eq!(
