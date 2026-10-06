@@ -1,23 +1,14 @@
 mod app;
-mod assets;
 mod auth;
-mod canvas;
-#[cfg(target_arch = "wasm32")]
-mod gpu;
 mod heat;
 mod history;
-mod icons;
 mod map_intel;
 mod navbar;
 mod playback;
 mod players;
-mod render_loop;
-mod renderer;
 mod season_scalar;
 mod sidebar;
 mod site_nav;
-mod sse;
-mod tiles;
 mod timeline;
 mod tower;
 mod ui_icons;
@@ -25,13 +16,7 @@ mod war_stats;
 mod warcontroller;
 
 // Shared map math and state helpers, also used by the other browser client.
-#[cfg(target_arch = "wasm32")]
-pub(crate) use sequoia_map_engine::{claim_labels, label_layout, overlay_sizing};
-pub(crate) use sequoia_map_engine::{colors, defense, spatial, territory, time_format, viewport};
-
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "gpu/native.rs"]
-mod gpu;
+pub(crate) use sequoia_map_engine::{colors, defense, territory, time_format, viewport};
 
 use leptos::mount::mount_to;
 use leptos::prelude::*;

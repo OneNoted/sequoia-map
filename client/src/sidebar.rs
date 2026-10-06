@@ -31,18 +31,17 @@ use crate::app::{
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
     ShowSettings, ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, SidebarIndex, SidebarItems,
     SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
-    WarFeedVisible, canvas_dimensions, clamp_connection_opacity_scale,
-    clamp_connection_thickness_scale, clamp_label_scale_group, clamp_label_scale_master,
-    clamp_player_head_size,
+    WarFeedVisible, clamp_connection_opacity_scale, clamp_connection_thickness_scale,
+    clamp_label_scale_group, clamp_label_scale_master, clamp_player_head_size,
 };
 use crate::colors::rgba_css;
 use crate::defense::defense_tier_display;
 use crate::history;
 use crate::season_scalar::{ScalarSource, effective_scalar};
-use crate::sse::ConnectionStatus;
 use crate::territory::ClientTerritoryMap;
 use crate::tower::TowerCalculator;
-use crate::viewport::Viewport;
+use sequoia_browser_map::BrowserMap;
+use sequoia_browser_map::live_feed::ConnectionStatus;
 
 /// Build list of (label, formatted_value, icon_name) for non-zero resources.
 fn build_resource_items(res: &Resources) -> Vec<(&'static str, String, &'static str)> {
@@ -1192,7 +1191,7 @@ fn SearchResults() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let Selected(selected) = expect_context();
     let DetailReturnGuild(detail_return_guild) = expect_context();
-    let viewport: RwSignal<Viewport> = expect_context();
+    let camera = expect_context::<BrowserMap>().camera();
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
 
@@ -1259,18 +1258,7 @@ fn SearchResults() -> impl IntoView {
                             selected.set(Some(name_click.clone()));
                             let map = territories.get_untracked();
                             if let Some(ct) = map.get(&name_click) {
-                                let loc = &ct.territory.location;
-                                let (cw, ch) = canvas_dimensions();
-                                viewport.update(|vp| {
-                                    vp.fit_bounds(
-                                        loc.left() as f64 - 200.0,
-                                        loc.top() as f64 - 200.0,
-                                        loc.right() as f64 + 200.0,
-                                        loc.bottom() as f64 + 200.0,
-                                        cw,
-                                        ch,
-                                    );
-                                });
+                                camera.focus(&ct.territory.location);
                             }
                         };
                         view! {
@@ -1704,7 +1692,7 @@ fn GuildPanel() -> impl IntoView {
     let SidebarTransient(sidebar_transient) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let viewport: RwSignal<Viewport> = expect_context();
+    let camera = expect_context::<BrowserMap>().camera();
     let tick: RwSignal<i64> = expect_context();
 
     let guild_detail: RwSignal<Option<serde_json::Value>> = RwSignal::new(None);
@@ -2034,18 +2022,7 @@ fn GuildPanel() -> impl IntoView {
                                         }
                                         let map = territories.get_untracked();
                                         if let Some(ct) = map.get(&tn_inner) {
-                                            let loc = &ct.territory.location;
-                                            let (cw, ch) = canvas_dimensions();
-                                            viewport.update(|vp| {
-                                                vp.fit_bounds(
-                                                    loc.left() as f64 - 200.0,
-                                                    loc.top() as f64 - 200.0,
-                                                    loc.right() as f64 + 200.0,
-                                                    loc.bottom() as f64 + 200.0,
-                                                    cw,
-                                                    ch,
-                                                );
-                                            });
+                                            camera.focus(&ct.territory.location);
                                         }
                                     };
                                     let swatch = format!(

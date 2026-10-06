@@ -130,14 +130,6 @@ pub(crate) struct ConnectionOpacityScale(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct ConnectionThicknessScale(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
-pub(crate) struct ConnectionZoomFadeStart(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct ConnectionZoomFadeEnd(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct SuppressCooldownVisuals(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct FillAlphaBoost(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
 pub(crate) struct ResourceHighlight(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct DefenseHighlight(pub RwSignal<bool>);
@@ -254,6 +246,9 @@ pub(crate) struct HeatWindowLabel(pub RwSignal<String>);
 pub(crate) struct HeatMetaState(pub RwSignal<Option<HistoryHeatMeta>>);
 
 pub(crate) const MOBILE_BREAKPOINT: f64 = 768.0;
+/// Gap below the minimap, raised in history mode to clear the timeline.
+const MINIMAP_LIVE_INSET: f32 = 16.0;
+const MINIMAP_HISTORY_INSET: f32 = 68.0;
 /// Longest wait between website session probe attempts.
 ///
 /// Doubling from a second, then held here for as long as the probe keeps failing. The loop
@@ -335,13 +330,7 @@ pub(crate) struct HistoryBufferModeActive(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct NeedsLiveResync(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
-pub(crate) struct LiveResyncInFlight(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
 pub(crate) struct LiveHandoffResyncCount(pub RwSignal<u64>);
-#[derive(Clone, Copy)]
-pub(crate) struct SseSeqGapDetectedCount(pub RwSignal<u64>);
-#[derive(Clone, Copy)]
-pub(crate) struct HistoryBufferSizeMax(pub RwSignal<usize>);
 #[derive(Clone, Copy)]
 pub(crate) struct LiveSeasonScalarSample(pub RwSignal<Option<SeasonScalarSample>>);
 #[derive(Clone, Copy)]
@@ -798,23 +787,22 @@ fn load_settings_v2() -> SettingsV2 {
     SettingsV2::default()
 }
 
-use crate::canvas::MapCanvas;
 use crate::colors::rgba_css;
 use crate::defense::{DEFENSE_TIERS, defense_tier_display};
 use crate::heat::{self, HeatFetchInput};
 use crate::history;
-use crate::icons::{self, ResourceAtlas};
 use crate::map_intel::MapIntelOverlay;
 use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
-use crate::sse::{self, ConnectionStatus};
 use crate::territory::{ClientTerritoryMap, from_snapshot};
-use crate::tiles::{self, LoadedTile};
 use crate::time_format::format_hms;
 use crate::timeline::Timeline;
 use crate::viewport::Viewport;
 use crate::warcontroller;
+use sequoia_browser_map::live_feed::{self, LiveFeed};
+use sequoia_browser_map::{BrowserMap, HeatLayer, MapCanvas, MapEvent, MapInputs};
+use sequoia_map_engine::settings::{LabelScales, RenderSettings};
 
 /// Format a resource value for compact display (e.g. 9000 -> "9.0k").
 fn format_resource_compact(val: i32) -> String {
@@ -897,14 +885,8 @@ pub fn MapPage() -> impl IntoView {
     let navigate = use_navigate();
     // Global signals
     let territories: RwSignal<ClientTerritoryMap> = RwSignal::new(Default::default());
-    let viewport: RwSignal<Viewport> = RwSignal::new(Viewport::default());
-    let hovered: RwSignal<Option<String>> = RwSignal::new(None);
     let selected: RwSignal<Option<String>> = RwSignal::new(None);
     let search_query: RwSignal<String> = RwSignal::new(String::new());
-    let connection: RwSignal<ConnectionStatus> = RwSignal::new(ConnectionStatus::Connecting);
-    let mouse_pos: RwSignal<(f64, f64)> = RwSignal::new((0.0, 0.0));
-    let loaded_tiles: RwSignal<Vec<LoadedTile>> = RwSignal::new(Vec::new());
-    let loaded_icons: RwSignal<Option<ResourceAtlas>> = RwSignal::new(None);
     // Epoch-second tick — drives cooldown countdown updates across canvas, tooltip, sidebar
     let tick: RwSignal<i64> = RwSignal::new(chrono::Utc::now().timestamp());
     let saved = load_settings_v2();
@@ -980,7 +962,6 @@ pub fn MapPage() -> impl IntoView {
     let deferred_boot_timer_set: RwSignal<bool> = RwSignal::new(false);
     let live_bootstrap_started: RwSignal<bool> = RwSignal::new(false);
     let tile_fetch_scheduled: RwSignal<bool> = RwSignal::new(false);
-    let icons_loaded: RwSignal<bool> = RwSignal::new(false);
     let loading_shell_removed: RwSignal<bool> = RwSignal::new(false);
 
     // Mobile detection
@@ -1017,14 +998,7 @@ pub fn MapPage() -> impl IntoView {
     let history_legacy_geometry_active: RwSignal<bool> = RwSignal::new(false);
     let history_probe_nonce: RwSignal<u64> = RwSignal::new(0);
     let history_fetch_nonce: RwSignal<u64> = RwSignal::new(0);
-    let last_live_seq: RwSignal<Option<u64>> = RwSignal::new(None);
-    let history_buffered_updates: RwSignal<Vec<BufferedUpdate>> = RwSignal::new(Vec::new());
-    let history_buffer_mode_active: RwSignal<bool> = RwSignal::new(false);
-    let needs_live_resync: RwSignal<bool> = RwSignal::new(false);
-    let live_resync_in_flight: RwSignal<bool> = RwSignal::new(false);
     let live_handoff_resync_count: RwSignal<u64> = RwSignal::new(0);
-    let sse_seq_gap_detected_count: RwSignal<u64> = RwSignal::new(0);
-    let history_buffer_size_max: RwSignal<usize> = RwSignal::new(0);
     let live_season_scalar_sample: RwSignal<Option<SeasonScalarSample>> = RwSignal::new(None);
     let history_season_scalar_sample: RwSignal<Option<SeasonScalarSample>> = RwSignal::new(None);
     let history_season_leaderboard: RwSignal<Option<Vec<HistoryGuildSrEntry>>> =
@@ -1056,16 +1030,97 @@ pub fn MapPage() -> impl IntoView {
     let territory_geometry: StoredValue<TerritoryGeometryMap> = StoredValue::new(HashMap::new());
     let guild_colors: StoredValue<GuildColorMap> = StoredValue::new(HashMap::new());
 
+    let feed = LiveFeed {
+        war_controller: Some(warcontroller_state),
+        ..LiveFeed::new(
+            territories,
+            Signal::derive(move || map_mode.get() == MapMode::History),
+        )
+    };
+    let LiveFeed {
+        connection,
+        last_live_seq,
+        buffered_updates: history_buffered_updates,
+        buffer_mode_active: history_buffer_mode_active,
+        needs_resync: needs_live_resync,
+        ..
+    } = feed;
+
+    let render_settings = Memo::new(move |_| RenderSettings {
+        thick_cooldown_borders: thick_cooldown_borders.get(),
+        suppress_cooldown_visuals: false,
+        resource_highlight: resource_highlight.get(),
+        defense_highlight: defense_highlight.get(),
+        fill_alpha_boost: 0.0,
+        show_connections: show_connections.get(),
+        bold_connections: bold_connections.get(),
+        connection_opacity_scale: connection_opacity_scale.get() as f32,
+        connection_thickness_scale: connection_thickness_scale.get() as f32,
+        connection_zoom_fade: (0.15, 0.45),
+        show_names: show_names.get(),
+        abbreviate_names: abbreviate_names.get(),
+        show_claim_labels: show_claim_labels.get(),
+        show_far_zoom_territory_tags: show_far_zoom_territory_tags.get(),
+        name_color: name_color.get(),
+        tag_color: tag_color.get(),
+        readable_font: readable_font.get(),
+        show_countdown: show_countdown.get(),
+        granular_map_time: show_granular_map_time.get(),
+        compound_map_time: show_compound_map_time.get(),
+        show_resource_icons: show_resource_icons.get(),
+        show_territory_ornaments: show_territory_ornaments.get(),
+        label_scales: LabelScales {
+            master: label_scale_master.get() as f32,
+            static_tag: label_scale_static.get() as f32,
+            static_name: label_scale_static_name.get() as f32,
+            dynamic: label_scale_dynamic.get() as f32,
+            icons: label_scale_icons.get() as f32,
+        },
+    });
+    // Timers count against the history timestamp while replaying the past.
+    let map_clock = Memo::new(move |_| match map_mode.get() {
+        MapMode::History => history_timestamp.get().unwrap_or_else(|| tick.get()),
+        MapMode::Live => tick.get(),
+    });
+    // The war feed is live-only, so replaying history must not paint today's wars onto a
+    // past snapshot.
+    let war_outlines = Memo::new(move |_| match map_mode.get() {
+        MapMode::History => HashSet::new(),
+        MapMode::Live => territories_in_war.get(),
+    });
+    let minimap_inset = Memo::new(move |_| {
+        (!is_mobile.get() && show_minimap.get()).then_some(match map_mode.get() {
+            MapMode::History => MINIMAP_HISTORY_INSET,
+            MapMode::Live => MINIMAP_LIVE_INSET,
+        })
+    });
+    let map = BrowserMap::new(
+        MapInputs {
+            territories: territories.into(),
+            selected: selected.into(),
+            settings: render_settings.into(),
+            clock_secs: map_clock.into(),
+            heat: Some(HeatLayer {
+                enabled: heat_mode_enabled.into(),
+                take_counts: heat_entries_by_territory.into(),
+                max_take_count: heat_max_take_count.into(),
+            }),
+            wars: Some(war_outlines.into()),
+            minimap_inset: minimap_inset.into(),
+            edit: Signal::stored(Default::default()),
+        },
+        Viewport::default(),
+    );
+    let camera = map.camera();
+    let hovered = map.hovered();
+
     // Provide via context so children can access
     provide_context(territories);
-    provide_context(viewport);
+    provide_context(map);
     provide_context(Hovered(hovered));
     provide_context(Selected(selected));
     provide_context(search_query);
     provide_context(connection);
-    provide_context(mouse_pos);
-    provide_context(loaded_tiles);
-    provide_context(loaded_icons);
     provide_context(tick);
     provide_context(show_connections);
     provide_context(AbbreviateNames(abbreviate_names));
@@ -1079,10 +1134,6 @@ pub fn MapPage() -> impl IntoView {
     provide_context(BoldConnections(bold_connections));
     provide_context(ConnectionOpacityScale(connection_opacity_scale));
     provide_context(ConnectionThicknessScale(connection_thickness_scale));
-    provide_context(ConnectionZoomFadeStart(RwSignal::new(0.15)));
-    provide_context(ConnectionZoomFadeEnd(RwSignal::new(0.45)));
-    provide_context(SuppressCooldownVisuals(RwSignal::new(false)));
-    provide_context(FillAlphaBoost(RwSignal::new(0.0)));
     provide_context(ResourceHighlight(resource_highlight));
     provide_context(DefenseHighlight(defense_highlight));
     provide_context(MapIntelModeEnabled(map_intel_enabled));
@@ -1129,10 +1180,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(HistoryBufferedUpdates(history_buffered_updates));
     provide_context(HistoryBufferModeActive(history_buffer_mode_active));
     provide_context(NeedsLiveResync(needs_live_resync));
-    provide_context(LiveResyncInFlight(live_resync_in_flight));
     provide_context(LiveHandoffResyncCount(live_handoff_resync_count));
-    provide_context(SseSeqGapDetectedCount(sse_seq_gap_detected_count));
-    provide_context(HistoryBufferSizeMax(history_buffer_size_max));
     provide_context(LiveSeasonScalarSample(live_season_scalar_sample));
     provide_context(WarControllerData(warcontroller_state));
     provide_context(TerritoriesInWar(territories_in_war));
@@ -1933,7 +1981,7 @@ pub fn MapPage() -> impl IntoView {
         live_bootstrap_started.set(true);
 
         wasm_bindgen_futures::spawn_local(async move {
-            match history::fetch_live_state().await {
+            match live_feed::fetch_live_state().await {
                 Ok(live_state) => {
                     if map_mode.get_untracked() != MapMode::Live {
                         return;
@@ -1965,9 +2013,9 @@ pub fn MapPage() -> impl IntoView {
 
     // Connect to SSE on mount
     Effect::new(move || {
-        sse::connect(territories, connection);
+        live_feed::connect(feed);
         on_cleanup(|| {
-            sse::disconnect();
+            live_feed::disconnect();
         });
     });
 
@@ -2024,20 +2072,7 @@ pub fn MapPage() -> impl IntoView {
             return;
         }
         tile_fetch_scheduled.set(true);
-
-        let (canvas_w, canvas_h) = canvas_dimensions();
-        let context = tiles::TileFetchContext::new(viewport.get_untracked(), canvas_w, canvas_h);
-        tiles::fetch_tiles(loaded_tiles, context);
-    });
-
-    // Lazy-load the icon atlas only when resource icons are enabled.
-    Effect::new(move || {
-        if !deferred_boot_ready.get() || !show_resource_icons.get() || icons_loaded.get_untracked()
-        {
-            return;
-        }
-        icons_loaded.set(true);
-        icons::load_resource_atlas(loaded_icons);
+        map.load_tiles();
     });
 
     // Start playback engine (runs continuously, only active when playing)
@@ -2250,23 +2285,25 @@ pub fn MapPage() -> impl IntoView {
                         }
                     }
                     "r" | "0" => {
-                        viewport.update(|vp| {
-                            let territories = territories.get_untracked();
-                            if territories.is_empty() {
-                                return;
-                            }
-                            let (mut min_x, mut min_y, mut max_x, mut max_y) =
-                                (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-                            for ct in territories.values() {
+                        let bounds = territories.with_untracked(|territories| {
+                            territories.values().fold(None, |bounds, ct| {
                                 let loc = &ct.territory.location;
-                                min_x = min_x.min(loc.left() as f64);
-                                min_y = min_y.min(loc.top() as f64);
-                                max_x = max_x.max(loc.right() as f64);
-                                max_y = max_y.max(loc.bottom() as f64);
-                            }
-                            let (cw, ch) = canvas_dimensions();
-                            vp.fit_bounds(min_x, min_y, max_x, max_y, cw, ch);
+                                let (left, top) = (loc.left() as f64, loc.top() as f64);
+                                let (right, bottom) = (loc.right() as f64, loc.bottom() as f64);
+                                Some(match bounds {
+                                    None => (left, top, right, bottom),
+                                    Some((min_x, min_y, max_x, max_y)) => (
+                                        f64::min(min_x, left),
+                                        f64::min(min_y, top),
+                                        f64::max(max_x, right),
+                                        f64::max(max_y, bottom),
+                                    ),
+                                })
+                            })
                         });
+                        if let Some(bounds) = bounds {
+                            camera.fit(bounds);
+                        }
                     }
                     "j" | "ArrowDown" => {
                         e.prevent_default();
@@ -2293,18 +2330,7 @@ pub fn MapPage() -> impl IntoView {
                                 detail_return_guild.set(None);
                                 selected.set(Some(name.clone()));
                                 if let Some(ct) = map.get(name) {
-                                    let loc = &ct.territory.location;
-                                    let (cw, ch) = canvas_dimensions();
-                                    viewport.update(|vp| {
-                                        vp.fit_bounds(
-                                            loc.left() as f64 - 200.0,
-                                            loc.top() as f64 - 200.0,
-                                            loc.right() as f64 + 200.0,
-                                            loc.bottom() as f64 + 200.0,
-                                            cw,
-                                            ch,
-                                        );
-                                    });
+                                    camera.focus(&ct.territory.location);
                                 }
                             } else {
                                 // Guild name (from leaderboard) — open guild panel
@@ -2319,21 +2345,19 @@ pub fn MapPage() -> impl IntoView {
                     }
                     "ArrowLeft" => {
                         e.prevent_default();
-                        viewport.update(|vp| vp.pan(50.0 / vp.scale, 0.0));
+                        camera.update(|vp| vp.pan(50.0 / vp.scale, 0.0));
                     }
                     "ArrowRight" => {
                         e.prevent_default();
-                        viewport.update(|vp| vp.pan(-50.0 / vp.scale, 0.0));
+                        camera.update(|vp| vp.pan(-50.0 / vp.scale, 0.0));
                     }
                     "+" | "=" => {
                         e.prevent_default();
-                        let (cw, ch) = canvas_dimensions();
-                        viewport.update(|vp| vp.zoom_at(-120.0, cw / 2.0, ch / 2.0));
+                        camera.zoom_at_center(-120.0);
                     }
                     "-" => {
                         e.prevent_default();
-                        let (cw, ch) = canvas_dimensions();
-                        viewport.update(|vp| vp.zoom_at(120.0, cw / 2.0, ch / 2.0));
+                        camera.zoom_at_center(120.0);
                     }
                     _ => {}
                 }
@@ -2376,10 +2400,41 @@ pub fn MapPage() -> impl IntoView {
         });
     }
 
+    let on_map_event = move |event: MapEvent| match event {
+        MapEvent::Hover(territory) => {
+            if is_mobile.get_untracked() {
+                peek_territory.set(territory);
+            }
+        }
+        MapEvent::Tap { territory, .. } => {
+            if territory.is_some() {
+                show_settings.set(false);
+                if !sidebar_open.get_untracked() {
+                    sidebar_open.set(true);
+                    sidebar_transient.set(true);
+                }
+            } else if sidebar_transient.get_untracked() {
+                sidebar_open.set(false);
+                sidebar_transient.set(false);
+            }
+            detail_return_guild.set(None);
+            selected.set(territory.clone());
+            if is_mobile.get_untracked() {
+                peek_territory.set(territory);
+            }
+        }
+        // The live map has no edit tools.
+        MapEvent::Stroke(_)
+        | MapEvent::Pick { .. }
+        | MapEvent::BoxSelect { .. }
+        | MapEvent::SelectTap { .. } => {}
+    };
+
     view! {
         <div style="width: 100%; height: 100%; position: relative;">
             <div style="width: 100%; height: 100%; position: relative; overflow: hidden; background: var(--bg-page);">
-                <MapCanvas />
+                <MapCanvas map on_event=on_map_event />
+                <HeatLegend />
                 <SiteNavbar />
                 // Minimap backdrop frame (desktop only)
                 <div
@@ -2484,6 +2539,36 @@ pub fn MapPage() -> impl IntoView {
             }
         }}
         <TerritoryPeekCard />
+    }
+}
+
+/// Colour scale for heat mode, over the top-left of the map.
+#[component]
+fn HeatLegend() -> impl IntoView {
+    let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let HeatMaxTakeCount(heat_max_take_count) = expect_context();
+    let HeatWindowLabel(heat_window_label) = expect_context();
+
+    move || {
+        if !heat_mode_enabled.get() {
+            return ().into_any();
+        }
+        let max_count = heat_max_take_count.get();
+        let label = heat_window_label.get();
+        view! {
+            <div style="position: absolute; top: calc(var(--nav-height, 0px) + 16px); left: 16px; z-index: 22; pointer-events: none; background: rgba(10,12,20,0.82); border: 1px solid rgba(245,197,66,0.25); border-radius: 6px; padding: 8px 10px; min-width: 172px;">
+                <div style="font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); margin-bottom: 5px;">"Heat"</div>
+                <div style="height: 8px; border-radius: 0; background: linear-gradient(90deg, #1e50dc 0%, #28c8f0 25%, #f5dc46 50%, #f58c32 75%, #dc2823 100%);" />
+                <div style="margin-top: 6px; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);">
+                    <span>"Low"</span>
+                    <span>{format!("Max {max_count}")}</span>
+                </div>
+                <div style="margin-top: 4px; font-family: var(--font-mono); font-size: 0.6rem; color: #6f748f; line-height: 1.25;">
+                    {label}
+                </div>
+            </div>
+        }
+        .into_any()
     }
 }
 
@@ -2819,7 +2904,7 @@ fn DefenseLegend() -> impl IntoView {
 fn Tooltip() -> impl IntoView {
     let Hovered(hovered) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let mouse_pos: RwSignal<(f64, f64)> = expect_context();
+    let pointer = expect_context::<BrowserMap>().pointer();
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
     let HistoryTimestamp(history_timestamp) = expect_context();
@@ -2908,7 +2993,7 @@ fn Tooltip() -> impl IntoView {
             let Some(info) = tooltip_info.get() else {
                 return view! { <div style="display:none;" /> }.into_any();
             };
-            let (x, y) = mouse_pos.get();
+            let (x, y) = pointer.get();
             let (r, g, b) = info.guild_color;
             let (tr, tg, tb) = info.treasury.color_rgb();
             let buff = info.treasury.buff_percent();

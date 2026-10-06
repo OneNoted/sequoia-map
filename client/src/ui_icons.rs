@@ -1,6 +1,5 @@
 //! DOM icon helpers for the map sidebar and player cards.
-use crate::assets::versioned_app_asset_url;
-use crate::icons::ATLAS_PATH;
+use sequoia_browser_map::{ATLAS_PATH, versioned_app_asset_url};
 use sequoia_map_engine::icon_atlas::{ICON_COUNT, icon_index};
 
 const CLASS_ICON_DIR: &str = "icons/classes";

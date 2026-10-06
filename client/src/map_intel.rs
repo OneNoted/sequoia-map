@@ -10,8 +10,9 @@ use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::app::{IsMobile, MapIntelModeEnabled, SidebarOpen, SidebarWidth, canvas_dimensions};
-use crate::render_loop::RenderScheduler;
 use crate::viewport::Viewport;
+use sequoia_browser_map::BrowserMap;
+use sequoia_browser_map::render_loop::RenderScheduler;
 
 const NODE_MIN_RADIUS: f64 = 1.25;
 const NODE_MAX_RADIUS: f64 = 3.25;
@@ -285,8 +286,9 @@ impl NodeShape {
 #[component]
 pub(crate) fn MapIntelOverlay() -> impl IntoView {
     let MapIntelModeEnabled(enabled) = expect_context();
-    let viewport: RwSignal<Viewport> = expect_context();
-    let mouse_pos: RwSignal<(f64, f64)> = expect_context();
+    let map = expect_context::<BrowserMap>();
+    let camera = map.camera();
+    let pointer = map.pointer();
     let IsMobile(is_mobile) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarWidth(sidebar_width) = expect_context();
@@ -340,7 +342,7 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
 
             ctx.clear_rect(0.0, 0.0, width, height);
             if enabled.get_untracked() {
-                let vp = viewport.get_untracked();
+                let vp = camera.get_untracked();
                 data.with_untracked(|payload| {
                     if let Some(payload) = payload.as_ref() {
                         draw_payload(&ctx, &vp, payload, width, height);
@@ -355,7 +357,7 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
         let scheduler = scheduler.clone();
         move || {
             enabled.track();
-            viewport.track();
+            camera.track();
             data.track();
             scheduler.mark_dirty();
         }
@@ -365,8 +367,8 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
         if !enabled.get() {
             return None;
         }
-        let (sx, sy) = mouse_pos.get();
-        let vp = viewport.get();
+        let (sx, sy) = pointer.get();
+        let vp = camera.get();
         data.with(|payload| {
             payload
                 .as_ref()

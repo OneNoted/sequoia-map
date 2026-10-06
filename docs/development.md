@@ -129,7 +129,10 @@ zoom and viewport: labels, resource icons, selection, panning and live/history
 transitions. The smoke test detects startup and resource failures, not visual
 parity. Use release builds on the same machine for performance comparisons.
 Set `window.__SEQUOIA_GPU_DIAG__ = true` before renderer initialization for
-`gpu-diag` rebuild counters; pan-only frames should normally reuse labels/icons.
+`gpu-diag` rebuild counters; pan-only frames reuse labels and icons. Set
+`window.__SEQUOIA_RENDER_STATS__ = true` before the map mounts for an overlay with
+draw calls, uploads and the layers each frame rebuilt. Touch gestures need a touch
+device or emulated touch input; mouse drags do not exercise pinch handling.
 Do not commit temporary diagnostic instrumentation.
 
 ## Containers

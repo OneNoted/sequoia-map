@@ -3,13 +3,13 @@ use std::cell::RefCell;
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
+use sequoia_browser_map::live_feed::fetch_live_state;
 use sequoia_shared::history::{HistoryBounds, HistoryGuildSrEntry, HistorySnapshot};
-use sequoia_shared::{GuildRef, LiveState, SeasonScalarSample, Territory, TerritoryMap};
+use sequoia_shared::{GuildRef, SeasonScalarSample, Territory, TerritoryMap};
 
 use crate::app::{BufferedUpdate, GuildColorMap, MapMode, TerritoryGeometryMap};
 use crate::territory::{ClientTerritoryMap, apply_changes, from_snapshot};
 
-const MAX_BUFFERED_UPDATES: usize = 20_000;
 const REKINDLED_WORLD_RELEASE_SECS: i64 = 1_723_248_000; // 2024-08-10T00:00:00Z
 
 thread_local! {
@@ -142,22 +142,6 @@ pub async fn fetch_live_snapshot() -> Result<TerritoryMap, String> {
         .map_err(|e| format!("parse error: {e}"))
 }
 
-/// Fetch a gap-free live snapshot with sequence.
-pub async fn fetch_live_state() -> Result<LiveState, String> {
-    let resp = gloo_net::http::Request::get("/api/live/state")
-        .send()
-        .await
-        .map_err(|e| format!("fetch error: {e}"))?;
-
-    if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    resp.json::<LiveState>()
-        .await
-        .map_err(|e| format!("parse error: {e}"))
-}
-
 /// Fetch history bounds from the API.
 pub async fn fetch_bounds() -> Result<HistoryBounds, String> {
     let resp = gloo_net::http::Request::get("/api/history/bounds")
@@ -267,53 +251,6 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
     });
 }
 
-/// Buffer one incoming live update while history mode is active.
-pub fn buffer_history_update(
-    history_buffered_updates: RwSignal<Vec<BufferedUpdate>>,
-    history_buffer_size_max: RwSignal<usize>,
-    needs_live_resync: RwSignal<bool>,
-    update: BufferedUpdate,
-) {
-    let mut overflowed = false;
-    let mut new_len = 0;
-
-    history_buffered_updates.update(|buffer| {
-        if buffer.iter().any(|existing| existing.seq == update.seq) {
-            new_len = buffer.len();
-            return;
-        }
-
-        buffer.push(update);
-        buffer.sort_by_key(|item| item.seq);
-
-        if buffer.len() > MAX_BUFFERED_UPDATES {
-            let overflow = buffer.len() - MAX_BUFFERED_UPDATES;
-            buffer.drain(0..overflow);
-            overflowed = true;
-        }
-
-        new_len = buffer.len();
-    });
-
-    if overflowed {
-        needs_live_resync.set(true);
-        web_sys::console::warn_1(
-            &"history buffer overflowed; forcing live resync on handoff".into(),
-        );
-    }
-
-    let mut updated_max = None;
-    history_buffer_size_max.update(|current_max| {
-        if new_len > *current_max {
-            *current_max = new_len;
-            updated_max = Some(new_len);
-        }
-    });
-    if let Some(max_size) = updated_max {
-        web_sys::console::info_1(&format!("history_buffer_size_max={max_size}").into());
-    }
-}
-
 pub fn replay_updates_after_seq(
     baseline_seq: u64,
     buffered_updates: &[BufferedUpdate],
@@ -333,17 +270,6 @@ pub fn replay_updates_after_seq(
     }
 
     replay
-}
-
-pub fn has_seq_gap(last_live_seq: Option<u64>, incoming_seq: u64) -> bool {
-    if incoming_seq == 0 {
-        return false;
-    }
-
-    match last_live_seq {
-        Some(last_seq) => incoming_seq != last_seq.saturating_add(1),
-        None => false,
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -669,13 +595,6 @@ mod tests {
         let replay = replay_updates_after_seq(4, &buffer);
         let seqs: Vec<u64> = replay.into_iter().map(|u| u.seq).collect();
         assert_eq!(seqs, vec![5, 8]);
-    }
-
-    #[test]
-    fn detects_sequence_gap() {
-        assert!(!has_seq_gap(Some(10), 11));
-        assert!(has_seq_gap(Some(10), 12));
-        assert!(!has_seq_gap(None, 7));
     }
 
     #[test]

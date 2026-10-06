@@ -1,14 +1,13 @@
-/// Viewport manages the pan/zoom transformation from world coordinates to screen coordinates.
-/// Uses CSS matrix3d transforms for GPU-accelerated rendering.
-#[derive(Debug, Clone)]
+/// The map camera: the pan/zoom transform from world coordinates to canvas CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {
     pub offset_x: f64,
     pub offset_y: f64,
     pub scale: f64,
 }
 
-const MIN_SCALE: f64 = 0.05;
-const MAX_SCALE: f64 = 8.0;
+pub const MIN_SCALE: f64 = 0.05;
+pub const MAX_SCALE: f64 = 8.0;
 const ZOOM_SENSITIVITY: f64 = 0.001;
 const FIT_SCALE_BOOST: f64 = 1.08;
 
@@ -24,7 +23,6 @@ impl Default for Viewport {
 
 impl Viewport {
     /// Convert world coordinates to screen coordinates.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn world_to_screen(&self, wx: f64, wy: f64) -> (f64, f64) {
         (
             wx * self.scale + self.offset_x,
@@ -56,6 +54,20 @@ impl Viewport {
     pub fn pan(&mut self, dx: f64, dy: f64) {
         self.offset_x += dx;
         self.offset_y += dy;
+    }
+
+    /// Place the world point `world` under the screen point `screen` at `scale`, clamped to the
+    /// zoom limits. The anchor stays put even when the requested scale is out of range.
+    pub fn anchor(&mut self, world: (f64, f64), screen: (f64, f64), scale: f64) {
+        self.scale = scale.clamp(MIN_SCALE, MAX_SCALE);
+        self.offset_x = screen.0 - world.0 * self.scale;
+        self.offset_y = screen.1 - world.1 * self.scale;
+    }
+
+    /// Centre the world point `world` in a `width` x `height` canvas, keeping the scale.
+    pub fn center_on(&mut self, world: (f64, f64), width: f64, height: f64) {
+        self.offset_x = width * 0.5 - world.0 * self.scale;
+        self.offset_y = height * 0.5 - world.1 * self.scale;
     }
 
     /// Fit the viewport to show the given world-coordinate bounds with padding.
@@ -171,6 +183,16 @@ mod tests {
         assert_close(vp.offset_x, 20.0);
         assert_close(vp.offset_y, 30.0);
         assert_close(vp.scale, 0.8);
+    }
+
+    #[test]
+    fn anchor_keeps_the_world_point_under_the_screen_point_at_the_limits() {
+        let mut vp = Viewport::default();
+        vp.anchor((120.0, -40.0), (300.0, 200.0), 1_000.0);
+        assert_close(vp.scale, MAX_SCALE);
+        let (sx, sy) = vp.world_to_screen(120.0, -40.0);
+        assert_close(sx, 300.0);
+        assert_close(sy, 200.0);
     }
 
     #[test]
