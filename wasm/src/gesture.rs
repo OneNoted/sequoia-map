@@ -3,15 +3,25 @@
 //! The browser seam feeds pointer and wheel events in. [`Gestures`] tracks which contacts are
 //! down and what they are doing, moves the [`Viewport`] for pans, pinches and wheel zoom, and
 //! reports what the host has to act on (taps, edit strokes, picks and rubber-band selections)
-//! as [`GestureEvent`]s in canvas CSS pixels.
+//! as [`GestureEvent`]s.
+//!
+//! Units: pointer positions and [`GestureEvent`] coordinates are canvas CSS pixels, measured
+//! from the canvas's top-left corner at full precision (fractional). The camera maps world
+//! units to the same CSS pixels; the device pixel ratio only matters to the renderer.
 //!
 //! Invariants:
-//! - Contacts are kept in press order. Two contacts pinch, using the two oldest; a further
-//!   contact is tracked but ignored until one of the pinching pair lifts.
-//! - Whenever the contacts driving the camera change, the gesture is re-based on their current
-//!   positions: the map never jumps, and a remaining finger keeps panning without a new press.
-//! - A pinch scales by the ratio of finger separations and keeps the world point under the
-//!   midpoint glued to the moving midpoint, also while the scale is clamped.
+//! - Contacts are kept in press order. The two oldest drive the camera; a further contact is
+//!   tracked but ignored until one of them lifts.
+//! - While the driving contacts stay the same, the camera is a function of where they are now:
+//!   the world point that was under their centroid stays under it, and a pinch scales by the
+//!   ratio of finger separations. How many events it took to get there, or which finger moved
+//!   first, does not matter.
+//! - Whenever the driving contacts change, or something else moves the camera mid-gesture, the
+//!   gesture holds on afresh from the current positions: the map never jumps, and a remaining
+//!   finger keeps panning without a new press.
+//! - Zoom limits clamp the scale but never the anchor, and reversing a clamped pinch responds
+//!   at once. Separations under a fingertip count as a fingertip, so nearly touching or
+//!   crossing fingers cannot zoom by an arbitrary ratio.
 //! - Once a second contact has joined a press sequence, nothing in it is a tap or an edit
 //!   commit. Cancelled contacts never commit anything.
 //! - Touch strokes and picks commit only once the finger travels past the tap slop or lifts,
@@ -28,8 +38,9 @@ const MOUSE_TAP_SLOP_PX: f64 = 4.0;
 const TOUCH_TAP_SLOP_PX: f64 = 10.0;
 /// A rubber band smaller than this in both directions is a click.
 const SELECT_CLICK_PX: f64 = 4.0;
-/// Below this finger separation a pinch only pans; the ratio would be noise.
-const MIN_PINCH_SPAN_PX: f64 = 1.0;
+/// Two touch contacts are never meaningfully closer than a fingertip (CSS px). Smaller
+/// separations, nearly coincident or crossing fingers, zoom as if they were this far apart.
+const MIN_PINCH_SPAN_PX: f64 = 16.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerKind {
@@ -127,6 +138,68 @@ pub struct GestureOutput {
     pub events: Vec<GestureEvent>,
 }
 
+/// Holds the camera to the driving contacts: the world point that was under their centroid
+/// when the grip was taken stays under the centroid, and a pinch scales with their separation.
+/// The camera is recomputed from the grip on every move, never accumulated.
+#[derive(Clone, Copy, Debug)]
+struct Grip {
+    /// Centroid, and separation for a pinch, when the grip was taken.
+    from: (f64, f64),
+    from_span: Option<f64>,
+    /// The camera the grip was taken on; `None` until the first move binds it.
+    base: Option<Viewport>,
+    /// The camera this grip last produced, and the geometry it produced it for.
+    produced: Option<Viewport>,
+    at: (f64, f64),
+    span: Option<f64>,
+}
+
+impl Grip {
+    fn new(at: (f64, f64), span: Option<f64>) -> Self {
+        Self {
+            from: at,
+            from_span: span,
+            base: None,
+            produced: None,
+            at,
+            span,
+        }
+    }
+
+    /// Moves the camera for contacts now at `at` (`span` apart for a pinch). Returns whether
+    /// the camera changed.
+    fn follow(&mut self, camera: &mut Viewport, at: (f64, f64), span: Option<f64>) -> bool {
+        if self.produced != Some(*camera) {
+            // First move, or keys, a focus or the minimap moved the camera meanwhile: hold on
+            // from here rather than undo it.
+            self.take(*camera);
+        }
+        let base = self.base.unwrap_or(*camera);
+        let scale = match (self.from_span, span) {
+            (Some(from), Some(to)) => {
+                base.scale * to.max(MIN_PINCH_SPAN_PX) / from.max(MIN_PINCH_SPAN_PX)
+            }
+            _ => base.scale,
+        };
+        let before = *camera;
+        camera.anchor(base.screen_to_world(self.from.0, self.from.1), at, scale);
+        self.at = at;
+        self.span = span;
+        if camera.scale != scale {
+            // Clamped: re-take the grip so that reversing the pinch zooms straight away.
+            self.take(*camera);
+        }
+        self.produced = Some(*camera);
+        *camera != before
+    }
+
+    fn take(&mut self, camera: Viewport) {
+        self.base = Some(camera);
+        self.from = self.at;
+        self.from_span = self.span;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 enum Mode {
     #[default]
@@ -135,12 +208,12 @@ enum Mode {
         id: i32,
         origin: (f64, f64),
         travel: f64,
+        grip: Grip,
     },
     Pinch {
         a: i32,
         b: i32,
-        mid: (f64, f64),
-        span: f64,
+        grip: Grip,
     },
     Edit {
         id: i32,
@@ -193,6 +266,7 @@ impl Gestures {
                     id: pointer.id,
                     origin,
                     travel: 0.0,
+                    grip: Grip::new(origin, None),
                 },
                 Press::Handled => Mode::Handled { id: pointer.id },
                 Press::Stroke | Press::Pick | Press::Select => {
@@ -233,7 +307,7 @@ impl Gestures {
         now_ms: f64,
     ) -> Option<GestureOutput> {
         let index = self.contacts.iter().position(|c| c.id == pointer.id)?;
-        let previous = self.contacts[index];
+        let kind = self.contacts[index].kind;
         self.contacts[index].x = pointer.x;
         self.contacts[index].y = pointer.y;
         self.settle(now_ms);
@@ -241,19 +315,18 @@ impl Gestures {
         let here = pointer.at();
         let mut out = GestureOutput::default();
         match &mut self.mode {
-            Mode::Pan { id, origin, travel } if *id == pointer.id => {
+            Mode::Pan {
+                id,
+                origin,
+                travel,
+                grip,
+            } if *id == pointer.id => {
                 *travel = travel.max(distance(*origin, here));
-                let (dx, dy) = (here.0 - previous.x, here.1 - previous.y);
-                if dx != 0.0 || dy != 0.0 {
-                    camera.pan(dx, dy);
-                    out.camera_moved = true;
-                }
+                out.camera_moved = grip.follow(camera, here, None);
             }
-            Mode::Pinch { a, b, mid, span } if pointer.id == *a || pointer.id == *b => {
-                let (next_mid, next_span) = pair_geometry(&self.contacts, *a, *b);
-                out.camera_moved = pinch(camera, (*mid, *span), (next_mid, next_span));
-                *mid = next_mid;
-                *span = next_span;
+            Mode::Pinch { a, b, grip } if pointer.id == *a || pointer.id == *b => {
+                let (mid, span) = pair_geometry(&self.contacts, *a, *b);
+                out.camera_moved = grip.follow(camera, mid, Some(span));
             }
             Mode::Edit {
                 id,
@@ -263,7 +336,7 @@ impl Gestures {
                 committed,
             } if *id == pointer.id => {
                 *travel = travel.max(distance(*origin, here));
-                let past_slop = *travel > previous.kind.tap_slop();
+                let past_slop = *travel > kind.tap_slop();
                 match press {
                     Press::Select => {
                         out.events
@@ -423,14 +496,14 @@ impl Gestures {
                 id: only.id,
                 origin: only.at(),
                 travel: 0.0,
+                grip: Grip::new(only.at(), None),
             },
             [a, b, ..] => {
                 let (mid, span) = pair_geometry(&self.contacts, a.id, b.id);
                 Mode::Pinch {
                     a: a.id,
                     b: b.id,
-                    mid,
-                    span,
+                    grip: Grip::new(mid, Some(span)),
                 }
             }
         }
@@ -476,21 +549,6 @@ fn pair_geometry(contacts: &[Pointer], a: i32, b: i32) -> ((f64, f64), f64) {
     };
     let (pa, pb) = (find(a), find(b));
     (((pa.0 + pb.0) * 0.5, (pa.1 + pb.1) * 0.5), distance(pa, pb))
-}
-
-/// Moves the camera from one two-finger geometry to the next: the world point under the old
-/// midpoint ends up under the new one, scaled by the change in separation.
-fn pinch(camera: &mut Viewport, from: ((f64, f64), f64), to: ((f64, f64), f64)) -> bool {
-    let ((from_mid, from_span), (to_mid, to_span)) = (from, to);
-    let anchor = camera.screen_to_world(from_mid.0, from_mid.1);
-    let ratio = if from_span >= MIN_PINCH_SPAN_PX && to_span >= MIN_PINCH_SPAN_PX {
-        to_span / from_span
-    } else {
-        1.0
-    };
-    let before = *camera;
-    camera.anchor(anchor, to_mid, camera.scale * ratio);
-    *camera != before
 }
 
 #[cfg(test)]
@@ -604,6 +662,186 @@ mod tests {
         gestures.moved(&mut cam, touch(2, 100.5, 100.0), 3.0);
         gestures.moved(&mut cam, touch(2, 101.0, 100.0), 4.0);
         assert!(cam.scale >= MIN_SCALE);
+    }
+
+    /// Two fingers driven through `steps` (each a list of (id, x, y) moves) from a fresh press
+    /// at `a`/`b`; returns the camera afterwards.
+    fn drive(a: (f64, f64), b: (f64, f64), steps: &[(i32, f64, f64)]) -> Viewport {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.press(touch(1, a.0, a.1), Press::Pan, 0.0);
+        gestures.press(touch(2, b.0, b.1), Press::Pan, 0.0);
+        for (n, &(id, x, y)) in steps.iter().enumerate() {
+            gestures.moved(&mut cam, touch(id, x, y), n as f64);
+        }
+        cam
+    }
+
+    fn assert_same_camera(actual: Viewport, expected: Viewport) {
+        assert_close(actual.scale, expected.scale);
+        assert_close(actual.offset_x, expected.offset_x);
+        assert_close(actual.offset_y, expected.offset_y);
+    }
+
+    #[test]
+    fn a_pinch_depends_on_where_the_fingers_are_not_on_how_they_got_there() {
+        let (a, b) = ((150.0, 420.0), (240.0, 420.0));
+        let (a_end, b_end) = ((101.25, 433.5), (287.75, 380.125));
+        let direct = drive(a, b, &[(1, a_end.0, a_end.1), (2, b_end.0, b_end.1)]);
+
+        // Reverse order, one finger at a time, and a burst of fractional steps interleaving
+        // both fingers, as many events between two frames would arrive.
+        let reversed = drive(a, b, &[(2, b_end.0, b_end.1), (1, a_end.0, a_end.1)]);
+        let mut burst = Vec::new();
+        for i in 1..=200 {
+            let t = f64::from(i) / 200.0;
+            burst.push((1, a.0 + (a_end.0 - a.0) * t, a.1 + (a_end.1 - a.1) * t));
+            burst.push((2, b.0 + (b_end.0 - b.0) * t, b.1 + (b_end.1 - b.1) * t));
+        }
+        let interleaved = drive(a, b, &burst);
+        // Detours through nearly coincident and crossed fingers end up in the same place.
+        let detour = drive(
+            a,
+            b,
+            &[
+                (1, 239.5, 420.2),
+                (1, 300.0, 410.0),
+                (2, 120.0, 440.0),
+                (1, a_end.0, a_end.1),
+                (2, b_end.0, b_end.1),
+            ],
+        );
+        for cam in [reversed, interleaved, detour] {
+            assert_same_camera(cam, direct);
+        }
+
+        let start = camera();
+        let focus = start.screen_to_world((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        assert_world_under(
+            &direct,
+            focus,
+            ((a_end.0 + b_end.0) / 2.0, (a_end.1 + b_end.1) / 2.0),
+        );
+        let span = |p: (f64, f64), q: (f64, f64)| (q.0 - p.0).hypot(q.1 - p.1);
+        assert_close(direct.scale / start.scale, span(a_end, b_end) / span(a, b));
+    }
+
+    #[test]
+    fn tiny_pinches_follow_every_fraction_of_a_pixel() {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        let start = cam.scale;
+        gestures.press(touch(1, 150.0, 420.0), Press::Pan, 0.0);
+        gestures.press(touch(2, 240.0, 420.0), Press::Pan, 0.0);
+        let focus = cam.screen_to_world(195.0, 420.0);
+        // Out by 0.3 px per event, then back in, as fractional pointer coordinates arrive.
+        let spans = (1..=20)
+            .map(|i| 90.0 + 0.3 * f64::from(i))
+            .chain((0..20).rev().map(|i| 90.0 + 0.3 * f64::from(i)));
+        let mut last = cam.scale;
+        for (n, span) in spans.enumerate() {
+            gestures.moved(&mut cam, touch(1, 195.0 - span / 2.0, 420.0), n as f64);
+            gestures.moved(&mut cam, touch(2, 195.0 + span / 2.0, 420.0), n as f64);
+            assert_close(cam.scale / start, span / 90.0);
+            assert_world_under(&cam, focus, (195.0, 420.0));
+            // No step zooms by more than the separation changed.
+            assert!((cam.scale / last - 1.0).abs() <= 0.31 / 90.0 + 1e-12);
+            last = cam.scale;
+        }
+        assert_close(cam.scale, start);
+    }
+
+    #[test]
+    fn nearly_touching_and_crossing_fingers_come_back_to_the_starting_zoom() {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        let start = cam;
+        let center = (195.0, 420.0);
+        gestures.press(touch(1, center.0 - 20.0, center.1), Press::Pan, 0.0);
+        gestures.press(touch(2, center.0 + 20.0, center.1), Press::Pan, 0.0);
+        let focus = cam.screen_to_world(center.0, center.1);
+        // 40 px apart, through 0.6 px and swapped sides, and back to 40 px.
+        let halves = [10.0, 3.0, 0.3, 0.0, -0.3, -8.0, -20.0, -8.0, 0.0, 8.0, 20.0];
+        for (n, half) in halves.into_iter().enumerate() {
+            gestures.moved(&mut cam, touch(1, center.0 - half, center.1), n as f64);
+            gestures.moved(&mut cam, touch(2, center.0 + half, center.1), n as f64);
+            assert!(cam.scale >= start.scale * MIN_PINCH_SPAN_PX / 40.0 - 1e-12);
+            assert!(cam.scale <= start.scale + 1e-12);
+            assert_world_under(&cam, focus, center);
+        }
+        assert_same_camera(cam, start);
+    }
+
+    #[test]
+    fn a_camera_moved_by_the_host_mid_gesture_is_kept() {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.press(touch(1, 100.0, 100.0), Press::Pan, 0.0);
+        gestures.moved(&mut cam, touch(1, 120.0, 100.0), 1.0);
+        // Keys zoom in meanwhile; the drag carries on from there instead of undoing it.
+        cam.zoom_at(-300.0, 50.0, 50.0);
+        let zoomed = cam;
+        let under = cam.screen_to_world(120.0, 100.0);
+        gestures.moved(&mut cam, touch(1, 150.0, 130.0), 2.0);
+        assert_close(cam.scale, zoomed.scale);
+        assert_world_under(&cam, under, (150.0, 130.0));
+    }
+
+    #[test]
+    fn lifting_the_first_pinch_finger_hands_over_without_a_jump() {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.press(touch(6, 100.0, 300.0), Press::Pan, 0.0);
+        gestures.press(touch(7, 160.0, 300.0), Press::Pan, 10.0);
+        gestures.moved(&mut cam, touch(6, 80.0, 310.0), 20.0);
+        gestures.moved(&mut cam, touch(7, 200.0, 290.0), 20.0);
+        let after_pinch = cam;
+        gestures.released(touch(6, 80.0, 310.0), 30.0);
+        assert_eq!(cam, after_pinch);
+        let under = cam.screen_to_world(200.0, 290.0);
+        gestures.moved(&mut cam, touch(7, 230.0, 250.0), 40.0);
+        assert_close(cam.scale, after_pinch.scale);
+        assert_world_under(&cam, under, (230.0, 250.0));
+    }
+
+    #[test]
+    fn pinch_and_pan_cycles_keep_the_map_glued_to_the_fingers() {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        let mut a = (150.0, 400.0);
+        let mut b = (250.0, 400.0);
+        gestures.press(touch(1, a.0, a.1), Press::Pan, 0.0);
+        let mut next_id = 2;
+        let mut t = 0.0;
+        for cycle in 0..4 {
+            // Second finger joins, pinch and drag.
+            gestures.press(touch(next_id, b.0, b.1), Press::Pan, t);
+            let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+            let focus = cam.screen_to_world(mid.0, mid.1);
+            for step in 1..=10 {
+                t += 1.0;
+                let k = f64::from(step);
+                a = (a.0 - 1.5, a.1 + 0.5 * f64::from(cycle));
+                b = (b.0 + 2.5 + 0.1 * k, b.1 - 0.75);
+                gestures.moved(&mut cam, touch(1, a.0, a.1), t);
+                gestures.moved(&mut cam, touch(next_id, b.0, b.1), t);
+                assert_world_under(&cam, focus, ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0));
+            }
+            // Second finger lifts; the first pans on alone.
+            let before_lift = cam;
+            gestures.released(touch(next_id, b.0, b.1), t);
+            assert_eq!(cam, before_lift);
+            let under = cam.screen_to_world(a.0, a.1);
+            for _ in 0..5 {
+                t += 1.0;
+                a = (a.0 + 3.0, a.1 - 2.0);
+                gestures.moved(&mut cam, touch(1, a.0, a.1), t);
+                assert_world_under(&cam, under, a);
+                assert_close(cam.scale, before_lift.scale);
+            }
+            b = (a.0 + 90.0, a.1 + 5.0);
+            next_id += 1;
+        }
     }
 
     #[test]
