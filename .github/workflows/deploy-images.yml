@@ -8,10 +8,10 @@ on:
 permissions:
   contents: read
 
-# Production tags and Coolify are shared across every run, including dispatches.
+# Only eligible production runs may occupy the shared deployment queue.
 # Finish an active deployment; a replaced pending run is covered by the baseline diff.
 concurrency:
-  group: deploy-images-production
+  group: ${{ github.repository == 'SequoiaWynncraft/sequoia-map' && github.ref == 'refs/heads/main' && 'deploy-images-production' || format('deploy-images-nonproduction-{0}', github.run_id) }}
   cancel-in-progress: false
 
 env:
@@ -55,6 +55,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           AFTER_SHA: ${{ github.sha }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
 
@@ -88,16 +89,23 @@ jobs:
             exit 0
           fi
 
-          # Only an actual publication+trigger is a baseline, not a no-op success.
-          # Bound history lookup; uncertainty rebuilds every image.
-          if ! successful_runs="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-images.yml/runs" \
-            -f branch=main -f status=success -F per_page=20 --jq '.workflow_runs[] | [.id, .head_sha] | @tsv')"; then
+          # A failed run may have promoted tags before failing its trigger/readback.
+          # Scan all statuses until an actual publication+trigger; uncertainty rebuilds all.
+          if ! recent_runs="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-images.yml/runs" \
+            -f branch=main -F per_page=20 --jq '.workflow_runs[] | [.id, .head_sha, (.conclusion // "pending")] | @tsv')"; then
             emit_all
             exit 0
           fi
           before=""
-          while IFS=$'\t' read -r run_id run_sha; do
+          while IFS=$'\t' read -r run_id run_sha conclusion; do
             if ! [[ "${run_id}" =~ ^[0-9]+$ && "${run_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              emit_all
+              exit 0
+            fi
+            if [ "${run_id}" = "${CURRENT_RUN_ID}" ]; then
+              continue
+            fi
+            if [ "${conclusion}" != success ]; then
               emit_all
               exit 0
             fi
@@ -112,7 +120,7 @@ jobs:
               false) ;;
               *) emit_all; exit 0 ;;
             esac
-          done <<< "${successful_runs}"
+          done <<< "${recent_runs}"
           if [ -z "${before}" ]; then
             emit_all
             exit 0
