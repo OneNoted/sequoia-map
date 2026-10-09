@@ -351,7 +351,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSwitch label="Online Members" active=show_leaderboard_online />
                 <SettingsSwitch label="SR Rate" hint="Estimated SR per hour; per 5 minutes in history" active=show_leaderboard_sr_gain />
                 <SettingsSwitch label="Season Rating" hint="Always shown when sorted by rating" active=show_leaderboard_sr_value />
-                <SettingsSwitch label="Estimate SR Scalar" hint="From current season data when available" active=auto_sr_scalar_enabled />
+                <SettingsSwitch label="Estimate SR Scalar" hint="From season data when available" active=auto_sr_scalar_enabled />
                 <SettingsScalarRow scalar=manual_sr_scalar />
             </SettingsSection>
 
@@ -434,7 +434,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     format=percent
                 />
                 <SettingsResetButton
-                    label="Reset connection style"
+                    label="Reset line sliders"
                     on_reset=Callback::new(move |()| {
                         connection_opacity_scale.set(DEFAULT_CONNECTION_OPACITY_SCALE);
                         connection_thickness_scale.set(DEFAULT_CONNECTION_THICKNESS_SCALE);
