@@ -880,6 +880,11 @@ fn push_text_line_dual_with_tracking(
 // --- Tile texture cache ---
 
 /// Identifies a tile set by id and quality, in load order.
+/// Most tile pixels uploaded in one frame. wgpu keeps a staging copy of every upload until
+/// the frame is submitted, so uploading a whole tile set at once (a renderer rebuilt after a
+/// lost context, or a start from a warm cache) briefly needed memory for all of it.
+const TILE_UPLOAD_BUDGET_BYTES: u64 = 16 << 20;
+
 fn tile_upload_signature(tiles: &[LoadedTile]) -> u64 {
     tiles.iter().fold(0u64, |acc, tile| {
         let quality_bits = match tile.quality {
@@ -2668,10 +2673,13 @@ impl GpuRenderer {
 
     /// Uploads tiles that are new or improved since the last frame and drops tiles that
     /// are gone, bumping `tiles_revision` when the set changes.
-    fn sync_tiles(&mut self, tiles: &[LoadedTile]) {
+    ///
+    /// Uploads at most [`TILE_UPLOAD_BUDGET_BYTES`] of pixels (and always one tile) per call;
+    /// returns whether tiles are still waiting, so the caller draws another frame.
+    fn sync_tiles(&mut self, tiles: &[LoadedTile]) -> bool {
         let signature = tile_upload_signature(tiles);
         if self.tiles_signature == Some(signature) || !self.ensure_tile_upload_context() {
-            return;
+            return false;
         }
         self.tiles_signature = Some(signature);
         self.tiles_revision = self.tiles_revision.wrapping_add(1);
@@ -2680,12 +2688,13 @@ impl GpuRenderer {
             .retain(|tile_id, _| active_tile_ids.contains(tile_id));
 
         let Some(upload_canvas) = self.tile_upload_canvas.as_ref().cloned() else {
-            return;
+            return false;
         };
         let Some(upload_ctx) = self.tile_upload_ctx.as_ref().cloned() else {
-            return;
+            return false;
         };
         let mut upload_size = self.tile_upload_canvas_size;
+        let mut uploaded_bytes = 0u64;
 
         for tile in tiles {
             let tile_id = tile.id;
@@ -2701,6 +2710,13 @@ impl GpuRenderer {
             if w == 0 || h == 0 {
                 continue;
             }
+            let bytes = 4 * u64::from(w) * u64::from(h);
+            if uploaded_bytes > 0 && uploaded_bytes + bytes > TILE_UPLOAD_BUDGET_BYTES {
+                // The rest go up over the next frames.
+                self.tiles_signature = None;
+                break;
+            }
+            uploaded_bytes += bytes;
 
             // Reuse a persistent staging canvas/context to avoid per-tile DOM/context churn.
             if upload_size != (w, h) {
@@ -2800,6 +2816,7 @@ impl GpuRenderer {
             );
         }
         self.tile_upload_canvas_size = upload_size;
+        self.tiles_signature.is_none()
     }
 
     /// Build instance data from territories and upload to GPU.
@@ -4102,13 +4119,13 @@ impl GpuRenderer {
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
 
-        self.sync_tiles(frame.tiles);
+        let tiles_pending = self.sync_tiles(frame.tiles);
         let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
             // Fail closed: map rendering requires the GPU text pipeline.
             return FrameOutcome::default();
         };
         let outcome = FrameOutcome {
-            animating: now < self.max_anim_end_ms,
+            animating: now < self.max_anim_end_ms || tiles_pending,
             next_refresh,
         };
 
