@@ -2821,13 +2821,14 @@ impl GpuRenderer {
                     resource_data[0] > 0.5 || (resource_data[3] as u32 & (1 << 10)) != 0; // mode 0 + double emeralds
 
                 let fill_alpha = if has_overlay {
-                    if is_selected {
-                        0.52
-                    } else if is_hovered {
-                        0.44
-                    } else {
-                        0.34
-                    }
+                    settings.overlay_fill_alpha()
+                        + if is_selected {
+                            0.18
+                        } else if is_hovered {
+                            0.10
+                        } else {
+                            0.0
+                        }
                 } else if is_selected {
                     0.38
                 } else if is_hovered {

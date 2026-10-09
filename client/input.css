@@ -689,6 +689,125 @@
   animation: peek-card-enter 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Keyboard shortcut help: the bar's "?" button and its dialog */
+.keybind-help-button {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.766rem;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: border-color 0.15s, color 0.15s;
+}
+.keybind-help-button:hover,
+.keybind-help-button[aria-expanded="true"] {
+  color: var(--color-gold);
+  border-color: rgba(245,197,66,0.35);
+}
+.keybind-help-button:focus-visible,
+.keybind-help-close:focus-visible {
+  outline: 2px solid rgba(245,197,66,0.5);
+  outline-offset: 2px;
+}
+.keybind-help {
+  width: min(340px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--color-border-accent);
+  border-radius: 10px;
+  background: var(--color-deep);
+  color: var(--color-text-primary);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.keybind-help::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+.keybind-help-body {
+  padding: 12px 14px 12px;
+}
+.keybind-help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.keybind-help-header h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.812rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-gold);
+}
+.keybind-help-close {
+  min-width: 32px;
+  min-height: 32px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.keybind-help ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.keybind-help-row {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+.keybind-help-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.keybind-help kbd {
+  min-width: 20px;
+  padding: 1px 5px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 3px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-align: center;
+}
+.keybind-help-context,
+.keybind-help-note {
+  color: var(--color-text-secondary);
+}
+.keybind-help-note {
+  margin: 8px 0 0;
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+}
+@media (max-width: 767px) {
+  .keybind-help-close { min-width: 44px; min-height: 44px; }
+  .keybind-help-row { font-size: 0.86rem; padding: 4px 0; }
+}
+
 /* Mobile timeline — larger slider thumbs */
 @media (max-width: 767px) {
   .timeline-slider::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -10px; }

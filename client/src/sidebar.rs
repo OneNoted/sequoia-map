@@ -24,19 +24,22 @@ use crate::app::{
     LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
     LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapIntelModeEnabled, MapMode,
     NameColor, NameColorSetting, NeedsLiveResync, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN,
-    PlaybackActive, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize, ReadableFont,
-    ResetSettingsTrigger, ResourceHighlight, Selected, SelectedGuild, ShowClaimLabels,
-    ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
+    PlaybackActive, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize,
+    RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont,
+    ResetSettingsTrigger, ResourceHighlight, ResourceHighlightOpacity, Selected, SelectedGuild,
+    ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
     ShowSettings, ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, SidebarIndex, SidebarItems,
     SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
     WarFeedVisible, clamp_connection_opacity_scale, clamp_connection_thickness_scale,
     clamp_label_scale_group, clamp_label_scale_master, clamp_player_head_size,
+    clamp_resource_highlight_opacity,
 };
 use crate::colors::rgba_css;
 use crate::defense::defense_tier_display;
 use crate::history;
+use crate::keybinds::KeybindHelp;
 use crate::season_scalar::{ScalarSource, effective_scalar};
 use crate::territory::ClientTerritoryMap;
 use crate::tower::TowerCalculator;
@@ -566,6 +569,7 @@ fn SettingsPanel() -> impl IntoView {
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
     let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
+    let ResourceHighlightOpacity(resource_highlight_opacity) = expect_context();
     let DefenseHighlight(defense_highlight) = expect_context();
     let MapIntelModeEnabled(map_intel_enabled) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
@@ -721,6 +725,14 @@ fn SettingsPanel() -> impl IntoView {
                     thickness=connection_thickness_scale
                 />
                 <SettingsToggleRow label="Resource Highlight" shortcut="P" active=resource_highlight />
+                <SettingsScaleRow
+                    label="Highlight Opacity"
+                    value=resource_highlight_opacity
+                    min=RESOURCE_HIGHLIGHT_OPACITY_MIN
+                    max=RESOURCE_HIGHLIGHT_OPACITY_MAX
+                    step=0.05
+                    clamp=clamp_resource_highlight_opacity
+                />
                 <SettingsToggleRow label="Defense Highlight" shortcut="D" active=defense_highlight />
                 <SettingsToggleRow label="Map Intel" shortcut="I" active=map_intel_enabled />
                 <SettingsToggleRow label="Resource Icons" shortcut="" active=show_resource_icons />
@@ -2064,6 +2076,8 @@ fn DetailPanel() -> impl IntoView {
     let SelectedGuild(selected_guild) = expect_context();
     let DetailReturnGuild(detail_return_guild) = expect_context();
     let SidebarTransient(sidebar_transient) = expect_context();
+    let SidebarOpen(sidebar_open) = expect_context();
+    let IsMobile(is_mobile) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
@@ -2199,6 +2213,12 @@ fn DetailPanel() -> impl IntoView {
     };
 
     let on_close = move |_| {
+        // On mobile, closing the sheet hands the territory back to its peek card.
+        if is_mobile.get_untracked() && detail_return_guild.get_untracked().is_none() {
+            sidebar_transient.set(false);
+            sidebar_open.set(false);
+            return;
+        }
         if let Some(return_guild) = detail_return_guild.get_untracked() {
             selected.set(None);
             selected_guild.set(Some(return_guild));
@@ -2236,6 +2256,8 @@ fn DetailPanel() -> impl IntoView {
             </button>
             <button
                 style="position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--color-text-dim); cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s; z-index: 1; display: flex; align-items: center; justify-content: center;"
+                title="Close details"
+                aria-label="Close details"
                 on:click=on_close
                 on:mouseenter=|e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
@@ -2625,22 +2647,11 @@ fn StatsBar() -> impl IntoView {
         guilds.len()
     });
 
-    let status_dot_style = Memo::new(move |_| match connection.get() {
-        ConnectionStatus::Live => {
-            "width: 8px; height: 8px; border-radius: 50%; background: var(--color-emerald); box-shadow: 0 0 8px rgba(80,200,120,0.5);"
-        }
-        ConnectionStatus::Connecting => {
-            "width: 8px; height: 8px; border-radius: 50%; background: var(--color-gold); box-shadow: 0 0 8px rgba(245,197,66,0.35); animation: pulse-dot 1.5s ease-in-out infinite;"
-        }
-        ConnectionStatus::Reconnecting => {
-            "width: 8px; height: 8px; border-radius: 50%; background: var(--color-gold); box-shadow: 0 0 8px rgba(245,197,66,0.35); animation: pulse-dot 1.5s ease-in-out infinite;"
-        }
-    });
-
+    // A healthy feed shows nothing; only connecting and reconnecting get a lamp.
     let status_text = Memo::new(move |_| match connection.get() {
-        ConnectionStatus::Live => "Live",
-        ConnectionStatus::Connecting => "Connecting...",
-        ConnectionStatus::Reconnecting => "Reconnecting...",
+        ConnectionStatus::Live => None,
+        ConnectionStatus::Connecting => Some("Connecting..."),
+        ConnectionStatus::Reconnecting => Some("Reconnecting..."),
     });
 
     let is_history = move || mode.get() == MapMode::History;
@@ -2648,6 +2659,7 @@ fn StatsBar() -> impl IntoView {
     view! {
         <div style="padding: 10px 12px; border-top: 1px solid var(--color-border-subtle); display: flex; align-items: center; justify-content: space-between; gap: 8px; font-family: var(--font-mono); font-size: 0.789rem; color: #6a6870;">
             <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: none;">
+            <KeybindHelp touch_target=is_mobile />
             <button
                 style:display=move || if history_available.get() && !is_mobile.get() { "flex" } else { "none" }
                 style="background: none; border: 1px solid var(--color-border-subtle); border-radius: 999px; padding: 5px 10px; cursor: pointer; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; font-size: 0.766rem; min-width: 64px;"
@@ -2746,12 +2758,16 @@ fn StatsBar() -> impl IntoView {
             </div>
             </div>
             <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
-            <div
-                title=move || status_text.get()
-                style="width: 26px; height: 26px; border: 1px solid var(--color-border-subtle); border-radius: 999px; background: var(--color-surface); display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
-            >
-                <span style=move || status_dot_style.get()></span>
-            </div>
+            {move || status_text.get().map(|text| view! {
+                <div
+                    role="status"
+                    title=text
+                    aria-label=text
+                    style="width: 26px; height: 26px; border: 1px solid var(--color-border-subtle); border-radius: 999px; background: var(--color-surface); display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
+                >
+                    <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--color-gold); box-shadow: 0 0 8px rgba(245,197,66,0.35); animation: pulse-dot 1.5s ease-in-out infinite;"></span>
+                </div>
+            })}
             <button
                 style:display=move || if show_settings.get() { "flex" } else { "none" }
                 style="background: linear-gradient(180deg, rgba(245,197,66,0.12) 0%, rgba(245,197,66,0.06) 100%); border: 1px solid rgba(245,197,66,0.24); border-radius: 999px; padding: 5px 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s, box-shadow 0.15s; font-family: var(--font-display); font-size: 0.648rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); box-shadow: 0 0 12px rgba(245,197,66,0.08);"
