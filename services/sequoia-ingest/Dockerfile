@@ -1,4 +1,4 @@
-FROM rust:1.88-bookworm AS build
+FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS build
 
 WORKDIR /app
 COPY Cargo.toml ./
@@ -14,7 +14,7 @@ RUN --mount=type=cache,id=sequoia-ingest-cargo-registry,target=/usr/local/cargo/
     install -Dm755 /tmp/target-cache/release/sequoia-ingest /app/sequoia-ingest && \
     strip /app/sequoia-ingest
 
-FROM debian:bookworm-slim
+FROM public.ecr.aws/docker/library/debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 sequoia \

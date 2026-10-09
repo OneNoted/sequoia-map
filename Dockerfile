@@ -1,5 +1,5 @@
 ### Stage 1: Build the client (WASM via Trunk)
-FROM rust:1.88-bookworm AS client-build
+FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS client-build
 
 ARG TARGETARCH
 ARG BINARYEN_VERSION=126
@@ -133,7 +133,7 @@ RUN find dist -type f -name '*_bg.wasm' -exec wasm-opt -Oz {} -o {} \;
 RUN find dist -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' \) -exec sh -c 'brotli -f -q 11 "$1" -o "$1.br"; gzip -f -k -9 "$1"' _ {} \;
 
 ### Stage 2: Build the server
-FROM rust:1.88-bookworm AS server-build
+FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS server-build
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -156,7 +156,7 @@ RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registr
     strip /app/sequoia-server
 
 ### Stage 3: Runtime
-FROM debian:bookworm-slim
+FROM public.ecr.aws/docker/library/debian:bookworm-slim
 
 ARG SOURCE_COMMIT=
 
