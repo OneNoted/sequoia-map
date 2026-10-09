@@ -88,7 +88,7 @@ jobs:
           server=false
           ingest=false
           edge=false
-          if matches '^(\.github/workflows/deploy-images\.yml|\.ci/|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|Dockerfile|shared/|client/|claims-client/|server/)'; then
+          if matches '^(\.github/workflows/deploy-images\.yml|\.ci/|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|Dockerfile|shared/|wasm/|browser-map/|client/|claims-client/|server/)'; then
             server=true
           fi
           if matches '^(\.github/workflows/deploy-images\.yml|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|shared/|services/sequoia-ingest/)'; then

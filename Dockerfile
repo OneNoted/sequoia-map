@@ -107,6 +107,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
 COPY wasm/ wasm/
+COPY browser-map/ browser-map/
 COPY client/ client/
 COPY claims-client/ claims-client/
 # Need a stub server crate so workspace resolves
@@ -139,7 +140,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
 COPY wasm/ wasm/
 COPY server/ server/
-# Need a stub client crate so workspace resolves
+# Need stub browser crates so workspace resolves
+COPY browser-map/Cargo.toml browser-map/Cargo.toml
+RUN mkdir -p browser-map/src && touch browser-map/src/lib.rs
 COPY client/Cargo.toml client/Cargo.toml
 RUN mkdir -p client/src && echo 'fn main() {}' > client/src/main.rs
 COPY claims-client/Cargo.toml claims-client/Cargo.toml

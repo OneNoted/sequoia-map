@@ -98,7 +98,7 @@ run = [
 description = "Check all native crates and both browser targets"
 run = [
   "cargo check --locked --workspace --all-targets",
-  "cargo check --locked -p sequoia-client -p sequoia-claims-client --target wasm32-unknown-unknown",
+  "cargo check --locked -p sequoia-client -p sequoia-claims-client -p sequoia-browser-map --target wasm32-unknown-unknown",
   "cargo check --locked --manifest-path services/sequoia-ingest/Cargo.toml --all-targets",
 ]
 
@@ -106,7 +106,7 @@ run = [
 description = "Run Clippy for native crates and browser targets"
 run = [
   "cargo clippy --locked --workspace --all-targets -- -D warnings",
-  "cargo clippy --locked -p sequoia-client -p sequoia-claims-client --target wasm32-unknown-unknown -- -D warnings",
+  "cargo clippy --locked -p sequoia-client -p sequoia-claims-client -p sequoia-browser-map --target wasm32-unknown-unknown -- -D warnings",
   "cargo clippy --locked --manifest-path services/sequoia-ingest/Cargo.toml --all-targets -- -D warnings",
 ]
 

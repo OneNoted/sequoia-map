@@ -8,7 +8,7 @@ addresses = ["127.0.0.1"]
 port = 8081
 
 [watch]
-watch = ["src", "../shared/src", "../wasm/src", "../Cargo.toml", "../Cargo.lock", "index.html", "input.css", "public"]
+watch = ["src", "../browser-map/src", "../shared/src", "../wasm/src", "../Cargo.toml", "../Cargo.lock", "index.html", "input.css", "public"]
 
 [[proxy]]
 backend = "http://127.0.0.1:3000/api/"
