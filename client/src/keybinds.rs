@@ -5,6 +5,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+/// One action of the global map keydown handler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Shortcut {
     Dismiss,
@@ -92,9 +93,10 @@ impl Shortcut {
         }
     }
 
+    /// Short help-dialog text for what the shortcut does.
     pub(crate) const fn description(self) -> &'static str {
         match self {
-            Shortcut::Dismiss => "Close details, clear selection",
+            Shortcut::Dismiss => "Close details or return to guild; otherwise clear selection",
             Shortcut::FocusSearch => "Search",
             Shortcut::ListNext => "Next list item",
             Shortcut::ListPrevious => "Previous list item",
@@ -130,6 +132,7 @@ impl Shortcut {
         }
     }
 
+    /// Resolves an exact, case-sensitive `KeyboardEvent.key` value (`"n"`, not `"N"`).
     pub(crate) fn from_key(key: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -154,7 +157,8 @@ fn key_cap(key: &str) -> String {
 #[derive(Clone, Copy)]
 pub(crate) struct KeybindHelpOpen(pub RwSignal<bool>);
 
-/// The `?` button and the shortcut list it opens.
+/// The `?` button and the shortcut list it opens. `touch_target` grows the button to
+/// the 44px minimum used for touch controls on mobile.
 #[component]
 pub(crate) fn KeybindHelp(#[prop(into)] touch_target: Signal<bool>) -> impl IntoView {
     let KeybindHelpOpen(open) = expect_context();

@@ -131,6 +131,7 @@ pub(crate) struct ConnectionOpacityScale(pub RwSignal<f64>);
 pub(crate) struct ConnectionThicknessScale(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceHighlight(pub RwSignal<bool>);
+/// Base fill alpha of resource-highlighted territories, set by the settings slider.
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceHighlightOpacity(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
@@ -557,8 +558,11 @@ pub(crate) const CONNECTION_OPACITY_SCALE_MAX: f64 = 2.50;
 pub(crate) const CONNECTION_THICKNESS_SCALE_MIN: f64 = 0.70;
 pub(crate) const CONNECTION_THICKNESS_SCALE_MAX: f64 = 2.50;
 // Exact decimal twins of the renderer's `f32` bounds, so the slider snaps to its steps.
+/// Initial and reset opacity; also fills in saved settings that predate the slider.
 pub(crate) const DEFAULT_RESOURCE_HIGHLIGHT_OPACITY: f64 = 0.45;
+/// Faintest highlight the slider allows; resources still read against the map.
 pub(crate) const RESOURCE_HIGHLIGHT_OPACITY_MIN: f64 = 0.15;
+/// Firmest highlight the slider allows, short of fully hiding the map tiles.
 pub(crate) const RESOURCE_HIGHLIGHT_OPACITY_MAX: f64 = 0.90;
 pub(crate) const LABEL_SCALE_MASTER_MIN: f64 = 1.0;
 pub(crate) const LABEL_SCALE_MASTER_MAX: f64 = 2.25;
