@@ -684,17 +684,64 @@ fn SettingsColorRow(label: &'static str, color: RwSignal<NameColor>) -> impl Int
     }
 }
 
-/// The manual season-rating scalar, as a number field.
+/// Reads a finished scalar edit. Only a positive number is an edit; empty, zero, negative
+/// or unparsable text means "no change". (`clamp_manual_scalar` maps those to the default,
+/// which suits a corrupt saved value, not a half-typed one.)
+fn parse_scalar_edit(text: &str) -> Option<f64> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+/// The manual season-rating scalar, as a number field. Typing only changes the field;
+/// Enter, Tab/blur or a spin-button step commits it (clamped into range), and Escape
+/// abandons the edit.
 #[component]
 fn SettingsScalarRow(scalar: RwSignal<f64>) -> impl IntoView {
-    let on_input = move |e: leptos::ev::Event| {
-        if let Some(parsed) = e
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
-            .and_then(|input| input.value().trim().parse::<f64>().ok())
+    let input_ref = NodeRef::<leptos::html::Input>::new();
+    // Set while the field holds unfinished text, so outside updates do not overwrite it.
+    let editing = RwSignal::new(false);
+    let show = move |input: &web_sys::HtmlInputElement| {
+        input.set_value(&format!("{:.2}", scalar.get_untracked()));
+    };
+
+    // Outside changes (Reset all, load) reach the field whenever no edit is in progress.
+    Effect::new(move || {
+        scalar.track();
+        if !editing.get()
+            && let Some(input) = input_ref.get()
         {
-            scalar.set(clamp_manual_scalar(parsed));
+            show(&input);
         }
+    });
+
+    // Only text the user typed is committed: focusing and leaving a field that shows a
+    // rounded value must not rewrite the stored one.
+    let commit = move || {
+        if !editing.get_untracked() {
+            return;
+        }
+        let Some(input) = input_ref.get_untracked() else {
+            return;
+        };
+        if let Some(value) = parse_scalar_edit(&input.value()) {
+            scalar.set(clamp_manual_scalar(value));
+        }
+        editing.set(false);
+        // Also normalizes text that changed nothing ("1.5", rejected input).
+        show(&input);
+    };
+    let on_keydown = move |e: leptos::ev::KeyboardEvent| match e.key().as_str() {
+        "Enter" => commit(),
+        "Escape" => {
+            // The global handler blurs the field next; with the edit dropped, nothing commits.
+            editing.set(false);
+            if let Some(input) = input_ref.get_untracked() {
+                show(&input);
+            }
+        }
+        _ => {}
     };
 
     view! {
@@ -704,13 +751,17 @@ fn SettingsScalarRow(scalar: RwSignal<f64>) -> impl IntoView {
                 <span class="settings-row-hint">"Used when estimating is off or unavailable"</span>
             </span>
             <input
+                node_ref=input_ref
                 type="number"
                 class="seq-input"
                 min="0.05"
                 max="20"
                 step="0.05"
-                prop:value=move || format!("{:.2}", scalar.get())
-                on:input=on_input
+                value=format!("{:.2}", scalar.get_untracked())
+                on:input=move |_| editing.set(true)
+                on:change=move |_| commit()
+                on:blur=move |_| commit()
+                on:keydown=on_keydown
             />
         </label>
     }
@@ -843,7 +894,17 @@ fn SettingsHeatSeasonRow(
 
 #[cfg(test)]
 mod tests {
-    use super::{Overlay, TimeHeld, ZoomedOutLabels};
+    use super::{Overlay, TimeHeld, ZoomedOutLabels, parse_scalar_edit};
+
+    #[test]
+    fn scalar_edits_accept_only_positive_numbers() {
+        assert_eq!(parse_scalar_edit("0.5"), Some(0.5));
+        assert_eq!(parse_scalar_edit(" 1.25 "), Some(1.25));
+        assert_eq!(parse_scalar_edit("25"), Some(25.0)); // clamped on commit, not here
+        for rejected in ["", " ", "0", "-2", "abc", "NaN", "inf", "1e999"] {
+            assert_eq!(parse_scalar_edit(rejected), None, "{rejected:?}");
+        }
+    }
 
     #[test]
     fn overlay_choice_round_trips_the_exclusive_flags() {
