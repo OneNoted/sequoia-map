@@ -2174,9 +2174,13 @@ pub fn MapPage() -> impl IntoView {
                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                     .map(|el| el.tag_name())
                     .unwrap_or_default();
+                let is_radio = e
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                    .is_some_and(|input| input.type_() == "radio");
 
-                // Don't intercept when typing in an input
-                if target_tag == "INPUT" || target_tag == "TEXTAREA" {
+                // Text and other input controls keep their existing key handling.
+                if (target_tag == "INPUT" && !is_radio) || target_tag == "TEXTAREA" {
                     if key == "Escape"
                         && let Some(el) = e
                             .target()
@@ -2184,6 +2188,15 @@ pub fn MapPage() -> impl IntoView {
                     {
                         el.blur().ok();
                     }
+                    return;
+                }
+                // Radios keep native navigation/activation, but not map shortcuts.
+                if is_radio
+                    && matches!(
+                        key.as_str(),
+                        " " | "Enter" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight"
+                    )
+                {
                     return;
                 }
 
