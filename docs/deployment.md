@@ -48,6 +48,18 @@ and `SEQUOIA_EDGE_IMAGE` override each image. Configure registry credentials
 in Coolify if the packages are private. Trigger deployment only after image
 publication succeeds.
 
+The deployment workflow is restricted to the deployment fork's `main` branch.
+It compares against the last successful image-publication and Coolify-trigger
+run, so failed, cancelled and no-op runs cannot hide outstanding image changes.
+Unknown inputs or unavailable baseline history rebuild every image. Server,
+ingest and edge candidates build on independent runners with SHA tags; only
+after all selected builds succeed are their exact digests promoted to `main`
+and Coolify triggered. Production workflows are serialized without cancelling
+an active deployment, and a superseded source head cannot promote its images.
+Unchanged images keep their existing revisions; a successful trigger is not
+proof that Coolify has completed the rollout. Verify running image digests and
+the real service health after deployment.
+
 The published images use Docker Official Images from Amazon ECR Public
 (`public.ecr.aws/docker/library`) for their Rust, Debian and Caddy bases. This
 avoids Docker Hub's shared anonymous pull limit on GitHub-hosted builders while
@@ -55,6 +67,16 @@ retaining the same upstream images and version tags. The tags remain mutable
 so rebuilds can pick up upstream base-image security updates.
 The CI PostgreSQL service uses the same official mirror for its existing
 `18.3-alpine` tag; database test coverage and service configuration are unchanged.
+
+Rust dependency builds are separate manifest/lockfile layers, reused through
+the existing registry build cache even on fresh runners. First-party stub
+artifacts are cleaned before copying real source, preventing Cargo from
+mistaking old source timestamps for fresh binaries. Keep the stub manifest
+and source lists aligned with workspace members and any future build scripts;
+the separately locked ingest workspace has its own dependency layer. Client
+tooling is independent of these manifests, and Trunk matches the Mise pin.
+The parallel native/WASM stages each receive half the runner's Cargo job budget;
+local builds can override `CARGO_BUILD_JOBS` with a Docker build argument.
 
 `docker-compose.coolify.dev.yml` is the separate deployed development stack,
 not the local hot-reload environment.
