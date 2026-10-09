@@ -1,10 +1,12 @@
 .git
 .jj
 .github
-target
-client/dist
-client/.trunk
-client/.cache
+**/target
+**/dist
+**/.trunk
+**/.cache
+.data
+mise.local.toml
 **/*.log
 .env
 .env.*

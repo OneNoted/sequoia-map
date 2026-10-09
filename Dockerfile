@@ -1,11 +1,29 @@
-### Stage 1: Build the client (WASM via Trunk)
-FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS client-build
+FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS workspace-deps
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY shared/Cargo.toml shared/Cargo.toml
+COPY wasm/Cargo.toml wasm/Cargo.toml
+COPY browser-map/Cargo.toml browser-map/Cargo.toml
+COPY client/Cargo.toml client/Cargo.toml
+COPY claims-client/Cargo.toml claims-client/Cargo.toml
+COPY server/Cargo.toml server/Cargo.toml
+# Keep dependency artifacts in ordinary layers: registry exports do not retain cache mounts.
+RUN mkdir -p shared/src wasm/src browser-map/src client/src claims-client/src server/src \
+    && touch shared/src/lib.rs wasm/src/lib.rs browser-map/src/lib.rs \
+    && echo 'fn main() {}' > client/src/main.rs \
+    && echo 'fn main() {}' > claims-client/src/main.rs \
+    && echo 'fn main() {}' > server/src/main.rs
+
+### Client tooling is independent of the application dependency manifests.
+FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS client-tools
 
 ARG TARGETARCH
 ARG BINARYEN_VERSION=126
 ARG BINARYEN_ARCH=
 ARG TAILWINDCSS_VERSION=4.2.0
 ARG WASM_BINDGEN_VERSION=0.2.113
+ARG TRUNK_VERSION=0.21.14
 
 RUN apt-get update && apt-get install -y --no-install-recommends brotli gzip ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY .ci/binaryen/ /tmp/binaryen-assets/
@@ -101,58 +119,47 @@ RUN set -eux; \
 RUN rustup target add wasm32-unknown-unknown
 RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=sequoia-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    cargo install trunk --locked
+    cargo install trunk --version "${TRUNK_VERSION}" --locked
 
+FROM client-tools AS client-build
+
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+COPY --from=workspace-deps /app/ /app/
+RUN cargo build --release --locked --target wasm32-unknown-unknown -p sequoia-client -p sequoia-claims-client \
+    && cargo clean --release --locked --target wasm32-unknown-unknown \
+       -p sequoia-shared -p sequoia-map-engine -p sequoia-browser-map \
+       -p sequoia-client -p sequoia-claims-client
 COPY shared/ shared/
 COPY wasm/ wasm/
 COPY browser-map/ browser-map/
 COPY client/ client/
 COPY claims-client/ claims-client/
-# Need a stub server crate so workspace resolves
-COPY server/Cargo.toml server/Cargo.toml
-RUN mkdir -p server/src && echo 'fn main() {}' > server/src/main.rs
-
 WORKDIR /app/client
-RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=sequoia-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=sequoia-client-target,target=/app/target,sharing=locked \
-    --mount=type=cache,id=sequoia-trunk-cache,target=/app/.trunk,sharing=locked \
-    trunk build --release
+RUN trunk build --release --locked
 RUN find dist -type f -name '*_bg.wasm' -exec wasm-opt -Oz {} -o {} \;
 RUN find dist -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' \) -exec sh -c 'brotli -f -q 11 "$1" -o "$1.br"; gzip -f -k -9 "$1"' _ {} \;
 
 WORKDIR /app/claims-client
-RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=sequoia-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=sequoia-client-target,target=/app/target,sharing=locked \
-    --mount=type=cache,id=sequoia-trunk-cache,target=/app/.trunk,sharing=locked \
-    trunk build --release
+RUN trunk build --release --locked
 RUN find dist -type f -name '*_bg.wasm' -exec wasm-opt -Oz {} -o {} \;
 RUN find dist -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' \) -exec sh -c 'brotli -f -q 11 "$1" -o "$1.br"; gzip -f -k -9 "$1"' _ {} \;
 
-### Stage 2: Build the server
-FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS server-build
+### Build the server
+FROM workspace-deps AS server-build
 
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+RUN cargo build --release --locked --bin sequoia-server \
+    && cargo clean --release --locked -p sequoia-server -p sequoia-shared
 COPY shared/ shared/
 COPY wasm/ wasm/
 COPY server/ server/
-# Need stub browser crates so workspace resolves
-COPY browser-map/Cargo.toml browser-map/Cargo.toml
-RUN mkdir -p browser-map/src && touch browser-map/src/lib.rs
-COPY client/Cargo.toml client/Cargo.toml
-RUN mkdir -p client/src && echo 'fn main() {}' > client/src/main.rs
-COPY claims-client/Cargo.toml claims-client/Cargo.toml
-RUN mkdir -p claims-client/src && echo 'fn main() {}' > claims-client/src/main.rs
 
-RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=sequoia-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=sequoia-server-target,target=/tmp/target-cache,sharing=locked \
-    CARGO_TARGET_DIR=/tmp/target-cache cargo build --release --bin sequoia-server && \
-    install -Dm755 /tmp/target-cache/release/sequoia-server /app/sequoia-server && \
+RUN cargo build --release --locked --bin sequoia-server && \
+    install -Dm755 /app/target/release/sequoia-server /app/sequoia-server && \
     strip /app/sequoia-server
 
 ### Stage 3: Runtime
