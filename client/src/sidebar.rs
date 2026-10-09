@@ -1958,6 +1958,7 @@ fn StatsBar() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let connection: RwSignal<ConnectionStatus> = expect_context();
     let ShowSettings(show_settings) = expect_context();
+    let SidebarOpen(sidebar_open) = expect_context();
     let CurrentMode(mode) = expect_context();
     let PlaybackActive(playback_active) = expect_context();
     let HistoryAvailable(history_available) = expect_context();
@@ -1981,7 +1982,7 @@ fn StatsBar() -> impl IntoView {
     let reset_armed = RwSignal::new(false);
     let reset_arming = StoredValue::new(0u32);
     Effect::new(move || {
-        if !show_settings.get() {
+        if !show_settings.get() || !sidebar_open.get() {
             reset_armed.set(false);
         }
     });
