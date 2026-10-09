@@ -1469,6 +1469,7 @@ fn claims_render_settings(resource_highlight: bool) -> RenderSettings {
         thick_cooldown_borders: false,
         suppress_cooldown_visuals: true,
         resource_highlight,
+        resource_highlight_opacity: 0.34,
         defense_highlight: false,
         fill_alpha_boost: 0.12,
         show_connections: true,
