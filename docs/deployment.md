@@ -53,6 +53,8 @@ The published images use Docker Official Images from Amazon ECR Public
 avoids Docker Hub's shared anonymous pull limit on GitHub-hosted builders while
 retaining the same upstream images and version tags. The tags remain mutable
 so rebuilds can pick up upstream base-image security updates.
+The CI PostgreSQL service uses the same official mirror for its existing
+`18.3-alpine` tag; database test coverage and service configuration are unchanged.
 
 `docker-compose.coolify.dev.yml` is the separate deployed development stack,
 not the local hot-reload environment.
