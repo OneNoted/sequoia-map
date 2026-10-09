@@ -241,6 +241,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                         // A new renderer starts with empty caches.
                         state.planner = ScenePlanner::default();
                         drop(state);
+                        gpu_error.set(None);
                         gl_context.lost.set(false);
                         scheduler.mark_dirty();
                     }
