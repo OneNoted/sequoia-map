@@ -433,6 +433,9 @@ jobs:
             exit 1
           fi
 
+          # Narrow the promotion-to-trigger window; Git and HTTP are not atomic.
+          current_head="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main)" || exit 1
+          [ "${current_head}" = "${GITHUB_SHA}"$'\trefs/heads/main' ] || { echo "Refusing trigger: candidate is superseded or main is unknown." >&2; exit 1; }
           curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error --connect-timeout 10 --max-time 60 \
             -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
             "${COOLIFY_WEBHOOK}"
