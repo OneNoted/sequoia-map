@@ -456,7 +456,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
             </SettingsDisclosure>
 
             <SettingsDisclosure title="Advanced" hint="Diagnostics">
-                <SettingsSwitch label="API Status Badge" hint="Live data source status in the sidebar header" active=show_debug_info />
+                <SettingsSwitch label="Diagnostics" hint="API status and territory data sources" active=show_debug_info />
                 <div class="settings-row settings-info">
                     <span class="settings-row-label">"Territories loaded"</span>
                     <span class="settings-value">{move || territory_count.get()}</span>
