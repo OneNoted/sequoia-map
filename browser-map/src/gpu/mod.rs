@@ -639,6 +639,20 @@ fn set_claim_label_debug(scale: f64, active: bool, cluster_count: usize, rendere
     );
 }
 
+/// Logs an uncaptured wgpu error. A broken pipeline would repeat every frame, so only the
+/// first few are logged in full.
+fn report_uncaptured_error(error: wgpu::Error) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    const LOGGED: u32 = 8;
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    let seen = SEEN.fetch_add(1, Ordering::Relaxed);
+    if seen < LOGGED {
+        web_sys::console::error_1(&format!("wgpu error: {error}").into());
+    } else if seen == LOGGED {
+        web_sys::console::error_1(&"wgpu error: further errors are not logged".into());
+    }
+}
+
 fn gpu_is_firefox() -> bool {
     web_sys::window()
         .and_then(|w| w.navigator().user_agent().ok())
@@ -1074,6 +1088,10 @@ impl GpuRenderer {
             )
             .await
             .map_err(|e| format!("wgpu init ({backend_path}) request_device: {e}"))?;
+        // wgpu's default handler panics, and a panic mid-frame leaves the whole map wedged.
+        // Validation and lost-context errors are reported instead; the frame they spoil is
+        // redrawn, and a lost context is rebuilt by the canvas.
+        device.on_uncaptured_error(Box::new(report_uncaptured_error));
 
         let mut surface_config = surface
             .get_default_config(&adapter, width, height)
@@ -2591,6 +2609,11 @@ impl GpuRenderer {
 
     pub fn frame_metrics(&self) -> FrameMetrics {
         self.frame_metrics
+    }
+
+    /// The largest surface side the device accepts, in physical pixels.
+    pub fn max_surface_side(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
     }
 
     /// Resize the surface when the canvas size changes.
