@@ -2,45 +2,27 @@ use leptos::prelude::*;
 use std::collections::HashMap;
 use wasm_bindgen::JsCast;
 
-use sequoia_shared::history::HistoryHeatMeta;
 use sequoia_shared::{
     DataProvenance, Resources, TreasuryLevel, passive_sr_per_5s, passive_sr_per_hour,
 };
 
 use crate::app::{
-    AbbreviateNames, AutoSrScalarEnabled, BoldConnections, CONNECTION_OPACITY_SCALE_MAX,
-    CONNECTION_OPACITY_SCALE_MIN, CONNECTION_THICKNESS_SCALE_MAX, CONNECTION_THICKNESS_SCALE_MIN,
-    ConnectionOpacityScale, ConnectionThicknessScale, CurrentMode,
-    DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_THICKNESS_SCALE,
-    DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER, DEFAULT_LABEL_SCALE_STATIC_NAME,
-    DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight, DetailReturnGuild, GuildColorStore,
-    GuildOnlineData, HeatEntriesByTerritory, HeatFallbackApplied, HeatHistoryBasis,
-    HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled,
-    HeatSelectedSeasonId, HeatWindowLabel, HistoryAvailable, HistoryBoundsSignal,
+    AutoSrScalarEnabled, CurrentMode, DetailReturnGuild, GuildColorStore, GuildOnlineData,
+    HeatEntriesByTerritory, HeatModeEnabled, HistoryAvailable, HistoryBoundsSignal,
     HistoryBufferModeActive, HistoryBufferedUpdates, HistoryFetchNonce,
     HistoryLegacyGeometryActive, HistorySeasonLeaderboard, HistorySeasonScalarSample,
-    HistoryTimestamp, IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN,
-    LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
-    LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, LastLiveSeq, LeaderboardSortBySr,
-    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapIntelModeEnabled, MapMode,
-    NameColor, NameColorSetting, NeedsLiveResync, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN,
-    PlaybackActive, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize,
-    RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont,
-    ResetSettingsTrigger, ResourceHighlight, ResourceHighlightOpacity, Selected, SelectedGuild,
-    ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
-    ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
-    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
-    ShowSettings, ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, SidebarIndex, SidebarItems,
-    SidebarOpen, SidebarTransient, TagColorSetting, TerritoryGeometryStore, ThickCooldownBorders,
-    WarFeedVisible, clamp_connection_opacity_scale, clamp_connection_thickness_scale,
-    clamp_label_scale_group, clamp_label_scale_master, clamp_player_head_size,
-    clamp_resource_highlight_opacity,
+    HistoryTimestamp, IsMobile, LastLiveSeq, LeaderboardSortBySr, LiveHandoffResyncCount,
+    LiveSeasonScalarSample, ManualSrScalar, MapMode, NeedsLiveResync, PlaybackActive,
+    ResetSettingsTrigger, Selected, SelectedGuild, ShowDebugInfo, ShowLeaderboardOnline,
+    ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowSettings,
+    SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient, TerritoryGeometryStore,
 };
 use crate::colors::rgba_css;
 use crate::defense::defense_tier_display;
 use crate::history;
 use crate::keybinds::KeybindHelp;
 use crate::season_scalar::{ScalarSource, effective_scalar};
+use crate::settings_menu::SettingsPanel;
 use crate::territory::ClientTerritoryMap;
 use crate::tower::TowerCalculator;
 use sequoia_browser_map::BrowserMap;
@@ -548,651 +530,6 @@ fn SearchBar() -> impl IntoView {
                     style:display=move || if is_mobile.get() { "none" } else { "block" }
                 >"/"</div>
             </div>
-        </div>
-    }
-}
-
-#[component]
-fn SettingsPanel() -> impl IntoView {
-    let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let ShowSettings(show_settings) = expect_context();
-    let AbbreviateNames(abbreviate_names) = expect_context();
-    let show_connections: RwSignal<bool> = expect_context();
-    let ShowCountdown(show_countdown) = expect_context();
-    let ShowGranularMapTime(show_granular_map_time) = expect_context();
-    let ShowCompoundMapTime(show_compound_map_time) = expect_context();
-    let ShowNames(show_names) = expect_context();
-    let ShowClaimLabels(show_claim_labels) = expect_context();
-    let ShowFarZoomTerritoryTags(show_far_zoom_territory_tags) = expect_context();
-    let ThickCooldownBorders(thick_cooldown_borders) = expect_context();
-    let BoldConnections(bold_connections) = expect_context();
-    let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
-    let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
-    let ResourceHighlight(resource_highlight) = expect_context();
-    let ResourceHighlightOpacity(resource_highlight_opacity) = expect_context();
-    let DefenseHighlight(defense_highlight) = expect_context();
-    let MapIntelModeEnabled(map_intel_enabled) = expect_context();
-    let ShowResourceIcons(show_resource_icons) = expect_context();
-    let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
-    let ManualSrScalar(manual_sr_scalar) = expect_context();
-    let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
-    let ShowLeaderboardSrGain(show_leaderboard_sr_gain) = expect_context();
-    let ShowLeaderboardSrValue(show_leaderboard_sr_value) = expect_context();
-    let ShowLeaderboardTerritoryCount(show_leaderboard_territory_count) = expect_context();
-    let ShowLeaderboardOnline(show_leaderboard_online) = expect_context();
-    let HeatModeEnabled(heat_mode_enabled) = expect_context();
-    let HeatLiveSourceSetting(heat_live_source) = expect_context();
-    let HeatHistoryBasisSetting(heat_history_basis) = expect_context();
-    let HeatSelectedSeasonId(heat_selected_season_id) = expect_context();
-    let HeatMetaState(heat_meta) = expect_context();
-    let HeatFallbackApplied(heat_fallback_applied) = expect_context();
-    let HeatWindowLabel(heat_window_label) = expect_context();
-    let CurrentMode(mode) = expect_context();
-    let ReadableFont(readable_font) = expect_context();
-    let NameColorSetting(name_color) = expect_context();
-    let TagColorSetting(tag_color) = expect_context();
-    let ShowMinimap(show_minimap) = expect_context();
-    let ShowWarQueue(show_war_queue) = expect_context();
-    let ShowWarStats(show_war_stats) = expect_context();
-    let ShowPlayerHeads(show_player_heads) = expect_context();
-    let PlayerHeadRenderHead(player_head_render_head) = expect_context();
-    let PlayerHeadRenderLabel(player_head_render_label) = expect_context();
-    let PlayerHeadSize(player_head_size) = expect_context();
-    let WarFeedVisible(war_feed_visible) = expect_context();
-    let IsMobile(is_mobile) = expect_context();
-    let LabelScaleMaster(label_scale_master) = expect_context();
-    let LabelScaleStatic(label_scale_static_tag) = expect_context();
-    let LabelScaleStaticName(label_scale_static_name) = expect_context();
-    let LabelScaleDynamic(label_scale_dynamic) = expect_context();
-    let LabelScaleIcons(label_scale_icons) = expect_context();
-    let ShowDebugInfo(show_debug_info) = expect_context();
-    let territory_count = Memo::new(move |_| territories.get().len());
-
-    view! {
-        <div style="border-bottom: 1px solid var(--color-border-subtle);">
-            <div style="padding: 12px 14px 8px; display: flex; align-items: center; gap: 10px;">
-                <button
-                    style="width: 30px; height: 30px; border-radius: 999px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: var(--color-text-secondary); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color 0.15s, background 0.15s, color 0.15s; font-family: var(--font-mono); font-size: 0.92rem; line-height: 1;"
-                    title="Back"
-                    on:click=move |_| show_settings.set(false)
-                    on:mouseenter=move |e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("color", "var(--color-gold)").ok();
-                            el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
-                            el.style().set_property("background", "var(--color-deep)").ok();
-                        }
-                    }
-                    on:mouseleave=move |e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("color", "var(--color-text-secondary)").ok();
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                            el.style().set_property("background", "var(--color-surface)").ok();
-                        }
-                    }
-                >
-                    "\u{2039}"
-                </button>
-                <div style="font-family: var(--font-display); font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim);">
-                    <span style="color: var(--color-gold); margin-right: 6px; font-size: 0.812rem;">{"\u{2699}"}</span>"Settings"
-                </div>
-            </div>
-            <div style="padding: 0 12px 12px;">
-                <SettingsSectionHeader title="Labels" />
-                <SettingsToggleRow label="Territory Names" shortcut="N" active=show_names />
-                <SettingsToggleRow label="Guild Area Names" shortcut="" active=show_claim_labels />
-                <SettingsToggleRow label="Far-Zoom Territory Tags" shortcut="" active=show_far_zoom_territory_tags />
-                <SettingsToggleRow label="Abbreviate Names" shortcut="A" active=abbreviate_names />
-                <SettingsToggleRow label="Readable Font" shortcut="F" active=readable_font />
-                <SettingsNameColorRow color=name_color />
-                <SettingsNameColorRow color=tag_color label="Tag Color" />
-
-                <SettingsSectionHeader title="Label Scale" />
-                <SettingsScaleRow
-                    label="Master"
-                    value=label_scale_master
-                    min=LABEL_SCALE_MASTER_MIN
-                    max=LABEL_SCALE_MASTER_MAX
-                    step=0.05
-                    clamp=clamp_label_scale_master
-                />
-                <SettingsScaleRow
-                    label="Guild Tag"
-                    value=label_scale_static_tag
-                    min=LABEL_SCALE_GROUP_MIN
-                    max=LABEL_SCALE_GROUP_MAX
-                    step=0.05
-                    clamp=clamp_label_scale_group
-                />
-                <SettingsScaleRow
-                    label="Territory Name"
-                    value=label_scale_static_name
-                    min=LABEL_SCALE_GROUP_MIN
-                    max=LABEL_SCALE_GROUP_MAX
-                    step=0.05
-                    clamp=clamp_label_scale_group
-                />
-                <SettingsScaleRow
-                    label="Timers & Cooldowns"
-                    value=label_scale_dynamic
-                    min=LABEL_SCALE_GROUP_MIN
-                    max=LABEL_SCALE_GROUP_MAX
-                    step=0.05
-                    clamp=clamp_label_scale_group
-                />
-                <SettingsScaleRow
-                    label="Resource Icons"
-                    value=label_scale_icons
-                    min=LABEL_SCALE_GROUP_MIN
-                    max=LABEL_SCALE_GROUP_MAX
-                    step=0.05
-                    clamp=clamp_label_scale_group
-                />
-                <SettingsScaleResetRow
-                    master=label_scale_master
-                    static_tag=label_scale_static_tag
-                    static_name=label_scale_static_name
-                    dynamic=label_scale_dynamic
-                    icons=label_scale_icons
-                />
-
-                <SettingsSectionHeader title="Timing" />
-                <SettingsToggleRow label="Countdown Timer" shortcut="T" active=show_countdown />
-                <SettingsToggleRow label="Granular Map Time" shortcut="" active=show_granular_map_time />
-                <SettingsToggleRow label="Compound Map Time" shortcut="" active=show_compound_map_time />
-                <SettingsToggleRow label="Thick Cooldown Borders" shortcut="" active=thick_cooldown_borders />
-
-                <SettingsSectionHeader title="Map" />
-                <SettingsToggleRow label="Connection Lines" shortcut="C" active=show_connections />
-                <SettingsToggleRow label="Bold Connections" shortcut="B" active=bold_connections />
-                <SettingsScaleRow
-                    label="Line Opacity"
-                    value=connection_opacity_scale
-                    min=CONNECTION_OPACITY_SCALE_MIN
-                    max=CONNECTION_OPACITY_SCALE_MAX
-                    step=0.05
-                    clamp=clamp_connection_opacity_scale
-                />
-                <SettingsScaleRow
-                    label="Line Thickness"
-                    value=connection_thickness_scale
-                    min=CONNECTION_THICKNESS_SCALE_MIN
-                    max=CONNECTION_THICKNESS_SCALE_MAX
-                    step=0.05
-                    clamp=clamp_connection_thickness_scale
-                />
-                <SettingsConnectionScaleResetRow
-                    opacity=connection_opacity_scale
-                    thickness=connection_thickness_scale
-                />
-                <SettingsToggleRow label="Resource Highlight" shortcut="P" active=resource_highlight />
-                <SettingsScaleRow
-                    label="Highlight Opacity"
-                    value=resource_highlight_opacity
-                    min=RESOURCE_HIGHLIGHT_OPACITY_MIN
-                    max=RESOURCE_HIGHLIGHT_OPACITY_MAX
-                    step=0.05
-                    clamp=clamp_resource_highlight_opacity
-                />
-                <SettingsToggleRow label="Defense Highlight" shortcut="D" active=defense_highlight />
-                <SettingsToggleRow label="Map Intel" shortcut="I" active=map_intel_enabled />
-                <SettingsToggleRow label="Resource Icons" shortcut="" active=show_resource_icons />
-                <SettingsToggleRow label="Territory Ornaments" shortcut="" active=show_territory_ornaments />
-                <SettingsToggleRow label="Minimap" shortcut="M" active=show_minimap />
-                <SettingsToggleRow label="Heat Map" shortcut="" active=heat_mode_enabled />
-                <div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 10px;">
-                    <span style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body);">"Territories"</span>
-                    <span style="font-size: 0.858rem; color: var(--color-text-secondary); font-family: var(--font-mono);">
-                        {move || territory_count.get()}
-                    </span>
-                </div>
-                <Show when=move || heat_mode_enabled.get()>
-                    <div style="padding: 4px 10px 8px; border-top: 1px solid rgba(40,44,62,0.5); margin-top: 4px;">
-                        <SettingsHeatSourceRow
-                            mode=mode
-                            live_source=heat_live_source
-                            history_basis=heat_history_basis
-                        />
-                        <Show when=move || {
-                            if mode.get() == MapMode::History {
-                                heat_history_basis.get() == HeatHistoryBasis::SeasonCumulative
-                            } else {
-                                heat_live_source.get() == HeatLiveSource::Season
-                            }
-                        }>
-                            <SettingsHeatSeasonRow season_id=heat_selected_season_id meta=heat_meta />
-                        </Show>
-                        <Show when=move || heat_fallback_applied.get()>
-                            <div style="font-size: 0.766rem; color: var(--color-gold); font-family: var(--font-mono); margin-top: 6px;">
-                                "Season data unavailable, using last 60d fallback."
-                            </div>
-                        </Show>
-                        <div style="font-size: 0.719rem; color: #6f748f; font-family: var(--font-mono); margin-top: 5px;">
-                            {move || heat_window_label.get()}
-                        </div>
-                    </div>
-                </Show>
-
-                // Only for viewers who can actually see the war feed - the same rule the
-                // panels themselves follow. For everyone else these would be dead toggles.
-                <Show when=move || war_feed_visible.get()>
-                    <SettingsSectionHeader title="War" />
-                    <SettingsToggleRow label="War Queue" shortcut="" active=show_war_queue />
-                    // Desktop only: `WarStatsStrip` never renders on a phone, so on mobile
-                    // this would be another dead toggle.
-                    <Show when=move || !is_mobile.get()>
-                        <SettingsToggleRow label="War Stats" shortcut="" active=show_war_stats />
-                    </Show>
-                    <SettingsToggleRow label="Teammate Heads" shortcut="" active=show_player_heads />
-                    // Nested under the master toggle: with heads off these three decide
-                    // nothing, and the panel is long enough already.
-                    <Show when=move || show_player_heads.get()>
-                        <SettingsToggleRow label="Render Head" shortcut="" active=player_head_render_head />
-                        <SettingsToggleRow label="Render Label" shortcut="" active=player_head_render_label />
-                        <SettingsScaleRow
-                            label="Head Size"
-                            value=player_head_size
-                            min=PLAYER_HEAD_SIZE_MIN
-                            max=PLAYER_HEAD_SIZE_MAX
-                            step=1.0
-                            clamp=clamp_player_head_size
-                        />
-                    </Show>
-                </Show>
-
-                <SettingsSectionHeader title="Season Rating" />
-                <SettingsScalarRow scalar=manual_sr_scalar />
-                <SettingsToggleRow label="Auto Scalar Estimate" shortcut="" active=auto_sr_scalar_enabled />
-
-                <SettingsSectionHeader title="Leaderboard" />
-                <SettingsToggleRow label="Territory Count" shortcut="" active=show_leaderboard_territory_count />
-                <SettingsToggleRow label="Online Count" shortcut="" active=show_leaderboard_online />
-                <SettingsToggleRow label="SR Gain" shortcut="" active=show_leaderboard_sr_gain />
-                <SettingsToggleRow label="SR Value" shortcut="" active=show_leaderboard_sr_value />
-
-                <SettingsSectionHeader title="Advanced" />
-                <SettingsToggleRow label="Debug Mode" shortcut="" active=show_debug_info />
-            </div>
-        </div>
-    }
-}
-
-const NAME_COLOR_OPTIONS: &[(NameColor, &str, &str)] = &[
-    (NameColor::White, "White", "#dcdad2"),
-    (NameColor::Guild, "Guild", "#a88cc8"), // representative purple for the swatch
-    (NameColor::Gold, "Gold", "#f5c542"),   // hex, not a token: the alpha suffix below concatenates
-    (NameColor::Copper, "Copper", "#b56727"),
-    (NameColor::Muted, "Muted", "#787470"),
-];
-
-#[component]
-fn SettingsNameColorRow(
-    color: RwSignal<NameColor>,
-    #[prop(default = "Name Color")] label: &'static str,
-) -> impl IntoView {
-    view! {
-        <div style="display: flex; align-items: center; justify-content: space-between; padding: 9px 10px;">
-            <span style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body);">{label}</span>
-            <div style="display: flex; gap: 6px; align-items: center;">
-                {NAME_COLOR_OPTIONS.iter().map(|&(variant, label, css_color)| {
-                    let on_click = move |_| color.set(variant);
-                    view! {
-                        <span
-                            title=label
-                            style=move || {
-                                let selected = color.get() == variant;
-                                format!(
-                                    "display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: {}; cursor: pointer; border: 2px solid {}; transition: border-color 0.15s, box-shadow 0.15s;{}",
-                                    css_color,
-                                    if selected { "var(--color-text-primary)" } else { "#2a2e40" },
-                                    if selected { format!(" box-shadow: 0 0 5px {css_color}80;") } else { String::new() },
-                                )
-                            }
-                            on:click=on_click
-                        />
-                    }
-                }).collect_view()}
-            </div>
-        </div>
-    }
-}
-
-#[component]
-fn SettingsSectionHeader(title: &'static str) -> impl IntoView {
-    view! {
-        <div
-            style="padding: 10px 10px 5px; margin-top: 4px; font-family: var(--font-mono); font-size: 0.719rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-text-dim);"
-        >
-            {title}
-        </div>
-    }
-}
-
-#[component]
-fn SettingsScalarRow(scalar: RwSignal<f64>) -> impl IntoView {
-    let on_input = move |e: leptos::ev::Event| {
-        let Some(target) = e.target() else {
-            return;
-        };
-        let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
-            return;
-        };
-        if let Ok(parsed) = input.value().trim().parse::<f64>() {
-            scalar.set(crate::season_scalar::clamp_manual_scalar(parsed));
-        }
-    };
-
-    view! {
-        <div
-            style="display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border-radius: 4px;"
-        >
-            <span style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body);">
-                "Manual Scalar"
-            </span>
-            <input
-                type="number"
-                min="0.05"
-                max="20"
-                step="0.05"
-                prop:value=move || format!("{:.2}", scalar.get())
-                on:input=on_input
-                style="width: 90px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.835rem; padding: 4px 6px; outline: none;"
-            />
-        </div>
-    }
-}
-
-#[component]
-fn SettingsScaleRow(
-    label: &'static str,
-    value: RwSignal<f64>,
-    min: f64,
-    max: f64,
-    step: f64,
-    clamp: fn(f64) -> f64,
-) -> impl IntoView {
-    let slider_ref = NodeRef::<leptos::html::Input>::new();
-    let slider_ref_sync = slider_ref;
-    let local_value: RwSignal<f64> = RwSignal::new(clamp(value.get_untracked()));
-    let dragging: RwSignal<bool> = RwSignal::new(false);
-
-    Effect::new(move || {
-        let external = clamp(value.get());
-        if !dragging.get() {
-            local_value.set(external);
-            if let Some(input) = slider_ref_sync.get() {
-                input.set_value(&format!("{external:.2}"));
-            }
-        }
-    });
-
-    let on_input = {
-        move |e: leptos::ev::Event| {
-            let Some(target) = e.target() else {
-                return;
-            };
-            let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
-                return;
-            };
-            if let Ok(parsed) = input.value().trim().parse::<f64>() {
-                let clamped = clamp(parsed);
-                dragging.set(true);
-                local_value.set(clamped);
-                value.set(clamped);
-            }
-        }
-    };
-
-    let on_change = {
-        move |e: leptos::ev::Event| {
-            if let Some(target) = e.target()
-                && let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>()
-                && let Ok(parsed) = input.value().trim().parse::<f64>()
-            {
-                let clamped = clamp(parsed);
-                local_value.set(clamped);
-                value.set(clamped);
-            }
-            dragging.set(false);
-        }
-    };
-
-    view! {
-        <div style="display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 4px;">
-            <span style="min-width: 124px; font-size: 0.951rem; color: var(--color-text-primary); font-family: var(--font-body);">
-                {label}
-            </span>
-            <input
-                node_ref=slider_ref
-                type="range"
-                class="timeline-slider"
-                min=min
-                max=max
-                step=step
-                value=format!("{:.2}", local_value.get_untracked())
-                on:input=on_input
-                on:change=on_change
-                style="flex: 1; margin: 0; accent-color: var(--color-gold);"
-            />
-            <span
-                style="width: 42px; text-align: right; font-family: var(--font-mono); font-size: 0.766rem; color: var(--color-text-secondary);"
-            >
-                {move || format!("{:.2}", value.get())}
-            </span>
-        </div>
-    }
-}
-
-#[component]
-fn SettingsScaleResetRow(
-    master: RwSignal<f64>,
-    static_tag: RwSignal<f64>,
-    static_name: RwSignal<f64>,
-    dynamic: RwSignal<f64>,
-    icons: RwSignal<f64>,
-) -> impl IntoView {
-    let on_reset = move |_| {
-        master.set(DEFAULT_LABEL_SCALE_MASTER);
-        static_tag.set(DEFAULT_LABEL_SCALE_STATIC_TAG);
-        static_name.set(DEFAULT_LABEL_SCALE_STATIC_NAME);
-        dynamic.set(DEFAULT_LABEL_SCALE_GROUP);
-        icons.set(DEFAULT_LABEL_SCALE_GROUP);
-    };
-
-    view! {
-        <div style="display: flex; justify-content: flex-end; padding: 2px 10px 6px;">
-            <button
-                on:click=on_reset
-                style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.719rem; padding: 3px 8px; cursor: pointer;"
-            >
-                "Reset"
-            </button>
-        </div>
-    }
-}
-
-#[component]
-fn SettingsConnectionScaleResetRow(
-    opacity: RwSignal<f64>,
-    thickness: RwSignal<f64>,
-) -> impl IntoView {
-    let on_reset = move |_| {
-        opacity.set(DEFAULT_CONNECTION_OPACITY_SCALE);
-        thickness.set(DEFAULT_CONNECTION_THICKNESS_SCALE);
-    };
-
-    view! {
-        <div style="display: flex; justify-content: flex-end; padding: 2px 10px 6px;">
-            <button
-                on:click=on_reset
-                style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.719rem; padding: 3px 8px; cursor: pointer;"
-            >
-                "Reset"
-            </button>
-        </div>
-    }
-}
-
-#[component]
-fn SettingsToggleRow(
-    label: &'static str,
-    shortcut: &'static str,
-    active: RwSignal<bool>,
-) -> impl IntoView {
-    let on_click = move |_| {
-        active.update(|v| *v = !*v);
-    };
-
-    view! {
-        <div
-            style="display: flex; align-items: center; justify-content: space-between; padding: 9px 10px; border-radius: 4px; cursor: pointer; transition: background 0.15s;"
-            on:click=on_click
-            on:mouseenter=|e| {
-                if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("background", "var(--color-surface-hover)").ok();
-                }
-            }
-            on:mouseleave=|e| {
-                if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("background", "transparent").ok();
-                }
-            }
-        >
-            <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body);">{label}</span>
-                {(!shortcut.is_empty()).then(|| view! {
-                    <span style="font-family: var(--font-mono); font-size: 0.673rem; color: var(--color-border-accent); background: var(--color-surface); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--color-border-subtle);">{shortcut}</span>
-                })}
-            </div>
-            <span style=move || {
-                if active.get() {
-                    "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--color-emerald); box-shadow: 0 0 5px rgba(80,200,120,0.4); flex-shrink: 0;"
-                } else {
-                    "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--color-border-accent); flex-shrink: 0;"
-                }
-            } />
-        </div>
-    }
-}
-
-#[component]
-fn SettingsHeatSourceRow(
-    mode: RwSignal<MapMode>,
-    live_source: RwSignal<HeatLiveSource>,
-    history_basis: RwSignal<HeatHistoryBasis>,
-) -> impl IntoView {
-    let is_history = move || mode.get() == MapMode::History;
-    view! {
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px;">
-            <span style="font-size: 0.928rem; color: var(--color-text-secondary); font-family: var(--font-body);">
-                {move || if is_history() { "History Basis" } else { "Live Source" }}
-            </span>
-            <div style="display: inline-flex; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; overflow: hidden;">
-                <button
-                    style=move || {
-                        let active = if is_history() {
-                            history_basis.get() == HeatHistoryBasis::SeasonCumulative
-                        } else {
-                            live_source.get() == HeatLiveSource::Season
-                        };
-                        format!(
-                            "padding: 4px 8px; border: none; background: {}; color: {}; font-family: var(--font-mono); font-size: 0.766rem; cursor: pointer;",
-                            if active { "rgba(245,197,66,0.12)" } else { "transparent" },
-                            if active { "var(--color-gold)" } else { "#7c829e" },
-                        )
-                    }
-                    on:click=move |_| {
-                        if is_history() {
-                            history_basis.set(HeatHistoryBasis::SeasonCumulative);
-                        } else {
-                            live_source.set(HeatLiveSource::Season);
-                        }
-                    }
-                >
-                    "Season"
-                </button>
-                <button
-                    style=move || {
-                        let active = if is_history() {
-                            history_basis.get() == HeatHistoryBasis::AllTimeCumulative
-                        } else {
-                            live_source.get() == HeatLiveSource::AllTime
-                        };
-                        format!(
-                            "padding: 4px 8px; border: none; border-left: 1px solid var(--color-border-subtle); background: {}; color: {}; font-family: var(--font-mono); font-size: 0.766rem; cursor: pointer;",
-                            if active { "rgba(245,197,66,0.12)" } else { "transparent" },
-                            if active { "var(--color-gold)" } else { "#7c829e" },
-                        )
-                    }
-                    on:click=move |_| {
-                        if is_history() {
-                            history_basis.set(HeatHistoryBasis::AllTimeCumulative);
-                        } else {
-                            live_source.set(HeatLiveSource::AllTime);
-                        }
-                    }
-                >
-                    "All-time"
-                </button>
-            </div>
-        </div>
-    }
-}
-
-#[component]
-fn SettingsHeatSeasonRow(
-    season_id: RwSignal<Option<i32>>,
-    meta: RwSignal<Option<HistoryHeatMeta>>,
-) -> impl IntoView {
-    let on_change = move |e: leptos::ev::Event| {
-        let Some(target) = e.target() else {
-            return;
-        };
-        let Ok(select) = target.dyn_into::<web_sys::HtmlSelectElement>() else {
-            return;
-        };
-        let value = select.value();
-        if value == "latest" {
-            season_id.set(None);
-            return;
-        }
-        season_id.set(value.parse::<i32>().ok());
-    };
-
-    view! {
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px;">
-            <span style="font-size: 0.928rem; color: var(--color-text-secondary); font-family: var(--font-body);">"Season"</span>
-            <select
-                on:change=on_change
-                style="min-width: 120px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.812rem; padding: 4px 6px; outline: none;"
-            >
-                <option
-                    value="latest"
-                    selected=move || season_id.get().is_none()
-                >
-                    "Latest"
-                </option>
-                {move || {
-                    meta.get()
-                        .map(|m| {
-                            m.seasons
-                                .iter()
-                                .map(|season| {
-                                    let season_id_value = season.season_id;
-                                    let value = season_id_value.to_string();
-                                    view! {
-                                        <option
-                                            value=value.clone()
-                                            selected=move || season_id.get() == Some(season_id_value)
-                                        >
-                                            {format!("Season {season_id_value}")}
-                                        </option>
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                }}
-            </select>
         </div>
     }
 }
@@ -2613,6 +1950,9 @@ fn DetailPanel() -> impl IntoView {
     }
 }
 
+/// How long "Reset all" waits for its confirming second press.
+const RESET_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
+
 #[component]
 fn StatsBar() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
@@ -2637,6 +1977,14 @@ fn StatsBar() -> impl IntoView {
     let IsMobile(is_mobile) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let ResetSettingsTrigger(reset_settings_trigger) = expect_context();
+    // "Reset all" asks once more before wiping every setting.
+    let reset_armed = RwSignal::new(false);
+    let reset_arming = StoredValue::new(0u32);
+    Effect::new(move || {
+        if !show_settings.get() {
+            reset_armed.set(false);
+        }
+    });
 
     let guild_count = Memo::new(move |_| {
         let map = territories.get();
@@ -2769,31 +2117,33 @@ fn StatsBar() -> impl IntoView {
                 </div>
             })}
             <button
+                type="button"
+                class="settings-reset-all"
+                data-armed=move || reset_armed.get().to_string()
                 style:display=move || if show_settings.get() { "flex" } else { "none" }
-                style="background: linear-gradient(180deg, rgba(245,197,66,0.12) 0%, rgba(245,197,66,0.06) 100%); border: 1px solid rgba(245,197,66,0.24); border-radius: 999px; padding: 5px 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s, box-shadow 0.15s; font-family: var(--font-display); font-size: 0.648rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); box-shadow: 0 0 12px rgba(245,197,66,0.08);"
                 style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }
-                title="Reset all settings to defaults"
+                title="Reset every setting in this menu to its default"
                 on:click=move |_| {
-                    reset_settings_trigger.update(|value| *value = value.saturating_add(1));
-                }
-                on:mouseenter=move |e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "var(--color-deep)").ok();
-                        el.style().set_property("background", "var(--color-gold)").ok();
-                        el.style().set_property("border-color", "var(--color-gold)").ok();
-                        el.style().set_property("box-shadow", "0 0 12px rgba(245,197,66,0.24)").ok();
-                    }
-                }
-                on:mouseleave=move |e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "var(--color-gold)").ok();
-                        el.style().set_property("background", "linear-gradient(180deg, rgba(245,197,66,0.12) 0%, rgba(245,197,66,0.06) 100%)").ok();
-                        el.style().set_property("border-color", "rgba(245,197,66,0.24)").ok();
-                        el.style().set_property("box-shadow", "0 0 12px rgba(245,197,66,0.08)").ok();
+                    if reset_armed.get_untracked() {
+                        reset_armed.set(false);
+                        reset_settings_trigger.update(|value| *value = value.saturating_add(1));
+                    } else {
+                        reset_armed.set(true);
+                        // Only the latest arming may disarm; an older timer is stale.
+                        let arming = reset_arming.get_value().wrapping_add(1);
+                        reset_arming.set_value(arming);
+                        set_timeout(
+                            move || {
+                                if reset_arming.get_value() == arming {
+                                    reset_armed.set(false);
+                                }
+                            },
+                            RESET_CONFIRM_WINDOW,
+                        );
                     }
                 }
             >
-                "Defaults"
+                {move || if reset_armed.get() { "Confirm reset" } else { "Reset all" }}
             </button>
             <button
                 style="background: none; border: 1px solid var(--color-border-subtle); border-radius: 999px; padding: 5px 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s;"
