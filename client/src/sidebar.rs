@@ -2076,6 +2076,8 @@ fn DetailPanel() -> impl IntoView {
     let SelectedGuild(selected_guild) = expect_context();
     let DetailReturnGuild(detail_return_guild) = expect_context();
     let SidebarTransient(sidebar_transient) = expect_context();
+    let SidebarOpen(sidebar_open) = expect_context();
+    let IsMobile(is_mobile) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
@@ -2211,6 +2213,12 @@ fn DetailPanel() -> impl IntoView {
     };
 
     let on_close = move |_| {
+        // On mobile, closing the sheet hands the territory back to its peek card.
+        if is_mobile.get_untracked() && detail_return_guild.get_untracked().is_none() {
+            sidebar_transient.set(false);
+            sidebar_open.set(false);
+            return;
+        }
         if let Some(return_guild) = detail_return_guild.get_untracked() {
             selected.set(None);
             selected_guild.set(Some(return_guild));
@@ -2248,6 +2256,8 @@ fn DetailPanel() -> impl IntoView {
             </button>
             <button
                 style="position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--color-text-dim); cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s; z-index: 1; display: flex; align-items: center; justify-content: center;"
+                title="Close details"
+                aria-label="Close details"
                 on:click=on_close
                 on:mouseenter=|e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
