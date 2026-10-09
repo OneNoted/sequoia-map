@@ -2,6 +2,7 @@ mod app;
 mod auth;
 mod heat;
 mod history;
+mod keybinds;
 mod map_intel;
 mod navbar;
 mod playback;

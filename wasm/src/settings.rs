@@ -25,6 +25,8 @@ pub struct RenderSettings {
     /// Draws every territory as if its cooldown had expired.
     pub suppress_cooldown_visuals: bool,
     pub resource_highlight: bool,
+    /// Base fill alpha of resource-highlighted territories, before hover and selection.
+    pub resource_highlight_opacity: f32,
     pub defense_highlight: bool,
     /// Added to every territory fill alpha.
     pub fill_alpha_boost: f32,
@@ -55,6 +57,13 @@ pub struct RenderSettings {
 
     pub label_scales: LabelScales,
 }
+
+/// Resource highlight fill alpha range; the default is a little firmer than plain fills.
+pub const RESOURCE_HIGHLIGHT_OPACITY_MIN: f32 = 0.15;
+pub const RESOURCE_HIGHLIGHT_OPACITY_MAX: f32 = 0.90;
+pub const DEFAULT_RESOURCE_HIGHLIGHT_OPACITY: f32 = 0.45;
+/// Defense tiers keep the fixed overlay alpha.
+const DEFENSE_HIGHLIGHT_OPACITY: f32 = 0.34;
 
 /// User label size multipliers. Each group is multiplied by the master scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -95,11 +104,27 @@ impl LabelScales {
 }
 
 impl RenderSettings {
+    /// Base fill alpha of a territory carrying a resource or defense overlay.
+    pub fn overlay_fill_alpha(&self) -> f32 {
+        if self.defense_highlight || !self.resource_highlight {
+            return DEFENSE_HIGHLIGHT_OPACITY;
+        }
+        if self.resource_highlight_opacity.is_finite() {
+            self.resource_highlight_opacity.clamp(
+                RESOURCE_HIGHLIGHT_OPACITY_MIN,
+                RESOURCE_HIGHLIGHT_OPACITY_MAX,
+            )
+        } else {
+            DEFAULT_RESOURCE_HIGHLIGHT_OPACITY
+        }
+    }
+
     /// The cached outputs that changing from `previous` to `self` makes stale.
     pub fn invalidates(&self, previous: &Self) -> Rebuild {
         let territory_style = self.thick_cooldown_borders != previous.thick_cooldown_borders
             || self.suppress_cooldown_visuals != previous.suppress_cooldown_visuals
             || self.resource_highlight != previous.resource_highlight
+            || self.resource_highlight_opacity != previous.resource_highlight_opacity
             || self.defense_highlight != previous.defense_highlight
             || self.fill_alpha_boost != previous.fill_alpha_boost;
         let connection_style = self.show_connections != previous.show_connections
@@ -152,7 +177,10 @@ impl RenderSettings {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{LabelScales, NameColor, RenderSettings};
+    use super::{
+        DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, LabelScales, NameColor, RESOURCE_HIGHLIGHT_OPACITY_MAX,
+        RESOURCE_HIGHLIGHT_OPACITY_MIN, RenderSettings,
+    };
     use crate::scene::Rebuild;
 
     pub(crate) fn settings() -> RenderSettings {
@@ -160,6 +188,7 @@ pub(crate) mod tests {
             thick_cooldown_borders: true,
             suppress_cooldown_visuals: false,
             resource_highlight: false,
+            resource_highlight_opacity: DEFAULT_RESOURCE_HIGHLIGHT_OPACITY,
             defense_highlight: false,
             fill_alpha_boost: 0.0,
             show_connections: true,
@@ -204,6 +233,13 @@ pub(crate) mod tests {
     fn territory_and_connection_styles_stay_in_their_own_buffers() {
         assert_eq!(
             after(|s| s.defense_highlight = true),
+            Rebuild {
+                territories: true,
+                ..Rebuild::NONE
+            }
+        );
+        assert_eq!(
+            after(|s| s.resource_highlight_opacity = 0.8),
             Rebuild {
                 territories: true,
                 ..Rebuild::NONE
@@ -268,6 +304,35 @@ pub(crate) mod tests {
                 ..Rebuild::NONE
             }
         );
+    }
+
+    #[test]
+    fn resource_highlight_opacity_only_drives_resource_overlays() {
+        let mut resources = settings();
+        resources.resource_highlight = true;
+        resources.resource_highlight_opacity = 0.8;
+        assert_eq!(resources.overlay_fill_alpha(), 0.8);
+        resources.resource_highlight_opacity = 5.0;
+        assert_eq!(
+            resources.overlay_fill_alpha(),
+            RESOURCE_HIGHLIGHT_OPACITY_MAX
+        );
+        resources.resource_highlight_opacity = 0.0;
+        assert_eq!(
+            resources.overlay_fill_alpha(),
+            RESOURCE_HIGHLIGHT_OPACITY_MIN
+        );
+        resources.resource_highlight_opacity = f32::NAN;
+        assert_eq!(
+            resources.overlay_fill_alpha(),
+            DEFAULT_RESOURCE_HIGHLIGHT_OPACITY
+        );
+
+        // Defense tiers keep their fixed fill whatever the slider says.
+        let mut defense = settings();
+        defense.defense_highlight = true;
+        defense.resource_highlight_opacity = 0.8;
+        assert_eq!(defense.overlay_fill_alpha(), 0.34);
     }
 
     #[test]
