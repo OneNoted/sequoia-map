@@ -477,7 +477,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     format=times
                 />
                 <SettingsResetButton
-                    label="Reset line sliders"
+                    label="Reset connection style"
                     on_reset=Callback::new(move |()| {
                         connection_style.set(ConnectionStyle::Classic);
                         bold_connections.set(false);
