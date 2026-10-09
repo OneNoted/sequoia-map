@@ -321,7 +321,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let hq_tint = vec3<f32>(0.973, 0.831, 0.275);
         fill_color = mix(fill_color, hq_tint, 0.06);
     }
-    var f_alpha = fill_alpha + zoom_fill_boost;
+    var f_alpha = min(fill_alpha + zoom_fill_boost, 1.0);
     var cooldown_strip_mix: f32 = 0.0;
     var cooldown_strip_color: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
 
