@@ -8,9 +8,11 @@ on:
 permissions:
   contents: read
 
+# Production tags and Coolify are shared across every run, including dispatches.
+# Finish an active deployment; a replaced pending run is covered by the baseline diff.
 concurrency:
-  group: deploy-images-${{ github.ref }}
-  cancel-in-progress: true
+  group: deploy-images-production
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -20,14 +22,18 @@ env:
 
 jobs:
   changes:
-    if: github.repository == 'SequoiaWynncraft/sequoia-map'
+    if: github.repository == 'SequoiaWynncraft/sequoia-map' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       server: ${{ steps.filter.outputs.server }}
       ingest: ${{ steps.filter.outputs.ingest }}
       edge: ${{ steps.filter.outputs.edge }}
       deploy: ${{ steps.filter.outputs.deploy }}
+      matrix: ${{ steps.filter.outputs.matrix }}
     steps:
       - name: Checkout
         shell: bash
@@ -47,18 +53,34 @@ jobs:
         id: filter
         shell: bash
         env:
-          BEFORE_SHA: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
           AFTER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          emit_all() {
+          emit_selection() {
+            local server="$1" ingest="$2" edge="$3" deploy=false matrix
+            for selected in "${server}" "${ingest}" "${edge}"; do
+              case "${selected}" in
+                true) deploy=true ;;
+                false) ;;
+                *) echo "Invalid image selection: ${selected}" >&2; exit 1 ;;
+              esac
+            done
+            matrix="$(jq -cn --argjson server "${server}" --argjson ingest "${ingest}" --argjson edge "${edge}" \
+              '{image: [if $server then "server" else empty end, if $ingest then "ingest" else empty end, if $edge then "edge" else empty end]}')"
             {
-              echo "server=true"
-              echo "ingest=true"
-              echo "edge=true"
-              echo "deploy=true"
+              echo "server=${server}"
+              echo "ingest=${ingest}"
+              echo "edge=${edge}"
+              echo "deploy=${deploy}"
+              echo "matrix=${matrix}"
             } >> "${GITHUB_OUTPUT}"
+          }
+
+          emit_all() {
+            echo "Building all images: no reliable deployment baseline or input closure."
+            emit_selection true true true
           }
 
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
@@ -66,76 +88,106 @@ jobs:
             exit 0
           fi
 
-          before="${BEFORE_SHA:-}"
-          after="${AFTER_SHA}"
-          if [ -z "${before}" ] || [[ "${before}" =~ ^0+$ ]]; then
-            changed_files="$(git ls-tree -r --name-only "${after}")"
-          else
-            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
-              git fetch --no-tags --depth=1 origin "${before}" 2>/dev/null || true
+          # Only an actual publication+trigger is a baseline, not a no-op success.
+          # Bound history lookup; uncertainty rebuilds every image.
+          if ! successful_runs="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-images.yml/runs" \
+            -f branch=main -f status=success -F per_page=20 --jq '.workflow_runs[] | [.id, .head_sha] | @tsv')"; then
+            emit_all
+            exit 0
+          fi
+          before=""
+          while IFS=$'\t' read -r run_id run_sha; do
+            if ! [[ "${run_id}" =~ ^[0-9]+$ && "${run_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              emit_all
+              exit 0
             fi
-            if ! changed_files="$(git diff --name-only "${before}" "${after}" 2>/dev/null)"; then
+            if ! published="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
+              -f filter=latest -F per_page=100 \
+              --jq 'if .total_count != (.jobs | length) then error("Incomplete workflow job list") else [.jobs[] | select(.name == "Promote Images And Trigger Coolify" or .name == "Publish Images And Trigger Coolify")] | length == 1 and .[0].conclusion == "success" end')"; then
+              emit_all
+              exit 0
+            fi
+            case "${published}" in
+              true) before="${run_sha}"; break ;;
+              false) ;;
+              *) emit_all; exit 0 ;;
+            esac
+          done <<< "${successful_runs}"
+          if [ -z "${before}" ]; then
+            emit_all
+            exit 0
+          fi
+          if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            if ! git fetch --no-tags origin "${before}"; then
               emit_all
               exit 0
             fi
           fi
-
-          matches() {
-            local pattern="$1"
-            printf '%s\n' "${changed_files}" | grep -Eq "${pattern}"
-          }
+          if ! git merge-base --is-ancestor "${before}" "${AFTER_SHA}"; then
+            emit_all
+            exit 0
+          fi
+          if ! changed_files="$(git diff --name-only --no-renames "${before}" "${AFTER_SHA}")"; then
+            emit_all
+            exit 0
+          fi
+          echo "Selecting image changes since successful workflow head ${before}."
 
           server=false
           ingest=false
           edge=false
-          if matches '^(\.github/workflows/deploy-images\.yml|\.ci/|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|Dockerfile|shared/|wasm/|browser-map/|client/|claims-client/|server/)'; then
-            server=true
-          fi
-          if matches '^(\.github/workflows/deploy-images\.yml|docker-compose\.coolify\.yml|Cargo\.toml|Cargo\.lock|shared/|services/sequoia-ingest/)'; then
-            ingest=true
-          fi
-          if matches '^(\.github/workflows/deploy-images\.yml|docker-compose\.coolify\.yml|ops/caddy/)'; then
-            edge=true
-          fi
-          if [ "${server}" = "true" ] || [ "${ingest}" = "true" ] || [ "${edge}" = "true" ]; then
-            deploy=true
-          else
-            deploy=false
-          fi
+          while IFS= read -r file; do
+            case "${file}" in
+              .github/workflows/deploy-images.yml|.dockerignore|docker-compose.coolify.yml)
+                server=true; ingest=true; edge=true ;;
+              Cargo.toml|shared/*)
+                server=true; ingest=true ;;
+              Cargo.lock|Dockerfile|.ci/*|wasm/*|browser-map/*|client/*|claims-client/*|server/*)
+                server=true ;;
+              services/sequoia-ingest/*)
+                ingest=true ;;
+              ops/caddy/*)
+                edge=true ;;
+              ''|README.md|AGENTS.md|LICENSE|docs/*|.gitignore|.cargo/audit.toml|mise.toml|mods/wynn-iris/*|\
+              .github/workflows/ci.yml|.github/workflows/iris-release.yml|docker-compose.yml|docker-compose.coolify.dev.yml|\
+              scripts/postgres.sh|scripts/check-wasm-size.py|scripts/smoke-browser.py|ops/postgres/*|ops/backup/*|ops/prometheus/*)
+                ;; # Known inputs outside these Docker build/deployment closures.
+              *)
+                echo "Unknown deployment input: ${file}"
+                emit_all
+                exit 0 ;;
+            esac
+          done <<< "${changed_files}"
+          emit_selection "${server}" "${ingest}" "${edge}"
 
-          {
-            echo "server=${server}"
-            echo "ingest=${ingest}"
-            echo "edge=${edge}"
-            echo "deploy=${deploy}"
-          } >> "${GITHUB_OUTPUT}"
-
-  publish-and-deploy:
-    name: Publish Images And Trigger Coolify
-    needs: changes
-    if: github.repository == 'SequoiaWynncraft/sequoia-map' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.deploy == 'true')
-    # Use a GitHub-hosted runner so fork-sync pushes can always publish images and call Coolify.
-    # The previous self-hosted label could leave deploys queued indefinitely when no runner was registered.
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
+      - name: Validate Image Selection
         shell: bash
+        env:
+          SERVER_SELECTED: ${{ steps.filter.outputs.server }}
+          INGEST_SELECTED: ${{ steps.filter.outputs.ingest }}
+          EDGE_SELECTED: ${{ steps.filter.outputs.edge }}
+          DEPLOY_SELECTED: ${{ steps.filter.outputs.deploy }}
+          MATRIX_JSON: ${{ steps.filter.outputs.matrix }}
         run: |
           set -euo pipefail
-          git init .
-          if git remote get-url origin >/dev/null 2>&1; then
-            git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          else
-            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          fi
-          git fetch --no-tags --prune origin "+${GITHUB_REF}:refs/remotes/origin/workflow-checkout"
-          git checkout --force "${GITHUB_SHA}"
-          git clean -ffdx
+          for selected in "${SERVER_SELECTED}" "${INGEST_SELECTED}" "${EDGE_SELECTED}" "${DEPLOY_SELECTED}"; do
+            case "${selected}" in
+              true|false) ;;
+              *) echo "Missing or invalid deployment selection." >&2; exit 1 ;;
+            esac
+          done
+          jq -e --argjson server "${SERVER_SELECTED}" --argjson ingest "${INGEST_SELECTED}" --argjson edge "${EDGE_SELECTED}" \
+            --argjson deploy "${DEPLOY_SELECTED}" \
+            '. == {image: [if $server then "server" else empty end, if $ingest then "ingest" else empty end, if $edge then "edge" else empty end]} and ((.image | length > 0) == $deploy)' \
+            <<< "${MATRIX_JSON}" >/dev/null
 
+  credentials:
+    name: Validate Deployment Credentials
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
       - name: Validate Coolify Deploy Credentials
         env:
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
@@ -152,7 +204,7 @@ jobs:
 
           COOLIFY_API_BASE="${COOLIFY_WEBHOOK%%/api/v1/deploy*}"
           PROBE_URL="${COOLIFY_API_BASE}/api/v1/deploy?uuid=auth-probe-missing-resource"
-          PROBE_STATUS="$(curl --proto '=https' --tlsv1.2 --silent --show-error --output /tmp/coolify-probe.json --write-out '%{http_code}' \
+          PROBE_STATUS="$(curl --proto '=https' --tlsv1.2 --silent --show-error --connect-timeout 10 --max-time 30 --output /tmp/coolify-probe.json --write-out '%{http_code}' \
             -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
             "${PROBE_URL}")"
 
@@ -161,6 +213,35 @@ jobs:
             cat /tmp/coolify-probe.json
             exit 1
           fi
+
+
+  build-images:
+    name: Build ${{ matrix.image }} Image
+    needs: [changes, credentials]
+    if: needs.changes.outputs.deploy == 'true'
+    # Independent hosted runners avoid serial image compilation and runner scarcity.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git fetch --no-tags --prune origin "+${GITHUB_REF}:refs/remotes/origin/workflow-checkout"
+          git checkout --force "${GITHUB_SHA}"
+          git clean -ffdx
 
       - name: Set Up Buildx
         shell: bash
@@ -178,7 +259,7 @@ jobs:
           echo "${GHCR_TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_ACTOR}" --password-stdin
 
       - name: Prepare Client Build Tool Archives
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
+        if: matrix.image == 'server'
         env:
           TAILWINDCSS_VERSION: 4.2.0
           TAILWINDCSS_LINUX_X64_SHA256: 8f65e2d21c675f1e8d265219979d17d10634c1f553a2f583265b7edb28726432
@@ -203,57 +284,132 @@ jobs:
           echo "${WASM_BINDGEN_X64_MUSL_SHA256}" > .ci/wasm-bindgen/wasm-bindgen.tar.gz.sha256
           echo "${WASM_BINDGEN_X64_MUSL_SHA256}  .ci/wasm-bindgen/wasm-bindgen.tar.gz" | sha256sum -c -
 
-      - name: Build And Push Server Image
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.server == 'true'
+      - name: Build And Push Candidate Image
         shell: bash
+        env:
+          IMAGE_KIND: ${{ matrix.image }}
         run: |
           set -euo pipefail
+          build_args=()
+          case "${IMAGE_KIND}" in
+            server)
+              image="${SERVER_IMAGE}"
+              dockerfile=./Dockerfile
+              # BuildKit runs native and WASM stages together; share this runner's CPU budget.
+              cargo_jobs="$((($(nproc) + 1) / 2))"
+              build_args+=(--build-arg "SOURCE_COMMIT=${GITHUB_SHA}" --build-arg "CARGO_BUILD_JOBS=${cargo_jobs}") ;;
+            ingest)
+              image="${INGEST_IMAGE}"
+              dockerfile=./services/sequoia-ingest/Dockerfile ;;
+            edge)
+              image="${EDGE_IMAGE}"
+              dockerfile=./ops/caddy/Dockerfile.coolify ;;
+            *) echo "Unknown image kind: ${IMAGE_KIND}" >&2; exit 1 ;;
+          esac
           docker buildx build \
             --platform linux/amd64 \
-            --file ./Dockerfile \
-            --build-arg SOURCE_COMMIT="${GITHUB_SHA}" \
-            --tag "${SERVER_IMAGE}:main" \
-            --tag "${SERVER_IMAGE}:sha-${GITHUB_SHA}" \
-            --cache-from "type=registry,ref=${SERVER_IMAGE}:buildcache" \
-            --cache-to "type=registry,ref=${SERVER_IMAGE}:buildcache,mode=max" \
+            --file "${dockerfile}" \
+            "${build_args[@]}" \
+            --tag "${image}:sha-${GITHUB_SHA}" \
+            --cache-from "type=registry,ref=${image}:buildcache" \
+            --cache-to "type=registry,ref=${image}:buildcache,mode=max" \
             --provenance=false \
             --sbom=false \
             --push \
             .
 
-      - name: Build And Push Ingest Image
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.ingest == 'true'
+  publish-and-deploy:
+    name: Promote Images And Trigger Coolify
+    needs: [changes, credentials, build-images]
+    # Missing selections or failed prerequisites must produce a failed promotion gate.
+    if: always() && !cancelled() && github.repository == 'SequoiaWynncraft/sequoia-map' && github.ref == 'refs/heads/main' && (needs.changes.result != 'success' || needs.changes.outputs.deploy != 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Require Successful Selected Builds
         shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CREDENTIALS_RESULT: ${{ needs.credentials.result }}
+          BUILDS_RESULT: ${{ needs.build-images.result }}
+          SERVER_SELECTED: ${{ needs.changes.outputs.server }}
+          INGEST_SELECTED: ${{ needs.changes.outputs.ingest }}
+          EDGE_SELECTED: ${{ needs.changes.outputs.edge }}
+          DEPLOY_SELECTED: ${{ needs.changes.outputs.deploy }}
+          MATRIX_JSON: ${{ needs.changes.outputs.matrix }}
         run: |
           set -euo pipefail
-          docker buildx build \
-            --platform linux/amd64 \
-            --file ./services/sequoia-ingest/Dockerfile \
-            --tag "${INGEST_IMAGE}:main" \
-            --tag "${INGEST_IMAGE}:sha-${GITHUB_SHA}" \
-            --cache-from "type=registry,ref=${INGEST_IMAGE}:buildcache" \
-            --cache-to "type=registry,ref=${INGEST_IMAGE}:buildcache,mode=max" \
-            --provenance=false \
-            --sbom=false \
-            --push \
-            .
+          if [ "${CHANGES_RESULT}" != success ] || [ "${CREDENTIALS_RESULT}" != success ] || [ "${BUILDS_RESULT}" != success ]; then
+            echo "Deployment prerequisites were not all successful." >&2
+            exit 1
+          fi
+          if [ "${DEPLOY_SELECTED}" != true ]; then
+            echo "Missing or invalid deployment selection." >&2
+            exit 1
+          fi
+          for selected in "${SERVER_SELECTED}" "${INGEST_SELECTED}" "${EDGE_SELECTED}"; do
+            case "${selected}" in
+              true|false) ;;
+              *) echo "Missing or invalid image selection." >&2; exit 1 ;;
+            esac
+          done
+          jq -e --argjson server "${SERVER_SELECTED}" --argjson ingest "${INGEST_SELECTED}" --argjson edge "${EDGE_SELECTED}" \
+            '. == {image: [if $server then "server" else empty end, if $ingest then "ingest" else empty end, if $edge then "edge" else empty end]} and (.image | length > 0)' \
+            <<< "${MATRIX_JSON}" >/dev/null
 
-      - name: Build And Push Edge Image
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.edge == 'true'
+      - name: Log In To GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          docker buildx build \
-            --platform linux/amd64 \
-            --file ./ops/caddy/Dockerfile.coolify \
-            --tag "${EDGE_IMAGE}:main" \
-            --tag "${EDGE_IMAGE}:sha-${GITHUB_SHA}" \
-            --cache-from "type=registry,ref=${EDGE_IMAGE}:buildcache" \
-            --cache-to "type=registry,ref=${EDGE_IMAGE}:buildcache,mode=max" \
-            --provenance=false \
-            --sbom=false \
-            --push \
-            .
+          echo "${GHCR_TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Resolve And Promote Current Main Candidate
+        shell: bash
+        env:
+          SERVER_SELECTED: ${{ needs.changes.outputs.server }}
+          INGEST_SELECTED: ${{ needs.changes.outputs.ingest }}
+          EDGE_SELECTED: ${{ needs.changes.outputs.edge }}
+        run: |
+          set -euo pipefail
+          images=()
+          digests=()
+          for kind in server ingest edge; do
+            case "${kind}" in
+              server) selected="${SERVER_SELECTED}"; image="${SERVER_IMAGE}" ;;
+              ingest) selected="${INGEST_SELECTED}"; image="${INGEST_IMAGE}" ;;
+              edge) selected="${EDGE_SELECTED}"; image="${EDGE_IMAGE}" ;;
+            esac
+            if [ "${selected}" = true ]; then
+              digest="$(docker buildx imagetools inspect "${image}:sha-${GITHUB_SHA}" --format '{{json .Manifest}}' \
+                | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))')"
+              images+=("${image}")
+              digests+=("${digest}")
+            fi
+          done
+
+          # Resolve every selected image before any mutable production tag changes.
+          # A rejected old candidate remains failed, never becoming a new diff baseline.
+          current_head="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | awk '{print $1}')"
+          if [ "${current_head}" != "${GITHUB_SHA}" ]; then
+            echo "Refusing superseded candidate ${GITHUB_SHA}; main is ${current_head}." >&2
+            exit 1
+          fi
+          for index in "${!images[@]}"; do
+            image="${images[index]}"
+            digest="${digests[index]}"
+            docker buildx imagetools create --prefer-index=false --tag "${image}:main" "${image}@${digest}"
+            promoted_digest="$(docker buildx imagetools inspect "${image}:main" --format '{{json .Manifest}}' \
+              | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))')"
+            if [ "${promoted_digest}" != "${digest}" ]; then
+              echo "Production tag readback did not match candidate digest for ${image}." >&2
+              exit 1
+            fi
+          done
 
       - name: Trigger Coolify Deploy
         env:

@@ -3,15 +3,18 @@ FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml ./
 COPY services/sequoia-ingest/Cargo.toml services/sequoia-ingest/Cargo.lock services/sequoia-ingest/
-COPY shared/ shared/
-COPY services/sequoia-ingest/src/ services/sequoia-ingest/src/
+COPY shared/Cargo.toml shared/Cargo.toml
+RUN mkdir -p shared/src services/sequoia-ingest/src \
+    && touch shared/src/lib.rs \
+    && echo 'fn main() {}' > services/sequoia-ingest/src/main.rs
 
 WORKDIR /app/services/sequoia-ingest
-RUN --mount=type=cache,id=sequoia-ingest-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=sequoia-ingest-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=sequoia-ingest-target,target=/tmp/target-cache,sharing=locked \
-    CARGO_TARGET_DIR=/tmp/target-cache cargo build --release --bin sequoia-ingest && \
-    install -Dm755 /tmp/target-cache/release/sequoia-ingest /app/sequoia-ingest && \
+RUN cargo build --release --locked --bin sequoia-ingest \
+    && cargo clean --release --locked -p sequoia-ingest -p sequoia-shared
+COPY shared/ /app/shared/
+COPY services/sequoia-ingest/src/ src/
+RUN cargo build --release --locked --bin sequoia-ingest && \
+    install -Dm755 target/release/sequoia-ingest /app/sequoia-ingest && \
     strip /app/sequoia-ingest
 
 FROM public.ecr.aws/docker/library/debian:bookworm-slim

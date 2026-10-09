@@ -92,6 +92,11 @@ targets. Intentional argument-count exceptions use function-local `#[expect]`
 with a reason; Clippy reports expectations that are no longer needed. Do not
 add crate-wide warning suppression or change API shapes solely to silence lints.
 
+CI runs for pull requests, main pushes, merge-queue revisions and manual
+dispatches. Feature-branch pushes do not duplicate the pull-request checks;
+new pull-request revisions cancel their superseded runs. Mainline runs populate
+the shared tool/build caches; pull requests and merge-queue runs restore them.
+
 `mise run test` starts the local container and creates **`sequoia_test`**, separate
 from the development database. Some integration tests truncate tables.
 To use external PostgreSQL in CI or locally, set `TEST_DATABASE_URL` to a
