@@ -40,10 +40,13 @@ mise run iris:build  # default Minecraft profile; pass another profile as an arg
 ## Repository layout
 
 - `server/`: API, polling, live event stream and PostgreSQL history.
-- `client/`: map UI and renderer.
-- `claims-client/`: claims editor; reuses map modules from `client/`.
+- `client/`: live and history map UI.
+- `claims-client/`: claims editor.
+- `browser-map/`: the interactive map both clients mount: camera input, tiles,
+  live feed and the wgpu renderer.
 - `shared/`: types and calculations shared by the API, clients and gateway.
-- `wasm/`: browser utilities shared by both clients.
+- `wasm/`: UI-independent map engine (camera gestures, scene invalidation,
+  layout math) shared by both clients and tested natively.
 - `services/sequoia-ingest/`: separately locked Rust workspace for Iris reports.
 - `mods/wynn-iris/`: Fabric reporter and its Gradle wrapper.
 - `ops/`: deployment edge, monitoring, backups and database maintenance.

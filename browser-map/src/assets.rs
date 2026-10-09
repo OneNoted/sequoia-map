@@ -70,7 +70,7 @@ pub(crate) fn app_asset_url(path: &str) -> String {
     join_asset_url(&asset_base_path(), path)
 }
 
-pub(crate) fn versioned_app_asset_url(path: &str) -> String {
+pub fn versioned_app_asset_url(path: &str) -> String {
     append_asset_version(&app_asset_url(path), asset_version().as_deref())
 }
 

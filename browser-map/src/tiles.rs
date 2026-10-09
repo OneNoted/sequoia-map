@@ -12,8 +12,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::HtmlImageElement;
 
+use sequoia_map_engine::viewport::Viewport;
+
 use crate::assets::versioned_app_asset_url;
-use crate::viewport::Viewport;
 
 const HQ_CONCURRENCY: usize = 6;
 const LQ_CONCURRENCY: usize = 6;
@@ -68,6 +69,23 @@ pub struct LoadedTile {
     pub z1: i32,
     pub x2: i32,
     pub z2: i32,
+}
+
+/// World area covered by the loaded tiles: (min x, min z, max x, max z).
+pub(crate) fn tile_world_bounds(tiles: &[LoadedTile]) -> Option<(f64, f64, f64, f64)> {
+    tiles.iter().fold(None, |bounds, tile| {
+        let x1 = f64::from(tile.x1.min(tile.x2));
+        let z1 = f64::from(tile.z1.min(tile.z2));
+        // Tile bounds are inclusive.
+        let x2 = f64::from(tile.x1.max(tile.x2)) + 1.0;
+        let z2 = f64::from(tile.z1.max(tile.z2)) + 1.0;
+        Some(match bounds {
+            None => (x1, z1, x2, z2),
+            Some((min_x, min_z, max_x, max_z)) => {
+                (min_x.min(x1), min_z.min(z1), max_x.max(x2), max_z.max(z2))
+            }
+        })
+    })
 }
 
 /// Static tile definitions: (filename, start_x, start_z, end_x, end_z).

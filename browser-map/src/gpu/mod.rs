@@ -1,3 +1,9 @@
+//! The wgpu/WebGL2 map renderer.
+//!
+//! It owns every GPU resource: pipelines, tile textures, the glyph and icon atlases, the
+//! cached instance buffers and the minimap terrain image. What to rebuild each frame is
+//! decided by the scene planner and passed in as a [`Rebuild`].
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -5,39 +11,40 @@ use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use wgpu::util::DeviceExt;
 
-use sequoia_shared::TreasuryLevel;
-use sequoia_shared::colors::hsl_to_rgb;
-use sequoia_shared::territory::Resources;
-
-use crate::app::NameColor;
-use crate::claim_labels::{
-    CLAIM_LABEL_LETTER_SPACING_EM, build_claim_clusters, claim_label_zoom_active,
+use sequoia_map_engine::claim_labels::{
+    self, CLAIM_LABEL_LETTER_SPACING_EM, build_claim_clusters, claim_label_zoom_active,
     select_claim_label_candidates,
 };
-use crate::colors::brighten;
-use crate::defense::defense_tier_overlay_data;
-use crate::icons::ResourceAtlas;
-use crate::label_layout::{
+use sequoia_map_engine::colors::{brighten, heat_color_for_count};
+use sequoia_map_engine::defense::defense_tier_overlay_data;
+use sequoia_map_engine::icon_atlas::ICON_COUNT;
+use sequoia_map_engine::label_layout::{
     IconKind, abbreviate_name, compute_label_layout_metrics, cooldown_color,
     dynamic_label_next_update_age, dynamic_text_state, resource_icon_sequence,
     resource_icons_drawable, write_age, write_age_compound,
 };
-use crate::overlay_sizing::{
+use sequoia_map_engine::minimap::MinimapLayout;
+use sequoia_map_engine::overlay_sizing::{
     STATIC_NAME_BASELINE_GAP_MULTIPLIER, STATIC_NAME_MIN_RENDERED_PX, compute_dynamic_label_sizing,
     compute_far_zoom_tag_sizing, compute_resource_icon_center_y_world,
     compute_resource_icon_label_lift_world, compute_resource_icon_size_world,
     compute_static_label_sizing, compute_territory_ornament_sizing,
     compute_territory_ornament_tint, static_name_bottom_bound,
 };
-use crate::renderer::{FrameMetrics, InvalidationReason, RenderCapabilities, SceneSnapshot};
-use crate::territory::{ClientTerritoryMap, is_sequoia_guild, is_unclaimed_guild};
-use crate::tiles::{LoadedTile, TileQuality};
-use crate::time_format::write_hms;
-use crate::viewport::Viewport;
-use sequoia_map_engine::colors::heat_color_for_count;
-use sequoia_map_engine::icon_atlas::ICON_COUNT;
+use sequoia_map_engine::scene::{
+    LABEL_VISIBILITY_MIN_SCALE, NextRefresh, Rebuild, TIMER_VISIBILITY_MIN_SCALE,
+};
+use sequoia_map_engine::settings::{NameColor, RenderSettings};
+use sequoia_map_engine::territory::{ClientTerritoryMap, is_sequoia_guild, is_unclaimed_guild};
+use sequoia_map_engine::time_format::write_hms;
+use sequoia_map_engine::viewport::Viewport;
+use sequoia_shared::TreasuryLevel;
+use sequoia_shared::colors::hsl_to_rgb;
+use sequoia_shared::territory::Resources;
 
-pub type RenderFrameInput<'a> = SceneSnapshot<'a>;
+use crate::frame::{Frame, FrameMetrics, FrameOutcome, RenderCapabilities};
+use crate::icons::ResourceAtlas;
+use crate::tiles::{LoadedTile, TileQuality};
 
 // --- GPU data types ---
 
@@ -216,11 +223,6 @@ const CONNECTION_LINE_STEPS_BOLD: &[(f32, f32)] = &[
     (0.8, 0.75),
     (1.6, 0.45),
 ];
-const MINIMAP_W: f32 = 200.0;
-const MINIMAP_H: f32 = 280.0;
-const MINIMAP_MARGIN: f32 = 16.0;
-const MINIMAP_HISTORY_BOTTOM: f32 = 68.0;
-const MINIMAP_DEFAULT_WORLD_BOUNDS: (f64, f64, f64, f64) = (-2200.0, -6600.0, 1600.0, 400.0);
 const STATIC_TAG_LETTER_SPACING_EM: f32 = 0.07;
 const STATIC_NAME_LETTER_SPACING_EM: f32 = 0.057;
 const STATIC_TAG_MIN_WIDTH_WORLD: f32 = 88.0;
@@ -230,12 +232,8 @@ const DYNAMIC_TIME_LETTER_SPACING_EM: f32 = 0.035;
 const DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN: f32 = 0.0035;
 const DYNAMIC_TIME_MIN_RENDERED_PX: f32 = 11.5;
 const DYNAMIC_COOLDOWN_MIN_RENDERED_PX: f32 = 12.0;
-/// Minimum viewport scale required before per-territory timer text (held/cooldown) is shown.
-/// Keeps the default world view uncluttered; timers appear when users zoom in.
-const DYNAMIC_TIMER_VISIBILITY_MIN_SCALE: f64 = 0.31;
-/// Minimum viewport scale at which any territory labels are drawn.
-/// Below this zoom level all text (static tags, dynamic time, icons) is hidden uniformly.
-const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
+/// A captured territory is fresh (on cooldown) for this long.
+const FRESH_TERRITORY_SECS: i64 = 600;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.75;
 const HQ_CROWN_FAR_BOX_FRACTION: f32 = 0.90;
 const HQ_CROWN_FAR_MAX_RENDERED_PX: f32 = 96.0;
@@ -867,10 +865,29 @@ fn push_text_line_dual_with_tracking(
 
 // --- Tile texture cache ---
 
+/// Identifies a tile set by id and quality, in load order.
+fn tile_upload_signature(tiles: &[LoadedTile]) -> u64 {
+    tiles.iter().fold(0u64, |acc, tile| {
+        let quality_bits = match tile.quality {
+            TileQuality::Low => 1u64,
+            TileQuality::High => 2u64,
+        };
+        acc.wrapping_mul(1_099_511_628_211)
+            .wrapping_add(((tile.id as u64) << 2) ^ quality_bits)
+    })
+}
+
 struct TileTexture {
     bind_group: wgpu::BindGroup,
     rect: [f32; 4], // [x, z, width, height] in world coords
     quality: TileQuality,
+}
+
+/// The cached minimap background and tiles, drawn once per layout and tile set.
+struct MinimapTerrain {
+    layout: MinimapLayout,
+    tiles_revision: u64,
+    bind_group: wgpu::BindGroup,
 }
 
 // --- GpuRenderer ---
@@ -913,7 +930,9 @@ pub struct GpuRenderer {
     tile_upload_canvas: Option<HtmlCanvasElement>,
     tile_upload_ctx: Option<CanvasRenderingContext2d>,
     tile_upload_canvas_size: (u32, u32),
-    tile_world_bounds: Option<(f64, f64, f64, f64)>,
+    /// Identity of the uploaded tile set; `tiles_revision` counts its changes.
+    tiles_signature: Option<u64>,
+    tiles_revision: u64,
 
     // Connection line pipeline (full GPU mode only)
     connection_pipeline: wgpu::RenderPipeline,
@@ -921,37 +940,34 @@ pub struct GpuRenderer {
     connection_buffer: wgpu::Buffer,
     connection_count: u32,
     connection_capacity: u32,
-    connection_dirty: bool,
     connection_vertices: Vec<ConnectionVertex>,
     connection_drawn_set: HashSet<(u64, u64)>,
     minimap_indicator_buffer: wgpu::Buffer,
     minimap_indicator_capacity: u32,
+
+    // Minimap terrain cache: background and tiles rendered offscreen, composited per frame.
+    minimap_terrain_viewport_buffer: wgpu::Buffer,
+    minimap_terrain_viewport_bind_group: wgpu::BindGroup,
     minimap_bg_buffer: wgpu::Buffer,
+    minimap_blit_pipeline: wgpu::RenderPipeline,
+    minimap_blit_bind_group_layout: wgpu::BindGroupLayout,
+    minimap_blit_buffer: wgpu::Buffer,
+    minimap_terrain: Option<MinimapTerrain>,
 
     // Text pipelines (static + dynamic)
     text_renderer: Option<GpuTextRenderer>,
-    static_text_dirty: bool,
-    dynamic_text_dirty: bool,
-    static_zoom_bucket: i32,
-    dynamic_zoom_bucket: i32,
-    dynamic_reference_time_secs: i64,
-    dynamic_next_update_secs: i64,
-    dynamic_refresh_deferred: bool,
-    dynamic_timer_visible_at_zoom: bool,
+    /// Font the glyph atlas was built with.
+    text_readable_font: bool,
     territory_name_cache: HashMap<String, (String, String)>,
 
     // Resource icon pipeline
     icon_renderer: Option<GpuIconRenderer>,
-    icon_dirty: bool,
     supports_gpu_icons: bool,
 
     // Track current dimensions
     width: u32,
     height: u32,
     dpr: f32,
-
-    // Dirty tracking: skip instance rebuild during pan/zoom
-    instance_dirty: bool,
 
     // Cached max animation end time (epoch ms) — avoids scanning all
     // territories every frame just to check if animations are active.
@@ -973,62 +989,9 @@ pub struct GpuRenderer {
     last_render_time_ms: f64,
     capabilities: RenderCapabilities,
     frame_metrics: FrameMetrics,
-
-    // Settings
-    pub thick_cooldown_borders: bool,
-    pub resource_highlight: bool,
-    pub defense_highlight: bool,
-    pub use_static_gpu_labels: bool,
-    pub use_full_gpu_text: bool,
-    pub static_show_names: bool,
-    pub show_claim_labels: bool,
-    pub show_far_zoom_territory_tags: bool,
-    pub static_abbreviate_names: bool,
-    pub static_name_color: NameColor,
-    pub show_connections: bool,
-    pub bold_connections: bool,
-    pub connection_opacity_scale: f32,
-    pub connection_thickness_scale: f32,
-    pub connection_zoom_fade_start: f32,
-    pub connection_zoom_fade_end: f32,
-    pub suppress_cooldown_visuals: bool,
-    pub fill_alpha_boost: f32,
-    pub static_tag_color: NameColor,
-    pub use_readable_font: bool,
-    pub dynamic_show_countdown: bool,
-    pub dynamic_show_granular_map_time: bool,
-    pub dynamic_show_compound_map_time: bool,
-    pub dynamic_show_resource_icons: bool,
-    pub show_territory_ornaments: bool,
-    pub label_scale_master: f32,
-    pub label_scale_static_tag: f32,
-    pub label_scale_static_name: f32,
-    pub label_scale_dynamic: f32,
-    pub label_scale_icons: f32,
 }
 
 impl GpuRenderer {
-    fn tile_world_bounds(tiles: &[LoadedTile]) -> Option<(f64, f64, f64, f64)> {
-        if tiles.is_empty() {
-            return None;
-        }
-        let mut min_x = f64::INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-        for tile in tiles {
-            let x1 = tile.x1.min(tile.x2) as f64;
-            let y1 = tile.z1.min(tile.z2) as f64;
-            let x2 = tile.x1.max(tile.x2) as f64 + 1.0;
-            let y2 = tile.z1.max(tile.z2) as f64 + 1.0;
-            min_x = min_x.min(x1);
-            min_y = min_y.min(y1);
-            max_x = max_x.max(x2);
-            max_y = max_y.max(y2);
-        }
-        Some((min_x, min_y, max_x, max_y))
-    }
-
     #[inline]
     fn quad_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -1622,6 +1585,101 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        let minimap_terrain_viewport_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("minimap-terrain-viewport-ubo"),
+            size: std::mem::size_of::<ViewportUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let minimap_terrain_viewport_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("minimap-terrain-viewport-bg"),
+                layout: &viewport_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: minimap_terrain_viewport_buffer.as_entire_binding(),
+                }],
+            });
+        let minimap_blit_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("minimap-blit-ubo"),
+            size: std::mem::size_of::<[f32; 4]>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let minimap_blit_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("minimap-blit-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let minimap_blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("minimap-blit-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("minimap_blit.wgsl").into()),
+        });
+        let minimap_blit_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("minimap-blit-pl"),
+                bind_group_layouts: &[&minimap_blit_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let minimap_blit_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("minimap-blit-pipeline"),
+                layout: Some(&minimap_blit_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &minimap_blit_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[vertex_layout.clone()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &minimap_blit_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        // The terrain image holds premultiplied colour (see `ensure_minimap_terrain`).
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
         let mut renderer = Self {
             device,
             queue,
@@ -1650,35 +1708,32 @@ impl GpuRenderer {
             tile_upload_canvas: None,
             tile_upload_ctx: None,
             tile_upload_canvas_size: (0, 0),
-            tile_world_bounds: None,
+            tiles_signature: None,
+            tiles_revision: 0,
             connection_pipeline,
             connection_fill_pipeline,
             connection_buffer,
             connection_count: 0,
             connection_capacity,
-            connection_dirty: true,
             connection_vertices: Vec::new(),
             connection_drawn_set: HashSet::new(),
             minimap_indicator_buffer,
             minimap_indicator_capacity,
+            minimap_terrain_viewport_buffer,
+            minimap_terrain_viewport_bind_group,
             minimap_bg_buffer,
+            minimap_blit_pipeline,
+            minimap_blit_bind_group_layout,
+            minimap_blit_buffer,
+            minimap_terrain: None,
             text_renderer: None,
-            static_text_dirty: false,
-            dynamic_text_dirty: false,
-            static_zoom_bucket: -1,
-            dynamic_zoom_bucket: -1,
-            dynamic_reference_time_secs: i64::MIN,
-            dynamic_next_update_secs: i64::MIN,
-            dynamic_refresh_deferred: false,
-            dynamic_timer_visible_at_zoom: false,
+            text_readable_font: false,
             territory_name_cache: HashMap::new(),
             icon_renderer: None,
-            icon_dirty: false,
             supports_gpu_icons,
             width,
             height,
             dpr,
-            instance_dirty: true,
             max_anim_end_ms: 0.0,
             start_time_ms: js_sys::Date::now(),
             instances_buf: Vec::new(),
@@ -1696,43 +1751,11 @@ impl GpuRenderer {
                 compatibility_fallback: !supports_gpu_icons,
             },
             frame_metrics: FrameMetrics::default(),
-            thick_cooldown_borders: false,
-            resource_highlight: false,
-            defense_highlight: false,
-            use_static_gpu_labels: false,
-            use_full_gpu_text: false,
-            static_show_names: false,
-            show_claim_labels: false,
-            show_far_zoom_territory_tags: true,
-            static_abbreviate_names: true,
-            static_name_color: NameColor::Guild,
-            show_connections: true,
-            bold_connections: false,
-            connection_opacity_scale: 1.0,
-            connection_thickness_scale: 1.0,
-            connection_zoom_fade_start: 0.15,
-            connection_zoom_fade_end: 0.45,
-            suppress_cooldown_visuals: false,
-            fill_alpha_boost: 0.0,
-            static_tag_color: NameColor::Guild,
-            use_readable_font: false,
-            dynamic_show_countdown: false,
-            dynamic_show_granular_map_time: false,
-            dynamic_show_compound_map_time: false,
-            dynamic_show_resource_icons: true,
-            show_territory_ornaments: true,
-            label_scale_master: 1.0,
-            label_scale_static_tag: 1.0,
-            label_scale_static_name: 1.0,
-            label_scale_dynamic: 1.0,
-            label_scale_icons: 1.0,
         };
 
         if !renderer.ensure_text_renderer() {
             return Err("wgpu init (webgl): failed to initialize GPU text renderer".into());
         }
-        renderer.use_static_gpu_labels = true;
-        renderer.use_full_gpu_text = true;
 
         Ok(renderer)
     }
@@ -1748,17 +1771,9 @@ impl GpuRenderer {
             self.surface_config.format,
             &self.viewport_bind_group_layout,
             &vertex_layout,
-            self.use_readable_font,
+            self.text_readable_font,
         );
         self.text_renderer.is_some()
-    }
-
-    pub fn rebuild_text_renderer(&mut self) {
-        self.text_renderer = None;
-        if self.ensure_text_renderer() {
-            self.static_text_dirty = true;
-            self.dynamic_text_dirty = true;
-        }
     }
 
     fn ensure_icon_renderer(&mut self, icons: &ResourceAtlas) -> bool {
@@ -2570,22 +2585,6 @@ impl GpuRenderer {
         })
     }
 
-    pub fn mark_dirty(&mut self, reason: InvalidationReason) {
-        match reason {
-            InvalidationReason::Geometry => self.instance_dirty = true,
-            InvalidationReason::StaticLabel => self.static_text_dirty = true,
-            InvalidationReason::DynamicLabel => self.dynamic_text_dirty = true,
-            InvalidationReason::Viewport => {
-                self.dynamic_text_dirty = true;
-                self.icon_dirty = true;
-            }
-            InvalidationReason::Resources => {
-                self.icon_dirty = true;
-                self.connection_dirty = true;
-            }
-        }
-    }
-
     pub fn capabilities(&self) -> RenderCapabilities {
         self.capabilities
     }
@@ -2644,11 +2643,15 @@ impl GpuRenderer {
         true
     }
 
-    /// Upload tile images as GPU textures with pre-baked rect uniforms.
-    pub fn upload_tiles(&mut self, tiles: &[LoadedTile]) {
-        if !self.ensure_tile_upload_context() {
+    /// Uploads tiles that are new or improved since the last frame and drops tiles that
+    /// are gone, bumping `tiles_revision` when the set changes.
+    fn sync_tiles(&mut self, tiles: &[LoadedTile]) {
+        let signature = tile_upload_signature(tiles);
+        if self.tiles_signature == Some(signature) || !self.ensure_tile_upload_context() {
             return;
         }
+        self.tiles_signature = Some(signature);
+        self.tiles_revision = self.tiles_revision.wrapping_add(1);
         let active_tile_ids: HashSet<usize> = tiles.iter().map(|tile| tile.id).collect();
         self.tile_textures
             .retain(|tile_id, _| active_tile_ids.contains(tile_id));
@@ -2774,7 +2777,6 @@ impl GpuRenderer {
             );
         }
         self.tile_upload_canvas_size = upload_size;
-        self.tile_world_bounds = Self::tile_world_bounds(tiles);
     }
 
     /// Build instance data from territories and upload to GPU.
@@ -2782,48 +2784,35 @@ impl GpuRenderer {
     /// Animation color interpolation is handled GPU-side: we encode
     /// from_color + timing in the instance data once, and the shader
     /// computes the interpolated color every frame at zero CPU cost.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "A rebuild consumes a snapshot of independently owned map overlays rather than retaining reactive state."
-    )]
-    fn update_instances(
-        &mut self,
-        territories: &ClientTerritoryMap,
-        hovered: &Option<String>,
-        selected: &Option<String>,
-        now: f64,
-        thick_cooldown_borders: bool,
-        heat_mode_enabled: bool,
-        heat_entries: &HashMap<String, u64>,
-        heat_max_take_count: u64,
-        territories_in_war: &HashSet<String>,
-        history_mode: bool,
-    ) {
+    fn update_instances(&mut self, frame: &Frame) {
+        let settings = frame.settings;
+        let now = frame.now_ms;
         let start_ms = self.start_time_ms;
         let start_secs = start_ms / 1000.0;
 
         self.instances_buf.clear();
         self.instances_buf
-            .extend(territories.iter().map(|(name, ct)| {
+            .extend(frame.territories.iter().map(|(name, ct)| {
                 let loc = &ct.territory.location;
-                let (r, g, b) = if heat_mode_enabled {
-                    let take_count = heat_entries.get(name).copied().unwrap_or(0);
-                    heat_color_for_count(take_count, heat_max_take_count)
-                } else {
-                    ct.guild_color
+                let (r, g, b) = match frame.heat {
+                    Some(heat) => {
+                        let take_count = heat.take_counts.get(name).copied().unwrap_or(0);
+                        heat_color_for_count(take_count, heat.max_take_count)
+                    }
+                    None => ct.guild_color,
                 };
 
-                let is_hovered = hovered.as_deref() == Some(name.as_str());
-                let is_selected = selected.as_deref() == Some(name.as_str());
+                let is_hovered = frame.hovered == Some(name.as_str());
+                let is_selected = frame.selected == Some(name.as_str());
 
-                let resource_data = if self.defense_highlight {
+                let resource_data = if settings.defense_highlight {
                     defense_tier_overlay_data(
                         ct.territory
                             .runtime
                             .as_ref()
                             .and_then(|runtime| runtime.defense_tier.as_deref()),
                     )
-                } else if self.resource_highlight {
+                } else if settings.resource_highlight {
                     ct.territory.resources.highlight_data()
                 } else {
                     [0.0; 4]
@@ -2853,22 +2842,20 @@ impl GpuRenderer {
                     .as_ref()
                     .and_then(|runtime| runtime.headquarters)
                     .unwrap_or(false);
-                // The war feed is live-only, so replaying history must not paint today's
-                // wars onto a past snapshot.
-                let is_at_war = !history_mode && territories_in_war.contains(name);
+                let is_at_war = frame.wars.is_some_and(|wars| wars.contains(name));
                 let flags = (is_hovered as u32)
                     + (is_selected as u32) * 2
                     + (is_headquarters as u32) * 4
                     + (is_at_war as u32) * 8;
 
-                let acquired_rel_secs = if self.suppress_cooldown_visuals {
+                let acquired_rel_secs = if settings.suppress_cooldown_visuals {
                     -1_000_000.0_f32
                 } else {
                     (ct.territory.acquired.timestamp() as f64 - start_secs) as f32
                 };
 
                 // Encode animation params for GPU-side interpolation
-                let (anim_color, anim_time) = if heat_mode_enabled {
+                let (anim_color, anim_time) = if frame.heat.is_some() {
                     ([0.0; 4], [0.0; 4])
                 } else {
                     match ct.animation.as_ref() {
@@ -2895,12 +2882,12 @@ impl GpuRenderer {
                     ],
                     color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
                     state: [
-                        fill_alpha + self.fill_alpha_boost,
+                        fill_alpha + settings.fill_alpha_boost,
                         0.72,
                         flags as f32,
-                        if self.suppress_cooldown_visuals {
+                        if settings.suppress_cooldown_visuals {
                             1.0
-                        } else if thick_cooldown_borders {
+                        } else if settings.thick_cooldown_borders {
                             2.0
                         } else {
                             1.0
@@ -2917,7 +2904,8 @@ impl GpuRenderer {
 
         // Cache the latest animation end time so render() can check
         // has_anims with a single comparison instead of scanning all territories.
-        self.max_anim_end_ms = territories
+        self.max_anim_end_ms = frame
+            .territories
             .values()
             .filter_map(|ct| ct.animation.as_ref())
             .map(|a| a.start_time + a.duration)
@@ -2990,42 +2978,6 @@ impl GpuRenderer {
         }
     }
 
-    fn dynamic_zoom_bucket(scale: f64) -> i32 {
-        (scale * 20.0).floor() as i32
-    }
-
-    fn static_zoom_bucket(scale: f64) -> i32 {
-        // Finer bucketing minimizes visible stepping while zooming labels.
-        (scale * 320.0).floor() as i32
-    }
-
-    #[inline]
-    fn effective_scale(master: f32, group: f32) -> f32 {
-        let master = if master.is_finite() { master } else { 1.0 };
-        let group = if group.is_finite() { group } else { 1.0 };
-        (master * group).clamp(0.5, 4.0)
-    }
-
-    #[inline]
-    fn effective_static_tag_scale(&self) -> f32 {
-        Self::effective_scale(self.label_scale_master, self.label_scale_static_tag)
-    }
-
-    #[inline]
-    fn effective_static_name_scale(&self) -> f32 {
-        Self::effective_scale(self.label_scale_master, self.label_scale_static_name)
-    }
-
-    #[inline]
-    fn effective_dynamic_label_scale(&self) -> f32 {
-        Self::effective_scale(self.label_scale_master, self.label_scale_dynamic)
-    }
-
-    #[inline]
-    fn effective_icon_scale(&self) -> f32 {
-        Self::effective_scale(self.label_scale_master, self.label_scale_icons)
-    }
-
     fn sync_territory_name_cache(&mut self, territories: &ClientTerritoryMap) {
         self.territory_name_cache
             .retain(|name, _| territories.contains_key(name));
@@ -3037,12 +2989,16 @@ impl GpuRenderer {
     }
 
     /// Build static text glyph instances (guild tag + optional territory name).
-    fn update_static_text_instances(&mut self, territories: &ClientTerritoryMap, vp: &Viewport) {
+    fn update_static_text_instances(
+        &mut self,
+        territories: &ClientTerritoryMap,
+        vp: &Viewport,
+        settings: &RenderSettings,
+    ) {
         self.sync_territory_name_cache(territories);
-        let static_tag_scale = self.effective_static_tag_scale();
-        let static_name_scale = self.effective_static_name_scale();
+        let static_tag_scale = settings.label_scales.static_tag();
+        let static_name_scale = settings.label_scales.static_name();
         let Some(text_renderer) = self.text_renderer.as_mut() else {
-            self.static_text_dirty = false;
             return;
         };
 
@@ -3051,13 +3007,12 @@ impl GpuRenderer {
         fill_instances.clear();
         halo_instances.clear();
 
-        if !self.use_static_gpu_labels || vp.scale < LABEL_VISIBILITY_MIN_SCALE {
+        if vp.scale < LABEL_VISIBILITY_MIN_SCALE {
             set_claim_label_debug(vp.scale, false, 0, 0);
             text_renderer.static_fill_instances = fill_instances;
             text_renderer.static_halo_instances = halo_instances;
             text_renderer.static_fill_count = 0;
             text_renderer.static_halo_count = 0;
-            self.static_text_dirty = false;
             return;
         }
 
@@ -3069,13 +3024,13 @@ impl GpuRenderer {
             let tag_tracking_units = line_height * STATIC_TAG_LETTER_SPACING_EM;
             let name_tracking_units = line_height * STATIC_NAME_LETTER_SPACING_EM;
             let claim_label_zoom = claim_label_zoom_active(vp.scale);
-            if self.show_claim_labels && claim_label_zoom {
+            if settings.show_claim_labels && claim_label_zoom {
                 let claim_tracking_units = line_height * CLAIM_LABEL_LETTER_SPACING_EM;
                 let claim_clusters = build_claim_clusters(territories);
                 let claim_labels = select_claim_label_candidates(
                     &claim_clusters,
                     vp,
-                    crate::claim_labels::Rect {
+                    claim_labels::Rect {
                         left: 0.0,
                         top: 0.0,
                         right: self.surface_config.width as f32,
@@ -3116,7 +3071,7 @@ impl GpuRenderer {
                 );
             } else {
                 set_claim_label_debug(vp.scale, false, 0, 0);
-                let show_far_zoom_tags = self.show_far_zoom_territory_tags && claim_label_zoom;
+                let show_far_zoom_tags = settings.show_far_zoom_territory_tags && claim_label_zoom;
                 for (name, ct) in territories {
                     let loc = &ct.territory.location;
                     let ww = loc.width() as f32;
@@ -3165,7 +3120,7 @@ impl GpuRenderer {
                             compute_label_layout_metrics(sw as f64, sh as f64, false)
                                 .detail_layout_alpha;
                         let resource_icons_visible = resource_icons_visible_for_territory(
-                            self.dynamic_show_resource_icons,
+                            settings.show_resource_icons,
                             sw,
                             sh,
                             resource_icon_detail_layout_alpha,
@@ -3177,7 +3132,7 @@ impl GpuRenderer {
                             resource_icons_visible,
                         );
                         let tag_y = loc.midpoint_y() as f32 - label_lift;
-                        let mut tag_color = name_color_rgba(self.static_tag_color, ct.guild_color);
+                        let mut tag_color = name_color_rgba(settings.tag_color, ct.guild_color);
                         tag_color[3] = 0.92 * sizing.alpha;
                         let tag_halo_alpha = 0.68 * sizing.alpha;
                         push_text_line_dual_with_tracking(
@@ -3223,7 +3178,7 @@ impl GpuRenderer {
                         compute_label_layout_metrics(sw as f64, sh as f64, false)
                             .detail_layout_alpha;
                     let resource_icons_visible = resource_icons_visible_for_territory(
-                        self.dynamic_show_resource_icons,
+                        settings.show_resource_icons,
                         sw,
                         sh,
                         resource_icon_detail_layout_alpha,
@@ -3256,7 +3211,7 @@ impl GpuRenderer {
                     let tag_px = tag_size * px_per_world;
                     if tag_px >= STATIC_TAG_MIN_RENDERED_PX {
                         let tag_color = {
-                            let mut c = name_color_rgba(self.static_tag_color, ct.guild_color);
+                            let mut c = name_color_rgba(settings.tag_color, ct.guild_color);
                             c[3] = 1.0;
                             c
                         };
@@ -3280,17 +3235,17 @@ impl GpuRenderer {
                         );
                     }
 
-                    if self.static_show_names && detail_layout_alpha > 0.02 {
+                    if settings.show_names && detail_layout_alpha > 0.02 {
                         let fallback_abbrev;
                         let base_name = if let Some((abbreviated, full)) =
                             self.territory_name_cache.get(name.as_str())
                         {
-                            if self.static_abbreviate_names {
+                            if settings.abbreviate_names {
                                 abbreviated.as_str()
                             } else {
                                 full.as_str()
                             }
-                        } else if self.static_abbreviate_names {
+                        } else if settings.abbreviate_names {
                             fallback_abbrev = abbreviate_name(name);
                             fallback_abbrev.as_str()
                         } else {
@@ -3312,7 +3267,7 @@ impl GpuRenderer {
                         let name_y = tag_y
                             + tag_size * 0.5
                             + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
-                        let mut name_rgba = name_color_rgba(self.static_name_color, ct.guild_color);
+                        let mut name_rgba = name_color_rgba(settings.name_color, ct.guild_color);
                         name_rgba[3] *=
                             STATIC_NAME_FILL_ALPHA_MULTIPLIER * detail_layout_alpha.clamp(0.0, 1.0);
                         let name_px = detail_size * px_per_world;
@@ -3367,21 +3322,21 @@ impl GpuRenderer {
         );
 
         self.diag_static_rebuilds = self.diag_static_rebuilds.saturating_add(1);
-        self.static_text_dirty = false;
     }
 
+    /// Build timer glyph instances. Returns the clock second at which the text next changes.
     fn update_dynamic_text_instances(
         &mut self,
         territories: &ClientTerritoryMap,
         vp: &Viewport,
+        settings: &RenderSettings,
         reference_time_secs: i64,
-    ) {
-        let static_tag_scale = self.effective_static_tag_scale();
-        let static_name_scale = self.effective_static_name_scale();
-        let dynamic_label_scale = self.effective_dynamic_label_scale();
+    ) -> i64 {
+        let static_tag_scale = settings.label_scales.static_tag();
+        let static_name_scale = settings.label_scales.static_name();
+        let dynamic_label_scale = settings.label_scales.dynamic();
         let Some(text_renderer) = self.text_renderer.as_mut() else {
-            self.dynamic_text_dirty = false;
-            return;
+            return i64::MAX;
         };
 
         let mut fill_instances = std::mem::take(&mut text_renderer.dynamic_fill_instances);
@@ -3389,13 +3344,13 @@ impl GpuRenderer {
         fill_instances.clear();
         halo_instances.clear();
 
-        if !self.use_full_gpu_text || vp.scale < LABEL_VISIBILITY_MIN_SCALE {
+        // Hidden timers never change on their own; zooming back in rebuilds them.
+        if vp.scale < LABEL_VISIBILITY_MIN_SCALE {
             text_renderer.dynamic_fill_instances = fill_instances;
             text_renderer.dynamic_halo_instances = halo_instances;
             text_renderer.dynamic_fill_count = 0;
             text_renderer.dynamic_halo_count = 0;
-            self.dynamic_text_dirty = false;
-            return;
+            return i64::MAX;
         }
 
         let scale = vp.scale as f32;
@@ -3424,9 +3379,9 @@ impl GpuRenderer {
                     dynamic_text_state(reference_time_secs, ct.territory.acquired.timestamp());
                 let next_age = dynamic_label_next_update_age(
                     state.age_secs,
-                    self.dynamic_show_countdown,
-                    self.dynamic_show_granular_map_time,
-                    self.dynamic_show_compound_map_time,
+                    settings.show_countdown,
+                    settings.granular_map_time,
+                    settings.compound_map_time,
                 );
                 next_update_secs =
                     next_update_secs.min(ct.territory.acquired.timestamp() + next_age);
@@ -3472,21 +3427,21 @@ impl GpuRenderer {
 
                 let cx = loc.midpoint_x() as f32;
                 let cy = loc.midpoint_y() as f32;
-                let timer_visible_at_zoom = vp.scale >= DYNAMIC_TIMER_VISIBILITY_MIN_SCALE;
+                let timer_visible_at_zoom = vp.scale >= TIMER_VISIBILITY_MIN_SCALE;
                 let show_dynamic_cooldown = timer_visible_at_zoom
-                    && self.dynamic_show_countdown
+                    && settings.show_countdown
                     && state.is_fresh
                     && cooldown_px >= DYNAMIC_COOLDOWN_MIN_RENDERED_PX;
-                let any_time_format = self.dynamic_show_countdown
-                    || self.dynamic_show_granular_map_time
-                    || self.dynamic_show_compound_map_time;
+                let any_time_format = settings.show_countdown
+                    || settings.granular_map_time
+                    || settings.compound_map_time;
                 let show_dynamic_time = timer_visible_at_zoom
                     && any_time_format
                     && !show_dynamic_cooldown
                     && time_px >= DYNAMIC_TIME_MIN_RENDERED_PX;
                 let has_timer_line = show_dynamic_time || show_dynamic_cooldown;
                 let resource_icons_visible = resource_icons_visible_for_territory(
-                    self.dynamic_show_resource_icons,
+                    settings.show_resource_icons,
                     sw,
                     sh,
                     detail_layout_alpha,
@@ -3498,8 +3453,8 @@ impl GpuRenderer {
                     resource_icons_visible,
                 );
                 let mut static_name_bottom = static_name_bottom_bound(
-                    self.use_static_gpu_labels,
-                    self.static_show_names,
+                    true,
+                    settings.show_names,
                     ww,
                     hh,
                     cy,
@@ -3515,7 +3470,7 @@ impl GpuRenderer {
                         hh,
                         cy,
                         px_per_world,
-                        self.static_show_names,
+                        settings.show_names,
                         static_tag_scale,
                         static_name_scale,
                         resource_icons_visible,
@@ -3551,9 +3506,9 @@ impl GpuRenderer {
                 }
 
                 if show_dynamic_time {
-                    if self.dynamic_show_granular_map_time {
+                    if settings.granular_map_time {
                         write_hms(&mut text_buf, state.age_secs);
-                    } else if self.dynamic_show_compound_map_time {
+                    } else if settings.compound_map_time {
                         write_age_compound(&mut text_buf, state.age_secs);
                     } else {
                         write_age(&mut text_buf, state.age_secs);
@@ -3662,39 +3617,41 @@ impl GpuRenderer {
             &mut text_renderer.dynamic_halo_capacity,
         );
 
-        self.dynamic_next_update_secs = if next_update_secs == i64::MAX {
+        self.diag_dynamic_rebuilds = self.diag_dynamic_rebuilds.saturating_add(1);
+        if next_update_secs == i64::MAX {
             reference_time_secs + 1
         } else {
             next_update_secs
-        };
-        self.diag_dynamic_rebuilds = self.diag_dynamic_rebuilds.saturating_add(1);
-        self.dynamic_text_dirty = false;
+        }
     }
 
+    /// Build icon instances. Returns the clock second at which their layout next changes:
+    /// resource icons sit below the timers, whose size and cooldown line depend on whether a
+    /// territory is still fresh.
     fn update_icon_instances(
         &mut self,
         territories: &ClientTerritoryMap,
         vp: &Viewport,
+        settings: &RenderSettings,
         reference_time_secs: i64,
-    ) {
-        let static_tag_scale = self.effective_static_tag_scale();
-        let static_name_scale = self.effective_static_name_scale();
-        let dynamic_label_scale = self.effective_dynamic_label_scale();
-        let icon_scale = self.effective_icon_scale();
+    ) -> i64 {
+        let static_tag_scale = settings.label_scales.static_tag();
+        let static_name_scale = settings.label_scales.static_name();
+        let dynamic_label_scale = settings.label_scales.dynamic();
+        let icon_scale = settings.label_scales.icons();
         let Some(renderer) = self.icon_renderer.as_mut() else {
-            self.icon_dirty = false;
-            return;
+            return i64::MAX;
         };
         let default_ornament_uv = renderer.default_ornament_uv;
         let default_ornament_aspect = renderer.default_ornament_aspect.max(0.2);
         let sequoia_ornament_uv = renderer.sequoia_ornament_uv;
         let sequoia_ornament_aspect = renderer.sequoia_ornament_aspect.max(0.2);
         renderer.instances_buf.clear();
-        if !self.use_full_gpu_text || vp.scale < LABEL_VISIBILITY_MIN_SCALE {
+        if vp.scale < LABEL_VISIBILITY_MIN_SCALE {
             renderer.instance_count = 0;
-            self.icon_dirty = false;
-            return;
+            return i64::MAX;
         }
+        let mut next_change_secs = i64::MAX;
 
         let scale = vp.scale as f32;
         for ct in territories.values() {
@@ -3717,13 +3674,13 @@ impl GpuRenderer {
             let resource_icon_detail_layout_alpha =
                 compute_label_layout_metrics(sw as f64, sh as f64, false).detail_layout_alpha;
             let resource_icons_visible = resource_icons_visible_for_territory(
-                self.dynamic_show_resource_icons,
+                settings.show_resource_icons,
                 sw,
                 sh,
                 resource_icon_detail_layout_alpha,
                 &ct.territory.resources,
             );
-            if self.show_territory_ornaments {
+            if settings.show_territory_ornaments {
                 let use_sequoia_ornament =
                     is_sequoia_guild(&ct.territory.guild.name, &ct.territory.guild.prefix);
                 let (base_ornament_uv, ornament_aspect, tint) = if use_sequoia_ornament {
@@ -3841,7 +3798,11 @@ impl GpuRenderer {
                 continue;
             }
 
-            let state = dynamic_text_state(reference_time_secs, ct.territory.acquired.timestamp());
+            let acquired_secs = ct.territory.acquired.timestamp();
+            let state = dynamic_text_state(reference_time_secs, acquired_secs);
+            if state.is_fresh {
+                next_change_secs = next_change_secs.min(acquired_secs + FRESH_TERRITORY_SECS);
+            }
             let detail_layout_alpha = resource_icon_detail_layout_alpha;
             let label_lift = compute_resource_icon_label_lift_world(
                 hh,
@@ -3861,14 +3822,13 @@ impl GpuRenderer {
             let line_gap = sizing.line_gap;
             let time_px = time_size * px_per_world;
             let cooldown_px = cooldown_size * px_per_world;
-            let timer_visible_at_zoom = vp.scale >= DYNAMIC_TIMER_VISIBILITY_MIN_SCALE;
+            let timer_visible_at_zoom = vp.scale >= TIMER_VISIBILITY_MIN_SCALE;
             let cooldown_timer_visible = timer_visible_at_zoom
                 && state.is_fresh
-                && self.dynamic_show_countdown
+                && settings.show_countdown
                 && cooldown_px >= DYNAMIC_COOLDOWN_MIN_RENDERED_PX;
-            let any_time_format = self.dynamic_show_countdown
-                || self.dynamic_show_granular_map_time
-                || self.dynamic_show_compound_map_time;
+            let any_time_format =
+                settings.show_countdown || settings.granular_map_time || settings.compound_map_time;
             let show_dynamic_time = timer_visible_at_zoom
                 && any_time_format
                 && !cooldown_timer_visible
@@ -3876,8 +3836,8 @@ impl GpuRenderer {
             let has_timer_line = cooldown_timer_visible || show_dynamic_time;
 
             let mut static_name_bottom = static_name_bottom_bound(
-                self.use_static_gpu_labels,
-                self.static_show_names,
+                true,
+                settings.show_names,
                 ww,
                 hh,
                 cy,
@@ -3893,7 +3853,7 @@ impl GpuRenderer {
                     hh,
                     cy,
                     px_per_world,
-                    self.static_show_names,
+                    settings.show_names,
                     static_tag_scale,
                     static_name_scale,
                     resource_icons_visible,
@@ -3973,25 +3933,28 @@ impl GpuRenderer {
             &mut renderer.instance_capacity,
         );
         self.diag_icon_rebuilds = self.diag_icon_rebuilds.saturating_add(1);
-        self.icon_dirty = false;
+        next_change_secs
     }
 
-    fn update_connection_vertices(&mut self, territories: &ClientTerritoryMap, scale: f64) {
+    fn update_connection_vertices(
+        &mut self,
+        territories: &ClientTerritoryMap,
+        scale: f64,
+        settings: &RenderSettings,
+    ) {
         self.connection_vertices.clear();
-        if !self.show_connections {
+        if !settings.show_connections {
             self.connection_count = 0;
-            self.connection_dirty = false;
             return;
         }
 
         let zoom_fade = smoothstep_f32(
-            self.connection_zoom_fade_start,
-            self.connection_zoom_fade_end,
+            settings.connection_zoom_fade.0,
+            settings.connection_zoom_fade.1,
             scale as f32,
         );
         if zoom_fade < 0.001 {
             self.connection_count = 0;
-            self.connection_dirty = false;
             return;
         }
 
@@ -4028,10 +3991,10 @@ impl GpuRenderer {
                 let nx = -dy * inv_len;
                 let ny = dx * inv_len;
                 let world_per_px = (1.0 / (scale as f32).max(0.05)).min(24.0);
-                let opacity_scale = self.connection_opacity_scale.max(0.0);
-                let thickness_scale = self.connection_thickness_scale.max(0.2);
+                let opacity_scale = settings.connection_opacity_scale.max(0.0);
+                let thickness_scale = settings.connection_thickness_scale.max(0.2);
 
-                let color = if self.bold_connections {
+                let color = if settings.bold_connections {
                     let (cr, cg, cb) = ct.guild_color;
                     let lum = 0.299 * cr as f64 + 0.587 * cg as f64 + 0.114 * cb as f64;
                     let dark_boost = (1.0 - lum / 255.0).clamp(0.0, 1.0);
@@ -4048,7 +4011,7 @@ impl GpuRenderer {
                     [1.0, 1.0, 1.0, 0.16 * zoom_fade * opacity_scale]
                 };
 
-                let thickness_steps = if self.bold_connections {
+                let thickness_steps = if settings.bold_connections {
                     CONNECTION_LINE_STEPS_BOLD
                 } else {
                     CONNECTION_LINE_STEPS_NORMAL
@@ -4089,34 +4052,13 @@ impl GpuRenderer {
                 bytemuck::cast_slice(&self.connection_vertices),
             );
         }
-        self.connection_dirty = false;
     }
 
-    /// Render a full frame. Returns true if animations are active.
-    pub fn render(&mut self, frame: RenderFrameInput<'_>) -> bool {
-        let RenderFrameInput {
-            vp,
-            territories,
-            hovered,
-            selected,
-            tiles,
-            world_bounds,
-            now,
-            reference_time_secs,
-            interaction_active,
-            icons,
-            show_minimap,
-            history_mode,
-            heat_mode_enabled,
-            heat_entries,
-            heat_max_take_count,
-            territories_in_war,
-        } = frame;
-        let frame_start_ms = now;
-        let mut draw_calls: u32 = 0;
-        let mut tile_draw_calls: u32 = 0;
-        let mut bytes_uploaded: u64 = 0;
-        let minimap_world_bounds = self.tile_world_bounds.or(world_bounds);
+    /// Draws a frame, first rebuilding the cached layers named in `rebuild`.
+    pub fn render(&mut self, frame: &Frame, rebuild: Rebuild) -> FrameOutcome {
+        let vp = frame.camera;
+        let now = frame.now_ms;
+        let mut stats = DrawStats::default();
 
         // CSS pixel dimensions for viewport/culling (shaders work in CSS space)
         let w = self.width as f32 / self.dpr;
@@ -4129,248 +4071,35 @@ impl GpuRenderer {
             bytemuck::cast_slice(&[ViewportUniform {
                 offset: [vp.offset_x as f32, vp.offset_y as f32],
                 scale: vp.scale as f32,
-                time: ((now - self.start_time_ms) / 1000.0) as f32,
+                time: self.shader_time(now),
                 resolution: [w, h],
-                _pad1: [
-                    (reference_time_secs as f64 - self.start_time_ms / 1000.0) as f32,
-                    0.0,
-                ],
+                _pad1: [self.shader_reference_time(frame.clock_secs), 0.0],
             }]),
         );
-        bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
+        stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
 
-        let mut did_static_rebuild = false;
-        let mut did_dynamic_rebuild = false;
-        let mut did_icon_rebuild = false;
-
-        // Update instance buffer only when state has changed.
-        // Animation color interpolation is GPU-side — no per-frame rebuild needed.
-        if self.instance_dirty {
-            self.update_instances(
-                territories,
-                hovered,
-                selected,
-                now,
-                self.thick_cooldown_borders,
-                heat_mode_enabled,
-                heat_entries,
-                heat_max_take_count,
-                territories_in_war,
-                history_mode,
-            );
-            bytes_uploaded +=
-                (self.instance_count as u64) * std::mem::size_of::<TerritoryInstance>() as u64;
-            self.instance_dirty = false;
-        }
-        if self.connection_dirty {
-            self.update_connection_vertices(territories, vp.scale);
-            bytes_uploaded +=
-                (self.connection_count as u64) * std::mem::size_of::<ConnectionVertex>() as u64;
-        }
-
-        if (self.use_full_gpu_text || self.use_static_gpu_labels) && self.text_renderer.is_none() {
-            if self.ensure_text_renderer() {
-                self.static_text_dirty = true;
-                self.dynamic_text_dirty = true;
-            } else {
-                // Fail closed: map rendering requires the GPU text pipeline.
-                return false;
-            }
-        }
-        if !self.supports_gpu_icons {
-            self.icon_dirty = false;
-        } else if self.use_full_gpu_text
-            && let Some(icon_set) = icons.as_ref()
-            && self.icon_renderer.is_none()
-            && self.ensure_icon_renderer(icon_set)
-        {
-            self.icon_dirty = true;
-        }
-
-        let static_zoom_bucket = Self::static_zoom_bucket(vp.scale);
-        let timer_visible_at_zoom = vp.scale >= DYNAMIC_TIMER_VISIBILITY_MIN_SCALE;
-        if timer_visible_at_zoom != self.dynamic_timer_visible_at_zoom {
-            self.dynamic_timer_visible_at_zoom = timer_visible_at_zoom;
-            // Crossing the timer visibility threshold changes text/icon layout even when
-            // zoom buckets remain unchanged; force an immediate refit.
-            self.static_text_dirty = true;
-            self.dynamic_text_dirty = true;
-            self.icon_dirty = true;
-        }
-        if static_zoom_bucket != self.static_zoom_bucket {
-            self.static_zoom_bucket = static_zoom_bucket;
-            self.static_text_dirty = true;
-        }
-
-        if self.static_text_dirty {
-            self.update_static_text_instances(territories, vp);
-            if let Some(text_renderer) = self.text_renderer.as_ref() {
-                let per = std::mem::size_of::<TextInstance>() as u64;
-                bytes_uploaded += (text_renderer.static_fill_count as u64
-                    + text_renderer.static_halo_count as u64)
-                    * per;
-            }
-            did_static_rebuild = true;
-        }
-
-        let zoom_bucket = Self::dynamic_zoom_bucket(vp.scale);
-        if zoom_bucket != self.dynamic_zoom_bucket {
-            self.dynamic_zoom_bucket = zoom_bucket;
-            self.dynamic_text_dirty = true;
-            self.icon_dirty = true;
-            self.connection_dirty = true;
-        }
-        if reference_time_secs != self.dynamic_reference_time_secs {
-            let prev_reference = self.dynamic_reference_time_secs;
-            self.dynamic_reference_time_secs = reference_time_secs;
-            let stepped_back = prev_reference != i64::MIN && reference_time_secs < prev_reference;
-            let crossed_scheduled_boundary = self.dynamic_next_update_secs == i64::MIN
-                || reference_time_secs >= self.dynamic_next_update_secs;
-            if stepped_back || crossed_scheduled_boundary {
-                if interaction_active {
-                    self.dynamic_refresh_deferred = true;
-                } else {
-                    self.dynamic_text_dirty = true;
-                    self.dynamic_refresh_deferred = false;
-                    // Icons can move when cooldown line appears/disappears.
-                    if self.dynamic_show_countdown {
-                        self.icon_dirty = true;
-                    }
-                }
-            }
-        }
-        if !interaction_active && self.dynamic_refresh_deferred {
-            self.dynamic_text_dirty = true;
-            self.dynamic_refresh_deferred = false;
-            if self.dynamic_show_countdown {
-                self.icon_dirty = true;
-            }
-        }
-        if self.use_full_gpu_text && self.dynamic_text_dirty {
-            self.update_dynamic_text_instances(territories, vp, reference_time_secs);
-            if let Some(text_renderer) = self.text_renderer.as_ref() {
-                let per = std::mem::size_of::<TextInstance>() as u64;
-                bytes_uploaded += (text_renderer.dynamic_fill_count as u64
-                    + text_renderer.dynamic_halo_count as u64)
-                    * per;
-            }
-            did_dynamic_rebuild = true;
-        }
-        if self.use_full_gpu_text && self.icon_dirty && self.icon_renderer.is_some() {
-            self.update_icon_instances(territories, vp, reference_time_secs);
-            if let Some(icon_renderer) = self.icon_renderer.as_ref() {
-                bytes_uploaded += (icon_renderer.instance_count as u64)
-                    * std::mem::size_of::<IconInstance>() as u64;
-            }
-            did_icon_rebuild = true;
-        }
-
-        let pan_only = (vp.scale - self.diag_last_vp.2).abs() < 0.000001
-            && ((vp.offset_x - self.diag_last_vp.0).abs() > 0.001
-                || (vp.offset_y - self.diag_last_vp.1).abs() > 0.001);
-        if pan_only && !did_static_rebuild && !did_dynamic_rebuild && !did_icon_rebuild {
-            self.diag_pan_only_zero_rebuild_frames =
-                self.diag_pan_only_zero_rebuild_frames.saturating_add(1);
-        }
-        self.diag_last_vp = (vp.offset_x, vp.offset_y, vp.scale);
-
-        if self.diag_console_logging
-            && (did_static_rebuild || did_dynamic_rebuild || did_icon_rebuild)
-        {
-            web_sys::console::log_1(
-                &format!(
-                    "gpu-diag static_rebuilds={} dynamic_rebuilds={} icon_rebuilds={} pan_zero_rebuild_frames={}",
-                    self.diag_static_rebuilds,
-                    self.diag_dynamic_rebuilds,
-                    self.diag_icon_rebuilds,
-                    self.diag_pan_only_zero_rebuild_frames
-                )
-                .into(),
-            );
-            self.diag_static_rebuilds = 0;
-            self.diag_dynamic_rebuilds = 0;
-            self.diag_icon_rebuilds = 0;
-            self.diag_pan_only_zero_rebuild_frames = 0;
-        }
+        self.sync_tiles(frame.tiles);
+        let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
+            // Fail closed: map rendering requires the GPU text pipeline.
+            return FrameOutcome::default();
+        };
+        let outcome = FrameOutcome {
+            animating: now < self.max_anim_end_ms,
+            next_refresh,
+        };
 
         // Pre-compute glow uniforms and write buffers BEFORE the render pass
         // to avoid pipeline stalls from mid-pass buffer writes on WebGL2/glow.
-        let mut draw_sel_glow = false;
-        let mut draw_hov_glow = false;
-
-        if let Some(sel_name) = selected {
-            if let Some(ct) = territories.get(sel_name) {
-                let loc = &ct.territory.location;
-                let (r, g, b) = ct.guild_color;
-                let expand_world = 8.0 / vp.scale as f32;
-                self.queue.write_buffer(
-                    &self.glow_buffer_sel,
-                    0,
-                    bytemuck::cast_slice(&[GlowUniform {
-                        rect: [
-                            loc.left() as f32 - expand_world,
-                            loc.top() as f32 - expand_world,
-                            loc.width() as f32 + expand_world * 2.0,
-                            loc.height() as f32 + expand_world * 2.0,
-                        ],
-                        glow_color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.35],
-                        expand: 6.0,
-                        falloff: 0.03,
-                        ring_width: 1.5,
-                        fill_tint_alpha: 0.02,
-                        fill_tint_rgb: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
-                        _pad: 0.0,
-                    }]),
-                );
-                bytes_uploaded += std::mem::size_of::<GlowUniform>() as u64;
-                draw_sel_glow = true;
-            }
-        }
-
-        if let Some(hov_name) = hovered {
-            if selected.as_deref() != Some(hov_name.as_str()) {
-                if let Some(ct) = territories.get(hov_name) {
-                    let loc = &ct.territory.location;
-                    let (r, g, b) = ct.guild_color;
-                    let expand_world = 5.0 / vp.scale as f32;
-                    self.queue.write_buffer(
-                        &self.glow_buffer_hov,
-                        0,
-                        bytemuck::cast_slice(&[GlowUniform {
-                            rect: [
-                                loc.left() as f32 - expand_world,
-                                loc.top() as f32 - expand_world,
-                                loc.width() as f32 + expand_world * 2.0,
-                                loc.height() as f32 + expand_world * 2.0,
-                            ],
-                            glow_color: [
-                                r as f32 / 255.0,
-                                g as f32 / 255.0,
-                                b as f32 / 255.0,
-                                0.25,
-                            ],
-                            expand: 5.0,
-                            falloff: 0.035,
-                            ring_width: 1.0,
-                            fill_tint_alpha: 0.0,
-                            fill_tint_rgb: [0.0, 0.0, 0.0],
-                            _pad: 0.0,
-                        }]),
-                    );
-                    bytes_uploaded += std::mem::size_of::<GlowUniform>() as u64;
-                    draw_hov_glow = true;
-                }
-            }
-        }
+        let (draw_sel_glow, draw_hov_glow) = self.write_glow_uniforms(frame, &mut stats);
 
         // Get surface texture
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.surface.configure(&self.device, &self.surface_config);
-                return false;
+                return outcome;
             }
-            Err(_) => return false,
+            Err(_) => return outcome,
         };
 
         let view = output
@@ -4403,13 +4132,13 @@ impl GpuRenderer {
             });
 
             // Draw tiles
-            if !tiles.is_empty() {
+            if !frame.tiles.is_empty() {
                 pass.set_pipeline(&self.tile_pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
-                for tile in tiles {
+                for tile in frame.tiles {
                     let Some(tile_tex) = self.tile_textures.get(&tile.id) else {
                         continue;
                     };
@@ -4419,7 +4148,7 @@ impl GpuRenderer {
                     let z2 = z1 + th;
 
                     // World bounds culling
-                    if let Some((bx1, by1, bx2, by2)) = world_bounds {
+                    if let Some((bx1, by1, bx2, by2)) = frame.territory_bounds {
                         let margin = 300.0;
                         if (x2 as f64) < bx1 - margin
                             || (x1 as f64) > bx2 + margin
@@ -4446,8 +4175,7 @@ impl GpuRenderer {
 
                     pass.set_bind_group(1, &tile_tex.bind_group, &[]);
                     pass.draw_indexed(0..6, 0, 0..1);
-                    draw_calls = draw_calls.saturating_add(1);
-                    tile_draw_calls = tile_draw_calls.saturating_add(1);
+                    stats.tile_draw();
                 }
             }
 
@@ -4459,7 +4187,7 @@ impl GpuRenderer {
                 pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..6, 0, 0..self.instance_count);
-                draw_calls = draw_calls.saturating_add(1);
+                stats.draw();
             }
 
             if self.connection_count > 0 {
@@ -4467,7 +4195,7 @@ impl GpuRenderer {
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.connection_buffer.slice(..));
                 pass.draw(0..self.connection_count, 0..1);
-                draw_calls = draw_calls.saturating_add(1);
+                stats.draw();
             }
 
             // Glow draws — uniforms already written before pass to avoid
@@ -4481,53 +4209,54 @@ impl GpuRenderer {
                 if draw_sel_glow {
                     pass.set_bind_group(1, &self.glow_bind_group_sel, &[]);
                     pass.draw_indexed(0..6, 0, 0..1);
-                    draw_calls = draw_calls.saturating_add(1);
+                    stats.draw();
                 }
 
                 if draw_hov_glow {
                     pass.set_bind_group(1, &self.glow_bind_group_hov, &[]);
                     pass.draw_indexed(0..6, 0, 0..1);
-                    draw_calls = draw_calls.saturating_add(1);
+                    stats.draw();
                 }
             }
 
-            if self.use_static_gpu_labels
-                && let Some(text_renderer) = self.text_renderer.as_ref()
-            {
+            if let Some(text_renderer) = self.text_renderer.as_ref() {
                 pass.set_pipeline(&text_renderer.pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
-                if text_renderer.static_halo_count > 0 {
-                    pass.set_bind_group(1, &text_renderer.halo_bind_group, &[]);
-                    pass.set_vertex_buffer(1, text_renderer.static_halo_buffer.slice(..));
-                    pass.draw_indexed(0..6, 0, 0..text_renderer.static_halo_count);
-                    draw_calls = draw_calls.saturating_add(1);
-                }
-                if text_renderer.static_fill_count > 0 {
-                    pass.set_bind_group(1, &text_renderer.fill_bind_group, &[]);
-                    pass.set_vertex_buffer(1, text_renderer.static_fill_buffer.slice(..));
-                    pass.draw_indexed(0..6, 0, 0..text_renderer.static_fill_count);
-                    draw_calls = draw_calls.saturating_add(1);
-                }
-
-                if self.use_full_gpu_text && text_renderer.dynamic_halo_count > 0 {
-                    pass.set_bind_group(1, &text_renderer.halo_bind_group, &[]);
-                    pass.set_vertex_buffer(1, text_renderer.dynamic_halo_buffer.slice(..));
-                    pass.draw_indexed(0..6, 0, 0..text_renderer.dynamic_halo_count);
-                    draw_calls = draw_calls.saturating_add(1);
-                }
-                if self.use_full_gpu_text && text_renderer.dynamic_fill_count > 0 {
-                    pass.set_bind_group(1, &text_renderer.fill_bind_group, &[]);
-                    pass.set_vertex_buffer(1, text_renderer.dynamic_fill_buffer.slice(..));
-                    pass.draw_indexed(0..6, 0, 0..text_renderer.dynamic_fill_count);
-                    draw_calls = draw_calls.saturating_add(1);
+                for (bind_group, buffer, count) in [
+                    (
+                        &text_renderer.halo_bind_group,
+                        &text_renderer.static_halo_buffer,
+                        text_renderer.static_halo_count,
+                    ),
+                    (
+                        &text_renderer.fill_bind_group,
+                        &text_renderer.static_fill_buffer,
+                        text_renderer.static_fill_count,
+                    ),
+                    (
+                        &text_renderer.halo_bind_group,
+                        &text_renderer.dynamic_halo_buffer,
+                        text_renderer.dynamic_halo_count,
+                    ),
+                    (
+                        &text_renderer.fill_bind_group,
+                        &text_renderer.dynamic_fill_buffer,
+                        text_renderer.dynamic_fill_count,
+                    ),
+                ] {
+                    if count > 0 {
+                        pass.set_bind_group(1, bind_group, &[]);
+                        pass.set_vertex_buffer(1, buffer.slice(..));
+                        pass.draw_indexed(0..6, 0, 0..count);
+                        stats.draw();
+                    }
                 }
             }
 
-            if self.use_full_gpu_text
-                && let Some(icon_renderer) = self.icon_renderer.as_ref()
+            if let Some(icon_renderer) = self.icon_renderer.as_ref()
                 && icon_renderer.instance_count > 0
             {
                 pass.set_pipeline(&icon_renderer.pipeline);
@@ -4537,239 +4266,25 @@ impl GpuRenderer {
                 pass.set_vertex_buffer(1, icon_renderer.instance_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 pass.draw_indexed(0..6, 0, 0..icon_renderer.instance_count);
-                draw_calls = draw_calls.saturating_add(1);
+                stats.draw();
             }
         }
 
-        if show_minimap {
-            let minimap_bottom = if history_mode {
-                MINIMAP_HISTORY_BOTTOM
-            } else {
-                MINIMAP_MARGIN
-            };
-            let minimap_x = MINIMAP_MARGIN;
-            let minimap_y = (h - MINIMAP_H - minimap_bottom).max(0.0);
-            let scissor_x = (minimap_x * self.dpr).floor().max(0.0) as u32;
-            let scissor_y = (minimap_y * self.dpr).floor().max(0.0) as u32;
-            let scissor_w =
-                ((MINIMAP_W * self.dpr).ceil() as u32).min(self.width.saturating_sub(scissor_x));
-            let scissor_h =
-                ((MINIMAP_H * self.dpr).ceil() as u32).min(self.height.saturating_sub(scissor_y));
-
-            if scissor_w > 0 && scissor_h > 0 {
-                let (world_min_x, world_min_y, world_max_x, world_max_y) =
-                    minimap_world_bounds.unwrap_or(MINIMAP_DEFAULT_WORLD_BOUNDS);
-                let world_w = ((world_max_x - world_min_x).max(1.0)) as f32;
-                let world_h = ((world_max_y - world_min_y).max(1.0)) as f32;
-                let minimap_scale = (MINIMAP_W / world_w).min(MINIMAP_H / world_h);
-                let used_w = world_w * minimap_scale;
-                let used_h = world_h * minimap_scale;
-                let minimap_offset_x =
-                    minimap_x + (MINIMAP_W - used_w) * 0.5 - (world_min_x as f32) * minimap_scale;
-                let minimap_offset_y =
-                    minimap_y + (MINIMAP_H - used_h) * 0.5 - (world_min_y as f32) * minimap_scale;
-
-                self.queue.write_buffer(
-                    &self.minimap_viewport_buffer,
-                    0,
-                    bytemuck::cast_slice(&[ViewportUniform {
-                        offset: [minimap_offset_x, minimap_offset_y],
-                        scale: minimap_scale,
-                        time: ((now - self.start_time_ms) / 1000.0) as f32,
-                        resolution: [w, h],
-                        _pad1: [
-                            (reference_time_secs as f64 - self.start_time_ms / 1000.0) as f32,
-                            0.0,
-                        ],
-                    }]),
-                );
-                bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
-
-                let (tl_wx, tl_wy) = vp.screen_to_world(0.0, 0.0);
-                let (br_wx, br_wy) = vp.screen_to_world(w as f64, h as f64);
-                let left = tl_wx.min(br_wx) as f32;
-                let right = tl_wx.max(br_wx) as f32;
-                let top = tl_wy.min(br_wy) as f32;
-                let bottom = tl_wy.max(br_wy) as f32;
-                let world_min_x_f = world_min_x as f32;
-                let world_min_y_f = world_min_y as f32;
-                let world_max_x_f = world_max_x as f32;
-                let world_max_y_f = world_max_y as f32;
-                let left = left.clamp(world_min_x_f, world_max_x_f);
-                let right = right.clamp(world_min_x_f, world_max_x_f);
-                let top = top.clamp(world_min_y_f, world_max_y_f);
-                let bottom = bottom.clamp(world_min_y_f, world_max_y_f);
-                let color = [245.0 / 255.0, 197.0 / 255.0, 66.0 / 255.0, 0.95];
-                let indicator_vertices = [
-                    ConnectionVertex {
-                        world_pos: [left, top],
-                        color,
-                    },
-                    ConnectionVertex {
-                        world_pos: [right, top],
-                        color,
-                    },
-                    ConnectionVertex {
-                        world_pos: [right, top],
-                        color,
-                    },
-                    ConnectionVertex {
-                        world_pos: [right, bottom],
-                        color,
-                    },
-                    ConnectionVertex {
-                        world_pos: [right, bottom],
-                        color,
-                    },
-                    ConnectionVertex {
-                        world_pos: [left, bottom],
-                        color,
-                    },
-                    ConnectionVertex {
-                        world_pos: [left, bottom],
-                        color,
-                    },
-                    ConnectionVertex {
-                        world_pos: [left, top],
-                        color,
-                    },
-                ];
-                let indicator_count = if right > left && bottom > top {
-                    8u32
-                } else {
-                    0u32
-                };
-                if indicator_count > self.minimap_indicator_capacity {
-                    self.minimap_indicator_capacity = indicator_count.next_power_of_two();
-                    self.minimap_indicator_buffer =
-                        self.device.create_buffer(&wgpu::BufferDescriptor {
-                            label: Some("minimap-indicator-vertex-buf"),
-                            size: (self.minimap_indicator_capacity as u64)
-                                * std::mem::size_of::<ConnectionVertex>() as u64,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                            mapped_at_creation: false,
-                        });
-                }
-                if indicator_count > 0 {
-                    self.queue.write_buffer(
-                        &self.minimap_indicator_buffer,
-                        0,
-                        bytemuck::cast_slice(&indicator_vertices),
-                    );
-                    bytes_uploaded +=
-                        (indicator_count as u64) * std::mem::size_of::<ConnectionVertex>() as u64;
-                }
-
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("minimap-pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-                pass.set_scissor_rect(scissor_x, scissor_y, scissor_w, scissor_h);
-
-                // Minimap background fill
-                {
-                    let bg_color = [19.0 / 255.0, 22.0 / 255.0, 31.0 / 255.0, 0.88_f32];
-                    let (wmx, wmy, wmxx, wmxy) =
-                        minimap_world_bounds.unwrap_or(MINIMAP_DEFAULT_WORLD_BOUNDS);
-                    let pad = 200.0_f32;
-                    let bg_vertices = [
-                        ConnectionVertex {
-                            world_pos: [wmx as f32 - pad, wmy as f32 - pad],
-                            color: bg_color,
-                        },
-                        ConnectionVertex {
-                            world_pos: [wmxx as f32 + pad, wmy as f32 - pad],
-                            color: bg_color,
-                        },
-                        ConnectionVertex {
-                            world_pos: [wmxx as f32 + pad, wmxy as f32 + pad],
-                            color: bg_color,
-                        },
-                        ConnectionVertex {
-                            world_pos: [wmx as f32 - pad, wmy as f32 - pad],
-                            color: bg_color,
-                        },
-                        ConnectionVertex {
-                            world_pos: [wmxx as f32 + pad, wmxy as f32 + pad],
-                            color: bg_color,
-                        },
-                        ConnectionVertex {
-                            world_pos: [wmx as f32 - pad, wmxy as f32 + pad],
-                            color: bg_color,
-                        },
-                    ];
-                    self.queue.write_buffer(
-                        &self.minimap_bg_buffer,
-                        0,
-                        bytemuck::cast_slice(&bg_vertices),
-                    );
-                    pass.set_pipeline(&self.connection_fill_pipeline);
-                    pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.minimap_bg_buffer.slice(..));
-                    pass.draw(0..6, 0..1);
-                    draw_calls = draw_calls.saturating_add(1);
-                }
-
-                if !tiles.is_empty() {
-                    pass.set_pipeline(&self.tile_pipeline);
-                    pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                    for tile in tiles {
-                        let Some(tile_tex) = self.tile_textures.get(&tile.id) else {
-                            continue;
-                        };
-                        pass.set_bind_group(1, &tile_tex.bind_group, &[]);
-                        pass.draw_indexed(0..6, 0, 0..1);
-                        draw_calls = draw_calls.saturating_add(1);
-                        tile_draw_calls = tile_draw_calls.saturating_add(1);
-                    }
-                }
-
-                if self.instance_count > 0 {
-                    pass.set_pipeline(&self.territory_pipeline);
-                    pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-                    pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-                    pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                    pass.draw_indexed(0..6, 0, 0..self.instance_count);
-                    draw_calls = draw_calls.saturating_add(1);
-                }
-
-                if self.connection_count > 0 {
-                    pass.set_pipeline(&self.connection_pipeline);
-                    pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
-                    pass.set_vertex_buffer(0, self.connection_buffer.slice(..));
-                    pass.draw(0..self.connection_count, 0..1);
-                    draw_calls = draw_calls.saturating_add(1);
-                }
-
-                pass.set_pipeline(&self.connection_pipeline);
-                pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.minimap_indicator_buffer.slice(..));
-                pass.draw(0..indicator_count, 0..1);
-                draw_calls = draw_calls.saturating_add(1);
-            }
+        if let Some(layout) = frame.minimap {
+            self.ensure_minimap_terrain(&mut encoder, layout, frame.tiles, &mut stats);
+            self.draw_minimap(&mut encoder, &view, layout, frame, &mut stats);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
-        let frame_cpu_ms = (js_sys::Date::now() - frame_start_ms).max(0.0);
+        let frame_cpu_ms = (js_sys::Date::now() - now).max(0.0);
         let fps_estimate = if self.last_render_time_ms > 0.0 {
-            let dt = (frame_start_ms - self.last_render_time_ms).max(0.0001);
+            let dt = (now - self.last_render_time_ms).max(0.0001);
             1000.0 / dt
         } else {
             0.0
         };
-        self.last_render_time_ms = frame_start_ms;
+        self.last_render_time_ms = now;
         let text_instances = self
             .text_renderer
             .as_ref()
@@ -4782,17 +4297,498 @@ impl GpuRenderer {
             .unwrap_or(0);
         self.frame_metrics = FrameMetrics {
             frame_cpu_ms,
-            draw_calls,
-            tile_draw_calls,
-            bytes_uploaded,
+            draw_calls: stats.draw_calls,
+            tile_draw_calls: stats.tile_draw_calls,
+            bytes_uploaded: stats.bytes_uploaded,
             resolution_scale: self.dpr,
             territory_instances: self.instance_count,
             text_instances,
             fps_estimate,
         };
 
-        // Check if any animations are still running (cached during instance rebuild)
-        now < self.max_anim_end_ms
+        outcome
+    }
+
+    /// Seconds since init, as the shaders' animation clock.
+    fn shader_time(&self, now_ms: f64) -> f32 {
+        ((now_ms - self.start_time_ms) / 1000.0) as f32
+    }
+
+    /// The timer clock relative to init, which drives the cooldown borders.
+    fn shader_reference_time(&self, clock_secs: i64) -> f32 {
+        (clock_secs as f64 - self.start_time_ms / 1000.0) as f32
+    }
+
+    /// Rebuilds the requested cached layers, plus any whose GPU resources had to be
+    /// recreated. `None` when the text pipeline cannot be created.
+    fn rebuild_layers(
+        &mut self,
+        frame: &Frame,
+        mut rebuild: Rebuild,
+        stats: &mut DrawStats,
+    ) -> Option<NextRefresh> {
+        let settings = frame.settings;
+        let vp = frame.camera;
+
+        // A glyph atlas for another font invalidates every text layout built from it.
+        if self.text_renderer.is_none() || self.text_readable_font != settings.readable_font {
+            self.text_readable_font = settings.readable_font;
+            self.text_renderer = None;
+            if !self.ensure_text_renderer() {
+                return None;
+            }
+            rebuild.static_labels = true;
+            rebuild.dynamic_labels = true;
+        }
+        if self.supports_gpu_icons
+            && self.icon_renderer.is_none()
+            && let Some(icons) = frame.icons
+            && self.ensure_icon_renderer(icons)
+        {
+            rebuild.icons = true;
+        }
+
+        // Animation colour interpolation is GPU-side; instances only change with the data.
+        if rebuild.territories {
+            self.update_instances(frame);
+            stats.bytes_uploaded +=
+                (self.instance_count as u64) * std::mem::size_of::<TerritoryInstance>() as u64;
+        }
+        if rebuild.connections {
+            self.update_connection_vertices(frame.territories, vp.scale, settings);
+            stats.bytes_uploaded +=
+                (self.connection_count as u64) * std::mem::size_of::<ConnectionVertex>() as u64;
+        }
+        let text_bytes = |text: Option<&GpuTextRenderer>, dynamic: bool| {
+            text.map_or(0, |text| {
+                let count = if dynamic {
+                    text.dynamic_fill_count + text.dynamic_halo_count
+                } else {
+                    text.static_fill_count + text.static_halo_count
+                };
+                u64::from(count) * std::mem::size_of::<TextInstance>() as u64
+            })
+        };
+        if rebuild.static_labels {
+            self.update_static_text_instances(frame.territories, vp, settings);
+            stats.bytes_uploaded += text_bytes(self.text_renderer.as_ref(), false);
+        }
+        let mut next_refresh = NextRefresh::default();
+        if rebuild.dynamic_labels {
+            next_refresh.dynamic_labels = Some(self.update_dynamic_text_instances(
+                frame.territories,
+                vp,
+                settings,
+                frame.clock_secs,
+            ));
+            stats.bytes_uploaded += text_bytes(self.text_renderer.as_ref(), true);
+        }
+        let rebuilt_icons = rebuild.icons && self.icon_renderer.is_some();
+        if rebuilt_icons {
+            next_refresh.icons =
+                Some(self.update_icon_instances(frame.territories, vp, settings, frame.clock_secs));
+            if let Some(icon_renderer) = self.icon_renderer.as_ref() {
+                stats.bytes_uploaded += (icon_renderer.instance_count as u64)
+                    * std::mem::size_of::<IconInstance>() as u64;
+            }
+        }
+
+        self.log_rebuild_diagnostics(
+            vp,
+            rebuild.static_labels || rebuild.dynamic_labels || rebuilt_icons,
+        );
+        Some(next_refresh)
+    }
+
+    fn log_rebuild_diagnostics(&mut self, vp: &Viewport, rebuilt_labels: bool) {
+        let pan_only = (vp.scale - self.diag_last_vp.2).abs() < 0.000001
+            && ((vp.offset_x - self.diag_last_vp.0).abs() > 0.001
+                || (vp.offset_y - self.diag_last_vp.1).abs() > 0.001);
+        if pan_only && !rebuilt_labels {
+            self.diag_pan_only_zero_rebuild_frames =
+                self.diag_pan_only_zero_rebuild_frames.saturating_add(1);
+        }
+        self.diag_last_vp = (vp.offset_x, vp.offset_y, vp.scale);
+
+        if self.diag_console_logging && rebuilt_labels {
+            web_sys::console::log_1(
+                &format!(
+                    "gpu-diag static_rebuilds={} dynamic_rebuilds={} icon_rebuilds={} pan_zero_rebuild_frames={}",
+                    self.diag_static_rebuilds,
+                    self.diag_dynamic_rebuilds,
+                    self.diag_icon_rebuilds,
+                    self.diag_pan_only_zero_rebuild_frames
+                )
+                .into(),
+            );
+            self.diag_static_rebuilds = 0;
+            self.diag_dynamic_rebuilds = 0;
+            self.diag_icon_rebuilds = 0;
+            self.diag_pan_only_zero_rebuild_frames = 0;
+        }
+    }
+
+    /// Writes the selection and hover glow uniforms; returns which glows to draw.
+    fn write_glow_uniforms(&mut self, frame: &Frame, stats: &mut DrawStats) -> (bool, bool) {
+        let vp = frame.camera;
+        let mut draw_sel_glow = false;
+        let mut draw_hov_glow = false;
+
+        if let Some(ct) = frame.selected.and_then(|name| frame.territories.get(name)) {
+            let loc = &ct.territory.location;
+            let (r, g, b) = ct.guild_color;
+            let expand_world = 8.0 / vp.scale as f32;
+            self.queue.write_buffer(
+                &self.glow_buffer_sel,
+                0,
+                bytemuck::cast_slice(&[GlowUniform {
+                    rect: [
+                        loc.left() as f32 - expand_world,
+                        loc.top() as f32 - expand_world,
+                        loc.width() as f32 + expand_world * 2.0,
+                        loc.height() as f32 + expand_world * 2.0,
+                    ],
+                    glow_color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.35],
+                    expand: 6.0,
+                    falloff: 0.03,
+                    ring_width: 1.5,
+                    fill_tint_alpha: 0.02,
+                    fill_tint_rgb: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
+                    _pad: 0.0,
+                }]),
+            );
+            stats.bytes_uploaded += std::mem::size_of::<GlowUniform>() as u64;
+            draw_sel_glow = true;
+        }
+
+        if let Some(ct) = frame
+            .hovered
+            .filter(|hovered| frame.selected != Some(*hovered))
+            .and_then(|name| frame.territories.get(name))
+        {
+            let loc = &ct.territory.location;
+            let (r, g, b) = ct.guild_color;
+            let expand_world = 5.0 / vp.scale as f32;
+            self.queue.write_buffer(
+                &self.glow_buffer_hov,
+                0,
+                bytemuck::cast_slice(&[GlowUniform {
+                    rect: [
+                        loc.left() as f32 - expand_world,
+                        loc.top() as f32 - expand_world,
+                        loc.width() as f32 + expand_world * 2.0,
+                        loc.height() as f32 + expand_world * 2.0,
+                    ],
+                    glow_color: [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.25],
+                    expand: 5.0,
+                    falloff: 0.035,
+                    ring_width: 1.0,
+                    fill_tint_alpha: 0.0,
+                    fill_tint_rgb: [0.0, 0.0, 0.0],
+                    _pad: 0.0,
+                }]),
+            );
+            stats.bytes_uploaded += std::mem::size_of::<GlowUniform>() as u64;
+            draw_hov_glow = true;
+        }
+
+        (draw_sel_glow, draw_hov_glow)
+    }
+
+    /// Renders the minimap background and tiles into an image the size of the minimap,
+    /// unless the cached one still matches the layout and tile set.
+    ///
+    /// The image is drawn onto transparent black with the usual alpha blending, so it holds
+    /// premultiplied colour; compositing it with premultiplied blending gives the same
+    /// result as drawing the background and tiles straight onto the frame.
+    fn ensure_minimap_terrain(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        layout: MinimapLayout,
+        tiles: &[LoadedTile],
+        stats: &mut DrawStats,
+    ) {
+        if self.minimap_terrain.as_ref().is_some_and(|terrain| {
+            terrain.layout == layout && terrain.tiles_revision == self.tiles_revision
+        }) {
+            return;
+        }
+
+        let [scissor_x, scissor_y, width, height] = layout.scissor;
+        let dpr = layout.device_pixel_ratio;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("minimap-terrain-tex"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // The on-screen minimap projection, with the minimap's top-left pixel as origin.
+        self.queue.write_buffer(
+            &self.minimap_terrain_viewport_buffer,
+            0,
+            bytemuck::cast_slice(&[ViewportUniform {
+                offset: [
+                    layout.offset[0] - scissor_x as f32 / dpr,
+                    layout.offset[1] - scissor_y as f32 / dpr,
+                ],
+                scale: layout.scale,
+                time: 0.0,
+                resolution: [width as f32 / dpr, height as f32 / dpr],
+                _pad1: [0.0, 0.0],
+            }]),
+        );
+        let bg_color = [19.0 / 255.0, 22.0 / 255.0, 31.0 / 255.0, 0.88_f32];
+        let (wmx, wmy, wmxx, wmxy) = layout.world;
+        let pad = 200.0_f32;
+        let corner = |x: f64, y: f64, pad_x: f32, pad_y: f32| ConnectionVertex {
+            world_pos: [x as f32 + pad_x, y as f32 + pad_y],
+            color: bg_color,
+        };
+        let bg_vertices = [
+            corner(wmx, wmy, -pad, -pad),
+            corner(wmxx, wmy, pad, -pad),
+            corner(wmxx, wmxy, pad, pad),
+            corner(wmx, wmy, -pad, -pad),
+            corner(wmxx, wmxy, pad, pad),
+            corner(wmx, wmxy, -pad, pad),
+        ];
+        self.queue.write_buffer(
+            &self.minimap_bg_buffer,
+            0,
+            bytemuck::cast_slice(&bg_vertices),
+        );
+        stats.bytes_uploaded +=
+            (std::mem::size_of::<ViewportUniform>() + std::mem::size_of_val(&bg_vertices)) as u64;
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("minimap-terrain-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.connection_fill_pipeline);
+            pass.set_bind_group(0, &self.minimap_terrain_viewport_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.minimap_bg_buffer.slice(..));
+            pass.draw(0..6, 0..1);
+            stats.draw();
+
+            if !tiles.is_empty() {
+                pass.set_pipeline(&self.tile_pipeline);
+                pass.set_bind_group(0, &self.minimap_terrain_viewport_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+                pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                for tile in tiles {
+                    let Some(tile_tex) = self.tile_textures.get(&tile.id) else {
+                        continue;
+                    };
+                    pass.set_bind_group(1, &tile_tex.bind_group, &[]);
+                    pass.draw_indexed(0..6, 0, 0..1);
+                    stats.tile_draw();
+                }
+            }
+        }
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("minimap-blit-bg"),
+            layout: &self.minimap_blit_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.minimap_blit_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.tile_sampler),
+                },
+            ],
+        });
+        self.minimap_terrain = Some(MinimapTerrain {
+            layout,
+            tiles_revision: self.tiles_revision,
+            bind_group,
+        });
+    }
+
+    /// Draws the minimap: cached terrain, then the live territories, connections and the
+    /// main view's outline.
+    fn draw_minimap(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        layout: MinimapLayout,
+        frame: &Frame,
+        stats: &mut DrawStats,
+    ) {
+        let Some(terrain) = self.minimap_terrain.as_ref() else {
+            return;
+        };
+        let vp = frame.camera;
+        let w = self.width as f32 / self.dpr;
+        let h = self.height as f32 / self.dpr;
+        let [scissor_x, scissor_y, scissor_w, scissor_h] = layout.scissor;
+
+        self.queue.write_buffer(
+            &self.minimap_viewport_buffer,
+            0,
+            bytemuck::cast_slice(&[ViewportUniform {
+                offset: layout.offset,
+                scale: layout.scale,
+                time: self.shader_time(frame.now_ms),
+                resolution: [w, h],
+                _pad1: [self.shader_reference_time(frame.clock_secs), 0.0],
+            }]),
+        );
+        // Clip-space rectangle of the minimap for the terrain blit.
+        let (surface_w, surface_h) = (self.width as f32, self.height as f32);
+        let blit_rect = [
+            scissor_x as f32 / surface_w * 2.0 - 1.0,
+            1.0 - scissor_y as f32 / surface_h * 2.0,
+            (scissor_x + scissor_w) as f32 / surface_w * 2.0 - 1.0,
+            1.0 - (scissor_y + scissor_h) as f32 / surface_h * 2.0,
+        ];
+        self.queue.write_buffer(
+            &self.minimap_blit_buffer,
+            0,
+            bytemuck::cast_slice(&blit_rect),
+        );
+        stats.bytes_uploaded +=
+            (std::mem::size_of::<ViewportUniform>() + std::mem::size_of_val(&blit_rect)) as u64;
+
+        let (tl_wx, tl_wy) = vp.screen_to_world(0.0, 0.0);
+        let (br_wx, br_wy) = vp.screen_to_world(w as f64, h as f64);
+        let (world_min_x, world_min_y, world_max_x, world_max_y) = layout.world;
+        let world_min_x_f = world_min_x as f32;
+        let world_min_y_f = world_min_y as f32;
+        let world_max_x_f = world_max_x as f32;
+        let world_max_y_f = world_max_y as f32;
+        let left = (tl_wx.min(br_wx) as f32).clamp(world_min_x_f, world_max_x_f);
+        let right = (tl_wx.max(br_wx) as f32).clamp(world_min_x_f, world_max_x_f);
+        let top = (tl_wy.min(br_wy) as f32).clamp(world_min_y_f, world_max_y_f);
+        let bottom = (tl_wy.max(br_wy) as f32).clamp(world_min_y_f, world_max_y_f);
+        let color = [245.0 / 255.0, 197.0 / 255.0, 66.0 / 255.0, 0.95];
+        let corner = |x: f32, y: f32| ConnectionVertex {
+            world_pos: [x, y],
+            color,
+        };
+        let indicator_vertices = [
+            corner(left, top),
+            corner(right, top),
+            corner(right, top),
+            corner(right, bottom),
+            corner(right, bottom),
+            corner(left, bottom),
+            corner(left, bottom),
+            corner(left, top),
+        ];
+        let indicator_count = if right > left && bottom > top {
+            8u32
+        } else {
+            0u32
+        };
+        if indicator_count > self.minimap_indicator_capacity {
+            self.minimap_indicator_capacity = indicator_count.next_power_of_two();
+            self.minimap_indicator_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("minimap-indicator-vertex-buf"),
+                size: (self.minimap_indicator_capacity as u64)
+                    * std::mem::size_of::<ConnectionVertex>() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        if indicator_count > 0 {
+            self.queue.write_buffer(
+                &self.minimap_indicator_buffer,
+                0,
+                bytemuck::cast_slice(&indicator_vertices),
+            );
+            stats.bytes_uploaded +=
+                (indicator_count as u64) * std::mem::size_of::<ConnectionVertex>() as u64;
+        }
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("minimap-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_scissor_rect(scissor_x, scissor_y, scissor_w, scissor_h);
+
+        pass.set_pipeline(&self.minimap_blit_pipeline);
+        pass.set_bind_group(0, &terrain.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..6, 0, 0..1);
+        stats.draw();
+
+        if self.instance_count > 0 {
+            pass.set_pipeline(&self.territory_pipeline);
+            pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..6, 0, 0..self.instance_count);
+            stats.draw();
+        }
+
+        if self.connection_count > 0 {
+            pass.set_pipeline(&self.connection_pipeline);
+            pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.connection_buffer.slice(..));
+            pass.draw(0..self.connection_count, 0..1);
+            stats.draw();
+        }
+
+        pass.set_pipeline(&self.connection_pipeline);
+        pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.minimap_indicator_buffer.slice(..));
+        pass.draw(0..indicator_count, 0..1);
+        stats.draw();
+    }
+}
+
+/// Draw-call and upload accounting for one frame.
+#[derive(Default)]
+struct DrawStats {
+    draw_calls: u32,
+    tile_draw_calls: u32,
+    bytes_uploaded: u64,
+}
+
+impl DrawStats {
+    fn draw(&mut self) {
+        self.draw_calls = self.draw_calls.saturating_add(1);
+    }
+
+    fn tile_draw(&mut self) {
+        self.draw();
+        self.tile_draw_calls = self.tile_draw_calls.saturating_add(1);
     }
 }
 
