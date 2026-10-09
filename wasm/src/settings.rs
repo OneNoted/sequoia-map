@@ -58,9 +58,11 @@ pub struct RenderSettings {
     pub label_scales: LabelScales,
 }
 
-/// Resource highlight fill alpha range; the default is a little firmer than plain fills.
+/// Faintest base alpha of resource-highlighted territories the slider allows.
 pub const RESOURCE_HIGHLIGHT_OPACITY_MIN: f32 = 0.15;
+/// Firmest base alpha; hover, selection and the far-zoom boost still add to it.
 pub const RESOURCE_HIGHLIGHT_OPACITY_MAX: f32 = 0.90;
+/// Initial base alpha, a little firmer than the 0.34 used before the slider existed.
 pub const DEFAULT_RESOURCE_HIGHLIGHT_OPACITY: f32 = 0.45;
 /// Defense tiers keep the fixed overlay alpha.
 const DEFENSE_HIGHLIGHT_OPACITY: f32 = 0.34;
