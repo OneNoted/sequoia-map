@@ -2186,6 +2186,12 @@ pub fn MapPage() -> impl IntoView {
                 let Some(shortcut) = Shortcut::from_key(&key) else {
                     return;
                 };
+                // A focused control keeps its own Enter and Space activation.
+                if matches!(shortcut, Shortcut::OpenListItem | Shortcut::PlayPause)
+                    && matches!(target_tag.as_str(), "BUTTON" | "A" | "SELECT" | "SUMMARY")
+                {
+                    return;
+                }
                 match shortcut {
                     Shortcut::Dismiss => {
                         if selected.get_untracked().is_some() {
