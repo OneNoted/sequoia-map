@@ -12,25 +12,27 @@ use sequoia_shared::history::HistoryHeatMeta;
 
 use crate::app::{
     AbbreviateNames, AutoSrScalarEnabled, BoldConnections, CONNECTION_OPACITY_SCALE_MAX,
-    CONNECTION_OPACITY_SCALE_MIN, CONNECTION_THICKNESS_SCALE_MAX, CONNECTION_THICKNESS_SCALE_MIN,
-    ConnectionOpacityScale, ConnectionThicknessScale, CurrentMode,
-    DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_THICKNESS_SCALE,
-    DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER, DEFAULT_LABEL_SCALE_STATIC_NAME,
-    DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight, HeatFallbackApplied, HeatHistoryBasis,
-    HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled,
-    HeatSelectedSeasonId, HeatWindowLabel, IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN,
-    LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
-    LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, ManualSrScalar, MapIntelModeEnabled,
-    MapMode, NameColor, NameColorSetting, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN,
-    PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize, RESOURCE_HIGHLIGHT_OPACITY_MAX,
+    CONNECTION_OPACITY_SCALE_MIN, CONNECTION_SOLID_OPACITY_MAX, CONNECTION_SOLID_OPACITY_MIN,
+    CONNECTION_THICKNESS_SCALE_MAX, CONNECTION_THICKNESS_SCALE_MIN, ConnectionOpacityScale,
+    ConnectionSolidOpacity, ConnectionStyle, ConnectionStyleSetting, ConnectionThicknessScale,
+    CurrentMode, DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_SOLID_OPACITY,
+    DEFAULT_CONNECTION_THICKNESS_SCALE, DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER,
+    DEFAULT_LABEL_SCALE_STATIC_NAME, DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight,
+    HeatFallbackApplied, HeatHistoryBasis, HeatHistoryBasisSetting, HeatLiveSource,
+    HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId, HeatWindowLabel,
+    IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX,
+    LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
+    LabelScaleStaticName, ManualSrScalar, MapIntelModeEnabled, MapMode, NameColor,
+    NameColorSetting, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN, PlayerHeadRenderHead,
+    PlayerHeadRenderLabel, PlayerHeadSize, RESOURCE_HIGHLIGHT_OPACITY_MAX,
     RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont, ResourceHighlight, ResourceHighlightOpacity,
     ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
     ShowSettings, ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, TagColorSetting,
     ThickCooldownBorders, WarFeedVisible, clamp_connection_opacity_scale,
-    clamp_connection_thickness_scale, clamp_label_scale_group, clamp_label_scale_master,
-    clamp_player_head_size, clamp_resource_highlight_opacity,
+    clamp_connection_solid_opacity, clamp_connection_thickness_scale, clamp_label_scale_group,
+    clamp_label_scale_master, clamp_player_head_size, clamp_resource_highlight_opacity,
 };
 use crate::season_scalar::clamp_manual_scalar;
 use crate::territory::ClientTerritoryMap;
@@ -133,6 +135,11 @@ fn percent(value: f64) -> String {
     format!("{:.0}%", value * 100.0)
 }
 
+/// A multiplier of the style's own default, such as the classic opacity.
+fn times(value: f64) -> String {
+    format!("\u{d7}{value:.2}")
+}
+
 fn pixels(value: f64) -> String {
     format!("{value:.0}px")
 }
@@ -166,7 +173,9 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let ShowFarZoomTerritoryTags(show_far_zoom_territory_tags) = expect_context();
     let ThickCooldownBorders(thick_cooldown_borders) = expect_context();
     let BoldConnections(bold_connections) = expect_context();
+    let ConnectionStyleSetting(connection_style) = expect_context();
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
+    let ConnectionSolidOpacity(connection_solid_opacity) = expect_context();
     let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
     let ResourceHighlightOpacity(resource_highlight_opacity) = expect_context();
@@ -355,7 +364,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsScalarRow scalar=manual_sr_scalar />
             </SettingsSection>
 
-            <SettingsDisclosure title="Sizes and lines" hint="Label, icon, connection and head sizes">
+            <SettingsDisclosure title="Sizes and lines" hint="Label, icon and head sizes; connection style">
                 <div class="settings-subhead">"Labels and icons"</div>
                 <SettingsSlider
                     label="Overall"
@@ -414,16 +423,50 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 />
 
                 <div class="settings-subhead">"Connections"</div>
-                <SettingsSwitch label="Bold Connections" shortcut="B" active=bold_connections />
-                <SettingsSlider
-                    label="Opacity"
-                    value=connection_opacity_scale
-                    min=CONNECTION_OPACITY_SCALE_MIN
-                    max=CONNECTION_OPACITY_SCALE_MAX
-                    step=0.05
-                    clamp=clamp_connection_opacity_scale
-                    format=percent
+                <SettingsChoice
+                    label="Style"
+                    hint="Classic is the original soft look"
+                    name="settings-connection-style"
+                    options=vec![
+                        (ConnectionStyle::Classic, Signal::stored("Classic")),
+                        (ConnectionStyle::White, Signal::stored("Solid white")),
+                        (ConnectionStyle::Guild, Signal::stored("Solid guild")),
+                    ]
+                    selected=connection_style
+                    on_select=Callback::new(move |style| connection_style.set(style))
                 />
+                <SettingsSwitch
+                    label="Bold Connections"
+                    shortcut="B"
+                    hint="Wider lines; classic lines also take the guild color"
+                    active=bold_connections
+                />
+                <Show
+                    when=move || connection_style.get() == ConnectionStyle::Classic
+                    fallback=move || {
+                        view! {
+                            <SettingsSlider
+                                label="Opacity"
+                                value=connection_solid_opacity
+                                min=CONNECTION_SOLID_OPACITY_MIN
+                                max=CONNECTION_SOLID_OPACITY_MAX
+                                step=0.05
+                                clamp=clamp_connection_solid_opacity
+                                format=percent
+                            />
+                        }
+                    }
+                >
+                    <SettingsSlider
+                        label="Opacity"
+                        value=connection_opacity_scale
+                        min=CONNECTION_OPACITY_SCALE_MIN
+                        max=CONNECTION_OPACITY_SCALE_MAX
+                        step=0.05
+                        clamp=clamp_connection_opacity_scale
+                        format=times
+                    />
+                </Show>
                 <SettingsSlider
                     label="Thickness"
                     value=connection_thickness_scale
@@ -431,12 +474,15 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     max=CONNECTION_THICKNESS_SCALE_MAX
                     step=0.05
                     clamp=clamp_connection_thickness_scale
-                    format=percent
+                    format=times
                 />
                 <SettingsResetButton
                     label="Reset line sliders"
                     on_reset=Callback::new(move |()| {
+                        connection_style.set(ConnectionStyle::Classic);
+                        bold_connections.set(false);
                         connection_opacity_scale.set(DEFAULT_CONNECTION_OPACITY_SCALE);
+                        connection_solid_opacity.set(DEFAULT_CONNECTION_SOLID_OPACITY);
                         connection_thickness_scale.set(DEFAULT_CONNECTION_THICKNESS_SCALE);
                     })
                 />
