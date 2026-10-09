@@ -109,7 +109,7 @@ impl Shortcut {
             Shortcut::ShowNames => "Territory names",
             Shortcut::AbbreviateNames => "Abbreviate names",
             Shortcut::ReadableFont => "Readable font",
-            Shortcut::Countdown => "Countdown timers",
+            Shortcut::Countdown => "Cooldown countdown",
             Shortcut::Connections => "Connection lines",
             Shortcut::BoldConnections => "Bold connections",
             Shortcut::ResourceHighlight => "Resource highlight",

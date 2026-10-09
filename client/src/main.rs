@@ -8,6 +8,7 @@ mod navbar;
 mod playback;
 mod players;
 mod season_scalar;
+mod settings_menu;
 mod sidebar;
 mod site_nav;
 mod timeline;
