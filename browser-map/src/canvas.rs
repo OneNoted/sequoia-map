@@ -317,25 +317,27 @@ fn render_frame(
     canvas: &HtmlCanvasElement,
     render_stats: Option<RwSignal<Option<RenderStats>>>,
 ) -> bool {
-    let Some(parent) = canvas.parent_element() else {
+    let Some(window) = web_sys::window() else {
         return false;
     };
-    let css_width = parent.client_width().max(1);
-    let css_height = parent.client_height().max(1);
-    let dpr = web_sys::window()
-        .map(|window| window.device_pixel_ratio())
-        .unwrap_or(1.0)
-        .max(1.0);
-    let width = (f64::from(css_width) * dpr).round().max(1.0) as u32;
-    let height = (f64::from(css_height) * dpr).round().max(1.0) as u32;
+    if canvas.parent_element().is_none() {
+        return false;
+    }
+    // The canvas's own CSS size, fractional where the layout is: rounding it first would
+    // stretch the backing store against the pointer coordinates by up to a pixel.
+    let rect = canvas.get_bounding_client_rect();
+    let css_width = rect.width().max(1.0);
+    let css_height = rect.height().max(1.0);
+    let dpr = window.device_pixel_ratio().max(1.0);
+    let width = (css_width * dpr).round().max(1.0) as u32;
+    let height = (css_height * dpr).round().max(1.0) as u32;
     if canvas.width() != width {
         canvas.set_width(width);
     }
     if canvas.height() != height {
         canvas.set_height(height);
     }
-    map.camera
-        .set_canvas_size((f64::from(css_width), f64::from(css_height)));
+    map.camera.set_canvas_size((css_width, css_height));
 
     let mut state = state.borrow_mut();
     state.surface = Surface {
@@ -358,7 +360,12 @@ fn render_frame(
 
     let inputs = map.inputs;
     let now_ms = js_sys::Date::now();
-    let interacting = gestures.is_interacting(now_ms);
+    // Gesture times are event time stamps, on the `performance.now()` clock.
+    let interacting = gestures.is_interacting(
+        window
+            .performance()
+            .map_or(f64::INFINITY, |performance| performance.now()),
+    );
     let camera = map.camera.get_untracked();
     let clock_secs = inputs.clock_secs.get_untracked();
     let settings = inputs.settings.get_untracked();

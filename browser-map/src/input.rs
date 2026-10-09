@@ -1,8 +1,20 @@
 //! Browser pointer and wheel events, adapted onto the engine's gesture state machine.
 //!
-//! This is the seam between DOM events and [`Gestures`]: it converts events to canvas
-//! coordinates, decides what a press does (minimap jump, edit tool, pan), manages pointer
-//! capture, and turns gesture output into [`MapEvent`]s by hit-testing territories.
+//! This is the seam between DOM events and [`Gestures`]: it converts events to canvas CSS
+//! pixels, decides what a press does (minimap jump, edit tool, pan), manages pointer capture,
+//! and turns gesture output into [`MapEvent`]s by hit-testing territories. The gesture
+//! semantics themselves live in the engine.
+//!
+//! Positions are `clientX`/`clientY` minus the canvas's client rect, both read as the doubles
+//! browsers report. `offsetX`/`offsetY` would do, but web-sys's stable getters truncate them
+//! to whole pixels, which turns sub-pixel finger motion into one-pixel zoom steps. Times are
+//! event time stamps (monotonic, like `performance.now()`).
+//!
+//! Touch presses are deliberately not `preventDefault`ed: `touch-action: none` already keeps
+//! the browser's own panning and zooming off the canvas, and Firefox before 159 stops
+//! delivering every other finger's `pointermove`/`pointerup` to the page once the first
+//! finger's `pointerdown` has been default-prevented (Mozilla bug 1524251), which froze the
+//! second finger of every pinch where it landed.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,7 +23,8 @@ use leptos::prelude::*;
 use sequoia_map_engine::gesture::{GestureEvent, Pointer, PointerKind, Press, ScreenRect};
 use sequoia_map_engine::wheel::WheelSample;
 use wasm_bindgen::JsCast;
-use web_sys::{HtmlCanvasElement, PointerEvent, WheelEvent};
+use wasm_bindgen::prelude::wasm_bindgen;
+use web_sys::{HtmlCanvasElement, MouseEvent, PointerEvent, WheelEvent};
 
 use crate::canvas::MapState;
 use crate::render_loop::RenderScheduler;
@@ -29,15 +42,17 @@ pub(crate) struct MapInput {
 
 impl MapInput {
     pub(crate) fn pointer_down(&self, event: &PointerEvent) {
-        event.prevent_default();
         let pointer = pointer_of(event);
+        if presses_prevent_default(pointer.kind) {
+            event.prevent_default();
+        }
         self.map.pointer.set((pointer.x, pointer.y));
         let press = self.press_for(event, pointer);
         let output = self
             .state
             .borrow_mut()
             .gestures
-            .press(pointer, press, js_sys::Date::now());
+            .press(pointer, press, event.time_stamp());
         if let Some(canvas) = event_canvas(event) {
             let _ = canvas.set_pointer_capture(pointer.id);
         }
@@ -54,7 +69,7 @@ impl MapInput {
                 .state
                 .borrow_mut()
                 .gestures
-                .moved(view, pointer, js_sys::Date::now());
+                .moved(view, pointer, event.time_stamp());
             output.as_ref().is_some_and(|output| output.camera_moved)
         });
         match output {
@@ -72,7 +87,7 @@ impl MapInput {
             .state
             .borrow_mut()
             .gestures
-            .released(pointer, js_sys::Date::now());
+            .released(pointer, event.time_stamp());
         // Only the primary button taps; others just pan.
         if event.button() != 0 {
             output
@@ -90,7 +105,7 @@ impl MapInput {
             .state
             .borrow_mut()
             .gestures
-            .cancelled(event.pointer_id(), js_sys::Date::now());
+            .cancelled(event.pointer_id(), event.time_stamp());
         self.dispatch(output.events, false);
         self.scheduler.mark_dirty();
     }
@@ -107,13 +122,13 @@ impl MapInput {
 
     pub(crate) fn wheel(&self, event: &WheelEvent) {
         event.prevent_default();
-        let at = (f64::from(event.offset_x()), f64::from(event.offset_y()));
+        let at = canvas_position(event);
         self.map.pointer.set(at);
         let sample = WheelSample {
             delta_x: event.delta_x(),
             delta_y: event.delta_y(),
             delta_mode: event.delta_mode(),
-            timestamp_ms: js_sys::Date::now(),
+            timestamp_ms: event.time_stamp(),
         };
         let (_, height) = self.map.camera.canvas_size();
         self.map.camera.update_if(|view| {
@@ -227,7 +242,27 @@ impl MapInput {
     }
 }
 
+#[wasm_bindgen]
+extern "C" {
+    /// A `MouseEvent` read through getters that keep the doubles browsers report; web-sys's
+    /// stable `client_x`/`client_y` return `i32`.
+    #[wasm_bindgen(extends = MouseEvent)]
+    type FractionalMouseEvent;
+    #[wasm_bindgen(method, getter = clientX)]
+    fn client_x(this: &FractionalMouseEvent) -> f64;
+    #[wasm_bindgen(method, getter = clientY)]
+    fn client_y(this: &FractionalMouseEvent) -> f64;
+}
+
+/// Whether a press of this kind cancels the browser's default action. Mouse presses do, so a
+/// drag never selects page text or moves focus. Touch presses must not: see the module docs.
+/// Pens keep their browser defaults too; `touch-action` covers them like fingers.
+fn presses_prevent_default(kind: PointerKind) -> bool {
+    kind == PointerKind::Mouse
+}
+
 fn pointer_of(event: &PointerEvent) -> Pointer {
+    let (x, y) = canvas_position(event);
     Pointer {
         id: event.pointer_id(),
         kind: match event.pointer_type().as_str() {
@@ -235,13 +270,41 @@ fn pointer_of(event: &PointerEvent) -> Pointer {
             "pen" => PointerKind::Pen,
             _ => PointerKind::Mouse,
         },
-        x: f64::from(event.offset_x()),
-        y: f64::from(event.offset_y()),
+        x,
+        y,
     }
+}
+
+/// The event's position in canvas CSS pixels. Captured pointers report positions outside
+/// the canvas too.
+fn canvas_position(event: &MouseEvent) -> (f64, f64) {
+    let precise = event.unchecked_ref::<FractionalMouseEvent>();
+    let client = (precise.client_x(), precise.client_y());
+    let origin = event
+        .current_target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .map(|canvas| {
+            let rect = canvas.get_bounding_client_rect();
+            (rect.left(), rect.top())
+        })
+        .unwrap_or_default();
+    (client.0 - origin.0, client.1 - origin.1)
 }
 
 fn event_canvas(event: &PointerEvent) -> Option<HtmlCanvasElement> {
     event
         .current_target()
         .and_then(|target| target.dyn_into::<HtmlCanvasElement>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_mouse_presses_cancel_browser_defaults() {
+        assert!(presses_prevent_default(PointerKind::Mouse));
+        assert!(!presses_prevent_default(PointerKind::Touch));
+        assert!(!presses_prevent_default(PointerKind::Pen));
+    }
 }
