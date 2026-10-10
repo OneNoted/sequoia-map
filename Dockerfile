@@ -137,13 +137,13 @@ COPY browser-map/ browser-map/
 COPY client/ client/
 COPY claims-client/ claims-client/
 WORKDIR /app/client
+# Trunk runs wasm-opt (data-wasm-opt) before writing integrity hashes; optimizing the
+# bundle afterwards would invalidate the WASM preload's integrity.
 RUN trunk build --release --locked
-RUN find dist -type f -name '*_bg.wasm' -exec wasm-opt -Oz {} -o {} \;
 RUN find dist -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' \) -exec sh -c 'brotli -f -q 11 "$1" -o "$1.br"; gzip -f -k -9 "$1"' _ {} \;
 
 WORKDIR /app/claims-client
 RUN trunk build --release --locked
-RUN find dist -type f -name '*_bg.wasm' -exec wasm-opt -Oz {} -o {} \;
 RUN find dist -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' \) -exec sh -c 'brotli -f -q 11 "$1" -o "$1.br"; gzip -f -k -9 "$1"' _ {} \;
 
 ### Build the server
