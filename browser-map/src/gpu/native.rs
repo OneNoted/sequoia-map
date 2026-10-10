@@ -28,6 +28,14 @@ impl GpuRenderer {
         match *self {}
     }
 
+    pub fn pending_text_font(&self) -> Option<String> {
+        match *self {}
+    }
+
+    pub fn text_font_loaded(&mut self, _font: &str) {
+        match *self {}
+    }
+
     pub fn render(&mut self, frame: &Frame, rebuild: Rebuild) -> FrameOutcome {
         // Everything the browser renderer reads, so both builds agree on what is used.
         let _ = (
