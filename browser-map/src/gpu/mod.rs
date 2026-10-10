@@ -3088,6 +3088,13 @@ impl GpuRenderer {
         settings: &RenderSettings,
     ) {
         self.sync_territory_name_cache(territories);
+        // Label screen rects are in CSS pixels, like the viewport.
+        let viewport_screen_bounds = claim_labels::Rect {
+            left: 0.0,
+            top: 0.0,
+            right: self.width as f32 / self.dpr,
+            bottom: self.height as f32 / self.dpr,
+        };
         let static_tag_scale = settings.label_scales.static_tag();
         let static_name_scale = settings.label_scales.static_name();
         let Some(text_renderer) = self.text_renderer.as_mut() else {
@@ -3122,12 +3129,7 @@ impl GpuRenderer {
                 let claim_labels = select_claim_label_candidates(
                     &claim_clusters,
                     vp,
-                    claim_labels::Rect {
-                        left: 0.0,
-                        top: 0.0,
-                        right: self.surface_config.width as f32,
-                        bottom: self.surface_config.height as f32,
-                    },
+                    viewport_screen_bounds,
                     line_height,
                     |text| line_units_with_tracking(text, glyphs, kerning, claim_tracking_units),
                 );
