@@ -142,6 +142,8 @@ struct IconInstance {
 struct ConnectionVertex {
     world_pos: [f32; 2],
     color: [f32; 4],
+    /// CSS pixels added after projection (solid strips' half-width).
+    offset_px: [f32; 2],
 }
 
 /// A connection vertex buffer that grows to fit what is written to it.
@@ -187,6 +189,7 @@ impl ConnectionBuffer {
             .extend(vertices.iter().map(|vertex| ConnectionVertex {
                 world_pos: vertex.world,
                 color: vertex.color,
+                offset_px: vertex.offset,
             }));
         self.count = self.staging.len() as u32;
         if self.count > self.capacity {
@@ -1548,6 +1551,11 @@ impl GpuRenderer {
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
             ],
         };
         let connection_pipeline_layout =
@@ -1605,6 +1613,11 @@ impl GpuRenderer {
                                 offset: 8,
                                 shader_location: 1,
                                 format: wgpu::VertexFormat::Float32x4,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 24,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Float32x2,
                             },
                         ],
                     }],
@@ -4536,6 +4549,7 @@ impl GpuRenderer {
         let corner = |x: f64, y: f64, pad_x: f32, pad_y: f32| ConnectionVertex {
             world_pos: [x as f32 + pad_x, y as f32 + pad_y],
             color: bg_color,
+            offset_px: [0.0, 0.0],
         };
         let bg_vertices = [
             corner(wmx, wmy, -pad, -pad),
@@ -4673,6 +4687,7 @@ impl GpuRenderer {
         let corner = |x: f32, y: f32| ConnectionVertex {
             world_pos: [x, y],
             color,
+            offset_px: [0.0, 0.0],
         };
         let indicator_vertices = [
             corner(left, top),

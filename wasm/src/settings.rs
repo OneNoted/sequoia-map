@@ -30,6 +30,14 @@ pub enum ConnectionStyle {
     Guild,
 }
 
+impl ConnectionStyle {
+    /// Whether the connection vertices depend on the main camera's scale (classic hairline
+    /// spacing and zoom fade). Solid strips are widened in screen space instead.
+    pub fn follows_zoom(self) -> bool {
+        self == ConnectionStyle::Classic
+    }
+}
+
 /// How the map is drawn: every display option a host can set. Hosts rebuild this whenever
 /// one of their settings changes; [`RenderSettings::invalidates`] decides what that costs.
 #[derive(Clone, Debug, PartialEq)]
