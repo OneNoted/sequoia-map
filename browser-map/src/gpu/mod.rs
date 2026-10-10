@@ -4275,24 +4275,37 @@ impl GpuRenderer {
                 pass.draw_indexed(0..6, 0, 0..icon_renderer.instance_count);
                 stats.draw();
             }
-
-            // Map Intel markers sit over everything on the map, under the minimap.
-            if draw_markers && let Some(markers) = self.marker_renderer.as_ref() {
-                let draws = markers.draw(
-                    &mut pass,
-                    &self.viewport_bind_group,
-                    &self.vertex_buffer,
-                    &self.index_buffer,
-                );
-                for _ in 0..draws {
-                    stats.draw();
-                }
-            }
         }
 
         if let Some(layout) = frame.minimap {
             self.ensure_minimap_terrain(&mut encoder, layout, frame.tiles, &mut stats);
             self.draw_minimap(&mut encoder, &view, layout, frame, &mut stats);
+        }
+
+        // Preserve the Intel overlay's ordering: symbols and their Canvas2D names
+        // both sit above the map and minimap, using the main-map projection.
+        if draw_markers && let Some(markers) = self.marker_renderer.as_ref() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("map-intel-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            let draws = markers.draw(
+                &mut pass,
+                &self.viewport_bind_group,
+                &self.vertex_buffer,
+                &self.index_buffer,
+            );
+            for _ in 0..draws {
+                stats.draw();
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
