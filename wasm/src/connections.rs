@@ -1,8 +1,13 @@
 //! Connection lines between neighbouring territories: which edges are drawn, in what colour,
 //! how wide and how opaque, as world-space vertices for the renderer.
 //!
-//! Widths are CSS pixels on screen, so the vertices are rebuilt whenever the camera scale
-//! changes. The [`ConnectionStyle`]s:
+//! Widths are CSS pixels on screen. Classic hairlines are spread in world units at the main
+//! camera's scale, so they are rebuilt whenever it changes (on the minimap's much smaller scale
+//! they collapse into a single hairline, as they always have). Solid strips instead carry
+//! their half-width as a screen-space offset that the shader adds after projecting the
+//! centreline, so the same vertices are exactly as wide under any projection: the main map at
+//! any zoom and the minimap alike, without a rebuild when the main camera zooms. The
+//! [`ConnectionStyle`]s:
 //!
 //! - Classic, the original look and the default. Each connection is a band of hairlines
 //!   (one device pixel each) 0.6 CSS px apart, 0.8 when bold, fading from the middle out:
@@ -42,6 +47,9 @@ const MAX_THICKNESS_SCALE: f32 = 4.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConnectionVertex {
     pub world: [f32; 2],
+    /// CSS pixels added after projecting `world`: a solid strip's half-width, zero for
+    /// classic hairlines.
+    pub offset: [f32; 2],
     pub color: [f32; 4],
 }
 
@@ -97,11 +105,9 @@ impl ConnectionMesh {
         if length <= f32::EPSILON {
             return;
         }
-        // Unit normal, scaled to world units per CSS pixel.
-        let normal = [
-            -dy / length * style.world_per_px,
-            dx / length * style.world_per_px,
-        ];
+        // Unit normal, and scaled to world units per CSS pixel at the main camera's scale.
+        let unit = [-dy / length, dx / length];
+        let normal = [unit[0] * style.world_per_px, unit[1] * style.world_per_px];
         let (color_a, color_b) = (style.color(from), style.color(to));
         let halves: &[([f32; 2], [f32; 2], [f32; 4])] = if color_a == color_b {
             &[(a, b, color_a)]
@@ -115,19 +121,19 @@ impl ConnectionMesh {
                     for (offset, factor) in &style.hairlines {
                         let shift = [normal[0] * offset, normal[1] * offset];
                         let color = with_alpha(color, color[3] * factor);
-                        self.lines.push(vertex(start, shift, color));
-                        self.lines.push(vertex(end, shift, color));
+                        self.lines.push(vertex(start, shift, [0.0, 0.0], color));
+                        self.lines.push(vertex(end, shift, [0.0, 0.0], color));
                     }
                 }
                 ConnectionStyle::White | ConnectionStyle::Guild => {
                     let half = style.solid_width_px * 0.5;
-                    let up = [normal[0] * half, normal[1] * half];
+                    let up = [unit[0] * half, unit[1] * half];
                     let down = [-up[0], -up[1]];
                     let corners = [
-                        vertex(start, up, color),
-                        vertex(end, up, color),
-                        vertex(end, down, color),
-                        vertex(start, down, color),
+                        vertex(start, [0.0, 0.0], up, color),
+                        vertex(end, [0.0, 0.0], up, color),
+                        vertex(end, [0.0, 0.0], down, color),
+                        vertex(start, [0.0, 0.0], down, color),
                     ];
                     self.triangles.extend([
                         corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
@@ -144,6 +150,7 @@ struct Style {
     bold: bool,
     /// Opacity applied to every line before per-colour and per-hairline factors.
     alpha: f32,
+    /// World units per CSS pixel at the main camera's scale; classic hairlines only.
     world_per_px: f32,
     /// Classic: (offset in CSS px, opacity factor) of every hairline across the band.
     hairlines: Vec<(f32, f32)>,
@@ -234,9 +241,10 @@ fn midpoint(territory: &ClientTerritory) -> [f32; 2] {
     [location.midpoint_x() as f32, location.midpoint_y() as f32]
 }
 
-fn vertex(at: [f32; 2], shift: [f32; 2], color: [f32; 4]) -> ConnectionVertex {
+fn vertex(at: [f32; 2], shift: [f32; 2], offset: [f32; 2], color: [f32; 4]) -> ConnectionVertex {
     ConnectionVertex {
         world: [at[0] + shift[0], at[1] + shift[1]],
+        offset,
         color,
     }
 }
@@ -383,13 +391,13 @@ mod tests {
     #[test]
     fn solid_lines_are_one_colour_of_a_true_width() {
         let map = pair(RED, RED);
-        for (scale, thickness, bold, width_px) in [
-            (1.0, 1.0, false, 1.5),
-            (2.0, 1.0, false, 1.5),
-            (0.25, 2.0, false, 3.0),
-            (2.0, 2.0, true, 6.0),
+        for (thickness, bold, width_px) in [
+            (1.0, false, 1.5),
+            (2.0, false, 3.0),
+            (2.0, true, 6.0),
+            (0.7, false, 1.05),
         ] {
-            let mesh = mesh(&map, scale, |s| {
+            let mesh = mesh(&map, 1.0, |s| {
                 s.connection_style = ConnectionStyle::White;
                 s.connection_thickness_scale = thickness;
                 s.bold_connections = bold;
@@ -401,14 +409,47 @@ mod tests {
                     .iter()
                     .all(|v| v.color == [1.0, 1.0, 1.0, 1.0])
             );
-            let ys: Vec<f32> = mesh.triangles.iter().map(|v| v.world[1]).collect();
+            // The strip runs along the centreline; its width is a screen-space offset.
+            assert!(mesh.triangles.iter().all(|v| v.world[1] == 0.0));
+            let ys: Vec<f32> = mesh.triangles.iter().map(|v| v.offset[1]).collect();
             let span = ys.iter().fold(f32::MIN, |m, y| m.max(*y))
                 - ys.iter().fold(f32::MAX, |m, y| m.min(*y));
-            assert!(
-                close(span * scale as f32, width_px),
-                "{scale} {thickness} {bold}: {span}"
-            );
+            assert!(close(span, width_px), "{thickness} {bold}: {span}");
         }
+    }
+
+    #[test]
+    fn solid_strips_are_the_same_under_any_projection() {
+        // The minimap projects the same vertices at about 0.04, below the main camera's
+        // limits: a strip must not depend on the main scale it was built at.
+        let map = pair(RED, BLUE);
+        let build = |scale| {
+            mesh(&map, scale, |s| {
+                s.connection_style = ConnectionStyle::Guild;
+                s.bold_connections = true;
+            })
+            .triangles
+        };
+        let mut reference = build(1.0);
+        reference.sort_by(|a, b| {
+            a.world
+                .partial_cmp(&b.world)
+                .unwrap()
+                .then(a.offset.partial_cmp(&b.offset).unwrap())
+        });
+        for scale in [0.04, 0.05, 0.3, 8.0] {
+            let mut strips = build(scale);
+            strips.sort_by(|a, b| {
+                a.world
+                    .partial_cmp(&b.world)
+                    .unwrap()
+                    .then(a.offset.partial_cmp(&b.offset).unwrap())
+            });
+            assert_eq!(strips, reference, "scale {scale}");
+        }
+        // Classic hairlines carry no screen offset; their spacing is in world units.
+        let classic = mesh(&map, 0.5, |_| {});
+        assert!(classic.lines.iter().all(|v| v.offset == [0.0, 0.0]));
     }
 
     #[test]

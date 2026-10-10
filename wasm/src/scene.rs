@@ -158,7 +158,13 @@ impl ScenePlanner {
 
         match self.scale.replace(camera.scale) {
             Some(previous) if previous == camera.scale => {}
-            Some(previous) => rebuild |= scale_change(previous, camera.scale),
+            Some(previous) => {
+                rebuild |= scale_change(
+                    previous,
+                    camera.scale,
+                    settings.connection_style.follows_zoom(),
+                )
+            }
             None => rebuild = Rebuild::ALL,
         }
 
@@ -193,13 +199,14 @@ impl ScenePlanner {
     }
 }
 
-fn scale_change(previous: f64, scale: f64) -> Rebuild {
+fn scale_change(previous: f64, scale: f64, connections_follow_zoom: bool) -> Rebuild {
     let timers_toggled =
         (previous >= TIMER_VISIBILITY_MIN_SCALE) != (scale >= TIMER_VISIBILITY_MIN_SCALE);
     Rebuild {
         territories: false,
-        // Connection width and fade are baked into vertices at the exact scale.
-        connections: true,
+        // Classic connection spacing and fade are baked into vertices at the exact scale;
+        // solid strips are widened in screen space and stay valid.
+        connections: connections_follow_zoom,
         static_labels: timers_toggled
             || static_label_bucket(previous) != static_label_bucket(scale),
         // Timer text and icons honour on-screen pixel minimums at the exact scale.
@@ -290,6 +297,22 @@ mod tests {
         let mut camera = at(0.290);
         camera.pan(120.0, 40.0);
         assert_eq!(planner.plan(&camera, &settings(), 100, true), Rebuild::NONE);
+    }
+
+    #[test]
+    fn zooming_keeps_solid_connection_strips() {
+        let mut solid = settings();
+        solid.connection_style = crate::settings::ConnectionStyle::White;
+        let mut planner = ScenePlanner::default();
+        assert_eq!(planner.plan(&at(0.25), &solid, 100, false), Rebuild::ALL);
+        for scale in [0.263, 0.6, 2.0] {
+            let rebuild = planner.plan(&at(scale), &solid, 100, true);
+            assert!(!rebuild.connections && rebuild.dynamic_labels);
+        }
+        // Back to classic: its hairlines follow the zoom again.
+        let classic = settings();
+        assert!(planner.plan(&at(2.0), &classic, 100, true).connections);
+        assert!(planner.plan(&at(1.5), &classic, 100, true).connections);
     }
 
     #[test]
