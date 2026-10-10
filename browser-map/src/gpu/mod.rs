@@ -4,6 +4,7 @@
 //! cached instance buffers and the minimap terrain image. What to rebuild each frame is
 //! decided by the scene planner and passed in as a [`Rebuild`].
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -247,12 +248,96 @@ struct GlyphMeta {
     draw_height: f32,
 }
 
+/// The glyph atlas's characters, metrics and pair kerning, indexed for per-glyph lookups
+/// in label layout. A character the atlas lacks draws as `?` and is not kerned.
+struct GlyphSet {
+    /// Atlas position of each ASCII character; `GlyphSet::ABSENT` where there is none.
+    ascii: [u8; 128],
+    /// Atlas characters outside ASCII and their positions.
+    other: Vec<(char, u8)>,
+    /// Metrics by atlas position.
+    metas: Vec<GlyphMeta>,
+    /// Kerning between the glyphs at positions `a` and `b`, at `a * metas.len() + b`.
+    kerning: Vec<f32>,
+    fallback: Option<u8>,
+}
+
+/// A character's glyph and, unless it was substituted, its kerning position.
+#[derive(Clone, Copy)]
+struct GlyphRef<'a> {
+    meta: &'a GlyphMeta,
+    kern_index: Option<u8>,
+}
+
+impl GlyphSet {
+    const ABSENT: u8 = u8::MAX;
+
+    /// `chars` are the atlas characters in atlas order (a repeated character keeps its last
+    /// position); `kerning` is row-major over those positions.
+    fn new(chars: &[char], metas: Vec<GlyphMeta>, kerning: Vec<f32>) -> Self {
+        debug_assert!(chars.len() == metas.len() && chars.len() < usize::from(Self::ABSENT));
+        debug_assert_eq!(kerning.len(), metas.len() * metas.len());
+        let mut ascii = [Self::ABSENT; 128];
+        let mut other: Vec<(char, u8)> = Vec::new();
+        for (position, &ch) in chars.iter().enumerate() {
+            let position = position as u8;
+            if ch.is_ascii() {
+                ascii[ch as usize] = position;
+            } else if let Some(entry) = other.iter_mut().find(|(known, _)| *known == ch) {
+                entry.1 = position;
+            } else {
+                other.push((ch, position));
+            }
+        }
+        let mut glyphs = Self {
+            ascii,
+            other,
+            metas,
+            kerning,
+            fallback: None,
+        };
+        glyphs.fallback = glyphs.position('?');
+        glyphs
+    }
+
+    fn position(&self, ch: char) -> Option<u8> {
+        if ch.is_ascii() {
+            Some(self.ascii[ch as usize]).filter(|&position| position != Self::ABSENT)
+        } else {
+            self.other
+                .iter()
+                .find(|(known, _)| *known == ch)
+                .map(|&(_, position)| position)
+        }
+    }
+
+    fn get(&self, ch: char) -> Option<GlyphRef<'_>> {
+        match self.position(ch) {
+            Some(position) => Some(GlyphRef {
+                meta: &self.metas[usize::from(position)],
+                kern_index: Some(position),
+            }),
+            None => self.fallback.map(|position| GlyphRef {
+                meta: &self.metas[usize::from(position)],
+                kern_index: None,
+            }),
+        }
+    }
+
+    /// Kerning between consecutive glyphs; nothing when either was substituted.
+    fn kern(&self, prev: Option<GlyphRef<'_>>, next: GlyphRef<'_>) -> f32 {
+        match (prev.and_then(|prev| prev.kern_index), next.kern_index) {
+            (Some(a), Some(b)) => self.kerning[usize::from(a) * self.metas.len() + usize::from(b)],
+            _ => 0.0,
+        }
+    }
+}
+
 struct GlyphAtlas {
     bind_group_layout: wgpu::BindGroupLayout,
     fill_bind_group: wgpu::BindGroup,
     halo_bind_group: wgpu::BindGroup,
-    glyphs: HashMap<char, GlyphMeta>,
-    kerning: HashMap<u32, f32>,
+    glyphs: GlyphSet,
     line_height: f32,
 }
 
@@ -276,8 +361,7 @@ struct GpuTextRenderer {
     dynamic_halo_count: u32,
     dynamic_halo_capacity: u32,
     dynamic_halo_instances: Vec<TextInstance>,
-    glyphs: HashMap<char, GlyphMeta>,
-    kerning: HashMap<u32, f32>,
+    glyphs: GlyphSet,
     line_height: f32,
 }
 
@@ -669,11 +753,6 @@ fn name_color_rgba(name_color: NameColor, guild_rgb: (u8, u8, u8)) -> [f32; 4] {
     }
 }
 
-#[inline]
-fn kerning_key(prev: char, next: char) -> u32 {
-    ((prev as u32) << 16) | (next as u32)
-}
-
 fn gpu_console_diag_enabled() -> bool {
     let Some(window) = web_sys::window() else {
         return false;
@@ -768,77 +847,60 @@ fn get_2d_context(
         .ok()
 }
 
-fn line_units_with_tracking(
-    text: &str,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
-    tracking_units: f32,
-) -> f32 {
+fn line_units_with_tracking(text: &str, glyphs: &GlyphSet, tracking_units: f32) -> f32 {
     let tracking_units = tracking_units.max(0.0);
     let mut units = 0.0f32;
-    let mut prev: Option<char> = None;
+    let mut prev: Option<GlyphRef<'_>> = None;
     for ch in text.chars() {
-        let Some(glyph) = glyphs.get(&ch).or_else(|| glyphs.get(&'?')) else {
+        let Some(glyph) = glyphs.get(ch) else {
             continue;
         };
-        if let Some(prev_ch) = prev {
-            units += tracking_units;
-            units += kerning
-                .get(&kerning_key(prev_ch, ch))
-                .copied()
-                .unwrap_or(0.0);
+        if prev.is_some() {
+            units += tracking_units + glyphs.kern(prev, glyph);
         }
-        units += glyph.advance;
-        prev = Some(ch);
+        units += glyph.meta.advance;
+        prev = Some(glyph);
     }
     units
 }
 
-fn fit_text_to_units_with_tracking(
-    text: &str,
+/// `text`, or as much of it as fits before an ellipsis; borrowed when it fits whole.
+fn fit_text_to_units_with_tracking<'a>(
+    text: &'a str,
     max_units: f32,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
+    glyphs: &GlyphSet,
     tracking_units: f32,
-) -> String {
+) -> Cow<'a, str> {
     let tracking_units = tracking_units.max(0.0);
-    if max_units <= 0.0
-        || line_units_with_tracking(text, glyphs, kerning, tracking_units) <= max_units
-    {
-        return text.to_string();
+    if max_units <= 0.0 || line_units_with_tracking(text, glyphs, tracking_units) <= max_units {
+        return Cow::Borrowed(text);
     }
     let ellipsis = "...";
-    let ellipsis_units = line_units_with_tracking(ellipsis, glyphs, kerning, tracking_units);
+    let ellipsis_units = line_units_with_tracking(ellipsis, glyphs, tracking_units);
     if ellipsis_units >= max_units {
-        return ellipsis.to_string();
+        return Cow::Borrowed(ellipsis);
     }
     let mut out = String::new();
     let mut used = 0.0f32;
-    let mut prev: Option<char> = None;
+    let mut prev: Option<GlyphRef<'_>> = None;
     for ch in text.chars() {
-        let Some(next_units) = glyphs
-            .get(&ch)
-            .or_else(|| glyphs.get(&'?'))
-            .map(|g| g.advance)
-        else {
+        let Some(glyph) = glyphs.get(ch) else {
             continue;
         };
-        let kern = prev
-            .and_then(|prev_ch| kerning.get(&kerning_key(prev_ch, ch)).copied())
-            .unwrap_or(0.0);
+        let kern = glyphs.kern(prev, glyph);
         let tracking = if prev.is_some() { tracking_units } else { 0.0 };
-        if used + tracking + kern + next_units + ellipsis_units > max_units {
+        if used + tracking + kern + glyph.meta.advance + ellipsis_units > max_units {
             break;
         }
-        used += tracking + kern + next_units;
+        used += tracking + kern + glyph.meta.advance;
         out.push(ch);
-        prev = Some(ch);
+        prev = Some(glyph);
     }
     if out.is_empty() {
-        ellipsis.to_string()
+        Cow::Borrowed(ellipsis)
     } else {
         out.push_str(ellipsis);
-        out
+        Cow::Owned(out)
     }
 }
 
@@ -848,8 +910,7 @@ fn fit_text_to_units_with_tracking(
 )]
 fn push_text_line_with_tracking(
     out: &mut Vec<TextInstance>,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
+    glyphs: &GlyphSet,
     line_height: f32,
     text: &str,
     cx: f32,
@@ -864,7 +925,7 @@ fn push_text_line_with_tracking(
     }
 
     let tracking_units = tracking_units.max(0.0);
-    let units = line_units_with_tracking(text, glyphs, kerning, tracking_units);
+    let units = line_units_with_tracking(text, glyphs, tracking_units);
     if units <= 0.0 {
         return;
     }
@@ -876,20 +937,18 @@ fn push_text_line_with_tracking(
     let mut cursor_x = cx - (units * scale) / 2.0;
     let line_top_y = cy - font_height_world * 0.5;
     color[3] = color[3].clamp(0.0, 1.0);
-    let mut prev: Option<char> = None;
+    let mut prev: Option<GlyphRef<'_>> = None;
 
     for ch in text.chars() {
-        let Some(glyph) = glyphs.get(&ch).or_else(|| glyphs.get(&'?')) else {
+        let Some(glyph) = glyphs.get(ch) else {
             continue;
         };
-        if let Some(prev_ch) = prev {
+        if prev.is_some() {
             cursor_x += tracking_units * scale;
-            cursor_x += kerning
-                .get(&kerning_key(prev_ch, ch))
-                .copied()
-                .unwrap_or(0.0)
-                * scale;
+            cursor_x += glyphs.kern(prev, glyph) * scale;
         }
+        prev = Some(glyph);
+        let glyph = glyph.meta;
         let step_world = glyph.advance * scale;
         let w_world = glyph.draw_width * scale;
         let x_world = cursor_x + glyph.draw_offset_x * scale;
@@ -897,7 +956,6 @@ fn push_text_line_with_tracking(
         let y_world = line_top_y + glyph.draw_offset_y * scale;
         if w_world <= 0.0 {
             cursor_x += step_world;
-            prev = Some(ch);
             continue;
         }
         out.push(TextInstance {
@@ -906,7 +964,6 @@ fn push_text_line_with_tracking(
             color,
         });
         cursor_x += step_world;
-        prev = Some(ch);
     }
 }
 
@@ -917,8 +974,7 @@ fn push_text_line_with_tracking(
 fn push_text_line_dual_with_tracking(
     fill_out: &mut Vec<TextInstance>,
     halo_out: &mut Vec<TextInstance>,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
+    glyphs: &GlyphSet,
     line_height: f32,
     text: &str,
     cx: f32,
@@ -932,7 +988,6 @@ fn push_text_line_dual_with_tracking(
     push_text_line_with_tracking(
         halo_out,
         glyphs,
-        kerning,
         line_height,
         text,
         cx,
@@ -945,7 +1000,6 @@ fn push_text_line_dual_with_tracking(
     push_text_line_with_tracking(
         fill_out,
         glyphs,
-        kerning,
         line_height,
         text,
         cx,
@@ -1939,7 +1993,6 @@ impl GpuRenderer {
             fill_bind_group,
             halo_bind_group,
             glyphs,
-            kerning,
             line_height,
         }) = Self::build_glyph_atlas(device, queue, readable_font)
         else {
@@ -2043,7 +2096,6 @@ impl GpuRenderer {
             dynamic_halo_capacity: initial_capacity,
             dynamic_halo_instances: Vec::new(),
             glyphs,
-            kerning,
             line_height,
         })
     }
@@ -2490,16 +2542,31 @@ impl GpuRenderer {
             ink_bounds_y.insert(ch, (ascent, descent));
         }
 
-        let mut kerning = HashMap::new();
-        for &a in &chars {
-            for &b in &chars {
-                let pair = format!("{a}{b}");
+        // Row-major over atlas positions; a repeated character copies its first row and
+        // column instead of being measured again.
+        let n = chars.len();
+        let first: Vec<usize> = chars
+            .iter()
+            .map(|&ch| chars.iter().position(|&known| known == ch).unwrap_or(0))
+            .collect();
+        let mut kerning = vec![0.0f32; n * n];
+        let mut pair = String::with_capacity(8);
+        for (i, &a) in chars.iter().enumerate() {
+            for (j, &b) in chars.iter().enumerate() {
+                let (fa, fb) = (first[i], first[j]);
+                if (fa, fb) != (i, j) {
+                    kerning[i * n + j] = kerning[fa * n + fb];
+                    continue;
+                }
+                pair.clear();
+                pair.push(a);
+                pair.push(b);
                 let pair_w = ctx.measure_text(&pair).map(|m| m.width()).unwrap_or(0.0) as f32;
                 let aw = advances.get(&a).copied().unwrap_or(0.0);
                 let bw = advances.get(&b).copied().unwrap_or(0.0);
                 let kern = pair_w - (aw + bw);
                 if kern.abs() > 0.01 {
-                    kerning.insert(kerning_key(a, b), kern);
+                    kerning[i * n + j] = kern;
                 }
             }
         }
@@ -2522,7 +2589,7 @@ impl GpuRenderer {
         ctx.set_text_align("left");
         ctx.set_text_baseline("alphabetic");
 
-        let mut glyphs = HashMap::with_capacity(chars.len());
+        let mut metas = Vec::with_capacity(chars.len());
         let atlas_wf = atlas_w as f32;
         let atlas_hf = atlas_h as f32;
         for (i, ch) in chars.iter().copied().enumerate() {
@@ -2566,17 +2633,14 @@ impl GpuRenderer {
             let v0 = (v0_px as f32) / atlas_hf;
             let u1 = (u1_px as f32) / atlas_wf;
             let v1 = (v1_px as f32) / atlas_hf;
-            glyphs.insert(
-                ch,
-                GlyphMeta {
-                    uv_rect: [u0, v0, u1, v1],
-                    advance: raw_advance,
-                    draw_offset_x,
-                    draw_width,
-                    draw_offset_y,
-                    draw_height,
-                },
-            );
+            metas.push(GlyphMeta {
+                uv_rect: [u0, v0, u1, v1],
+                advance: raw_advance,
+                draw_offset_x,
+                draw_width,
+                draw_offset_y,
+                draw_height,
+            });
         }
 
         ctx.clear_rect(0.0, 0.0, atlas_w as f64, atlas_h as f64);
@@ -2703,8 +2767,7 @@ impl GpuRenderer {
             bind_group_layout,
             fill_bind_group,
             halo_bind_group,
-            glyphs,
-            kerning,
+            glyphs: GlyphSet::new(&chars, metas, kerning),
             line_height: line_height_px as f32,
         })
     }
@@ -3180,7 +3243,6 @@ impl GpuRenderer {
         let scale = vp.scale as f32;
         {
             let glyphs = &text_renderer.glyphs;
-            let kerning = &text_renderer.kerning;
             let line_height = text_renderer.line_height;
             let tag_tracking_units = line_height * STATIC_TAG_LETTER_SPACING_EM;
             let name_tracking_units = line_height * STATIC_NAME_LETTER_SPACING_EM;
@@ -3196,7 +3258,7 @@ impl GpuRenderer {
                     vp,
                     viewport_screen_bounds,
                     line_height,
-                    |text| line_units_with_tracking(text, glyphs, kerning, claim_tracking_units),
+                    |text| line_units_with_tracking(text, glyphs, claim_tracking_units),
                 );
                 let rendered_claim_label_count = claim_labels.len();
                 for claim in claim_labels {
@@ -3210,7 +3272,6 @@ impl GpuRenderer {
                         &mut fill_instances,
                         &mut halo_instances,
                         glyphs,
-                        kerning,
                         line_height,
                         &claim.text,
                         claim.center_world[0],
@@ -3268,7 +3329,6 @@ impl GpuRenderer {
                             tag,
                             sizing.max_width_world * units_per_world,
                             glyphs,
-                            kerning,
                             tag_tracking_units,
                         );
                         if fitted == "..." {
@@ -3298,7 +3358,6 @@ impl GpuRenderer {
                             &mut fill_instances,
                             &mut halo_instances,
                             glyphs,
-                            kerning,
                             line_height,
                             &fitted,
                             loc.midpoint_x() as f32,
@@ -3381,7 +3440,6 @@ impl GpuRenderer {
                             &mut fill_instances,
                             &mut halo_instances,
                             glyphs,
-                            kerning,
                             line_height,
                             tag,
                             cx,
@@ -3420,7 +3478,6 @@ impl GpuRenderer {
                             base_name,
                             name_max_w * units_per_world,
                             glyphs,
-                            kerning,
                             name_tracking_units,
                         );
                         let name_y = tag_y
@@ -3442,7 +3499,6 @@ impl GpuRenderer {
                             &mut fill_instances,
                             &mut halo_instances,
                             glyphs,
-                            kerning,
                             line_height,
                             &fitted,
                             cx,
@@ -3517,7 +3573,6 @@ impl GpuRenderer {
         let mut text_buf = String::with_capacity(16);
         {
             let glyphs = &text_renderer.glyphs;
-            let kerning = &text_renderer.kerning;
             let line_height = text_renderer.line_height;
             for ct in territories.values() {
                 let loc = &ct.territory.location;
@@ -3695,7 +3750,6 @@ impl GpuRenderer {
                         &mut fill_instances,
                         &mut halo_instances,
                         glyphs,
-                        kerning,
                         line_height,
                         &text_buf,
                         cx,
@@ -3728,7 +3782,6 @@ impl GpuRenderer {
                         &mut fill_instances,
                         &mut halo_instances,
                         glyphs,
-                        kerning,
                         line_height,
                         &text_buf,
                         cx,
