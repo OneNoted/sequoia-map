@@ -214,6 +214,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
             }
             inputs.minimap_inset.track();
             map.tiles.track();
+            map.markers.track();
             scheduler.mark_dirty();
         }
     });
@@ -451,29 +452,32 @@ fn render_frame(
 
     let outcome = inputs.territories.with_untracked(|territories| {
         map.tiles.with_untracked(|tiles| {
-            with_optional(heat.map(|heat| heat.take_counts), |take_counts| {
-                with_optional(inputs.wars, |wars| {
-                    renderer.render(
-                        &Frame {
-                            camera: &camera,
-                            territories,
-                            hovered: hovered.as_deref(),
-                            selected: selected.as_deref(),
-                            settings: &settings,
-                            heat: take_counts.map(|take_counts| HeatColors {
-                                take_counts,
-                                max_take_count,
-                            }),
-                            wars,
-                            territory_bounds: *territory_bounds,
-                            tiles,
-                            icons: icons.as_ref(),
-                            minimap,
-                            clock_secs,
-                            now_ms,
-                        },
-                        rebuild,
-                    )
+            map.markers.with_untracked(|markers| {
+                with_optional(heat.map(|heat| heat.take_counts), |take_counts| {
+                    with_optional(inputs.wars, |wars| {
+                        renderer.render(
+                            &Frame {
+                                camera: &camera,
+                                territories,
+                                hovered: hovered.as_deref(),
+                                selected: selected.as_deref(),
+                                settings: &settings,
+                                heat: take_counts.map(|take_counts| HeatColors {
+                                    take_counts,
+                                    max_take_count,
+                                }),
+                                wars,
+                                territory_bounds: *territory_bounds,
+                                tiles,
+                                icons: icons.as_ref(),
+                                markers: markers.as_ref(),
+                                minimap,
+                                clock_secs,
+                                now_ms,
+                            },
+                            rebuild,
+                        )
+                    })
                 })
             })
         })

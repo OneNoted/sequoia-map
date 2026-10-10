@@ -1,8 +1,12 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use leptos::prelude::*;
+use sequoia_map_engine::map_markers::{
+    MapMarker, MapMarkers, MarkerShape, NODE_CLUSTER_SCALE, node_radius,
+};
 use sequoia_shared::{
     GatheringNodeMarker, MapActivityMarker, MapIntelOverlay as MapIntelPayload, WorldEventMarker,
 };
@@ -14,11 +18,12 @@ use crate::viewport::Viewport;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::render_loop::RenderScheduler;
 
-const NODE_MIN_RADIUS: f64 = 1.25;
-const NODE_MAX_RADIUS: f64 = 3.25;
 const NODE_BUCKET_WORLD_SIZE: f64 = 256.0;
-const NODE_CLUSTER_SCALE: f64 = 0.18;
-const NODE_SIMPLE_SCALE: f64 = 0.34;
+/// Event, raid and camp names show above this scale.
+const SITE_LABEL_MIN_SCALE: f64 = 0.58;
+const EVENT_COLOR: &str = "#f5c542";
+const RAID_COLOR: &str = "#b18cff";
+const CAMP_COLOR: &str = "#5bd6c8";
 const FETCH_RETRY_DELAY_SECS: u64 = 10;
 const MAP_INTEL_ENDPOINT: &str = "/api/map/intel/overlay";
 
@@ -37,11 +42,13 @@ struct MapIntelModel {
     camps: Vec<RenderActivity>,
     world_events: Vec<RenderWorldEvent>,
     gathering_nodes: NodeIndex,
+    /// Every marker, for the map renderer to draw.
+    markers: Arc<MapMarkers>,
 }
 
 impl MapIntelModel {
     fn from_payload(payload: MapIntelPayload) -> Self {
-        Self {
+        let mut model = Self {
             raids: payload
                 .raids
                 .into_iter()
@@ -58,7 +65,53 @@ impl MapIntelModel {
                 .map(RenderWorldEvent::from_marker)
                 .collect(),
             gathering_nodes: NodeIndex::from_markers(payload.gathering_nodes),
+            markers: Arc::default(),
+        };
+        model.markers = Arc::new(model.map_markers());
+        model
+    }
+
+    /// Nodes in a stable order, one summary per area and profession, then events, raids
+    /// and camps, as the canvas overlay drew them.
+    fn map_markers(&self) -> MapMarkers {
+        let site = |x: f64, z: f64, shape: MarkerShape, color: &str| MapMarker {
+            world: [x as f32, z as f32],
+            shape,
+            rgb: hex_rgb(color),
+        };
+        let mut sites = Vec::new();
+        for event in &self.world_events {
+            for &(x, z) in &event.locations {
+                sites.push(site(x, z, MarkerShape::Event, EVENT_COLOR));
+            }
         }
+        for raid in &self.raids {
+            sites.push(site(raid.x, raid.z, MarkerShape::Raid, RAID_COLOR));
+        }
+        for camp in &self.camps {
+            sites.push(site(camp.x, camp.z, MarkerShape::Camp, CAMP_COLOR));
+        }
+        MapMarkers::new(
+            self.gathering_nodes
+                .sorted_buckets()
+                .flatten()
+                .map(|node| MapMarker {
+                    world: [node.x as f32, node.z as f32],
+                    shape: node.shape.marker_shape(),
+                    rgb: hex_rgb(node.profession.style().color),
+                })
+                .collect(),
+            self.gathering_nodes
+                .summaries
+                .iter()
+                .map(|summary| MapMarker {
+                    world: [summary.x as f32, summary.z as f32],
+                    shape: MarkerShape::Summary,
+                    rgb: hex_rgb(summary.profession.style().color),
+                })
+                .collect(),
+            sites,
+        )
     }
 
     fn total_markers(&self) -> usize {
@@ -144,6 +197,13 @@ impl NodeIndex {
         self.count
     }
 
+    /// Each area's nodes, areas ordered by position.
+    fn sorted_buckets(&self) -> impl Iterator<Item = &Vec<RenderNode>> {
+        let mut keys: Vec<&NodeBucketKey> = self.buckets.keys().collect();
+        keys.sort_unstable();
+        keys.into_iter().map(|key| &self.buckets[key])
+    }
+
     fn for_each_in_world_bounds(
         &self,
         min_x: f64,
@@ -188,7 +248,9 @@ fn build_node_bucket_summaries(
     buckets: &HashMap<NodeBucketKey, Vec<RenderNode>>,
 ) -> Vec<NodeBucketSummary> {
     let mut summaries = Vec::with_capacity(buckets.len());
-    for nodes in buckets.values() {
+    let mut keys: Vec<&NodeBucketKey> = buckets.keys().collect();
+    keys.sort_unstable();
+    for nodes in keys.into_iter().map(|key| &buckets[key]) {
         let mut counts = [0usize; ProfessionKind::COUNT];
         let mut sum_x = [0.0; ProfessionKind::COUNT];
         let mut sum_z = [0.0; ProfessionKind::COUNT];
@@ -217,7 +279,7 @@ fn build_node_bucket_summaries(
     summaries
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct NodeBucketKey {
     x: i32,
     z: i32,
@@ -281,6 +343,14 @@ impl NodeShape {
             _ => Self::Dot,
         }
     }
+
+    fn marker_shape(self) -> MarkerShape {
+        match self {
+            Self::Dot => MarkerShape::Dot,
+            Self::Corner => MarkerShape::Corner,
+            Self::Wall => MarkerShape::Wall,
+        }
+    }
 }
 
 #[component]
@@ -329,6 +399,22 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
         });
     });
 
+    // The map renderer draws the markers. A frame drawn on this canvas clears its whole
+    // DPR-sized surface (milliseconds in Firefox), so it only carries the site names and
+    // stays untouched while it has none.
+    Effect::new(move || {
+        let markers = if enabled.get() {
+            data.with(|payload| payload.as_ref().map(|payload| payload.markers.clone()))
+        } else {
+            None
+        };
+        map.markers().set(markers);
+    });
+    on_cleanup(move || {
+        map.markers().try_set(None);
+    });
+
+    let labels_drawn = Rc::new(Cell::new(false));
     let scheduler = Rc::new(RenderScheduler::new({
         let cached_ctx = cached_ctx.clone();
         move || {
@@ -336,19 +422,28 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
                 return false;
             };
             let canvas: &HtmlCanvasElement = &canvas;
-            let Some((ctx, width, height)) = canvas_context(canvas, &cached_ctx) else {
-                return false;
-            };
-
-            ctx.clear_rect(0.0, 0.0, width, height);
-            if enabled.get_untracked() {
-                let vp = camera.get_untracked();
-                data.with_untracked(|payload| {
-                    if let Some(payload) = payload.as_ref() {
-                        draw_payload(&ctx, &vp, payload, width, height);
-                    }
-                });
-            }
+            let vp = camera.get_untracked();
+            let shown = enabled.get_untracked();
+            data.with_untracked(|payload| {
+                let width = f64::from(canvas.client_width().max(1));
+                let height = f64::from(canvas.client_height().max(1));
+                let labels = payload
+                    .as_ref()
+                    .filter(|_| shown)
+                    .map(|payload| site_labels(payload, &vp, width, height))
+                    .unwrap_or_default();
+                if labels.is_empty() && !labels_drawn.get() {
+                    return;
+                }
+                let Some((ctx, width, height)) = canvas_context(canvas, &cached_ctx) else {
+                    return;
+                };
+                ctx.clear_rect(0.0, 0.0, width, height);
+                for label in &labels {
+                    draw_label(&ctx, label.x, label.y, label.text, label.color);
+                }
+                labels_drawn.set(!labels.is_empty());
+            });
             false
         }
     }));
@@ -539,233 +634,47 @@ pub(crate) fn canvas_context(
     Some((ctx, width, height))
 }
 
-fn draw_payload(
-    ctx: &CanvasRenderingContext2d,
-    viewport: &Viewport,
-    payload: &MapIntelModel,
-    width: f64,
-    height: f64,
-) {
-    draw_nodes(ctx, viewport, &payload.gathering_nodes, width, height);
-    draw_world_events(ctx, viewport, &payload.world_events, width, height);
-    draw_activities(
-        ctx,
-        viewport,
-        &payload.raids,
-        MarkerKind::Raid,
-        width,
-        height,
-    );
-    draw_activities(
-        ctx,
-        viewport,
-        &payload.camps,
-        MarkerKind::Camp,
-        width,
-        height,
-    );
-}
-
-fn draw_nodes(
-    ctx: &CanvasRenderingContext2d,
-    viewport: &Viewport,
-    nodes: &NodeIndex,
-    width: f64,
-    height: f64,
-) {
-    if viewport.scale < NODE_CLUSTER_SCALE {
-        draw_node_summaries(ctx, viewport, nodes, width, height);
-        return;
-    }
-
-    let radius = node_radius(viewport.scale);
-    let simple_markers = viewport.scale < NODE_SIMPLE_SCALE;
-    let bounds = visible_world_bounds(viewport, width, height, 18.0);
-    let mut current_color = "";
-
-    nodes.for_each_in_world_bounds(
-        bounds.min_x,
-        bounds.min_z,
-        bounds.max_x,
-        bounds.max_z,
-        |node| {
-            let (sx, sy) = viewport.world_to_screen(node.x, node.z);
-            if !in_screen_bounds(sx, sy, width, height, 18.0) {
-                return;
-            }
-
-            let color = node.profession.style().color;
-            if current_color != color {
-                ctx.set_fill_style_str(color);
-                current_color = color;
-            }
-
-            if simple_markers {
-                let size = (radius * 1.65).max(2.0);
-                ctx.fill_rect(sx - size * 0.5, sy - size * 0.5, size, size);
-                return;
-            }
-
-            match node.shape {
-                NodeShape::Corner => {
-                    ctx.fill_rect(sx - radius, sy - radius, radius * 2.0, radius * 2.0)
-                }
-                NodeShape::Wall => {
-                    ctx.fill_rect(sx - radius, sy - radius * 0.45, radius * 2.0, radius * 0.9);
-                    ctx.fill_rect(sx - radius * 0.45, sy - radius, radius * 0.9, radius * 2.0);
-                }
-                NodeShape::Dot => {
-                    ctx.begin_path();
-                    ctx.arc(sx, sy, radius, 0.0, std::f64::consts::TAU).ok();
-                    ctx.fill();
-                }
-            }
-        },
-    );
-}
-
-fn draw_node_summaries(
-    ctx: &CanvasRenderingContext2d,
-    viewport: &Viewport,
-    nodes: &NodeIndex,
-    width: f64,
-    height: f64,
-) {
-    let bounds = visible_world_bounds(viewport, width, height, 24.0);
-    let size = 3.0;
-    let mut current_color = "";
-
-    for summary in &nodes.summaries {
-        if summary.x < bounds.min_x
-            || summary.x > bounds.max_x
-            || summary.z < bounds.min_z
-            || summary.z > bounds.max_z
-        {
-            continue;
-        }
-
-        let (sx, sy) = viewport.world_to_screen(summary.x, summary.z);
-
-        let color = summary.profession.style().color;
-        if current_color != color {
-            ctx.set_fill_style_str(color);
-            current_color = color;
-        }
-        ctx.fill_rect(sx - size * 0.5, sy - size * 0.5, size, size);
-    }
-}
-
-fn draw_world_events(
-    ctx: &CanvasRenderingContext2d,
-    viewport: &Viewport,
-    events: &[RenderWorldEvent],
-    width: f64,
-    height: f64,
-) {
-    for event in events {
-        for (x, z) in &event.locations {
-            let (sx, sy) = viewport.world_to_screen(*x, *z);
-            if !in_screen_bounds(sx, sy, width, height, 24.0) {
-                continue;
-            }
-            draw_diamond(ctx, sx, sy, 6.0, "#f5c542", "rgba(12,14,23,0.9)");
-            if viewport.scale > 0.58 {
-                draw_label(ctx, sx + 9.0, sy - 7.0, &event.name, "#f5c542");
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum MarkerKind {
-    Raid,
-    Camp,
-}
-
-fn draw_activities(
-    ctx: &CanvasRenderingContext2d,
-    viewport: &Viewport,
-    entries: &[RenderActivity],
-    kind: MarkerKind,
-    width: f64,
-    height: f64,
-) {
-    for entry in entries {
-        let (sx, sy) = viewport.world_to_screen(entry.x, entry.z);
-        if !in_screen_bounds(sx, sy, width, height, 24.0) {
-            continue;
-        }
-        match kind {
-            MarkerKind::Raid => {
-                draw_square(ctx, sx, sy, 6.0, "#b18cff", "rgba(12,14,23,0.9)");
-                if viewport.scale > 0.58 {
-                    draw_label(ctx, sx + 9.0, sy - 7.0, &entry.name, "#b18cff");
-                }
-            }
-            MarkerKind::Camp => {
-                draw_triangle(ctx, sx, sy, 7.0, "#5bd6c8", "rgba(12,14,23,0.9)");
-                if viewport.scale > 0.58 {
-                    draw_label(ctx, sx + 9.0, sy - 7.0, &entry.name, "#5bd6c8");
-                }
-            }
-        }
-    }
-}
-
-fn draw_diamond(
-    ctx: &CanvasRenderingContext2d,
+struct SiteLabel<'a> {
     x: f64,
     y: f64,
-    radius: f64,
-    fill: &str,
-    stroke: &str,
-) {
-    ctx.begin_path();
-    ctx.move_to(x, y - radius);
-    ctx.line_to(x + radius, y);
-    ctx.line_to(x, y + radius);
-    ctx.line_to(x - radius, y);
-    ctx.close_path();
-    ctx.set_fill_style_str(fill);
-    ctx.fill();
-    ctx.set_stroke_style_str(stroke);
-    ctx.set_line_width(2.0);
-    ctx.stroke();
+    text: &'a str,
+    color: &'static str,
 }
 
-fn draw_square(
-    ctx: &CanvasRenderingContext2d,
-    x: f64,
-    y: f64,
-    radius: f64,
-    fill: &str,
-    stroke: &str,
-) {
-    ctx.set_fill_style_str(fill);
-    ctx.fill_rect(x - radius, y - radius, radius * 2.0, radius * 2.0);
-    ctx.set_stroke_style_str(stroke);
-    ctx.set_line_width(2.0);
-    ctx.stroke_rect(x - radius, y - radius, radius * 2.0, radius * 2.0);
-}
-
-fn draw_triangle(
-    ctx: &CanvasRenderingContext2d,
-    x: f64,
-    y: f64,
-    radius: f64,
-    fill: &str,
-    stroke: &str,
-) {
-    ctx.begin_path();
-    ctx.move_to(x, y - radius);
-    ctx.line_to(x + radius, y + radius * 0.85);
-    ctx.line_to(x - radius, y + radius * 0.85);
-    ctx.close_path();
-    ctx.set_fill_style_str(fill);
-    ctx.fill();
-    ctx.set_stroke_style_str(stroke);
-    ctx.set_line_width(2.0);
-    ctx.stroke();
+/// Names of the events, raids and camps on screen, once zoomed in far enough.
+fn site_labels<'a>(
+    payload: &'a MapIntelModel,
+    viewport: &Viewport,
+    width: f64,
+    height: f64,
+) -> Vec<SiteLabel<'a>> {
+    let mut labels = Vec::new();
+    if viewport.scale <= SITE_LABEL_MIN_SCALE {
+        return labels;
+    }
+    let mut push = |x: f64, z: f64, text: &'a str, color: &'static str| {
+        let (sx, sy) = viewport.world_to_screen(x, z);
+        if in_screen_bounds(sx, sy, width, height, 24.0) {
+            labels.push(SiteLabel {
+                x: sx + 9.0,
+                y: sy - 7.0,
+                text,
+                color,
+            });
+        }
+    };
+    for event in &payload.world_events {
+        for &(x, z) in &event.locations {
+            push(x, z, &event.name, EVENT_COLOR);
+        }
+    }
+    for raid in &payload.raids {
+        push(raid.x, raid.z, &raid.name, RAID_COLOR);
+    }
+    for camp in &payload.camps {
+        push(camp.x, camp.z, &camp.name, CAMP_COLOR);
+    }
+    labels
 }
 
 fn draw_label(ctx: &CanvasRenderingContext2d, x: f64, y: f64, label: &str, color: &str) {
@@ -776,6 +685,12 @@ fn draw_label(ctx: &CanvasRenderingContext2d, x: f64, y: f64, label: &str, color
     ctx.set_fill_style_str(color);
     let _ = ctx.fill_text(label, x, y);
     ctx.restore();
+}
+
+#[derive(Clone, Copy)]
+enum MarkerKind {
+    Raid,
+    Camp,
 }
 
 fn closest_hover(
@@ -819,7 +734,7 @@ fn closest_world_event(
                         screen_y: my,
                         title: event.name.clone(),
                         meta: event.meta.clone(),
-                        color: "#f5c542",
+                        color: EVENT_COLOR,
                     },
                 ));
             }
@@ -841,8 +756,8 @@ fn closest_activity(
         let dist = distance_sq(sx, sy, mx, my);
         if dist <= 14.0 * 14.0 && best.as_ref().is_none_or(|(current, _)| dist < *current) {
             let color = match kind {
-                MarkerKind::Raid => "#b18cff",
-                MarkerKind::Camp => "#5bd6c8",
+                MarkerKind::Raid => RAID_COLOR,
+                MarkerKind::Camp => CAMP_COLOR,
             };
             best = Some((
                 dist,
@@ -951,35 +866,6 @@ fn distance_sq(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let dx = ax - bx;
     let dy = ay - by;
     dx * dx + dy * dy
-}
-
-struct WorldBounds {
-    min_x: f64,
-    min_z: f64,
-    max_x: f64,
-    max_z: f64,
-}
-
-fn visible_world_bounds(
-    viewport: &Viewport,
-    width: f64,
-    height: f64,
-    screen_margin: f64,
-) -> WorldBounds {
-    let (left_x, top_z) = viewport.screen_to_world(-screen_margin, -screen_margin);
-    let (right_x, bottom_z) =
-        viewport.screen_to_world(width + screen_margin, height + screen_margin);
-
-    WorldBounds {
-        min_x: left_x.min(right_x),
-        min_z: top_z.min(bottom_z),
-        max_x: left_x.max(right_x),
-        max_z: top_z.max(bottom_z),
-    }
-}
-
-fn node_radius(scale: f64) -> f64 {
-    (1.4 + scale * 0.9).clamp(NODE_MIN_RADIUS, NODE_MAX_RADIUS)
 }
 
 pub(crate) fn in_screen_bounds(x: f64, y: f64, width: f64, height: f64, margin: f64) -> bool {
@@ -1138,6 +1024,17 @@ fn resource_profession_kind(resource: &str) -> ProfessionKind {
     }
 }
 
+/// `#rrggbb` as bytes; the overlay's colours are all of that form.
+fn hex_rgb(color: &str) -> [u8; 3] {
+    let channel = |at: usize| {
+        color
+            .get(at..at + 2)
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            .unwrap_or(0)
+    };
+    [channel(1), channel(3), channel(5)]
+}
+
 fn alpha_border(color: &str) -> String {
     match color {
         "#c9a27d" => "rgba(201,162,125,0.62)".to_string(),
@@ -1186,11 +1083,17 @@ const FISHING_RESOURCES: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use sequoia_shared::{GatheringNodeMarker, MapPoint};
+    use sequoia_map_engine::map_markers::MarkerShape;
+    use sequoia_shared::{
+        GatheringNodeMarker, MapActivityMarker, MapIntelOverlay, MapPoint, WorldEventMarker,
+    };
 
     use crate::viewport::Viewport;
 
-    use super::{NodeIndex, closest_node, format_count, resource_profession_kind, title_label};
+    use super::{
+        MapIntelModel, NodeIndex, closest_node, format_count, hex_rgb, resource_profession_kind,
+        site_labels, title_label,
+    };
 
     fn node_marker(x: f64, z: f64, resource: &str) -> GatheringNodeMarker {
         GatheringNodeMarker {
@@ -1200,6 +1103,115 @@ mod tests {
             level: Some(1),
             angle: None,
         }
+    }
+
+    fn point(x: f64, z: f64) -> MapPoint {
+        MapPoint { x, y: 0.0, z }
+    }
+
+    fn payload() -> MapIntelOverlay {
+        let mut corner = node_marker(300.0, 0.0, "OAK");
+        corner.node_type = "CORNER".to_string();
+        let mut wall = node_marker(10.0, 0.0, "COPPER");
+        wall.node_type = "WALL".to_string();
+        let site = |name: &str, x: f64| MapActivityMarker {
+            name: name.to_string(),
+            location: point(x, 40.0),
+            ..Default::default()
+        };
+        MapIntelOverlay {
+            generated_at: String::new(),
+            source: String::new(),
+            raids: vec![site("Raid", 100.0)],
+            camps: vec![site("Camp", 200.0)],
+            world_events: vec![WorldEventMarker {
+                name: "Event".to_string(),
+                locations: vec![point(0.0, 40.0), point(50.0, 40.0)],
+                ..Default::default()
+            }],
+            gathering_nodes: vec![
+                node_marker(0.0, 0.0, "COPPER"),
+                corner,
+                wall,
+                node_marker(20.0, 0.0, "WHEAT"),
+            ],
+            gathering_resources: Vec::new(),
+            gathering_node_types: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn map_markers_carry_every_payload_marker() {
+        let model = MapIntelModel::from_payload(payload());
+        let markers = &model.markers;
+
+        // Nodes area by area, each area by profession then shape.
+        let nodes: Vec<_> = markers
+            .nodes()
+            .iter()
+            .map(|marker| (marker.world, marker.shape, marker.rgb))
+            .collect();
+        assert_eq!(
+            nodes,
+            [
+                ([0.0, 0.0], MarkerShape::Dot, hex_rgb("#c9a27d")),
+                ([10.0, 0.0], MarkerShape::Wall, hex_rgb("#c9a27d")),
+                ([20.0, 0.0], MarkerShape::Dot, hex_rgb("#f5c542")),
+                ([300.0, 0.0], MarkerShape::Corner, hex_rgb("#50c878")),
+            ]
+        );
+        // One summary per area and profession, at the nodes' mean position.
+        let summaries: Vec<_> = markers
+            .summaries()
+            .iter()
+            .map(|marker| (marker.world, marker.shape))
+            .collect();
+        assert_eq!(
+            summaries,
+            [
+                ([5.0, 0.0], MarkerShape::Summary),
+                ([20.0, 0.0], MarkerShape::Summary),
+                ([300.0, 0.0], MarkerShape::Summary),
+            ]
+        );
+        // Every event location, then raids, then camps.
+        let sites: Vec<_> = markers
+            .sites()
+            .iter()
+            .map(|marker| (marker.world[0], marker.shape, marker.rgb))
+            .collect();
+        assert_eq!(
+            sites,
+            [
+                (0.0, MarkerShape::Event, hex_rgb("#f5c542")),
+                (50.0, MarkerShape::Event, hex_rgb("#f5c542")),
+                (100.0, MarkerShape::Raid, hex_rgb("#b18cff")),
+                (200.0, MarkerShape::Camp, hex_rgb("#5bd6c8")),
+            ]
+        );
+    }
+
+    #[test]
+    fn site_names_show_zoomed_in_and_on_screen() {
+        let model = MapIntelModel::from_payload(payload());
+        let at = |scale: f64| Viewport {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale,
+        };
+        assert!(site_labels(&model, &at(0.58), 400.0, 300.0).is_empty());
+
+        let labels = site_labels(&model, &at(1.0), 120.0, 300.0);
+        let names: Vec<_> = labels.iter().map(|label| (label.text, label.x)).collect();
+        // The camp at x = 200 is off this 120 px wide screen.
+        assert_eq!(names, [("Event", 9.0), ("Event", 59.0), ("Raid", 109.0)]);
+        assert_eq!(labels[0].y, 33.0);
+    }
+
+    #[test]
+    fn parses_overlay_colours() {
+        assert_eq!(hex_rgb("#c9a27d"), [0xc9, 0xa2, 0x7d]);
+        assert_eq!(hex_rgb("#5bd6c8"), [0x5b, 0xd6, 0xc8]);
     }
 
     #[test]
