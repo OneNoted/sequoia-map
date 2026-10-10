@@ -20,6 +20,10 @@ impl GpuRenderer {
         match *self {}
     }
 
+    pub fn max_surface_side(&self) -> u32 {
+        match *self {}
+    }
+
     pub fn resize(&mut self, _width: u32, _height: u32, _dpr: f32) {
         match *self {}
     }
