@@ -2571,6 +2571,8 @@ pub fn MapPage() -> impl IntoView {
         | MapEvent::SelectTap { .. } => {}
     };
 
+    let sheet_drag: RwSignal<Option<SheetDrag>> = RwSignal::new(None);
+
     view! {
         <div style="width: 100%; height: 100%; position: relative;">
             <div style="width: 100%; height: 100%; position: relative; overflow: hidden; background: var(--bg-page);">
@@ -2634,6 +2636,7 @@ pub fn MapPage() -> impl IntoView {
                 class="sidebar-wrapper"
                 class:sidebar-ready=move || sidebar_ready.get()
                 class:sidebar-open=move || sidebar_open.get()
+                class:sheet-dragging=move || sheet_drag.with(Option::is_some)
                 style:width=move || {
                     if is_mobile.get() {
                         "100%".to_string()
@@ -2642,17 +2645,15 @@ pub fn MapPage() -> impl IntoView {
                     }
                 }
                 style:transform=move || {
-                    if is_mobile.get() {
-                        if sidebar_open.get() { "translateY(0)" } else { "translateY(100%)" }
-                    } else if sidebar_open.get() {
-                        "translateX(0)"
-                    } else {
-                        "translateX(100%)"
-                    }
+                    sidebar_transform(
+                        is_mobile.get(),
+                        sidebar_open.get(),
+                        sheet_drag.with(|drag| drag.map(|drag| drag.offset)),
+                    )
                 }
                 style:pointer-events=move || if sidebar_open.get() { "auto" } else { "none" }
             >
-                <BottomSheetHandle />
+                <BottomSheetHandle drag=sheet_drag />
                 <SidebarResizeHandle />
                 <SidebarToggle />
                 {move || {
@@ -2828,65 +2829,119 @@ fn SidebarResizeHandle() -> impl IntoView {
     }
 }
 
-/// Swipe-to-dismiss drag handle for the mobile bottom sheet.
-#[component]
-fn BottomSheetHandle() -> impl IntoView {
-    use std::rc::Rc;
+/// How far down the mobile sheet must be dragged to close it, CSS pixels.
+const SHEET_DISMISS_DRAG_PX: f64 = 80.0;
 
+/// A drag of the mobile bottom sheet's handle by one pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SheetDrag {
+    pointer_id: i32,
+    start_y: f64,
+    /// How far the sheet follows the pointer down, CSS pixels.
+    offset: f64,
+}
+
+impl SheetDrag {
+    fn new(pointer_id: i32, y: f64) -> Self {
+        Self {
+            pointer_id,
+            start_y: y,
+            offset: 0.0,
+        }
+    }
+
+    /// The drag after its pointer moved to `y`; the sheet never rises above its open place.
+    fn moved_to(self, y: f64) -> Self {
+        Self {
+            offset: (y - self.start_y).max(0.0),
+            ..self
+        }
+    }
+
+    fn dismisses(&self) -> bool {
+        self.offset > SHEET_DISMISS_DRAG_PX
+    }
+}
+
+/// Where the sidebar sits: a bottom sheet on mobile, held down by a handle drag while one
+/// lasts, else a panel at the right edge.
+fn sidebar_transform(mobile: bool, open: bool, drag_offset: Option<f64>) -> String {
+    match (mobile, open, drag_offset) {
+        (true, true, Some(offset)) => format!("translateY({offset}px)"),
+        (true, true, None) => "translateY(0)".to_string(),
+        (true, false, _) => "translateY(100%)".to_string(),
+        (false, true, _) => "translateX(0)".to_string(),
+        (false, false, _) => "translateX(100%)".to_string(),
+    }
+}
+
+/// Swipe-to-dismiss drag handle for the mobile bottom sheet. It only updates `drag`; the
+/// sheet's transform follows from that and the open state, so however a drag ends, the
+/// sheet is left where the open state puts it.
+#[component]
+fn BottomSheetHandle(drag: RwSignal<Option<SheetDrag>>) -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let IsMobile(is_mobile) = expect_context();
 
-    let drag_start_y: Rc<std::cell::Cell<f64>> = Rc::new(std::cell::Cell::new(0.0));
-    let dragging: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
+    // Closing the sheet, or leaving the mobile layout, ends a drag in progress.
+    Effect::new(move || {
+        if (!sidebar_open.get() || !is_mobile.get()) && drag.with_untracked(Option::is_some) {
+            drag.set(None);
+        }
+    });
 
-    let drag_start_y_down = drag_start_y.clone();
-    let dragging_down = dragging.clone();
-    let drag_start_y_move = drag_start_y.clone();
-    let dragging_move = dragging.clone();
-    let drag_start_y_up = drag_start_y.clone();
-    let dragging_up = dragging.clone();
+    let owns = move |e: &web_sys::PointerEvent| {
+        drag.with_untracked(|drag| drag.is_some_and(|drag| drag.pointer_id == e.pointer_id()))
+    };
+    let end = move |e: web_sys::PointerEvent| {
+        if owns(&e) {
+            drag.set(None);
+        }
+    };
 
     view! {
         <div
             class="bottom-sheet-handle"
             on:pointerdown=move |e: web_sys::PointerEvent| {
-                if !is_mobile.get_untracked() { return; }
-                drag_start_y_down.set(e.client_y() as f64);
-                dragging_down.set(true);
-                if let Some(target) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    target.set_pointer_capture(e.pointer_id()).ok();
+                if !is_mobile.get_untracked() || !sidebar_open.get_untracked() {
+                    return;
                 }
+                let Some(handle) = e
+                    .current_target()
+                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                else {
+                    return;
+                };
+                // One pointer drags at a time; a drag whose pointer the handle no longer
+                // holds is over even if no event said so.
+                if drag.with_untracked(|drag| {
+                    drag.is_some_and(|drag| handle.has_pointer_capture(drag.pointer_id))
+                }) {
+                    return;
+                }
+                drag.set(Some(SheetDrag::new(e.pointer_id(), f64::from(e.client_y()))));
+                handle.set_pointer_capture(e.pointer_id()).ok();
             }
             on:pointermove=move |e: web_sys::PointerEvent| {
-                if !dragging_move.get() { return; }
-                let delta = (e.client_y() as f64 - drag_start_y_move.get()).max(0.0);
-                // Apply translate directly to sidebar wrapper parent
-                if let Some(target) = e.target()
-                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-                    .and_then(|el| el.parent_element())
-                    .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
-                {
-                    target.style().set_property("transition", "none").ok();
-                    target.style().set_property("transform", &format!("translateY({delta}px)")).ok();
+                if owns(&e) {
+                    let y = f64::from(e.client_y());
+                    drag.update(|drag| *drag = drag.map(|drag| drag.moved_to(y)));
                 }
             }
             on:pointerup=move |e: web_sys::PointerEvent| {
-                if !dragging_up.get() { return; }
-                dragging_up.set(false);
-                let delta = (e.client_y() as f64 - drag_start_y_up.get()).max(0.0);
-                if let Some(target) = e.target()
-                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-                    .and_then(|el| el.parent_element())
-                    .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
-                {
-                    // Restore CSS transition
-                    target.style().remove_property("transition").ok();
-                    target.style().remove_property("transform").ok();
+                if !owns(&e) {
+                    return;
                 }
-                if delta > 80.0 {
+                let dismisses = drag
+                    .get_untracked()
+                    .is_some_and(|drag| drag.moved_to(f64::from(e.client_y())).dismisses());
+                drag.set(None);
+                if dismisses {
                     sidebar_open.set(false);
                 }
             }
+            on:pointercancel=end
+            on:lostpointercapture=end
         />
     }
 }
@@ -3476,6 +3531,7 @@ mod tests {
         clamp_resource_highlight_opacity, clamp_sidebar_width, clamp_war_panel_width,
         map_mode_from_path, normalize_heat_selected_season_id, should_wait_for_history_probe,
     };
+    use super::{SHEET_DISMISS_DRAG_PX, SheetDrag, sidebar_transform};
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
 
     #[test]
@@ -3851,5 +3907,32 @@ mod tests {
         assert!(should_wait_for_history_probe(false, 0));
         assert!(!should_wait_for_history_probe(false, 1));
         assert!(!should_wait_for_history_probe(true, 0));
+    }
+
+    #[test]
+    fn mobile_sheet_rests_where_its_open_state_puts_it() {
+        // A drag only shows while the sheet is open on mobile; when it ends the open sheet
+        // is back in place, not left at the stylesheet's closed position.
+        assert_eq!(
+            sidebar_transform(true, true, Some(30.0)),
+            "translateY(30px)"
+        );
+        assert_eq!(sidebar_transform(true, true, None), "translateY(0)");
+        assert_eq!(
+            sidebar_transform(true, false, Some(30.0)),
+            "translateY(100%)"
+        );
+        assert_eq!(sidebar_transform(false, true, Some(30.0)), "translateX(0)");
+        assert_eq!(sidebar_transform(false, false, None), "translateX(100%)");
+    }
+
+    #[test]
+    fn sheet_drags_follow_their_pointer_down_only() {
+        let drag = SheetDrag::new(7, 500.0);
+        assert_eq!(drag.moved_to(470.0).offset, 0.0);
+        assert_eq!(drag.moved_to(530.0).offset, 30.0);
+        assert!(!drag.moved_to(500.0 + SHEET_DISMISS_DRAG_PX).dismisses());
+        assert!(drag.moved_to(501.0 + SHEET_DISMISS_DRAG_PX).dismisses());
+        assert_eq!(drag.moved_to(530.0).pointer_id, 7);
     }
 }
