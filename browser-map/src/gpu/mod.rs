@@ -47,6 +47,9 @@ use crate::frame::{Frame, FrameMetrics, FrameOutcome, RenderCapabilities};
 use crate::icons::ResourceAtlas;
 use crate::tiles::{LoadedTile, TileQuality};
 
+mod markers;
+use markers::GpuMarkerRenderer;
+
 // --- GPU data types ---
 
 #[repr(C)]
@@ -1030,6 +1033,9 @@ pub struct GpuRenderer {
     icon_renderer: Option<GpuIconRenderer>,
     supports_gpu_icons: bool,
 
+    /// Map Intel markers, created when the host first shows some.
+    marker_renderer: Option<GpuMarkerRenderer>,
+
     // Track current dimensions
     width: u32,
     height: u32,
@@ -1804,6 +1810,7 @@ impl GpuRenderer {
             territory_name_cache: HashMap::new(),
             icon_renderer: None,
             supports_gpu_icons,
+            marker_renderer: None,
             width,
             height,
             dpr,
@@ -4083,6 +4090,7 @@ impl GpuRenderer {
         // Pre-compute glow uniforms and write buffers BEFORE the render pass
         // to avoid pipeline stalls from mid-pass buffer writes on WebGL2/glow.
         let (draw_sel_glow, draw_hov_glow) = self.write_glow_uniforms(frame, &mut stats);
+        let draw_markers = self.prepare_markers(frame, &mut stats);
 
         // Get surface texture
         let output = match self.surface.get_current_texture() {
@@ -4267,6 +4275,19 @@ impl GpuRenderer {
                 pass.draw_indexed(0..6, 0, 0..icon_renderer.instance_count);
                 stats.draw();
             }
+
+            // Map Intel markers sit over everything on the map, under the minimap.
+            if draw_markers && let Some(markers) = self.marker_renderer.as_ref() {
+                let draws = markers.draw(
+                    &mut pass,
+                    &self.viewport_bind_group,
+                    &self.vertex_buffer,
+                    &self.index_buffer,
+                );
+                for _ in 0..draws {
+                    stats.draw();
+                }
+            }
         }
 
         if let Some(layout) = frame.minimap {
@@ -4306,6 +4327,28 @@ impl GpuRenderer {
         };
 
         outcome
+    }
+
+    /// Uploads a new marker set and this frame's marker sizes, before the render pass.
+    /// Returns whether any marker shows.
+    fn prepare_markers(&mut self, frame: &Frame, stats: &mut DrawStats) -> bool {
+        if frame.markers.is_none() && self.marker_renderer.is_none() {
+            return false;
+        }
+        let markers = self.marker_renderer.get_or_insert_with(|| {
+            GpuMarkerRenderer::new(
+                &self.device,
+                self.surface_config.format,
+                &self.viewport_bind_group_layout,
+                &Self::quad_vertex_layout(),
+            )
+        });
+        stats.bytes_uploaded += markers.sync(&self.device, &self.queue, frame.markers);
+        let css_size = (
+            f64::from(self.width) / f64::from(self.dpr),
+            f64::from(self.height) / f64::from(self.dpr),
+        );
+        markers.prepare(&self.queue, frame.camera, css_size, self.dpr)
     }
 
     /// Seconds since init, as the shaders' animation clock.
