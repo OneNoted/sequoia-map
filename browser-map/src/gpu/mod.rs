@@ -2926,44 +2926,47 @@ impl GpuRenderer {
                 Ok(d) => d,
                 Err(_) => continue,
             };
-            let pixels = image_data.data();
             // Failed reads do not stage a GPU upload. Counting them against the budget
             // would retry the same failed prefix every frame and starve later tiles.
             uploaded_bytes += bytes;
 
+            let size = wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            };
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("tile-tex"),
-                size: wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
+                size,
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                // External image copies require a render-attachment destination.
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             });
-
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
+            // The read-back pixels go to the GPU straight from the browser's buffer rather
+            // than through a copy in WASM memory, which would grow for good to hold a tile.
+            // Uploading the <img> itself instead makes browsers decode the file again, as
+            // straight alpha, synchronously: slower than this draw and read-back.
+            self.queue.copy_external_image_to_texture(
+                &wgpu::CopyExternalImageSourceInfo {
+                    source: wgpu::ExternalImageSource::ImageData(image_data),
+                    origin: wgpu::Origin2d::ZERO,
+                    flip_y: false,
+                },
+                wgpu::CopyExternalImageDestInfo {
                     texture: &texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
+                    color_space: wgpu::PredefinedColorSpace::Srgb,
+                    premultiplied_alpha: false,
                 },
-                &pixels,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * w),
-                    rows_per_image: Some(h),
-                },
-                wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
+                size,
             );
 
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
