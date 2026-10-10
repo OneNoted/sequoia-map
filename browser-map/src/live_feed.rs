@@ -14,6 +14,13 @@ use sequoia_map_engine::territory::{
 };
 use sequoia_shared::{LiveState, TerritoryEvent, WarControllerState};
 
+/// Just the sequence number of a snapshot event; the territory map is skipped unparsed.
+#[derive(serde::Deserialize)]
+struct SnapshotSeq {
+    #[serde(default)]
+    seq: u64,
+}
+
 const MAX_BUFFERED_UPDATES: usize = 20_000;
 const LIVE_RESYNC_RETRY_BASE_MS: f64 = 500.0;
 const LIVE_RESYNC_RETRY_MAX_MS: f64 = 10_000.0;
@@ -34,6 +41,9 @@ pub struct LiveFeed {
     /// While set, the map shows the past: updates are buffered for replay, not applied.
     pub history_mode: Signal<bool>,
     pub last_live_seq: RwSignal<Option<u64>>,
+    /// The number of the last full live snapshot applied, cleared once an update is applied
+    /// over it. With `last_live_seq` equal, the map is that snapshot (see `holds_snapshot`).
+    pub snapshot_seq: StoredValue<Option<u64>>,
     pub buffered_updates: RwSignal<Vec<BufferedUpdate>>,
     /// Buffer updates even outside history mode (during the hand-off back to live).
     pub buffer_mode_active: RwSignal<bool>,
@@ -52,6 +62,7 @@ impl LiveFeed {
             connection: RwSignal::new(ConnectionStatus::Connecting),
             history_mode,
             last_live_seq: RwSignal::new(None),
+            snapshot_seq: StoredValue::new(None),
             buffered_updates: RwSignal::new(Vec::new()),
             buffer_mode_active: RwSignal::new(false),
             buffer_size_max: RwSignal::new(0),
@@ -64,6 +75,16 @@ impl LiveFeed {
 
     fn buffering(&self) -> bool {
         self.history_mode.get_untracked() || self.buffer_mode_active.get_untracked()
+    }
+
+    /// Whether the territory map is exactly the full snapshot numbered `seq`, so that
+    /// applying that snapshot again would change nothing. The history hand-off moves
+    /// `last_live_seq` itself, so it never matches a snapshot from before history mode
+    /// unless no live change happened in between.
+    pub fn holds_snapshot(&self, seq: u64) -> bool {
+        seq > 0
+            && self.last_live_seq.get_untracked() == Some(seq)
+            && self.snapshot_seq.get_value() == Some(seq)
     }
 }
 
@@ -329,6 +350,7 @@ fn trigger_live_resync(feed: LiveFeed) {
             Ok(live_state) => {
                 feed.territories.set(from_snapshot(live_state.territories));
                 feed.last_live_seq.set(Some(live_state.seq));
+                feed.snapshot_seq.set_value(Some(live_state.seq));
                 feed.needs_resync.set(false);
                 reset_live_resync_retry();
             }
@@ -389,6 +411,18 @@ pub fn connect(feed: LiveFeed) {
             return;
         };
 
+        // The REST bootstrap usually lands the same snapshot first: then only the sequence
+        // number is read, not the whole territory map, and nothing is applied again.
+        if !feed.buffering()
+            && let Ok(SnapshotSeq { seq }) = serde_json::from_str::<SnapshotSeq>(&data)
+            && feed.holds_snapshot(seq)
+        {
+            mark_post_reconnect_event_received();
+            needs_live_resync.set(false);
+            reset_live_resync_retry();
+            return;
+        }
+
         let Ok(TerritoryEvent::Snapshot {
             seq,
             territories: map,
@@ -423,6 +457,7 @@ pub fn connect(feed: LiveFeed) {
         } else {
             last_live_seq.set(None);
         }
+        feed.snapshot_seq.set_value((seq > 0).then_some(seq));
         needs_live_resync.set(false);
         reset_live_resync_retry();
     });
@@ -464,6 +499,7 @@ pub fn connect(feed: LiveFeed) {
                 apply_changes(map, &changes, now, 800.0);
             });
             last_live_seq.set(None);
+            feed.snapshot_seq.set_value(None);
             return;
         }
 
@@ -495,6 +531,7 @@ pub fn connect(feed: LiveFeed) {
             apply_changes(map, &changes, now, 800.0);
         });
         last_live_seq.set(Some(seq));
+        feed.snapshot_seq.set_value(None);
     });
     es.add_event_listener_with_callback("update", update_handler.as_ref().unchecked_ref())
         .ok();
@@ -530,6 +567,7 @@ pub fn connect(feed: LiveFeed) {
                 apply_runtime_updates(map, &updates);
             });
             last_live_seq.set(None);
+            feed.snapshot_seq.set_value(None);
             return;
         }
 
@@ -560,6 +598,7 @@ pub fn connect(feed: LiveFeed) {
             apply_runtime_updates(map, &updates);
         });
         last_live_seq.set(Some(seq));
+        feed.snapshot_seq.set_value(None);
     });
     es.add_event_listener_with_callback(
         "runtime_update",
@@ -631,7 +670,32 @@ pub fn connect(feed: LiveFeed) {
 
 #[cfg(test)]
 mod tests {
-    use super::has_seq_gap;
+    use leptos::prelude::*;
+
+    use super::{LiveFeed, has_seq_gap};
+
+    #[test]
+    fn a_snapshot_is_held_until_anything_is_applied_over_it() {
+        let feed = LiveFeed::new(RwSignal::new(Default::default()), Signal::stored(false));
+        assert!(!feed.holds_snapshot(7));
+
+        // A bootstrap or snapshot at 7.
+        feed.last_live_seq.set(Some(7));
+        feed.snapshot_seq.set_value(Some(7));
+        assert!(feed.holds_snapshot(7));
+        assert!(!feed.holds_snapshot(6));
+
+        // An update to 8; a snapshot at 8 may differ from what the update built.
+        feed.last_live_seq.set(Some(8));
+        feed.snapshot_seq.set_value(None);
+        assert!(!feed.holds_snapshot(8));
+
+        // A history hand-off moves the sequence on without a new snapshot.
+        feed.snapshot_seq.set_value(Some(8));
+        feed.last_live_seq.set(Some(12));
+        assert!(!feed.holds_snapshot(8));
+        assert!(!feed.holds_snapshot(12));
+    }
 
     #[test]
     fn detects_sequence_gap() {
