@@ -12,8 +12,8 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use wgpu::util::DeviceExt;
 
 use sequoia_map_engine::claim_labels::{
-    self, CLAIM_LABEL_LETTER_SPACING_EM, build_claim_clusters, claim_label_zoom_active,
-    select_claim_label_candidates,
+    self, CLAIM_LABEL_LETTER_SPACING_EM, ClaimCluster, build_claim_clusters,
+    claim_label_zoom_active, select_claim_label_candidates,
 };
 use sequoia_map_engine::colors::{brighten, heat_color_for_count};
 use sequoia_map_engine::connections::{self, ConnectionMesh, ConnectionProjection};
@@ -1064,6 +1064,8 @@ pub struct GpuRenderer {
     /// Font the glyph atlas was built with.
     text_readable_font: bool,
     territory_name_cache: HashMap<String, (String, String)>,
+    /// Zoomed-out guild-name clusters for one territory revision; they depend on nothing else.
+    claim_clusters: Option<(u64, Vec<ClaimCluster>)>,
 
     // Resource icon pipeline
     icon_renderer: Option<GpuIconRenderer>,
@@ -1849,6 +1851,7 @@ impl GpuRenderer {
             text_renderer: None,
             text_readable_font: false,
             territory_name_cache: HashMap::new(),
+            claim_clusters: None,
             icon_renderer: None,
             supports_gpu_icons,
             marker_renderer: None,
@@ -3132,10 +3135,21 @@ impl GpuRenderer {
     fn update_static_text_instances(
         &mut self,
         territories: &ClientTerritoryMap,
+        territory_revision: u64,
         vp: &Viewport,
         settings: &RenderSettings,
     ) {
         self.sync_territory_name_cache(territories);
+        // Clusters follow the territories only, not the camera: build them once per revision.
+        if settings.show_claim_labels
+            && claim_label_zoom_active(vp.scale)
+            && self
+                .claim_clusters
+                .as_ref()
+                .is_none_or(|(revision, _)| *revision != territory_revision)
+        {
+            self.claim_clusters = Some((territory_revision, build_claim_clusters(territories)));
+        }
         // Label screen rects are in CSS pixels, like the viewport.
         let viewport_screen_bounds = claim_labels::Rect {
             left: 0.0,
@@ -3173,9 +3187,12 @@ impl GpuRenderer {
             let claim_label_zoom = claim_label_zoom_active(vp.scale);
             if settings.show_claim_labels && claim_label_zoom {
                 let claim_tracking_units = line_height * CLAIM_LABEL_LETTER_SPACING_EM;
-                let claim_clusters = build_claim_clusters(territories);
+                let claim_clusters = self
+                    .claim_clusters
+                    .as_ref()
+                    .map_or(&[][..], |(_, clusters)| clusters.as_slice());
                 let claim_labels = select_claim_label_candidates(
-                    &claim_clusters,
+                    claim_clusters,
                     vp,
                     viewport_screen_bounds,
                     line_height,
@@ -4494,7 +4511,12 @@ impl GpuRenderer {
             })
         };
         if rebuild.static_labels {
-            self.update_static_text_instances(frame.territories, vp, settings);
+            self.update_static_text_instances(
+                frame.territories,
+                frame.territory_revision,
+                vp,
+                settings,
+            );
             stats.bytes_uploaded += text_bytes(self.text_renderer.as_ref(), false);
         }
         let mut next_refresh = NextRefresh::default();
