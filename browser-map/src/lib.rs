@@ -21,8 +21,10 @@ pub mod render_loop;
 mod tiles;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use leptos::prelude::*;
+use sequoia_map_engine::map_markers::MapMarkers;
 use sequoia_map_engine::settings::RenderSettings;
 use sequoia_map_engine::territory::ClientTerritoryMap;
 use sequoia_map_engine::viewport::Viewport;
@@ -109,6 +111,7 @@ pub struct BrowserMap {
     pointer: RwSignal<(f64, f64)>,
     tiles: RwSignal<Vec<tiles::LoadedTile>>,
     icons: RwSignal<Option<icons::ResourceAtlas>>,
+    markers: RwSignal<Option<Arc<MapMarkers>>>,
     inputs: MapInputs,
 }
 
@@ -120,6 +123,7 @@ impl BrowserMap {
             pointer: RwSignal::new((0.0, 0.0)),
             tiles: RwSignal::new(Vec::new()),
             icons: RwSignal::new(None),
+            markers: RwSignal::new(None),
             inputs,
         }
     }
@@ -131,6 +135,12 @@ impl BrowserMap {
     /// The territory under the pointer. The map sets it; hosts may clear it.
     pub fn hovered(&self) -> RwSignal<Option<String>> {
         self.hovered
+    }
+
+    /// Point markers drawn over the map, such as Map Intel's; `None` draws none. The
+    /// renderer uploads a set once and keeps it until a different one is set.
+    pub fn markers(&self) -> RwSignal<Option<Arc<MapMarkers>>> {
+        self.markers
     }
 
     /// Last pointer position over the map, in canvas CSS pixels.

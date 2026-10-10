@@ -9,6 +9,7 @@ pub mod connections;
 pub mod defense;
 pub mod gesture;
 pub mod label_layout;
+pub mod map_markers;
 pub mod minimap;
 pub mod overlay_sizing;
 pub mod scene;
