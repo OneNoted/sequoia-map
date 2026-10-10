@@ -4275,19 +4275,6 @@ impl GpuRenderer {
                 pass.draw_indexed(0..6, 0, 0..icon_renderer.instance_count);
                 stats.draw();
             }
-
-            // Map Intel markers sit over everything on the map, under the minimap.
-            if draw_markers && let Some(markers) = self.marker_renderer.as_ref() {
-                let draws = markers.draw(
-                    &mut pass,
-                    &self.viewport_bind_group,
-                    &self.vertex_buffer,
-                    &self.index_buffer,
-                );
-                for _ in 0..draws {
-                    stats.draw();
-                }
-            }
         }
 
         if let Some(layout) = frame.minimap {
