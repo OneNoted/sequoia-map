@@ -45,6 +45,9 @@ pub(crate) struct MapState {
     renderer: Option<GpuRenderer>,
     /// The camera has been fitted to the first territories that arrived.
     fitted: bool,
+    /// Counts changes to the territory map, so renderer caches derived from it alone know
+    /// when they are stale.
+    territory_revision: u64,
 }
 
 impl MapState {
@@ -57,6 +60,7 @@ impl MapState {
             surface: Surface::default(),
             planner: ScenePlanner::default(),
             renderer: None,
+            territory_revision: 0,
             fitted: false,
         }
     }
@@ -147,6 +151,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 let mut state = state.borrow_mut();
                 state.grid = grid;
                 state.territory_bounds = bounds;
+                state.territory_revision = state.territory_revision.wrapping_add(1);
                 state.planner.invalidate(SceneChange::Territories);
                 let fit = bounds.filter(|_| !state.fitted);
                 state.fitted |= fit.is_some();
@@ -425,6 +430,7 @@ fn render_frame(
         planner,
         renderer,
         territory_bounds,
+        territory_revision,
         ..
     } = &mut *state;
     let Some(renderer) = renderer.as_mut() else {
@@ -459,6 +465,7 @@ fn render_frame(
                             &Frame {
                                 camera: &camera,
                                 territories,
+                                territory_revision: *territory_revision,
                                 hovered: hovered.as_deref(),
                                 selected: selected.as_deref(),
                                 settings: &settings,

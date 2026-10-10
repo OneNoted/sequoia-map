@@ -33,6 +33,7 @@ impl GpuRenderer {
         let _ = (
             frame.camera,
             frame.territories,
+            frame.territory_revision,
             frame.hovered,
             frame.selected,
             frame.settings,
