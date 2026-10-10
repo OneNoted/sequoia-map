@@ -43,6 +43,7 @@ impl GpuRenderer {
             frame.territory_bounds,
             frame.tiles,
             frame.icons,
+            frame.markers,
             frame.minimap,
             frame.clock_secs,
             frame.now_ms,

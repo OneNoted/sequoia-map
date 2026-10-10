@@ -1,7 +1,9 @@
 //! What the renderer draws each frame and what it reports back.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use sequoia_map_engine::map_markers::MapMarkers;
 use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::NextRefresh;
 use sequoia_map_engine::settings::RenderSettings;
@@ -26,6 +28,8 @@ pub struct Frame<'a> {
     pub territory_bounds: Option<(f64, f64, f64, f64)>,
     pub tiles: &'a [LoadedTile],
     pub icons: Option<&'a ResourceAtlas>,
+    /// Map Intel markers over the map.
+    pub markers: Option<&'a Arc<MapMarkers>>,
     pub minimap: Option<MinimapLayout>,
     /// Seconds the timers count against: now, or the history timestamp.
     pub clock_secs: i64,
