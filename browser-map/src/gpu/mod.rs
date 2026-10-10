@@ -2766,8 +2766,6 @@ impl GpuRenderer {
                 self.tiles_signature = None;
                 break;
             }
-            uploaded_bytes += bytes;
-
             // Reuse a persistent staging canvas/context to avoid per-tile DOM/context churn.
             if upload_size != (w, h) {
                 upload_canvas.set_width(w);
@@ -2783,6 +2781,9 @@ impl GpuRenderer {
                 Err(_) => continue,
             };
             let pixels = image_data.data();
+            // Failed reads do not stage a GPU upload. Counting them against the budget
+            // would retry the same failed prefix every frame and starve later tiles.
+            uploaded_bytes += bytes;
 
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("tile-tex"),
