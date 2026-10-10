@@ -16,7 +16,7 @@ use sequoia_map_engine::claim_labels::{
     select_claim_label_candidates,
 };
 use sequoia_map_engine::colors::{brighten, heat_color_for_count};
-use sequoia_map_engine::connections::{self, ConnectionMesh};
+use sequoia_map_engine::connections::{self, ConnectionMesh, ConnectionProjection};
 use sequoia_map_engine::defense::defense_tier_overlay_data;
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
 use sequoia_map_engine::label_layout::{
@@ -147,6 +147,34 @@ struct ConnectionVertex {
     color: [f32; 4],
     /// CSS pixels added after projection (solid strips' half-width).
     offset_px: [f32; 2],
+    /// Main-map CSS pixels, in world units at the main camera's scale (classic hairlines).
+    spread_px: [f32; 2],
+}
+
+const CONNECTION_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+    0 => Float32x2,
+    1 => Float32x4,
+    2 => Float32x2,
+    3 => Float32x2,
+];
+
+/// `connection.wgsl`'s per-frame projection of the camera-independent connection mesh.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct ConnectionProjectionUniform {
+    world_per_px: f32,
+    fade: f32,
+    _pad: [f32; 2],
+}
+
+impl ConnectionProjectionUniform {
+    /// For vertices that are not connections (minimap background and frame): no spread, no
+    /// fade.
+    const NEUTRAL: Self = Self {
+        world_per_px: 0.0,
+        fade: 1.0,
+        _pad: [0.0; 2],
+    };
 }
 
 /// A connection vertex buffer that grows to fit what is written to it.
@@ -193,6 +221,7 @@ impl ConnectionBuffer {
                 world_pos: vertex.world,
                 color: vertex.color,
                 offset_px: vertex.offset,
+                spread_px: vertex.spread,
             }));
         self.count = self.staging.len() as u32;
         if self.count > self.capacity {
@@ -1007,6 +1036,13 @@ pub struct GpuRenderer {
     // Connection line pipeline (full GPU mode only)
     connection_pipeline: wgpu::RenderPipeline,
     connection_fill_pipeline: wgpu::RenderPipeline,
+    /// Spread and fade of the connection mesh at the main camera's scale, and the value
+    /// last written to it.
+    connection_projection_buffer: wgpu::Buffer,
+    connection_projection_bind_group: wgpu::BindGroup,
+    connection_projection: Option<ConnectionProjectionUniform>,
+    /// For non-connection vertices drawn with the connection pipelines.
+    neutral_projection_bind_group: wgpu::BindGroup,
     /// Classic hairlines (line list) and solid strips (triangle list).
     connection_mesh: ConnectionMesh,
     connection_lines: ConnectionBuffer,
@@ -1546,28 +1582,49 @@ impl GpuRenderer {
         let connection_vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<ConnectionVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-            ],
+            attributes: &CONNECTION_VERTEX_ATTRIBUTES,
         };
+        let connection_projection_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("connection-projection-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let projection_bind_group = |label, contents: ConnectionProjectionUniform| {
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::bytes_of(&contents),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &connection_projection_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            (buffer, bind_group)
+        };
+        let (connection_projection_buffer, connection_projection_bind_group) =
+            projection_bind_group(
+                "connection-projection",
+                ConnectionProjectionUniform::NEUTRAL,
+            );
+        let (_, neutral_projection_bind_group) =
+            projection_bind_group("neutral-projection", ConnectionProjectionUniform::NEUTRAL);
         let connection_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("connection-pl"),
-                bind_group_layouts: &[&viewport_bind_group_layout],
+                bind_group_layouts: &[&viewport_bind_group_layout, &connection_projection_layout],
                 push_constant_ranges: &[],
             });
         let connection_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1576,7 +1633,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &connection_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[connection_vertex_layout],
+                buffers: &[connection_vertex_layout.clone()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -1606,27 +1663,7 @@ impl GpuRenderer {
                 vertex: wgpu::VertexState {
                     module: &connection_shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<ConnectionVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                offset: 0,
-                                shader_location: 0,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 8,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32x4,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 24,
-                                shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                        ],
-                    }],
+                    buffers: &[connection_vertex_layout],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -1793,6 +1830,10 @@ impl GpuRenderer {
             tiles_revision: 0,
             connection_pipeline,
             connection_fill_pipeline,
+            connection_projection_buffer,
+            connection_projection_bind_group,
+            connection_projection: None,
+            neutral_projection_bind_group,
             connection_mesh: ConnectionMesh::default(),
             connection_lines,
             connection_triangles,
@@ -4040,10 +4081,9 @@ impl GpuRenderer {
     fn update_connection_vertices(
         &mut self,
         territories: &ClientTerritoryMap,
-        scale: f64,
         settings: &RenderSettings,
     ) -> u64 {
-        self.connection_mesh.rebuild(territories, scale, settings);
+        self.connection_mesh.rebuild(territories, settings);
         self.connection_lines
             .upload(&self.device, &self.queue, &self.connection_mesh.lines)
             + self.connection_triangles.upload(
@@ -4091,6 +4131,7 @@ impl GpuRenderer {
         // to avoid pipeline stalls from mid-pass buffer writes on WebGL2/glow.
         let (draw_sel_glow, draw_hov_glow) = self.write_glow_uniforms(frame, &mut stats);
         let draw_markers = self.prepare_markers(frame, &mut stats);
+        let draw_connections = self.write_connection_projection(frame, &mut stats);
 
         // Get surface texture
         let output = match self.surface.get_current_texture() {
@@ -4190,16 +4231,18 @@ impl GpuRenderer {
                 stats.draw();
             }
 
-            if self.connection_lines.count > 0 {
+            if draw_connections && self.connection_lines.count > 0 {
                 pass.set_pipeline(&self.connection_pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                pass.set_bind_group(1, &self.connection_projection_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.connection_lines.buffer.slice(..));
                 pass.draw(0..self.connection_lines.count, 0..1);
                 stats.draw();
             }
-            if self.connection_triangles.count > 0 {
+            if draw_connections && self.connection_triangles.count > 0 {
                 pass.set_pipeline(&self.connection_fill_pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                pass.set_bind_group(1, &self.connection_projection_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.connection_triangles.buffer.slice(..));
                 pass.draw(0..self.connection_triangles.count, 0..1);
                 stats.draw();
@@ -4279,7 +4322,14 @@ impl GpuRenderer {
 
         if let Some(layout) = frame.minimap {
             self.ensure_minimap_terrain(&mut encoder, layout, frame.tiles, &mut stats);
-            self.draw_minimap(&mut encoder, &view, layout, frame, &mut stats);
+            self.draw_minimap(
+                &mut encoder,
+                &view,
+                layout,
+                frame,
+                draw_connections,
+                &mut stats,
+            );
         }
 
         // Preserve the Intel overlay's ordering: symbols and their Canvas2D names
@@ -4340,6 +4390,27 @@ impl GpuRenderer {
         };
 
         outcome
+    }
+
+    /// Writes the connection spread and fade for this frame's main camera scale, when they
+    /// changed; returns whether connections show at all.
+    fn write_connection_projection(&mut self, frame: &Frame, stats: &mut DrawStats) -> bool {
+        let projection = ConnectionProjection::new(frame.settings, frame.camera.scale);
+        let uniform = ConnectionProjectionUniform {
+            world_per_px: projection.world_per_px,
+            fade: projection.fade,
+            _pad: [0.0; 2],
+        };
+        if self.connection_projection != Some(uniform) {
+            self.queue.write_buffer(
+                &self.connection_projection_buffer,
+                0,
+                bytemuck::bytes_of(&uniform),
+            );
+            stats.bytes_uploaded += std::mem::size_of::<ConnectionProjectionUniform>() as u64;
+            self.connection_projection = Some(uniform);
+        }
+        projection.visible()
     }
 
     /// Uploads a new marker set and this frame's marker sizes, before the render pass.
@@ -4410,8 +4481,7 @@ impl GpuRenderer {
                 (self.instance_count as u64) * std::mem::size_of::<TerritoryInstance>() as u64;
         }
         if rebuild.connections {
-            stats.bytes_uploaded +=
-                self.update_connection_vertices(frame.territories, vp.scale, settings);
+            stats.bytes_uploaded += self.update_connection_vertices(frame.territories, settings);
         }
         let text_bytes = |text: Option<&GpuTextRenderer>, dynamic: bool| {
             text.map_or(0, |text| {
@@ -4608,6 +4678,7 @@ impl GpuRenderer {
             world_pos: [x as f32 + pad_x, y as f32 + pad_y],
             color: bg_color,
             offset_px: [0.0, 0.0],
+            spread_px: [0.0, 0.0],
         };
         let bg_vertices = [
             corner(wmx, wmy, -pad, -pad),
@@ -4640,6 +4711,7 @@ impl GpuRenderer {
             });
             pass.set_pipeline(&self.connection_fill_pipeline);
             pass.set_bind_group(0, &self.minimap_terrain_viewport_bind_group, &[]);
+            pass.set_bind_group(1, &self.neutral_projection_bind_group, &[]);
             pass.set_vertex_buffer(0, self.minimap_bg_buffer.slice(..));
             pass.draw(0..6, 0..1);
             stats.draw();
@@ -4693,6 +4765,7 @@ impl GpuRenderer {
         view: &wgpu::TextureView,
         layout: MinimapLayout,
         frame: &Frame,
+        draw_connections: bool,
         stats: &mut DrawStats,
     ) {
         let Some(terrain) = self.minimap_terrain.as_ref() else {
@@ -4746,6 +4819,7 @@ impl GpuRenderer {
             world_pos: [x, y],
             color,
             offset_px: [0.0, 0.0],
+            spread_px: [0.0, 0.0],
         };
         let indicator_vertices = [
             corner(left, top),
@@ -4813,16 +4887,19 @@ impl GpuRenderer {
             stats.draw();
         }
 
-        if self.connection_lines.count > 0 {
+        // The same mesh as the main map, spread and faded for the main camera's scale.
+        if draw_connections && self.connection_lines.count > 0 {
             pass.set_pipeline(&self.connection_pipeline);
             pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+            pass.set_bind_group(1, &self.connection_projection_bind_group, &[]);
             pass.set_vertex_buffer(0, self.connection_lines.buffer.slice(..));
             pass.draw(0..self.connection_lines.count, 0..1);
             stats.draw();
         }
-        if self.connection_triangles.count > 0 {
+        if draw_connections && self.connection_triangles.count > 0 {
             pass.set_pipeline(&self.connection_fill_pipeline);
             pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+            pass.set_bind_group(1, &self.connection_projection_bind_group, &[]);
             pass.set_vertex_buffer(0, self.connection_triangles.buffer.slice(..));
             pass.draw(0..self.connection_triangles.count, 0..1);
             stats.draw();
@@ -4830,6 +4907,7 @@ impl GpuRenderer {
 
         pass.set_pipeline(&self.connection_pipeline);
         pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+        pass.set_bind_group(1, &self.neutral_projection_bind_group, &[]);
         pass.set_vertex_buffer(0, self.minimap_indicator_buffer.slice(..));
         pass.draw(0..indicator_count, 0..1);
         stats.draw();
