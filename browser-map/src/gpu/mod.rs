@@ -798,6 +798,23 @@ fn set_claim_label_debug(scale: f64, active: bool, cluster_count: usize, rendere
     );
 }
 
+/// The CSS font the glyph atlas is drawn and measured in.
+fn glyph_atlas_font(readable_font: bool) -> String {
+    if readable_font {
+        format!("{GLYPH_ATLAS_FONT_PX}px 'Inter', system-ui, sans-serif")
+    } else {
+        format!("{GLYPH_ATLAS_FONT_PX}px 'SilkscreenLocal', monospace")
+    }
+}
+
+/// Whether `font`'s faces have loaded; true where the browser cannot tell.
+fn font_loaded(font: &str) -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.fonts().check(font).ok())
+        .unwrap_or(true)
+}
+
 /// Logs an uncaptured wgpu error. A broken pipeline would repeat every frame, so only the
 /// first few are logged in full.
 fn report_uncaptured_error(error: wgpu::Error) {
@@ -1117,6 +1134,8 @@ pub struct GpuRenderer {
     text_renderer: Option<GpuTextRenderer>,
     /// Font the glyph atlas was built with.
     text_readable_font: bool,
+    /// The atlas font, when it had not loaded yet as the atlas was drawn (fallback glyphs).
+    text_font_pending: Option<String>,
     territory_name_cache: HashMap<String, (String, String)>,
     /// Zoomed-out guild-name clusters for one territory revision; they depend on nothing else.
     claim_clusters: Option<(u64, Vec<ClaimCluster>)>,
@@ -1904,6 +1923,7 @@ impl GpuRenderer {
             minimap_terrain: None,
             text_renderer: None,
             text_readable_font: false,
+            text_font_pending: None,
             territory_name_cache: HashMap::new(),
             claim_clusters: None,
             icon_renderer: None,
@@ -1943,6 +1963,8 @@ impl GpuRenderer {
             return true;
         }
         let vertex_layout = Self::quad_vertex_layout();
+        let font = glyph_atlas_font(self.text_readable_font);
+        self.text_font_pending = (!font_loaded(&font)).then_some(font);
         self.text_renderer = Self::init_text_renderer(
             &self.device,
             &self.queue,
@@ -1952,6 +1974,20 @@ impl GpuRenderer {
             self.text_readable_font,
         );
         self.text_renderer.is_some()
+    }
+
+    /// The glyph atlas font, if the atlas was drawn before it loaded; the host calls
+    /// [`Self::text_font_loaded`] once it has.
+    pub fn pending_text_font(&self) -> Option<String> {
+        self.text_font_pending.clone()
+    }
+
+    /// Redraws the glyph atlas, and with it every label, in `font` now that it has loaded.
+    pub fn text_font_loaded(&mut self, font: &str) {
+        if self.text_font_pending.as_deref() == Some(font) {
+            self.text_font_pending = None;
+            self.text_renderer = None;
+        }
     }
 
     fn ensure_icon_renderer(&mut self, icons: &ResourceAtlas) -> bool {
@@ -2483,11 +2519,7 @@ impl GpuRenderer {
         if chars.is_empty() {
             return None;
         }
-        let font = if readable_font {
-            format!("{GLYPH_ATLAS_FONT_PX}px 'Inter', system-ui, sans-serif")
-        } else {
-            format!("{GLYPH_ATLAS_FONT_PX}px 'SilkscreenLocal', monospace")
-        };
+        let font = glyph_atlas_font(readable_font);
         ctx.set_font(&font);
         ctx.set_text_align("left");
         ctx.set_text_baseline("alphabetic");

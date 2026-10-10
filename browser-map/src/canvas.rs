@@ -242,14 +242,34 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 }
                 match result {
                     Ok(renderer) => {
-                        let mut state = state.borrow_mut();
-                        state.renderer = Some(renderer);
-                        // A new renderer starts with empty caches.
-                        state.planner = ScenePlanner::default();
-                        drop(state);
+                        let pending_font = renderer.pending_text_font();
+                        {
+                            let mut state = state.borrow_mut();
+                            state.renderer = Some(renderer);
+                            // A new renderer starts with empty caches.
+                            state.planner = ScenePlanner::default();
+                        }
                         gpu_error.set(None);
                         gl_context.lost.set(false);
                         scheduler.mark_dirty();
+                        // Labels were laid out in a fallback face: redo them once the atlas
+                        // font arrives, rather than holding the first frame for it.
+                        if let Some(font) = pending_font
+                            && let Some(fonts) = web_sys::window()
+                                .and_then(|window| window.document())
+                                .map(|document| document.fonts())
+                        {
+                            let _ = wasm_bindgen_futures::JsFuture::from(fonts.load(&font)).await;
+                            if disposed.load(Ordering::Relaxed)
+                                || gl_context.generation.get() != generation
+                            {
+                                return;
+                            }
+                            if let Some(renderer) = state.borrow_mut().renderer.as_mut() {
+                                renderer.text_font_loaded(&font);
+                            }
+                            scheduler.mark_dirty();
+                        }
                     }
                     Err(error) => {
                         web_sys::console::error_1(
