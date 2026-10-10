@@ -16,6 +16,7 @@ use sequoia_map_engine::claim_labels::{
     select_claim_label_candidates,
 };
 use sequoia_map_engine::colors::{brighten, heat_color_for_count};
+use sequoia_map_engine::connections::{self, ConnectionMesh};
 use sequoia_map_engine::defense::defense_tier_overlay_data;
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
 use sequoia_map_engine::label_layout::{
@@ -141,6 +142,67 @@ struct IconInstance {
 struct ConnectionVertex {
     world_pos: [f32; 2],
     color: [f32; 4],
+    /// CSS pixels added after projection (solid strips' half-width).
+    offset_px: [f32; 2],
+}
+
+/// A connection vertex buffer that grows to fit what is written to it.
+struct ConnectionBuffer {
+    label: &'static str,
+    buffer: wgpu::Buffer,
+    capacity: u32,
+    count: u32,
+    staging: Vec<ConnectionVertex>,
+}
+
+impl ConnectionBuffer {
+    const INITIAL_CAPACITY: u32 = 4096;
+
+    fn new(device: &wgpu::Device, label: &'static str) -> Self {
+        Self {
+            label,
+            buffer: Self::allocate(device, label, Self::INITIAL_CAPACITY),
+            capacity: Self::INITIAL_CAPACITY,
+            count: 0,
+            staging: Vec::new(),
+        }
+    }
+
+    fn allocate(device: &wgpu::Device, label: &'static str, capacity: u32) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: u64::from(capacity) * std::mem::size_of::<ConnectionVertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Replaces the contents; returns the bytes uploaded.
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertices: &[connections::ConnectionVertex],
+    ) -> u64 {
+        self.staging.clear();
+        self.staging
+            .extend(vertices.iter().map(|vertex| ConnectionVertex {
+                world_pos: vertex.world,
+                color: vertex.color,
+                offset_px: vertex.offset,
+            }));
+        self.count = self.staging.len() as u32;
+        if self.count > self.capacity {
+            self.capacity = self.count.next_power_of_two();
+            self.buffer = Self::allocate(device, self.label, self.capacity);
+        }
+        if self.staging.is_empty() {
+            return 0;
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(&self.staging);
+        queue.write_buffer(&self.buffer, 0, bytes);
+        bytes.len() as u64
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -209,20 +271,6 @@ const GLYPH_ATLAS_BLEED_FACTOR: f32 = 0.62;
 const GLYPH_ATLAS_BLEED_EXTRA_PX: f32 = 1.1;
 const GLYPH_ATLAS_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 [](){}<>+-=_,.:;!?'/\\\\|@#$%^&*~`\\\"…";
 const GLYPH_ATLAS_COLS: usize = 16;
-const CONNECTION_LINE_STEPS_NORMAL: &[(f32, f32)] = &[
-    (-1.2, 0.28),
-    (-0.6, 0.6),
-    (0.0, 1.0),
-    (0.6, 0.6),
-    (1.2, 0.28),
-];
-const CONNECTION_LINE_STEPS_BOLD: &[(f32, f32)] = &[
-    (-1.6, 0.45),
-    (-0.8, 0.75),
-    (0.0, 1.0),
-    (0.8, 0.75),
-    (1.6, 0.45),
-];
 const STATIC_TAG_LETTER_SPACING_EM: f32 = 0.07;
 const STATIC_NAME_LETTER_SPACING_EM: f32 = 0.057;
 const STATIC_TAG_MIN_WIDTH_WORLD: f32 = 88.0;
@@ -639,6 +687,20 @@ fn set_claim_label_debug(scale: f64, active: bool, cluster_count: usize, rendere
     );
 }
 
+/// Logs an uncaptured wgpu error. A broken pipeline would repeat every frame, so only the
+/// first few are logged in full.
+fn report_uncaptured_error(error: wgpu::Error) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    const LOGGED: u32 = 8;
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    let seen = SEEN.fetch_add(1, Ordering::Relaxed);
+    if seen < LOGGED {
+        web_sys::console::error_1(&format!("wgpu error: {error}").into());
+    } else if seen == LOGGED {
+        web_sys::console::error_1(&"wgpu error: further errors are not logged".into());
+    }
+}
+
 fn gpu_is_firefox() -> bool {
     web_sys::window()
         .and_then(|w| w.navigator().user_agent().ok())
@@ -866,6 +928,11 @@ fn push_text_line_dual_with_tracking(
 // --- Tile texture cache ---
 
 /// Identifies a tile set by id and quality, in load order.
+/// Most tile pixels uploaded in one frame. wgpu keeps a staging copy of every upload until
+/// the frame is submitted, so uploading a whole tile set at once (a renderer rebuilt after a
+/// lost context, or a start from a warm cache) briefly needed memory for all of it.
+const TILE_UPLOAD_BUDGET_BYTES: u64 = 16 << 20;
+
 fn tile_upload_signature(tiles: &[LoadedTile]) -> u64 {
     tiles.iter().fold(0u64, |acc, tile| {
         let quality_bits = match tile.quality {
@@ -937,11 +1004,10 @@ pub struct GpuRenderer {
     // Connection line pipeline (full GPU mode only)
     connection_pipeline: wgpu::RenderPipeline,
     connection_fill_pipeline: wgpu::RenderPipeline,
-    connection_buffer: wgpu::Buffer,
-    connection_count: u32,
-    connection_capacity: u32,
-    connection_vertices: Vec<ConnectionVertex>,
-    connection_drawn_set: HashSet<(u64, u64)>,
+    /// Classic hairlines (line list) and solid strips (triangle list).
+    connection_mesh: ConnectionMesh,
+    connection_lines: ConnectionBuffer,
+    connection_triangles: ConnectionBuffer,
     minimap_indicator_buffer: wgpu::Buffer,
     minimap_indicator_capacity: u32,
 
@@ -1074,6 +1140,10 @@ impl GpuRenderer {
             )
             .await
             .map_err(|e| format!("wgpu init ({backend_path}) request_device: {e}"))?;
+        // wgpu's default handler panics, and a panic mid-frame leaves the whole map wedged.
+        // Validation and lost-context errors are reported instead; the frame they spoil is
+        // redrawn, and a lost context is rebuilt by the canvas.
+        device.on_uncaptured_error(Box::new(report_uncaptured_error));
 
         let mut surface_config = surface
             .get_default_config(&adapter, width, height)
@@ -1481,6 +1551,11 @@ impl GpuRenderer {
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
             ],
         };
         let connection_pipeline_layout =
@@ -1539,6 +1614,11 @@ impl GpuRenderer {
                                 shader_location: 1,
                                 format: wgpu::VertexFormat::Float32x4,
                             },
+                            wgpu::VertexAttribute {
+                                offset: 24,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Float32x2,
+                            },
                         ],
                     }],
                     compilation_options: Default::default(),
@@ -1563,13 +1643,8 @@ impl GpuRenderer {
                 multiview: None,
                 cache: None,
             });
-        let connection_capacity = 4096u32;
-        let connection_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("connection-vertex-buf"),
-            size: (connection_capacity as u64) * std::mem::size_of::<ConnectionVertex>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let connection_lines = ConnectionBuffer::new(&device, "connection-line-buf");
+        let connection_triangles = ConnectionBuffer::new(&device, "connection-strip-buf");
         let minimap_indicator_capacity = 16u32;
         let minimap_indicator_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("minimap-indicator-vertex-buf"),
@@ -1712,11 +1787,9 @@ impl GpuRenderer {
             tiles_revision: 0,
             connection_pipeline,
             connection_fill_pipeline,
-            connection_buffer,
-            connection_count: 0,
-            connection_capacity,
-            connection_vertices: Vec::new(),
-            connection_drawn_set: HashSet::new(),
+            connection_mesh: ConnectionMesh::default(),
+            connection_lines,
+            connection_triangles,
             minimap_indicator_buffer,
             minimap_indicator_capacity,
             minimap_terrain_viewport_buffer,
@@ -2593,6 +2666,11 @@ impl GpuRenderer {
         self.frame_metrics
     }
 
+    /// The largest surface side the device accepts, in physical pixels.
+    pub fn max_surface_side(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
     /// Resize the surface when the canvas size changes.
     pub fn resize(&mut self, width: u32, height: u32, dpr: f32) {
         if width == 0 || height == 0 {
@@ -2645,10 +2723,13 @@ impl GpuRenderer {
 
     /// Uploads tiles that are new or improved since the last frame and drops tiles that
     /// are gone, bumping `tiles_revision` when the set changes.
-    fn sync_tiles(&mut self, tiles: &[LoadedTile]) {
+    ///
+    /// Uploads at most [`TILE_UPLOAD_BUDGET_BYTES`] of pixels (and always one tile) per call;
+    /// returns whether tiles are still waiting, so the caller draws another frame.
+    fn sync_tiles(&mut self, tiles: &[LoadedTile]) -> bool {
         let signature = tile_upload_signature(tiles);
         if self.tiles_signature == Some(signature) || !self.ensure_tile_upload_context() {
-            return;
+            return false;
         }
         self.tiles_signature = Some(signature);
         self.tiles_revision = self.tiles_revision.wrapping_add(1);
@@ -2657,12 +2738,13 @@ impl GpuRenderer {
             .retain(|tile_id, _| active_tile_ids.contains(tile_id));
 
         let Some(upload_canvas) = self.tile_upload_canvas.as_ref().cloned() else {
-            return;
+            return false;
         };
         let Some(upload_ctx) = self.tile_upload_ctx.as_ref().cloned() else {
-            return;
+            return false;
         };
         let mut upload_size = self.tile_upload_canvas_size;
+        let mut uploaded_bytes = 0u64;
 
         for tile in tiles {
             let tile_id = tile.id;
@@ -2678,7 +2760,12 @@ impl GpuRenderer {
             if w == 0 || h == 0 {
                 continue;
             }
-
+            let bytes = 4 * u64::from(w) * u64::from(h);
+            if uploaded_bytes > 0 && uploaded_bytes + bytes > TILE_UPLOAD_BUDGET_BYTES {
+                // The rest go up over the next frames.
+                self.tiles_signature = None;
+                break;
+            }
             // Reuse a persistent staging canvas/context to avoid per-tile DOM/context churn.
             if upload_size != (w, h) {
                 upload_canvas.set_width(w);
@@ -2694,6 +2781,9 @@ impl GpuRenderer {
                 Err(_) => continue,
             };
             let pixels = image_data.data();
+            // Failed reads do not stage a GPU upload. Counting them against the budget
+            // would retry the same failed prefix every frame and starve later tiles.
+            uploaded_bytes += bytes;
 
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("tile-tex"),
@@ -2777,6 +2867,7 @@ impl GpuRenderer {
             );
         }
         self.tile_upload_canvas_size = upload_size;
+        self.tiles_signature.is_none()
     }
 
     /// Build instance data from territories and upload to GPU.
@@ -3942,117 +4033,15 @@ impl GpuRenderer {
         territories: &ClientTerritoryMap,
         scale: f64,
         settings: &RenderSettings,
-    ) {
-        self.connection_vertices.clear();
-        if !settings.show_connections {
-            self.connection_count = 0;
-            return;
-        }
-
-        let zoom_fade = smoothstep_f32(
-            settings.connection_zoom_fade.0,
-            settings.connection_zoom_fade.1,
-            scale as f32,
-        );
-        if zoom_fade < 0.001 {
-            self.connection_count = 0;
-            return;
-        }
-
-        self.connection_drawn_set.clear();
-        for ct in territories.values() {
-            let loc = &ct.territory.location;
-            let name_hash = ct.name_hash;
-            let ax = loc.midpoint_x() as f32;
-            let ay = loc.midpoint_y() as f32;
-
-            for conn_name in &ct.territory.connections {
-                let Some(conn_ct) = territories.get(conn_name) else {
-                    continue;
-                };
-                let conn_hash = conn_ct.name_hash;
-                let edge = if name_hash < conn_hash {
-                    (name_hash, conn_hash)
-                } else {
-                    (conn_hash, name_hash)
-                };
-                if !self.connection_drawn_set.insert(edge) {
-                    continue;
-                }
-                let conn_loc = &conn_ct.territory.location;
-                let bx = conn_loc.midpoint_x() as f32;
-                let by = conn_loc.midpoint_y() as f32;
-                let dx = bx - ax;
-                let dy = by - ay;
-                let len_sq = dx * dx + dy * dy;
-                if len_sq <= f32::EPSILON {
-                    continue;
-                }
-                let inv_len = len_sq.sqrt().recip();
-                let nx = -dy * inv_len;
-                let ny = dx * inv_len;
-                let world_per_px = (1.0 / (scale as f32).max(0.05)).min(24.0);
-                let opacity_scale = settings.connection_opacity_scale.max(0.0);
-                let thickness_scale = settings.connection_thickness_scale.max(0.2);
-
-                let color = if settings.bold_connections {
-                    let (cr, cg, cb) = ct.guild_color;
-                    let lum = 0.299 * cr as f64 + 0.587 * cg as f64 + 0.114 * cb as f64;
-                    let dark_boost = (1.0 - lum / 255.0).clamp(0.0, 1.0);
-                    let brighten_factor = 1.4 + dark_boost * 0.8;
-                    let alpha = (0.35 + dark_boost * 0.20) as f32 * zoom_fade * opacity_scale;
-                    let (r, g, b) = brighten(cr, cg, cb, brighten_factor);
-                    [
-                        r as f32 / 255.0,
-                        g as f32 / 255.0,
-                        b as f32 / 255.0,
-                        alpha.clamp(0.0, 1.0),
-                    ]
-                } else {
-                    [1.0, 1.0, 1.0, 0.16 * zoom_fade * opacity_scale]
-                };
-
-                let thickness_steps = if settings.bold_connections {
-                    CONNECTION_LINE_STEPS_BOLD
-                } else {
-                    CONNECTION_LINE_STEPS_NORMAL
-                };
-                for &(offset_px, alpha_scale) in thickness_steps {
-                    let offset_world = offset_px * thickness_scale * world_per_px;
-                    let ox = nx * offset_world;
-                    let oy = ny * offset_world;
-                    let mut line_color = color;
-                    line_color[3] = (color[3] * alpha_scale).clamp(0.0, 1.0);
-                    self.connection_vertices.push(ConnectionVertex {
-                        world_pos: [ax + ox, ay + oy],
-                        color: line_color,
-                    });
-                    self.connection_vertices.push(ConnectionVertex {
-                        world_pos: [bx + ox, by + oy],
-                        color: line_color,
-                    });
-                }
-            }
-        }
-
-        self.connection_count = self.connection_vertices.len() as u32;
-        if self.connection_count > self.connection_capacity {
-            self.connection_capacity = self.connection_count.next_power_of_two();
-            self.connection_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("connection-vertex-buf"),
-                size: (self.connection_capacity as u64)
-                    * std::mem::size_of::<ConnectionVertex>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        if !self.connection_vertices.is_empty() {
-            self.queue.write_buffer(
-                &self.connection_buffer,
-                0,
-                bytemuck::cast_slice(&self.connection_vertices),
-            );
-        }
+    ) -> u64 {
+        self.connection_mesh.rebuild(territories, scale, settings);
+        self.connection_lines
+            .upload(&self.device, &self.queue, &self.connection_mesh.lines)
+            + self.connection_triangles.upload(
+                &self.device,
+                &self.queue,
+                &self.connection_mesh.triangles,
+            )
     }
 
     /// Draws a frame, first rebuilding the cached layers named in `rebuild`.
@@ -4079,13 +4068,13 @@ impl GpuRenderer {
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
 
-        self.sync_tiles(frame.tiles);
+        let tiles_pending = self.sync_tiles(frame.tiles);
         let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
             // Fail closed: map rendering requires the GPU text pipeline.
             return FrameOutcome::default();
         };
         let outcome = FrameOutcome {
-            animating: now < self.max_anim_end_ms,
+            animating: now < self.max_anim_end_ms || tiles_pending,
             next_refresh,
         };
 
@@ -4191,11 +4180,18 @@ impl GpuRenderer {
                 stats.draw();
             }
 
-            if self.connection_count > 0 {
+            if self.connection_lines.count > 0 {
                 pass.set_pipeline(&self.connection_pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.connection_buffer.slice(..));
-                pass.draw(0..self.connection_count, 0..1);
+                pass.set_vertex_buffer(0, self.connection_lines.buffer.slice(..));
+                pass.draw(0..self.connection_lines.count, 0..1);
+                stats.draw();
+            }
+            if self.connection_triangles.count > 0 {
+                pass.set_pipeline(&self.connection_fill_pipeline);
+                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.connection_triangles.buffer.slice(..));
+                pass.draw(0..self.connection_triangles.count, 0..1);
                 stats.draw();
             }
 
@@ -4356,9 +4352,8 @@ impl GpuRenderer {
                 (self.instance_count as u64) * std::mem::size_of::<TerritoryInstance>() as u64;
         }
         if rebuild.connections {
-            self.update_connection_vertices(frame.territories, vp.scale, settings);
             stats.bytes_uploaded +=
-                (self.connection_count as u64) * std::mem::size_of::<ConnectionVertex>() as u64;
+                self.update_connection_vertices(frame.territories, vp.scale, settings);
         }
         let text_bytes = |text: Option<&GpuTextRenderer>, dynamic: bool| {
             text.map_or(0, |text| {
@@ -4554,6 +4549,7 @@ impl GpuRenderer {
         let corner = |x: f64, y: f64, pad_x: f32, pad_y: f32| ConnectionVertex {
             world_pos: [x as f32 + pad_x, y as f32 + pad_y],
             color: bg_color,
+            offset_px: [0.0, 0.0],
         };
         let bg_vertices = [
             corner(wmx, wmy, -pad, -pad),
@@ -4691,6 +4687,7 @@ impl GpuRenderer {
         let corner = |x: f32, y: f32| ConnectionVertex {
             world_pos: [x, y],
             color,
+            offset_px: [0.0, 0.0],
         };
         let indicator_vertices = [
             corner(left, top),
@@ -4758,11 +4755,18 @@ impl GpuRenderer {
             stats.draw();
         }
 
-        if self.connection_count > 0 {
+        if self.connection_lines.count > 0 {
             pass.set_pipeline(&self.connection_pipeline);
             pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.connection_buffer.slice(..));
-            pass.draw(0..self.connection_count, 0..1);
+            pass.set_vertex_buffer(0, self.connection_lines.buffer.slice(..));
+            pass.draw(0..self.connection_lines.count, 0..1);
+            stats.draw();
+        }
+        if self.connection_triangles.count > 0 {
+            pass.set_pipeline(&self.connection_fill_pipeline);
+            pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.connection_triangles.buffer.slice(..));
+            pass.draw(0..self.connection_triangles.count, 0..1);
             stats.draw();
         }
 

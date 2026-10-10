@@ -1,6 +1,11 @@
 //! The map canvas component: renderer lifecycle, demand-driven repaints and DOM overlays.
+//!
+//! The browser may take the canvas's WebGL context away at any time (backgrounded tabs on
+//! mobile, GPU process restarts, driver resets). The canvas then drops its renderer, asks for
+//! the context back and builds a new renderer once it is restored; until then it draws
+//! nothing rather than calling into a dead context.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -76,6 +81,14 @@ impl MapState {
     }
 }
 
+/// Whether the WebGL context is usable, and which renderer start is current.
+#[derive(Default)]
+struct GlContext {
+    lost: Cell<bool>,
+    /// Bumped on every loss, so a renderer started before it is never installed after it.
+    generation: Cell<u32>,
+}
+
 #[derive(Clone, Copy)]
 struct RenderStats {
     capabilities: RenderCapabilities,
@@ -97,11 +110,18 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
     // signals or revive the renderer.
     let disposed = Arc::new(AtomicBool::new(false));
 
+    let gl_context = Rc::new(GlContext::default());
+
     let scheduler = Rc::new(RenderScheduler::new({
         let state = state.clone();
         let disposed = disposed.clone();
+        let gl_context = gl_context.clone();
         move || {
             if disposed.load(Ordering::Relaxed) {
+                return false;
+            }
+            if gl_context.lost.get() {
+                state.borrow_mut().renderer = None;
                 return false;
             }
             let Some(canvas) = canvas_ref.get_untracked() else {
@@ -198,10 +218,46 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         }
     });
 
-    Effect::new({
+    let start_renderer = {
         let state = state.clone();
         let scheduler = scheduler.clone();
         let disposed = disposed.clone();
+        let gl_context = gl_context.clone();
+        move |canvas: HtmlCanvasElement| {
+            let state = state.clone();
+            let scheduler = scheduler.clone();
+            let disposed = disposed.clone();
+            let gl_context = gl_context.clone();
+            let generation = gl_context.generation.get();
+            wasm_bindgen_futures::spawn_local(async move {
+                let result = GpuRenderer::init(canvas).await;
+                if disposed.load(Ordering::Relaxed) || gl_context.generation.get() != generation {
+                    return;
+                }
+                match result {
+                    Ok(renderer) => {
+                        let mut state = state.borrow_mut();
+                        state.renderer = Some(renderer);
+                        // A new renderer starts with empty caches.
+                        state.planner = ScenePlanner::default();
+                        drop(state);
+                        gpu_error.set(None);
+                        gl_context.lost.set(false);
+                        scheduler.mark_dirty();
+                    }
+                    Err(error) => {
+                        web_sys::console::error_1(
+                            &format!("wgpu init failed (fail-closed): {error}").into(),
+                        );
+                        gpu_error.set(Some(error));
+                    }
+                }
+            });
+        }
+    };
+
+    Effect::new({
+        let start_renderer = start_renderer.clone();
         move |started: Option<bool>| {
             if started == Some(true) {
                 return true;
@@ -209,30 +265,37 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
             let Some(canvas) = canvas_ref.get() else {
                 return false;
             };
-            let state = state.clone();
-            let scheduler = scheduler.clone();
-            let disposed = disposed.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match GpuRenderer::init(canvas).await {
-                    Ok(renderer) => {
-                        if !disposed.load(Ordering::Relaxed) {
-                            state.borrow_mut().renderer = Some(renderer);
-                            scheduler.mark_dirty();
-                        }
-                    }
-                    Err(error) => {
-                        web_sys::console::error_1(
-                            &format!("wgpu init failed (fail-closed): {error}").into(),
-                        );
-                        if !disposed.load(Ordering::Relaxed) {
-                            gpu_error.set(Some(error));
-                        }
-                    }
-                }
-            });
+            start_renderer(canvas);
             true
         }
     });
+
+    let on_context_lost = {
+        let state = state.clone();
+        let scheduler = scheduler.clone();
+        let gl_context = gl_context.clone();
+        move |event: web_sys::Event| {
+            // Without this the browser never gives the context back.
+            event.prevent_default();
+            web_sys::console::warn_1(
+                &"map: WebGL context lost; waiting for it to be restored".into(),
+            );
+            gl_context.lost.set(true);
+            gl_context
+                .generation
+                .set(gl_context.generation.get().wrapping_add(1));
+            if let Ok(mut state) = state.try_borrow_mut() {
+                state.renderer = None;
+            }
+            scheduler.mark_dirty();
+        }
+    };
+    let on_context_restored = move |_: web_sys::Event| {
+        web_sys::console::warn_1(&"map: WebGL context restored; rebuilding the renderer".into());
+        if let Some(canvas) = canvas_ref.get_untracked() {
+            start_renderer(canvas);
+        }
+    };
 
     // Everything else (renderer, gesture state, pending frame) is dropped with the last
     // handler and effect that holds it.
@@ -285,6 +348,8 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 on:pointerleave=on_pointer_leave
                 on:wheel=on_wheel
                 on:contextmenu=move |event| event.prevent_default()
+                on:webglcontextlost=on_context_lost
+                on:webglcontextrestored=on_context_restored
             />
             {move || {
                 select_box.get().map(|rect| {
@@ -317,27 +382,37 @@ fn render_frame(
     canvas: &HtmlCanvasElement,
     render_stats: Option<RwSignal<Option<RenderStats>>>,
 ) -> bool {
-    let Some(parent) = canvas.parent_element() else {
+    let Some(window) = web_sys::window() else {
         return false;
     };
-    let css_width = parent.client_width().max(1);
-    let css_height = parent.client_height().max(1);
-    let dpr = web_sys::window()
-        .map(|window| window.device_pixel_ratio())
-        .unwrap_or(1.0)
-        .max(1.0);
-    let width = (f64::from(css_width) * dpr).round().max(1.0) as u32;
-    let height = (f64::from(css_height) * dpr).round().max(1.0) as u32;
+    if canvas.parent_element().is_none() {
+        return false;
+    }
+    let mut state = state.borrow_mut();
+    // The canvas's own CSS size, fractional where the layout is: rounding it first would
+    // stretch the backing store against the pointer coordinates by up to a pixel.
+    let rect = canvas.get_bounding_client_rect();
+    let css_width = rect.width().max(1.0);
+    let css_height = rect.height().max(1.0);
+    // Fewer backing pixels per CSS pixel rather than a surface the device cannot hold.
+    let max_side = state.renderer.as_ref().map_or(f64::INFINITY, |renderer| {
+        f64::from(renderer.max_surface_side())
+    });
+    let dpr = window
+        .device_pixel_ratio()
+        .max(1.0)
+        .min(max_side / css_width)
+        .min(max_side / css_height);
+    let width = (css_width * dpr).round().max(1.0) as u32;
+    let height = (css_height * dpr).round().max(1.0) as u32;
     if canvas.width() != width {
         canvas.set_width(width);
     }
     if canvas.height() != height {
         canvas.set_height(height);
     }
-    map.camera
-        .set_canvas_size((f64::from(css_width), f64::from(css_height)));
+    map.camera.set_canvas_size((css_width, css_height));
 
-    let mut state = state.borrow_mut();
     state.surface = Surface {
         width,
         height,
@@ -358,7 +433,12 @@ fn render_frame(
 
     let inputs = map.inputs;
     let now_ms = js_sys::Date::now();
-    let interacting = gestures.is_interacting(now_ms);
+    // Gesture times are event time stamps, on the `performance.now()` clock.
+    let interacting = gestures.is_interacting(
+        window
+            .performance()
+            .map_or(f64::INFINITY, |performance| performance.now()),
+    );
     let camera = map.camera.get_untracked();
     let clock_secs = inputs.clock_secs.get_untracked();
     let settings = inputs.settings.get_untracked();

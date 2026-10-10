@@ -16,6 +16,28 @@ pub enum NameColor {
     Muted,  // rgba(120, 116, 112, 0.78) — subtle/subdued
 }
 
+/// How connection lines are drawn; see [`crate::connections`].
+///
+/// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ConnectionStyle {
+    /// Soft hairline bands: faint white, guild-tinted when bold. The original look.
+    #[default]
+    Classic,
+    /// Solid white lines.
+    White,
+    /// Solid lines in the guild colour; edges between two guilds are split at the middle.
+    Guild,
+}
+
+impl ConnectionStyle {
+    /// Whether the connection vertices depend on the main camera's scale (classic hairline
+    /// spacing and zoom fade). Solid strips are widened in screen space instead.
+    pub fn follows_zoom(self) -> bool {
+        self == ConnectionStyle::Classic
+    }
+}
+
 /// How the map is drawn: every display option a host can set. Hosts rebuild this whenever
 /// one of their settings changes; [`RenderSettings::invalidates`] decides what that costs.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,10 +55,16 @@ pub struct RenderSettings {
 
     // Connection lines.
     pub show_connections: bool,
+    pub connection_style: ConnectionStyle,
+    /// Classic: guild-tinted, stronger and wider. Solid: twice as wide.
     pub bold_connections: bool,
+    /// Classic only: multiplies the classic opacities.
     pub connection_opacity_scale: f32,
+    /// Solid styles only: their opacity, 0 to 1.
+    pub connection_solid_opacity: f32,
+    /// Multiplies the line width.
     pub connection_thickness_scale: f32,
-    /// Connections fade in between these two viewport scales.
+    /// Classic connections fade in between these two viewport scales.
     pub connection_zoom_fade: (f32, f32),
 
     // Static labels: guild tags, territory names and claim labels.
@@ -130,8 +158,10 @@ impl RenderSettings {
             || self.defense_highlight != previous.defense_highlight
             || self.fill_alpha_boost != previous.fill_alpha_boost;
         let connection_style = self.show_connections != previous.show_connections
+            || self.connection_style != previous.connection_style
             || self.bold_connections != previous.bold_connections
             || self.connection_opacity_scale != previous.connection_opacity_scale
+            || self.connection_solid_opacity != previous.connection_solid_opacity
             || self.connection_thickness_scale != previous.connection_thickness_scale
             || self.connection_zoom_fade != previous.connection_zoom_fade;
         // Static text only.
@@ -194,8 +224,10 @@ pub(crate) mod tests {
             defense_highlight: false,
             fill_alpha_boost: 0.0,
             show_connections: true,
+            connection_style: super::ConnectionStyle::Classic,
             bold_connections: false,
             connection_opacity_scale: 1.0,
+            connection_solid_opacity: 1.0,
             connection_thickness_scale: 1.0,
             connection_zoom_fade: (0.15, 0.45),
             show_names: false,
@@ -247,12 +279,21 @@ pub(crate) mod tests {
                 ..Rebuild::NONE
             }
         );
+        let connections_only = Rebuild {
+            connections: true,
+            ..Rebuild::NONE
+        };
         assert_eq!(
             after(|s| s.connection_zoom_fade = (0.1, 0.3)),
-            Rebuild {
-                connections: true,
-                ..Rebuild::NONE
-            }
+            connections_only
+        );
+        assert_eq!(
+            after(|s| s.connection_style = super::ConnectionStyle::Guild),
+            connections_only
+        );
+        assert_eq!(
+            after(|s| s.connection_solid_opacity = 0.5),
+            connections_only
         );
     }
 

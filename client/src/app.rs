@@ -126,7 +126,13 @@ pub(crate) struct ThickCooldownBorders(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct BoldConnections(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct ConnectionStyleSetting(pub RwSignal<ConnectionStyle>);
+/// Classic connection opacity, relative to the classic look.
+#[derive(Clone, Copy)]
 pub(crate) struct ConnectionOpacityScale(pub RwSignal<f64>);
+/// Opacity of solid connection lines.
+#[derive(Clone, Copy)]
+pub(crate) struct ConnectionSolidOpacity(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct ConnectionThicknessScale(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
@@ -403,8 +409,12 @@ struct SettingsV2 {
     show_far_zoom_territory_tags: bool,
     thick_cooldown_borders: bool,
     bold_connections: bool,
+    #[serde(default)]
+    connection_style: ConnectionStyle,
     #[serde(default = "default_connection_opacity_scale")]
     connection_opacity_scale: f64,
+    #[serde(default = "default_connection_solid_opacity")]
+    connection_solid_opacity: f64,
     #[serde(default = "default_connection_thickness_scale")]
     connection_thickness_scale: f64,
     sidebar_open: bool,
@@ -511,6 +521,10 @@ const fn default_connection_opacity_scale() -> f64 {
     DEFAULT_CONNECTION_OPACITY_SCALE
 }
 
+const fn default_connection_solid_opacity() -> f64 {
+    DEFAULT_CONNECTION_SOLID_OPACITY
+}
+
 const fn default_connection_thickness_scale() -> f64 {
     DEFAULT_CONNECTION_THICKNESS_SCALE
 }
@@ -555,6 +569,9 @@ pub(crate) const DEFAULT_CONNECTION_OPACITY_SCALE: f64 = 1.0;
 pub(crate) const DEFAULT_CONNECTION_THICKNESS_SCALE: f64 = 1.0;
 pub(crate) const CONNECTION_OPACITY_SCALE_MIN: f64 = 0.60;
 pub(crate) const CONNECTION_OPACITY_SCALE_MAX: f64 = 2.50;
+pub(crate) const DEFAULT_CONNECTION_SOLID_OPACITY: f64 = 1.0;
+pub(crate) const CONNECTION_SOLID_OPACITY_MIN: f64 = 0.20;
+pub(crate) const CONNECTION_SOLID_OPACITY_MAX: f64 = 1.0;
 pub(crate) const CONNECTION_THICKNESS_SCALE_MIN: f64 = 0.70;
 pub(crate) const CONNECTION_THICKNESS_SCALE_MAX: f64 = 2.50;
 // Exact decimal twins of the renderer's `f32` bounds, so the slider snaps to its steps.
@@ -576,7 +593,17 @@ pub(crate) const PLAYER_HEAD_SIZE_MAX: f64 = 48.0;
 pub(crate) const DEFAULT_PLAYER_HEAD_SIZE: f64 = 20.0;
 
 pub(crate) fn clamp_connection_opacity_scale(value: f64) -> f64 {
+    if value.is_nan() {
+        return DEFAULT_CONNECTION_OPACITY_SCALE;
+    }
     value.clamp(CONNECTION_OPACITY_SCALE_MIN, CONNECTION_OPACITY_SCALE_MAX)
+}
+
+pub(crate) fn clamp_connection_solid_opacity(value: f64) -> f64 {
+    if value.is_nan() {
+        return DEFAULT_CONNECTION_SOLID_OPACITY;
+    }
+    value.clamp(CONNECTION_SOLID_OPACITY_MIN, CONNECTION_SOLID_OPACITY_MAX)
 }
 
 /// Guards `NaN` like the head size: a hand-edited blob must not hide the highlight.
@@ -591,6 +618,9 @@ pub(crate) fn clamp_resource_highlight_opacity(value: f64) -> f64 {
 }
 
 pub(crate) fn clamp_connection_thickness_scale(value: f64) -> f64 {
+    if value.is_nan() {
+        return DEFAULT_CONNECTION_THICKNESS_SCALE;
+    }
     value.clamp(
         CONNECTION_THICKNESS_SCALE_MIN,
         CONNECTION_THICKNESS_SCALE_MAX,
@@ -629,7 +659,9 @@ impl Default for SettingsV2 {
             show_far_zoom_territory_tags: true,
             thick_cooldown_borders: true,
             bold_connections: false,
+            connection_style: ConnectionStyle::Classic,
             connection_opacity_scale: default_connection_opacity_scale(),
+            connection_solid_opacity: default_connection_solid_opacity(),
             connection_thickness_scale: default_connection_thickness_scale(),
             sidebar_open: false,
             war_panel_open: true,
@@ -763,7 +795,9 @@ impl From<LegacySettings> for SettingsV2 {
             show_far_zoom_territory_tags: true,
             thick_cooldown_borders: value.thick_cooldown_borders,
             bold_connections: value.bold_connections,
+            connection_style: ConnectionStyle::Classic,
             connection_opacity_scale: default_connection_opacity_scale(),
+            connection_solid_opacity: default_connection_solid_opacity(),
             connection_thickness_scale: default_connection_thickness_scale(),
             sidebar_open: value.sidebar_open,
             war_panel_open: true,
@@ -832,6 +866,7 @@ use crate::viewport::Viewport;
 use crate::warcontroller;
 use sequoia_browser_map::live_feed::{self, LiveFeed};
 use sequoia_browser_map::{BrowserMap, HeatLayer, MapCanvas, MapEvent, MapInputs};
+pub(crate) use sequoia_map_engine::settings::ConnectionStyle;
 use sequoia_map_engine::settings::{LabelScales, RenderSettings};
 
 /// Format a resource value for compact display (e.g. 9000 -> "9.0k").
@@ -931,8 +966,12 @@ pub fn MapPage() -> impl IntoView {
         RwSignal::new(saved.show_far_zoom_territory_tags);
     let thick_cooldown_borders: RwSignal<bool> = RwSignal::new(saved.thick_cooldown_borders);
     let bold_connections: RwSignal<bool> = RwSignal::new(saved.bold_connections);
+    let connection_style: RwSignal<ConnectionStyle> = RwSignal::new(saved.connection_style);
     let connection_opacity_scale: RwSignal<f64> = RwSignal::new(clamp_connection_opacity_scale(
         saved.connection_opacity_scale,
+    ));
+    let connection_solid_opacity: RwSignal<f64> = RwSignal::new(clamp_connection_solid_opacity(
+        saved.connection_solid_opacity,
     ));
     let connection_thickness_scale: RwSignal<f64> = RwSignal::new(
         clamp_connection_thickness_scale(saved.connection_thickness_scale),
@@ -1088,8 +1127,10 @@ pub fn MapPage() -> impl IntoView {
         defense_highlight: defense_highlight.get(),
         fill_alpha_boost: 0.0,
         show_connections: show_connections.get(),
+        connection_style: connection_style.get(),
         bold_connections: bold_connections.get(),
         connection_opacity_scale: connection_opacity_scale.get() as f32,
+        connection_solid_opacity: connection_solid_opacity.get() as f32,
         connection_thickness_scale: connection_thickness_scale.get() as f32,
         connection_zoom_fade: (0.15, 0.45),
         show_names: show_names.get(),
@@ -1170,7 +1211,9 @@ pub fn MapPage() -> impl IntoView {
     provide_context(ShowFarZoomTerritoryTags(show_far_zoom_territory_tags));
     provide_context(ThickCooldownBorders(thick_cooldown_borders));
     provide_context(BoldConnections(bold_connections));
+    provide_context(ConnectionStyleSetting(connection_style));
     provide_context(ConnectionOpacityScale(connection_opacity_scale));
+    provide_context(ConnectionSolidOpacity(connection_solid_opacity));
     provide_context(ConnectionThicknessScale(connection_thickness_scale));
     provide_context(ResourceHighlight(resource_highlight));
     provide_context(ResourceHighlightOpacity(resource_highlight_opacity));
@@ -1347,8 +1390,12 @@ pub fn MapPage() -> impl IntoView {
         show_far_zoom_territory_tags.set(defaults.show_far_zoom_territory_tags);
         thick_cooldown_borders.set(defaults.thick_cooldown_borders);
         bold_connections.set(defaults.bold_connections);
+        connection_style.set(defaults.connection_style);
         connection_opacity_scale.set(clamp_connection_opacity_scale(
             defaults.connection_opacity_scale,
+        ));
+        connection_solid_opacity.set(clamp_connection_solid_opacity(
+            defaults.connection_solid_opacity,
         ));
         connection_thickness_scale.set(clamp_connection_thickness_scale(
             defaults.connection_thickness_scale,
@@ -1894,8 +1941,12 @@ pub fn MapPage() -> impl IntoView {
             show_far_zoom_territory_tags: show_far_zoom_territory_tags.get(),
             thick_cooldown_borders: thick_cooldown_borders.get(),
             bold_connections: bold_connections.get(),
+            connection_style: connection_style.get(),
             connection_opacity_scale: clamp_connection_opacity_scale(
                 connection_opacity_scale.get(),
+            ),
+            connection_solid_opacity: clamp_connection_solid_opacity(
+                connection_solid_opacity.get(),
             ),
             connection_thickness_scale: clamp_connection_thickness_scale(
                 connection_thickness_scale.get(),
@@ -3411,6 +3462,12 @@ fn TerritoryPeekCard() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
+        CONNECTION_SOLID_OPACITY_MAX, CONNECTION_SOLID_OPACITY_MIN, CONNECTION_THICKNESS_SCALE_MAX,
+        ConnectionStyle, DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_SOLID_OPACITY,
+        DEFAULT_CONNECTION_THICKNESS_SCALE, clamp_connection_opacity_scale,
+        clamp_connection_solid_opacity, clamp_connection_thickness_scale,
+    };
+    use super::{
         DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_SIDEBAR_WIDTH,
         DEFAULT_WAR_PANEL_WIDTH, LegacySettings, MapMode, NameColor, PLAYER_HEAD_SIZE_MAX,
         PLAYER_HEAD_SIZE_MIN, RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN,
@@ -3479,6 +3536,68 @@ mod tests {
         let round_trip: SettingsV2 =
             serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
         assert_eq!(round_trip.resource_highlight_opacity, 0.8);
+    }
+
+    #[test]
+    fn saved_connection_preferences_keep_the_classic_look() {
+        // Saved before connection styles existed: classic, with the old choices intact.
+        let old: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "bold_connections": true,
+            "connection_opacity_scale": 1.8,
+            "connection_thickness_scale": 0.9,
+        }))
+        .unwrap();
+        assert_eq!(old.connection_style, ConnectionStyle::Classic);
+        assert!(old.bold_connections);
+        assert_eq!(old.connection_opacity_scale, 1.8);
+        assert_eq!(old.connection_thickness_scale, 0.9);
+        assert_eq!(
+            old.connection_solid_opacity,
+            DEFAULT_CONNECTION_SOLID_OPACITY
+        );
+        assert_eq!(
+            SettingsV2::from(LegacySettings::default()).connection_style,
+            ConnectionStyle::Classic
+        );
+
+        let saved = SettingsV2 {
+            connection_style: ConnectionStyle::Guild,
+            connection_solid_opacity: 0.6,
+            ..SettingsV2::default()
+        };
+        let json = serde_json::to_value(&saved).unwrap();
+        assert_eq!(json["connection_style"], "Guild");
+        let round_trip: SettingsV2 = serde_json::from_value(json).unwrap();
+        assert_eq!(round_trip.connection_style, ConnectionStyle::Guild);
+        assert_eq!(round_trip.connection_solid_opacity, 0.6);
+    }
+
+    #[test]
+    fn connection_clamps_hold_their_bounds_and_survive_nan() {
+        assert_eq!(
+            clamp_connection_solid_opacity(f64::NAN),
+            DEFAULT_CONNECTION_SOLID_OPACITY
+        );
+        assert_eq!(
+            clamp_connection_solid_opacity(0.0),
+            CONNECTION_SOLID_OPACITY_MIN
+        );
+        assert_eq!(
+            clamp_connection_solid_opacity(3.0),
+            CONNECTION_SOLID_OPACITY_MAX
+        );
+        assert_eq!(
+            clamp_connection_opacity_scale(f64::NAN),
+            DEFAULT_CONNECTION_OPACITY_SCALE
+        );
+        assert_eq!(
+            clamp_connection_thickness_scale(f64::NAN),
+            DEFAULT_CONNECTION_THICKNESS_SCALE
+        );
+        assert_eq!(
+            clamp_connection_thickness_scale(9.0),
+            CONNECTION_THICKNESS_SCALE_MAX
+        );
     }
 
     #[test]
