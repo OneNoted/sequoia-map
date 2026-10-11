@@ -8,6 +8,7 @@ pub mod colors;
 pub mod connections;
 pub mod defense;
 pub mod gesture;
+pub mod heat;
 pub mod label_layout;
 pub mod map_markers;
 pub mod minimap;

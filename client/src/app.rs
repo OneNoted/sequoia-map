@@ -7,6 +7,7 @@ use wasm_bindgen::JsCast;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub(crate) const DEFAULT_SIDEBAR_WIDTH: f64 = 420.0;
 pub(crate) const SIDEBAR_WIDTH_MIN: f64 = 320.0;
@@ -245,8 +246,9 @@ pub(crate) struct HeatHistoryBasisSetting(pub RwSignal<HeatHistoryBasis>);
 pub(crate) struct HeatSelectedSeasonId(pub RwSignal<Option<i32>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HeatEntriesByTerritory(pub RwSignal<HashMap<String, u64>>);
+/// How heat mode ranks capture counts, for its legend.
 #[derive(Clone, Copy)]
-pub(crate) struct HeatMaxTakeCount(pub RwSignal<u64>);
+pub(crate) struct HeatScaleSignal(pub Signal<Arc<HeatScale>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HeatFallbackApplied(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -867,6 +869,7 @@ use crate::viewport::Viewport;
 use crate::warcontroller;
 use sequoia_browser_map::live_feed::{self, LiveFeed};
 use sequoia_browser_map::{BrowserMap, HeatLayer, MapCanvas, MapEvent, MapInputs};
+use sequoia_map_engine::heat::HeatScale;
 pub(crate) use sequoia_map_engine::settings::ConnectionStyle;
 use sequoia_map_engine::settings::{LabelScales, RenderSettings};
 
@@ -1056,7 +1059,6 @@ pub fn MapPage() -> impl IntoView {
     let heat_selected_season_id: RwSignal<Option<i32>> =
         RwSignal::new(saved.heat_selected_season_id);
     let heat_entries_by_territory: RwSignal<HashMap<String, u64>> = RwSignal::new(HashMap::new());
-    let heat_max_take_count: RwSignal<u64> = RwSignal::new(0);
     let heat_fallback_applied: RwSignal<bool> = RwSignal::new(false);
     let heat_window_label: RwSignal<String> = RwSignal::new(String::new());
     let heat_meta: RwSignal<Option<HistoryHeatMeta>> = RwSignal::new(None);
@@ -1171,6 +1173,11 @@ pub fn MapPage() -> impl IntoView {
             MapMode::Live => MINIMAP_LIVE_INSET,
         })
     });
+    let heat_layer = HeatLayer::new(
+        heat_mode_enabled.into(),
+        heat_entries_by_territory.into(),
+        territories.into(),
+    );
     let map = BrowserMap::new(
         MapInputs {
             territories: territories.into(),
@@ -1180,11 +1187,7 @@ pub fn MapPage() -> impl IntoView {
             clock_secs: map_clock.into(),
             // Paused history holds `map_clock` still; cooldown pulses keep animating.
             animation_tick: Some(tick.into()),
-            heat: Some(HeatLayer {
-                enabled: heat_mode_enabled.into(),
-                take_counts: heat_entries_by_territory.into(),
-                max_take_count: heat_max_take_count.into(),
-            }),
+            heat: Some(heat_layer),
             wars: Some(war_outlines.into()),
             minimap_inset: minimap_inset.into(),
             edit: Signal::stored(Default::default()),
@@ -1370,7 +1373,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(HeatHistoryBasisSetting(heat_history_basis));
     provide_context(HeatSelectedSeasonId(heat_selected_season_id));
     provide_context(HeatEntriesByTerritory(heat_entries_by_territory));
-    provide_context(HeatMaxTakeCount(heat_max_take_count));
+    provide_context(HeatScaleSignal(heat_layer.scale()));
     provide_context(HeatFallbackApplied(heat_fallback_applied));
     provide_context(HeatWindowLabel(heat_window_label));
     provide_context(HeatMetaState(heat_meta));
@@ -1661,7 +1664,6 @@ pub fn MapPage() -> impl IntoView {
                             .map(|entry| (entry.territory.clone(), entry.take_count))
                             .collect();
                         heat_entries_by_territory.set(entries_map);
-                        heat_max_take_count.set(payload.max_take_count);
                         heat_fallback_applied.set(payload.fallback_applied);
                         heat_window_label.set(format_heat_window_label(&payload, mode_now));
                     }
@@ -1671,7 +1673,6 @@ pub fn MapPage() -> impl IntoView {
                         }
                         web_sys::console::warn_1(&format!("heat fetch failed: {e}").into());
                         heat_entries_by_territory.set(HashMap::new());
-                        heat_max_take_count.set(0);
                         heat_fallback_applied.set(false);
                         heat_window_label.set(String::new());
                     }
@@ -1690,7 +1691,6 @@ pub fn MapPage() -> impl IntoView {
         move || {
             if !heat_mode_enabled.get() {
                 heat_entries_by_territory.set(HashMap::new());
-                heat_max_take_count.set(0);
                 heat_fallback_applied.set(false);
                 heat_window_label.set(String::new());
                 return;
@@ -2691,25 +2691,62 @@ pub fn MapPage() -> impl IntoView {
 }
 
 /// Colour scale for heat mode, over the top-left of the map.
+///
+/// Heat colours rank territories by their counts rather than scale the counts (see
+/// [`HeatScale`]), so the bar is labelled with the counts at each quarter of the ranked
+/// territories, which are not evenly spaced counts, each under the colour it renders.
 #[component]
 fn HeatLegend() -> impl IntoView {
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
-    let HeatMaxTakeCount(heat_max_take_count) = expect_context();
+    let HeatScaleSignal(heat_scale) = expect_context();
     let HeatWindowLabel(heat_window_label) = expect_context();
 
     move || {
         if !heat_mode_enabled.get() {
             return ().into_any();
         }
-        let max_count = heat_max_take_count.get();
+        let scale = heat_scale.get();
+        let stops = heat_legend_stops(&scale);
+        let rows = heat_legend_rows(&stops);
+        let row_count = rows.iter().max().map_or(1, |row| row + 1);
+        let uniform = stops.len() == 1;
+        let labels = stops
+            .into_iter()
+            .zip(rows)
+            .map(|((share, count), row)| {
+                // The label's own point at the same share sits on its colour, so labels at the
+                // ends stay inside the bar and one in the middle centres.
+                let percent = share * 100.0;
+                let top = row as f64 * HEAT_LEGEND_ROW_REM;
+                let style = format!(
+                    "position: absolute; left: {percent}%; top: {top}rem; transform: translateX(-{percent}%); white-space: nowrap;"
+                );
+                view! { <span style=style>{count}</span> }
+            })
+            .collect_view();
+        let label_rows_height = format!("{}rem", row_count as f64 * HEAT_LEGEND_ROW_REM);
+        let caption = match scale.len() {
+            0 => "No captures in this period".to_string(),
+            1 => "1 territory taken".to_string(),
+            ranked if uniform => format!("All {ranked} territories taken alike"),
+            ranked => format!("Quartiles of {ranked} territories taken"),
+        };
         let label = heat_window_label.get();
         view! {
             <div style="position: absolute; top: calc(var(--nav-height, 0px) + 16px); left: 16px; z-index: 22; pointer-events: none; background: rgba(10,12,20,0.82); border: 1px solid rgba(245,197,66,0.25); border-radius: 6px; padding: 8px 10px; min-width: 172px;">
                 <div style="font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); margin-bottom: 5px;">"Heat"</div>
                 <div style="height: 8px; border-radius: 0; background: linear-gradient(90deg, #1e50dc 0%, #28c8f0 25%, #f5dc46 50%, #f58c32 75%, #dc2823 100%);" />
-                <div style="margin-top: 6px; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);">
-                    <span>"Low"</span>
-                    <span>{format!("Max {max_count}")}</span>
+                <div
+                    style="position: relative; margin-top: 5px; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);"
+                    style:height=label_rows_height
+                    // Label boxes are a line high, a little less than a row, so stacked labels
+                    // never touch.
+                    style:line-height=format!("{HEAT_LEGEND_LINE_REM}rem")
+                >
+                    {labels}
+                </div>
+                <div style="margin-top: 3px; font-family: var(--font-mono); font-size: 0.6rem; color: var(--color-text-secondary);">
+                    {caption}
                 </div>
                 <div style="margin-top: 4px; font-family: var(--font-mono); font-size: 0.6rem; color: #6f748f; line-height: 1.25;">
                     {label}
@@ -2717,6 +2754,67 @@ fn HeatLegend() -> impl IntoView {
             </div>
         }
         .into_any()
+    }
+}
+
+/// The legend's labels as (share of the bar, count): the counts at 0, 25, 50, 75 and 100% of
+/// the ranked territories, each once and at the share the map colours it with. Tied counts
+/// can fill several quarters, and all of them render at the share of their last territory, so
+/// a uniform period is one label at the red end. None without captures.
+fn heat_legend_stops(scale: &HeatScale) -> Vec<(f64, String)> {
+    let mut counts: Vec<u64> = [0.0, 0.25, 0.5, 0.75, 1.0]
+        .into_iter()
+        .filter_map(|share| scale.count_at(share))
+        .collect();
+    // Ascending, so repeats are neighbours.
+    counts.dedup();
+    counts
+        .into_iter()
+        .map(|count| (scale.intensity(count), format_heat_count(count)))
+        .collect()
+}
+
+/// Height of one row of legend labels.
+const HEAT_LEGEND_ROW_REM: f64 = 0.9;
+/// Line height of a legend label: its box, which must fit inside a row.
+const HEAT_LEGEND_LINE_REM: f64 = 0.8;
+const _: () = assert!(HEAT_LEGEND_LINE_REM < HEAT_LEGEND_ROW_REM);
+/// The legend's bar in label characters, at its narrowest: 172 px less 20 px of padding, at
+/// about 5.2 px per character of the monospace labels (0.6 of 0.62rem, at the map's 14 px
+/// root size).
+const HEAT_LEGEND_BAR_CHARS: f64 = 29.0;
+
+/// A row for each of the legend's labels, in bar order. Labels keep their positions; each goes
+/// on the first row where it clears the last label by a character, and on a new row below
+/// when none has room, as when nearly every territory shares one count and the next is at the
+/// red end. A label at share `s` is shifted back by `s` of its own width, so in characters it
+/// spans `s * (bar - len)` to that plus `len`.
+fn heat_legend_rows(stops: &[(f64, String)]) -> Vec<usize> {
+    let mut row_ends: Vec<f64> = Vec::new();
+    stops
+        .iter()
+        .map(|(share, label)| {
+            let len = label.chars().count() as f64;
+            let start = share * (HEAT_LEGEND_BAR_CHARS - len);
+            let row = row_ends
+                .iter()
+                .position(|&end| start - end >= 1.0)
+                .unwrap_or_else(|| {
+                    row_ends.push(0.0);
+                    row_ends.len() - 1
+                });
+            row_ends[row] = start + len;
+            row
+        })
+        .collect()
+}
+
+/// Exact below ten thousand, then thousands to one decimal ("44.2k").
+fn format_heat_count(count: u64) -> String {
+    if count < 10_000 {
+        count.to_string()
+    } else {
+        format!("{:.1}k", count as f64 / 1000.0)
     }
 }
 
@@ -3537,6 +3635,9 @@ mod tests {
         clamp_resource_highlight_opacity, clamp_sidebar_width, clamp_war_panel_width,
         map_mode_from_path, normalize_heat_selected_season_id, should_wait_for_history_probe,
     };
+    use super::{
+        HEAT_LEGEND_BAR_CHARS, HeatScale, format_heat_count, heat_legend_rows, heat_legend_stops,
+    };
     use super::{SHEET_DISMISS_DRAG_PX, SheetDrag, sidebar_transform};
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
 
@@ -3715,6 +3816,143 @@ mod tests {
         assert!(defaults.player_head_render_head);
         assert!(!defaults.player_head_render_label);
         assert_eq!(defaults.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
+    }
+
+    #[test]
+    fn heat_legend_labels_the_uneven_quartile_counts_of_a_skewed_period() {
+        let ordinary = [10, 20, 30, 40, 50]
+            .into_iter()
+            .flat_map(|level| [level; 8]);
+        let scale = HeatScale::new(ordinary.chain([200]));
+        let stops = heat_legend_stops(&scale);
+        let labels: Vec<&str> = stops.iter().map(|(_, label)| label.as_str()).collect();
+        assert_eq!(labels, ["10", "20", "30", "40", "200"]);
+        // Eight of 41 territories at each ordinary level, one at 200.
+        let shares: Vec<f64> = stops.iter().map(|(share, _)| *share).collect();
+        assert_eq!(shares, [8.0, 16.0, 24.0, 32.0, 41.0].map(|at| at / 41.0));
+    }
+
+    #[test]
+    fn heat_legend_puts_a_single_or_uniform_count_where_it_renders() {
+        for scale in [HeatScale::new([7; 12]), HeatScale::new([0, 7, 0])] {
+            let stops = heat_legend_stops(&scale);
+            assert_eq!(stops, [(1.0, "7".to_string())]);
+            // The stop sits where the map colours that count.
+            assert_eq!(scale.intensity(7), stops[0].0);
+        }
+        assert!(heat_legend_stops(&HeatScale::new([0, 0])).is_empty());
+        assert!(heat_legend_stops(&HeatScale::new([])).is_empty());
+    }
+
+    #[test]
+    fn heat_legend_labels_a_tied_count_once_at_the_colour_it_renders() {
+        // Three territories at 1 fill the first three quarters; all render at 0.75.
+        assert_eq!(
+            heat_legend_stops(&HeatScale::new([1, 1, 1, 2])),
+            [(0.75, "1".to_string()), (1.0, "2".to_string())]
+        );
+        // A large tie in the middle is one label, at 25 of 30 territories.
+        let middle = HeatScale::new([1; 5].into_iter().chain([2; 20]).chain([3; 5]));
+        assert_eq!(
+            heat_legend_stops(&middle),
+            [
+                (5.0 / 30.0, "1".to_string()),
+                (25.0 / 30.0, "2".to_string()),
+                (1.0, "3".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn heat_legend_labels_each_count_once_where_the_map_colours_it() {
+        let periods: [&[u64]; 6] = [
+            &[1, 1, 1, 2],
+            &[5, 5, 9],
+            &[3, 3, 3, 3, 8, 8, 8, 8, 13],
+            &[0, 0, 4, 4, 4, 6],
+            &[2, 7, 7, 7, 7, 7, 7, 7, 11, 40],
+            &[4, 16, 16, 31, 51, 51, 51, 209],
+        ];
+        for counts in periods {
+            let scale = HeatScale::new(counts.iter().copied());
+            let stops = heat_legend_stops(&scale);
+            let mut previous: Option<f64> = None;
+            for (share, label) in &stops {
+                let count: u64 = label.parse().expect("exact below ten thousand");
+                assert_eq!(scale.intensity(count), *share, "{counts:?}: {label}");
+                assert!(previous.is_none_or(|p| p < *share), "{counts:?}: {stops:?}");
+                previous = Some(*share);
+            }
+            assert_eq!(
+                stops.last().map(|(share, _)| *share),
+                Some(1.0),
+                "{counts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn heat_legend_staggers_a_count_that_would_touch_its_neighbour() {
+        // Ninety-nine territories at 1 and one at 2: distinct counts at 0.99 and 1.
+        let concentrated = HeatScale::new([1; 99].into_iter().chain([2]));
+        let stops = heat_legend_stops(&concentrated);
+        assert_eq!(stops, [(0.99, "1".to_string()), (1.0, "2".to_string())]);
+        assert_eq!(heat_legend_rows(&stops), [0, 1]);
+    }
+
+    #[test]
+    fn heat_legend_keeps_spread_labels_on_one_row() {
+        let season = [4, 16, 31, 51, 209].map(|count| count.to_string());
+        let stops: Vec<(f64, String)> = [0.014, 0.263, 0.503, 0.753, 1.0]
+            .into_iter()
+            .zip(season)
+            .collect();
+        assert_eq!(heat_legend_rows(&stops), [0; 5]);
+        assert_eq!(heat_legend_rows(&[(1.0, "7".to_string())]), [0]);
+        assert!(heat_legend_rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn heat_legend_labels_on_one_row_never_touch() {
+        let periods: [Vec<u64>; 4] = [
+            [1; 99].into_iter().chain([2]).collect(),
+            [1].into_iter().chain([2; 98]).chain([3]).collect(),
+            // Long labels bunched around the first quarter.
+            [9_999; 24]
+                .into_iter()
+                .chain([10_000])
+                .chain([12_500; 25])
+                .chain([30_000; 25])
+                .chain([44_167; 25])
+                .collect(),
+            [744, 2_246, 2_246, 3_280, 6_156, 6_156, 44_167].to_vec(),
+        ];
+        for counts in periods {
+            let stops = heat_legend_stops(&HeatScale::new(counts.iter().copied()));
+            let rows = heat_legend_rows(&stops);
+            for row in 0..stops.len() {
+                let mut end: Option<f64> = None;
+                for ((share, label), _) in stops.iter().zip(&rows).filter(|(_, r)| **r == row) {
+                    let len = label.len() as f64;
+                    let start = share * (HEAT_LEGEND_BAR_CHARS - len);
+                    assert!(
+                        end.is_none_or(|end| start - end >= 1.0),
+                        "{stops:?} {rows:?}"
+                    );
+                    end = Some(start + len);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn heat_counts_are_exact_until_ten_thousand() {
+        assert_eq!(format_heat_count(9_999), "9999");
+        assert_eq!(format_heat_count(44_167), "44.2k");
+        assert_eq!(
+            format_heat_count(u64::MAX),
+            format!("{:.1}k", u64::MAX as f64 / 1000.0)
+        );
     }
 
     #[test]
