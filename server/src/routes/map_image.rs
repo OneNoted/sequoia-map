@@ -9,7 +9,7 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 
 use super::http_util::if_none_match_matches;
@@ -48,6 +48,16 @@ async fn map_image(
     query: Result<Query<ImageQuery>, QueryRejection>,
     request_headers: &HeaderMap,
 ) -> Response {
+    map_image_at(state, format, query, request_headers, Utc::now()).await
+}
+
+async fn map_image_at(
+    state: &AppState,
+    format: ImageFormat,
+    query: Result<Query<ImageQuery>, QueryRejection>,
+    request_headers: &HeaderMap,
+    now: DateTime<Utc>,
+) -> Response {
     let spec = match query
         .map_err(|_| InvalidWidth)
         .and_then(|Query(query)| ImageSpec::new(format, query.width))
@@ -66,7 +76,7 @@ async fn map_image(
                 Some("10"),
             );
         }
-        let scene = MapScene::new(&snapshot.territories, Utc::now());
+        let scene = MapScene::new(&snapshot.territories, now);
         let etag = state.map_images.etag(&scene, spec);
         let headers = metadata_headers(snapshot.seq, &snapshot.timestamp, &scene, etag);
         (scene, headers)
@@ -151,12 +161,15 @@ fn plain(status: StatusCode, message: &str, retry_after: Option<&'static str>) -
 #[cfg(test)]
 mod tests {
     use axum::body::{self, Body};
-    use axum::http::{Request, StatusCode, header};
-    use chrono::{TimeDelta, Utc};
+    use axum::extract::State;
+    use axum::http::{HeaderMap, Request, StatusCode, header};
+    use axum::response::Response;
+    use chrono::{DateTime, TimeDelta, Utc};
     use sequoia_shared::{GuildRef, Region, Territory, TerritoryMap, TerritoryRuntimeData};
     use tower::util::ServiceExt;
 
-    use crate::map_image::MapImages;
+    use super::map_image_at;
+    use crate::map_image::{ImageFormat, MapImages};
     use crate::state::AppState;
 
     const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../client/public");
@@ -169,7 +182,7 @@ mod tests {
                 prefix: prefix.to_string(),
                 color: Some((80, 160, 240)),
             },
-            acquired: Utc::now() - TimeDelta::hours(5),
+            acquired: fixed_time() - TimeDelta::hours(5),
             location: Region {
                 start,
                 end: [start[0] + 180, start[1] + 140],
@@ -206,6 +219,39 @@ mod tests {
         ])
     }
 
+    fn fixed_time() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-10-11T19:25:00Z")
+            .expect("fixture time")
+            .to_utc()
+    }
+
+    async fn get_at(
+        state: &AppState,
+        uri: &str,
+        etag: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Response {
+        let mut request = Request::builder().uri(uri);
+        if let Some(etag) = etag {
+            request = request.header(header::IF_NONE_MATCH, etag);
+        }
+        // Exercise the same HTTP extraction and response contract with a controlled
+        // clock; a slow image render must not make cache assertions cross a minute.
+        axum::Router::new()
+            .route(
+                "/api/live/map.webp",
+                axum::routing::get(
+                    move |State(state): State<AppState>, query, headers: HeaderMap| async move {
+                        map_image_at(&state, ImageFormat::Webp, query, &headers, now).await
+                    },
+                ),
+            )
+            .with_state(state.clone())
+            .oneshot(request.body(Body::empty()).expect("request"))
+            .await
+            .expect("response")
+    }
+
     async fn get(state: &AppState, uri: &str, etag: Option<&str>) -> axum::response::Response {
         let mut request = Request::builder().uri(uri);
         if let Some(etag) = etag {
@@ -235,7 +281,7 @@ mod tests {
     async fn webp_export_carries_snapshot_metadata_and_revalidates() {
         let state = state_with(ragni_and_detlas(), 41).await;
 
-        let first = get(&state, "/api/live/map.webp?width=800", None).await;
+        let first = get_at(&state, "/api/live/map.webp?width=800", None, fixed_time()).await;
 
         assert_eq!(first.status(), StatusCode::OK);
         assert_eq!(header_value(&first, "content-type"), "image/webp");
@@ -252,7 +298,13 @@ mod tests {
         let body = body_bytes(first).await;
         assert_eq!((&body[..4], &body[8..12]), (&b"RIFF"[..], &b"WEBP"[..]));
 
-        let revalidated = get(&state, "/api/live/map.webp?width=800", Some(&etag)).await;
+        let revalidated = get_at(
+            &state,
+            "/api/live/map.webp?width=800",
+            Some(&etag),
+            fixed_time(),
+        )
+        .await;
 
         assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(header_value(&revalidated, "etag"), etag);
@@ -263,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_only_update_keeps_the_image_with_fresh_metadata() {
         let state = state_with(ragni_and_detlas(), 7).await;
-        let first = get(&state, "/api/live/map.webp?width=800", None).await;
+        let first = get_at(&state, "/api/live/map.webp?width=800", None, fixed_time()).await;
         let etag = header_value(&first, "etag").to_string();
         let mut updated = ragni_and_detlas();
         if let Some(ragni) = updated.get_mut("Ragni") {
@@ -274,7 +326,13 @@ mod tests {
         }
         set_snapshot(&state, updated, 8).await;
 
-        let revalidated = get(&state, "/api/live/map.webp?width=800", Some(&etag)).await;
+        let revalidated = get_at(
+            &state,
+            "/api/live/map.webp?width=800",
+            Some(&etag),
+            fixed_time(),
+        )
+        .await;
 
         assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(header_value(&revalidated, "etag"), etag);
@@ -284,7 +342,7 @@ mod tests {
     #[tokio::test]
     async fn ownership_change_replaces_the_image() {
         let state = state_with(ragni_and_detlas(), 7).await;
-        let first = get(&state, "/api/live/map.webp?width=800", None).await;
+        let first = get_at(&state, "/api/live/map.webp?width=800", None, fixed_time()).await;
         let etag = header_value(&first, "etag").to_string();
         let mut updated = ragni_and_detlas();
         updated.insert(
@@ -293,11 +351,40 @@ mod tests {
         );
         set_snapshot(&state, updated, 9).await;
 
-        let changed = get(&state, "/api/live/map.webp?width=800", Some(&etag)).await;
+        let changed = get_at(
+            &state,
+            "/api/live/map.webp?width=800",
+            Some(&etag),
+            fixed_time(),
+        )
+        .await;
 
         assert_eq!(changed.status(), StatusCode::OK);
         assert_ne!(header_value(&changed, "etag"), etag);
         assert_eq!(header_value(&changed, "x-map-seq"), "9");
+    }
+
+    #[tokio::test]
+    async fn minute_rollover_replaces_the_image_with_fresh_hold_times() {
+        let state = state_with(ragni_and_detlas(), 7).await;
+        let first = get_at(&state, "/api/live/map.webp?width=800", None, fixed_time()).await;
+        let etag = header_value(&first, "etag").to_string();
+
+        let changed = get_at(
+            &state,
+            "/api/live/map.webp?width=800",
+            Some(&etag),
+            fixed_time() + TimeDelta::minutes(1),
+        )
+        .await;
+
+        assert_eq!(changed.status(), StatusCode::OK);
+        assert_ne!(header_value(&changed, "etag"), etag);
+        assert_eq!(
+            header_value(&changed, "x-map-as-of"),
+            "2026-10-11T19:26:00Z"
+        );
+        assert_eq!(header_value(&changed, "x-map-seq"), "7");
     }
 
     #[tokio::test]
