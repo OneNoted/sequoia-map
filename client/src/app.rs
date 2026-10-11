@@ -2694,7 +2694,7 @@ pub fn MapPage() -> impl IntoView {
 ///
 /// Heat colours rank territories by their counts rather than scale the counts (see
 /// [`HeatScale`]), so the bar is labelled with the counts at each quarter of the ranked
-/// territories, which are not evenly spaced counts.
+/// territories, which are not evenly spaced counts, each under the colour it renders.
 #[component]
 fn HeatLegend() -> impl IntoView {
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
@@ -2711,17 +2711,11 @@ fn HeatLegend() -> impl IntoView {
         let labels = stops
             .into_iter()
             .map(|(share, count)| {
-                // The ends align inside the bar; the quartiles centre on their stop.
-                let shift = if share <= 0.0 {
-                    0
-                } else if share >= 1.0 {
-                    100
-                } else {
-                    50
-                };
+                // The label's own point at the same share sits on its colour, so labels at the
+                // ends stay inside the bar and one in the middle centres.
+                let percent = share * 100.0;
                 let style = format!(
-                    "position: absolute; left: {}%; transform: translateX(-{shift}%); white-space: nowrap;",
-                    share * 100.0
+                    "position: absolute; left: {percent}%; transform: translateX(-{percent}%); white-space: nowrap;"
                 );
                 view! { <span style=style>{count}</span> }
             })
@@ -2752,24 +2746,21 @@ fn HeatLegend() -> impl IntoView {
     }
 }
 
-/// The legend's labelled stops as (share of the bar, count): the counts where the colours at
-/// 0, 25, 50, 75 and 100% begin. When every ranked territory has the same count they all
-/// colour as the hottest, so that count is the one stop, at the red end; none without
-/// captures.
+/// The legend's labels as (share of the bar, count): the counts at 0, 25, 50, 75 and 100% of
+/// the ranked territories, each once and at the share the map colours it with. Tied counts
+/// can fill several quarters, and all of them render at the share of their last territory, so
+/// a uniform period is one label at the red end. None without captures.
 fn heat_legend_stops(scale: &HeatScale) -> Vec<(f64, String)> {
-    let stops: Vec<(f64, u64)> = [0.0, 0.25, 0.5, 0.75, 1.0]
+    let mut counts: Vec<u64> = [0.0, 0.25, 0.5, 0.75, 1.0]
         .into_iter()
-        .filter_map(|share| scale.count_at(share).map(|count| (share, count)))
+        .filter_map(|share| scale.count_at(share))
         .collect();
-    match (stops.first(), stops.last()) {
-        (Some(&(_, low)), Some(&(_, high))) if low == high => {
-            vec![(1.0, format_heat_count(high))]
-        }
-        _ => stops
-            .into_iter()
-            .map(|(share, count)| (share, format_heat_count(count)))
-            .collect(),
-    }
+    // Ascending, so repeats are neighbours.
+    counts.dedup();
+    counts
+        .into_iter()
+        .map(|count| (scale.intensity(count), format_heat_count(count)))
+        .collect()
 }
 
 /// Exact below ten thousand, then thousands to one decimal ("44.2k").
@@ -3786,10 +3777,11 @@ mod tests {
             .flat_map(|level| [level; 8]);
         let scale = HeatScale::new(ordinary.chain([200]));
         let stops = heat_legend_stops(&scale);
-        let shares: Vec<f64> = stops.iter().map(|(share, _)| *share).collect();
         let labels: Vec<&str> = stops.iter().map(|(_, label)| label.as_str()).collect();
-        assert_eq!(shares, [0.0, 0.25, 0.5, 0.75, 1.0]);
         assert_eq!(labels, ["10", "20", "30", "40", "200"]);
+        // Eight of 41 territories at each ordinary level, one at 200.
+        let shares: Vec<f64> = stops.iter().map(|(share, _)| *share).collect();
+        assert_eq!(shares, [8.0, 16.0, 24.0, 32.0, 41.0].map(|at| at / 41.0));
     }
 
     #[test]
@@ -3805,14 +3797,49 @@ mod tests {
     }
 
     #[test]
-    fn heat_legend_stops_sit_where_their_counts_begin_to_render() {
-        let ordinary = [10, 20, 30, 40, 50]
-            .into_iter()
-            .flat_map(|level| [level; 8]);
-        let scale = HeatScale::new(ordinary.chain([200]));
-        for (share, label) in heat_legend_stops(&scale) {
-            let count: u64 = label.parse().expect("exact below ten thousand");
-            assert!(scale.intensity(count) >= share, "{label} at {share}");
+    fn heat_legend_labels_a_tied_count_once_at_the_colour_it_renders() {
+        // Three territories at 1 fill the first three quarters; all render at 0.75.
+        assert_eq!(
+            heat_legend_stops(&HeatScale::new([1, 1, 1, 2])),
+            [(0.75, "1".to_string()), (1.0, "2".to_string())]
+        );
+        // A large tie in the middle is one label, at 25 of 30 territories.
+        let middle = HeatScale::new([1; 5].into_iter().chain([2; 20]).chain([3; 5]));
+        assert_eq!(
+            heat_legend_stops(&middle),
+            [
+                (5.0 / 30.0, "1".to_string()),
+                (25.0 / 30.0, "2".to_string()),
+                (1.0, "3".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn heat_legend_labels_each_count_once_where_the_map_colours_it() {
+        let periods: [&[u64]; 6] = [
+            &[1, 1, 1, 2],
+            &[5, 5, 9],
+            &[3, 3, 3, 3, 8, 8, 8, 8, 13],
+            &[0, 0, 4, 4, 4, 6],
+            &[2, 7, 7, 7, 7, 7, 7, 7, 11, 40],
+            &[4, 16, 16, 31, 51, 51, 51, 209],
+        ];
+        for counts in periods {
+            let scale = HeatScale::new(counts.iter().copied());
+            let stops = heat_legend_stops(&scale);
+            let mut previous: Option<f64> = None;
+            for (share, label) in &stops {
+                let count: u64 = label.parse().expect("exact below ten thousand");
+                assert_eq!(scale.intensity(count), *share, "{counts:?}: {label}");
+                assert!(previous.is_none_or(|p| p < *share), "{counts:?}: {stops:?}");
+                previous = Some(*share);
+            }
+            assert_eq!(
+                stops.last().map(|(share, _)| *share),
+                Some(1.0),
+                "{counts:?}"
+            );
         }
     }
 
