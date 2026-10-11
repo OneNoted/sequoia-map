@@ -2739,6 +2739,9 @@ fn HeatLegend() -> impl IntoView {
                 <div
                     style="position: relative; margin-top: 5px; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);"
                     style:height=label_rows_height
+                    // Label boxes are a line high, a little less than a row, so stacked labels
+                    // never touch.
+                    style:line-height=format!("{HEAT_LEGEND_LINE_REM}rem")
                 >
                     {labels}
                 </div>
@@ -2773,9 +2776,13 @@ fn heat_legend_stops(scale: &HeatScale) -> Vec<(f64, String)> {
 
 /// Height of one row of legend labels.
 const HEAT_LEGEND_ROW_REM: f64 = 0.9;
+/// Line height of a legend label: its box, which must fit inside a row.
+const HEAT_LEGEND_LINE_REM: f64 = 0.8;
+const _: () = assert!(HEAT_LEGEND_LINE_REM < HEAT_LEGEND_ROW_REM);
 /// The legend's bar in label characters, at its narrowest: 172 px less 20 px of padding, at
-/// about 6 px per character of the 0.62rem monospace labels.
-const HEAT_LEGEND_BAR_CHARS: f64 = 25.0;
+/// about 5.2 px per character of the monospace labels (0.6 of 0.62rem, at the map's 14 px
+/// root size).
+const HEAT_LEGEND_BAR_CHARS: f64 = 29.0;
 
 /// A row for each of the legend's labels, in bar order. Labels keep their positions; each goes
 /// on the first row where it clears the last label by a character, and on a new row below
