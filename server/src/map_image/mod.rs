@@ -258,10 +258,14 @@ impl Shared {
     fn remember(&self, key: ImageKey, bytes: Bytes) {
         let mut cache = lock(&self.encoded);
         cache.retain(|((spec, _), _)| *spec != key.0);
+        // Serve oversized exports without retaining them: even one entry must fit
+        // the cache budget, and its superseded scene must not remain cached.
+        if bytes.len() > ENCODED_CACHE_BYTES {
+            return;
+        }
         cache.push_front((key, bytes));
         while cache.len() > ENCODED_CACHE_ENTRIES
-            || (cache.len() > 1
-                && cache.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() > ENCODED_CACHE_BYTES)
+            || cache.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() > ENCODED_CACHE_BYTES
         {
             cache.pop_back();
         }
@@ -280,6 +284,30 @@ mod tests {
     use sequoia_shared::LiveState;
 
     use super::*;
+
+    #[test]
+    fn oversized_exports_are_not_retained_or_replaced_with_a_stale_scene() {
+        let images = MapImages::new("/nonexistent-map-assets");
+        let spec = ImageSpec::new(ImageFormat::Png, None).expect("default width");
+        let other = ImageSpec::new(ImageFormat::Webp, None).expect("default width");
+        images
+            .shared
+            .remember((spec, 1), Bytes::from_static(b"older scene"));
+        images
+            .shared
+            .remember((other, 1), Bytes::from_static(b"other export"));
+
+        images
+            .shared
+            .remember((spec, 2), Bytes::from(vec![0; ENCODED_CACHE_BYTES + 1]));
+
+        assert!(images.shared.cached((spec, 2)).is_none());
+        assert!(images.shared.cached((spec, 1)).is_none());
+        assert_eq!(
+            images.shared.cached((other, 1)),
+            Some(Bytes::from_static(b"other export"))
+        );
+    }
 
     #[tokio::test]
     async fn requests_beyond_the_queue_are_turned_away_while_rendering() {
