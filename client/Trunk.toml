@@ -3,6 +3,10 @@ target = "index.html"
 dist = "dist"
 locked = true
 
+# The Binaryen release the Docker image installs (BINARYEN_VERSION).
+[tools]
+wasm_opt = "version_126"
+
 [serve]
 addresses = ["127.0.0.1"]
 port = 8081

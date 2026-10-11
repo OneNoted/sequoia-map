@@ -2113,8 +2113,13 @@ pub fn MapPage() -> impl IntoView {
                         );
                         return;
                     }
+                    // The SSE snapshot landed first, and nothing since.
+                    if feed.holds_snapshot(live_state.seq) {
+                        return;
+                    }
                     territories.set(from_snapshot(live_state.territories));
                     last_live_seq.set(Some(live_state.seq));
+                    feed.snapshot_seq.set_value(Some(live_state.seq));
                 }
                 Err(error) => {
                     web_sys::console::warn_1(

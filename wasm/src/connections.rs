@@ -1,13 +1,14 @@
 //! Connection lines between neighbouring territories: which edges are drawn, in what colour,
 //! how wide and how opaque, as world-space vertices for the renderer.
 //!
-//! Widths are CSS pixels on screen. Classic hairlines are spread in world units at the main
-//! camera's scale, so they are rebuilt whenever it changes (on the minimap's much smaller scale
-//! they collapse into a single hairline, as they always have). Solid strips instead carry
-//! their half-width as a screen-space offset that the shader adds after projecting the
-//! centreline, so the same vertices are exactly as wide under any projection: the main map at
-//! any zoom and the minimap alike, without a rebuild when the main camera zooms. The
-//! [`ConnectionStyle`]s:
+//! Widths are CSS pixels on screen. The mesh does not depend on the camera, so zooming never
+//! rebuilds or re-uploads it. Classic hairlines carry their spacing as main-map CSS pixels
+//! (`spread`), which the shader turns into world units at the main camera's scale, and their
+//! zoom fade is applied there too ([`ConnectionProjection`]); on the minimap's much smaller
+//! scale they therefore collapse into a single hairline, as they always have. Solid strips
+//! carry their half-width as a screen-space offset that the shader adds after projecting the
+//! centreline, so they are exactly as wide under any projection: the main map at any zoom and
+//! the minimap alike. The [`ConnectionStyle`]s:
 //!
 //! - Classic, the original look and the default. Each connection is a band of hairlines
 //!   (one device pixel each) 0.6 CSS px apart, 0.8 when bold, fading from the middle out:
@@ -50,10 +51,46 @@ pub struct ConnectionVertex {
     /// CSS pixels added after projecting `world`: a solid strip's half-width, zero for
     /// classic hairlines.
     pub offset: [f32; 2],
+    /// Main-map CSS pixels `world` moves by, in world units at the main camera's scale
+    /// ([`ConnectionProjection::world_per_px`]): a classic hairline's place in its band, zero
+    /// for solid strips.
+    pub spread: [f32; 2],
+    /// Classic alphas exclude the zoom fade and may exceed 1; the renderer multiplies by
+    /// [`ConnectionProjection::fade`] and then clamps.
     pub color: [f32; 4],
 }
 
-/// The connection vertices for one camera scale and set of settings.
+/// How the camera-independent mesh is drawn at one main-camera scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConnectionProjection {
+    /// World units per CSS pixel at the main camera's scale, for classic `spread`.
+    pub world_per_px: f32,
+    /// Opacity factor: classic lines fade out as the map zooms out; solid lines never do.
+    pub fade: f32,
+}
+
+impl ConnectionProjection {
+    pub fn new(settings: &RenderSettings, scale: f64) -> Self {
+        let fade = match settings.connection_style {
+            ConnectionStyle::Classic => {
+                let (from, to) = settings.connection_zoom_fade;
+                smoothstep(from, to, scale as f32)
+            }
+            ConnectionStyle::White | ConnectionStyle::Guild => 1.0,
+        };
+        Self {
+            world_per_px: (1.0 / (scale as f32).max(0.05)).min(24.0),
+            fade,
+        }
+    }
+
+    /// Whether anything shows; a faded-out classic mesh is not drawn at all.
+    pub fn visible(&self) -> bool {
+        self.fade >= 0.001
+    }
+}
+
+/// The connection vertices for a set of territories and settings, at any camera.
 #[derive(Debug, Default)]
 pub struct ConnectionMesh {
     /// Vertex pairs for a line list: classic hairlines.
@@ -64,19 +101,14 @@ pub struct ConnectionMesh {
 }
 
 impl ConnectionMesh {
-    pub fn rebuild(
-        &mut self,
-        territories: &ClientTerritoryMap,
-        scale: f64,
-        settings: &RenderSettings,
-    ) {
+    pub fn rebuild(&mut self, territories: &ClientTerritoryMap, settings: &RenderSettings) {
         self.lines.clear();
         self.triangles.clear();
         self.seen.clear();
         if !settings.show_connections {
             return;
         }
-        let style = Style::new(settings, scale);
+        let style = Style::new(settings);
         if style.alpha < 0.001 {
             return;
         }
@@ -105,9 +137,7 @@ impl ConnectionMesh {
         if length <= f32::EPSILON {
             return;
         }
-        // Unit normal, and scaled to world units per CSS pixel at the main camera's scale.
         let unit = [-dy / length, dx / length];
-        let normal = [unit[0] * style.world_per_px, unit[1] * style.world_per_px];
         let (color_a, color_b) = (style.color(from), style.color(to));
         let halves: &[([f32; 2], [f32; 2], [f32; 4])] = if color_a == color_b {
             &[(a, b, color_a)]
@@ -119,10 +149,10 @@ impl ConnectionMesh {
             match style.kind {
                 ConnectionStyle::Classic => {
                     for (offset, factor) in &style.hairlines {
-                        let shift = [normal[0] * offset, normal[1] * offset];
-                        let color = with_alpha(color, color[3] * factor);
-                        self.lines.push(vertex(start, shift, [0.0, 0.0], color));
-                        self.lines.push(vertex(end, shift, [0.0, 0.0], color));
+                        let spread = [unit[0] * offset, unit[1] * offset];
+                        let color = [color[0], color[1], color[2], color[3] * factor];
+                        self.lines.push(vertex(start, [0.0, 0.0], spread, color));
+                        self.lines.push(vertex(end, [0.0, 0.0], spread, color));
                     }
                 }
                 ConnectionStyle::White | ConnectionStyle::Guild => {
@@ -130,10 +160,10 @@ impl ConnectionMesh {
                     let up = [unit[0] * half, unit[1] * half];
                     let down = [-up[0], -up[1]];
                     let corners = [
-                        vertex(start, [0.0, 0.0], up, color),
-                        vertex(end, [0.0, 0.0], up, color),
-                        vertex(end, [0.0, 0.0], down, color),
-                        vertex(start, [0.0, 0.0], down, color),
+                        vertex(start, up, [0.0, 0.0], color),
+                        vertex(end, up, [0.0, 0.0], color),
+                        vertex(end, down, [0.0, 0.0], color),
+                        vertex(start, down, [0.0, 0.0], color),
                     ];
                     self.triangles.extend([
                         corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
@@ -148,10 +178,9 @@ impl ConnectionMesh {
 struct Style {
     kind: ConnectionStyle,
     bold: bool,
-    /// Opacity applied to every line before per-colour and per-hairline factors.
+    /// Opacity applied to every line before per-colour and per-hairline factors (and, for
+    /// classic lines, before the zoom fade).
     alpha: f32,
-    /// World units per CSS pixel at the main camera's scale; classic hairlines only.
-    world_per_px: f32,
     /// Classic: (offset in CSS px, opacity factor) of every hairline across the band.
     hairlines: Vec<(f32, f32)>,
     /// Solid: full width in CSS px.
@@ -159,17 +188,13 @@ struct Style {
 }
 
 impl Style {
-    fn new(settings: &RenderSettings, scale: f64) -> Self {
+    fn new(settings: &RenderSettings) -> Self {
         let kind = settings.connection_style;
         let bold = settings.bold_connections;
         let thickness = finite_or(settings.connection_thickness_scale, 1.0)
             .clamp(MIN_THICKNESS_SCALE, MAX_THICKNESS_SCALE);
         let alpha = match kind {
-            ConnectionStyle::Classic => {
-                let (from, to) = settings.connection_zoom_fade;
-                smoothstep(from, to, scale as f32)
-                    * finite_or(settings.connection_opacity_scale, 1.0).max(0.0)
-            }
+            ConnectionStyle::Classic => finite_or(settings.connection_opacity_scale, 1.0).max(0.0),
             ConnectionStyle::White | ConnectionStyle::Guild => {
                 finite_or(settings.connection_solid_opacity, 1.0).clamp(0.0, 1.0)
             }
@@ -184,7 +209,6 @@ impl Style {
             kind,
             bold,
             alpha,
-            world_per_px: (1.0 / (scale as f32).max(0.05)).min(24.0),
             hairlines: if kind == ConnectionStyle::Classic {
                 classic_hairlines(profile, thickness)
             } else {
@@ -202,7 +226,9 @@ impl Style {
                 let luminance = 0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b);
                 let dark_boost = (1.0 - luminance / 255.0).clamp(0.0, 1.0);
                 let (r, g, b) = brighten(r, g, b, 1.4 + dark_boost * 0.8);
-                rgba(r, g, b, (0.35 + dark_boost * 0.20) as f32 * self.alpha)
+                // Unclamped: the renderer clamps after the zoom fade.
+                let [r, g, b, _] = rgba(r, g, b, 1.0);
+                [r, g, b, (0.35 + dark_boost * 0.20) as f32 * self.alpha]
             }
             ConnectionStyle::Classic => [1.0, 1.0, 1.0, CLASSIC_WHITE_ALPHA * self.alpha],
             ConnectionStyle::White => [1.0, 1.0, 1.0, self.alpha],
@@ -241,10 +267,16 @@ fn midpoint(territory: &ClientTerritory) -> [f32; 2] {
     [location.midpoint_x() as f32, location.midpoint_y() as f32]
 }
 
-fn vertex(at: [f32; 2], shift: [f32; 2], offset: [f32; 2], color: [f32; 4]) -> ConnectionVertex {
+fn vertex(
+    world: [f32; 2],
+    offset: [f32; 2],
+    spread: [f32; 2],
+    color: [f32; 4],
+) -> ConnectionVertex {
     ConnectionVertex {
-        world: [at[0] + shift[0], at[1] + shift[1]],
+        world,
         offset,
+        spread,
         color,
     }
 }
@@ -256,10 +288,6 @@ fn rgba(r: u8, g: u8, b: u8, alpha: f32) -> [f32; 4] {
         f32::from(b) / 255.0,
         alpha.clamp(0.0, 1.0),
     ]
-}
-
-fn with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
-    [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)]
 }
 
 fn finite_or(value: f32, fallback: f32) -> f32 {
@@ -319,15 +347,11 @@ mod tests {
         ])
     }
 
-    fn mesh(
-        map: &ClientTerritoryMap,
-        scale: f64,
-        change: impl FnOnce(&mut RenderSettings),
-    ) -> ConnectionMesh {
+    fn mesh(map: &ClientTerritoryMap, change: impl FnOnce(&mut RenderSettings)) -> ConnectionMesh {
         let mut settings = settings();
         change(&mut settings);
         let mut mesh = ConnectionMesh::default();
-        mesh.rebuild(map, scale, &settings);
+        mesh.rebuild(map, &settings);
         mesh
     }
 
@@ -335,20 +359,17 @@ mod tests {
         (actual - expected).abs() < 1e-5
     }
 
-    /// Distinct y offsets (CSS px at `scale`) of the line-list vertices.
-    fn hairline_offsets(mesh: &ConnectionMesh, scale: f32) -> Vec<f32> {
-        mesh.lines
-            .chunks(2)
-            .map(|pair| pair[0].world[1] * scale)
-            .collect()
+    /// Main-map CSS px across the band of each hairline (the edge runs along x).
+    fn hairline_offsets(mesh: &ConnectionMesh) -> Vec<f32> {
+        mesh.lines.chunks(2).map(|pair| pair[0].spread[1]).collect()
     }
 
     #[test]
     fn classic_at_full_thickness_is_the_original_five_hairlines() {
         let map = pair(RED, RED);
-        let mesh = mesh(&map, 1.0, |_| {});
+        let mesh = mesh(&map, |_| {});
         assert!(mesh.triangles.is_empty());
-        let mut offsets = hairline_offsets(&mesh, 1.0);
+        let mut offsets = hairline_offsets(&mesh);
         // The edge runs either way depending on map iteration order, so compare sorted.
         offsets.sort_by(f32::total_cmp);
         let expected = [-1.2, -0.6, 0.0, 0.6, 1.2];
@@ -361,14 +382,20 @@ mod tests {
             assert!(close(*actual, 0.16 * factor), "{alphas:?}");
         }
         assert!(mesh.lines.iter().all(|v| v.color[..3] == [1.0, 1.0, 1.0]));
+        // The hairlines lie on the centreline; only their spread moves them across.
+        assert!(
+            mesh.lines
+                .iter()
+                .all(|v| v.world[1] == 0.0 && v.offset == [0.0, 0.0])
+        );
     }
 
     #[test]
     fn classic_thickness_widens_the_band_without_opening_gaps() {
         let map = pair(RED, RED);
         for thickness in [0.7, 1.0, 1.35, 2.5] {
-            let mesh = mesh(&map, 1.0, |s| s.connection_thickness_scale = thickness);
-            let mut offsets = hairline_offsets(&mesh, 1.0);
+            let mesh = mesh(&map, |s| s.connection_thickness_scale = thickness);
+            let mut offsets = hairline_offsets(&mesh);
             offsets.sort_by(f32::total_cmp);
             let outer = offsets.iter().fold(0.0_f32, |m, o| m.max(o.abs()));
             assert!(close(outer, 1.2 * thickness), "{thickness}: {offsets:?}");
@@ -377,11 +404,11 @@ mod tests {
             }
         }
         // The bold band keeps its own spacing.
-        let bold = mesh(&map, 1.0, |s| {
+        let bold = mesh(&map, |s| {
             s.bold_connections = true;
             s.connection_thickness_scale = 2.0;
         });
-        let mut offsets = hairline_offsets(&bold, 1.0);
+        let mut offsets = hairline_offsets(&bold);
         // The edge runs either way depending on map iteration order, so compare sorted.
         offsets.sort_by(f32::total_cmp);
         assert!(close(offsets[0], -3.2), "{offsets:?}");
@@ -397,7 +424,7 @@ mod tests {
             (2.0, true, 6.0),
             (0.7, false, 1.05),
         ] {
-            let mesh = mesh(&map, 1.0, |s| {
+            let mesh = mesh(&map, |s| {
                 s.connection_style = ConnectionStyle::White;
                 s.connection_thickness_scale = thickness;
                 s.bold_connections = bold;
@@ -419,45 +446,47 @@ mod tests {
     }
 
     #[test]
-    fn solid_strips_are_the_same_under_any_projection() {
-        // The minimap projects the same vertices at about 0.04, below the main camera's
-        // limits: a strip must not depend on the main scale it was built at.
-        let map = pair(RED, BLUE);
-        let build = |scale| {
-            mesh(&map, scale, |s| {
-                s.connection_style = ConnectionStyle::Guild;
-                s.bold_connections = true;
-            })
-            .triangles
-        };
-        let mut reference = build(1.0);
-        reference.sort_by(|a, b| {
-            a.world
-                .partial_cmp(&b.world)
-                .unwrap()
-                .then(a.offset.partial_cmp(&b.offset).unwrap())
-        });
-        for scale in [0.04, 0.05, 0.3, 8.0] {
-            let mut strips = build(scale);
-            strips.sort_by(|a, b| {
-                a.world
-                    .partial_cmp(&b.world)
-                    .unwrap()
-                    .then(a.offset.partial_cmp(&b.offset).unwrap())
-            });
-            assert_eq!(strips, reference, "scale {scale}");
+    fn classic_spread_and_fade_follow_the_main_camera_scale() {
+        let classic = settings();
+        // Hairlines one CSS px apart on the main map at any zoom the camera allows.
+        for scale in [0.05, 0.3, 1.0, 8.0] {
+            let projection = ConnectionProjection::new(&classic, scale);
+            assert!(
+                close(projection.world_per_px * scale as f32, 1.0),
+                "{scale}"
+            );
         }
-        // Classic hairlines carry no screen offset; their spacing is in world units.
-        let classic = mesh(&map, 0.5, |_| {});
-        assert!(classic.lines.iter().all(|v| v.offset == [0.0, 0.0]));
+        // The band fades out between 0.45 and 0.15 and is not drawn below.
+        let fade = |scale| ConnectionProjection::new(&classic, scale).fade;
+        assert_eq!(fade(0.45), 1.0);
+        assert!(close(fade(0.3), 0.5));
+        assert_eq!(fade(0.15), 0.0);
+        assert!(!ConnectionProjection::new(&classic, 0.1).visible());
+        let mut solid = settings();
+        solid.connection_style = ConnectionStyle::Guild;
+        assert_eq!(ConnectionProjection::new(&solid, 0.1).fade, 1.0);
+    }
+
+    #[test]
+    fn bold_classic_opacity_is_clamped_only_after_the_fade() {
+        // A dark guild at the highest opacity scale goes past full alpha before the fade.
+        let map = pair((10, 10, 10), (10, 10, 10));
+        let bold = mesh(&map, |s| {
+            s.bold_connections = true;
+            s.connection_opacity_scale = 2.5;
+        });
+        let middle = bold
+            .lines
+            .iter()
+            .map(|v| v.color[3])
+            .fold(0.0_f32, f32::max);
+        assert!(middle > 1.0, "{middle}");
     }
 
     #[test]
     fn solid_opacity_is_absolute_and_never_fades_with_zoom() {
         let map = pair(RED, RED);
-        // Zoomed out past the classic fade, classic draws nothing; solid lines stay.
-        assert!(mesh(&map, 0.1, |_| {}).lines.is_empty());
-        let solid = mesh(&map, 0.1, |s| {
+        let solid = mesh(&map, |s| {
             s.connection_style = ConnectionStyle::White;
             s.connection_solid_opacity = 0.4;
             // The classic multiplier does not touch solid lines.
@@ -469,7 +498,7 @@ mod tests {
     #[test]
     fn edges_between_two_guilds_split_at_the_middle_in_each_colour() {
         let map = pair(RED, BLUE);
-        let solid = mesh(&map, 1.0, |s| s.connection_style = ConnectionStyle::Guild);
+        let solid = mesh(&map, |s| s.connection_style = ConnectionStyle::Guild);
         assert_eq!(solid.triangles.len(), 12);
         let red = [200.0 / 255.0, 40.0 / 255.0, 40.0 / 255.0, 1.0];
         let blue = [30.0 / 255.0, 60.0 / 255.0, 220.0 / 255.0, 1.0];
@@ -483,13 +512,13 @@ mod tests {
             assert_eq!(v.color, expected, "{v:?}");
         }
         // Same split for the classic bold tint, and none within one guild.
-        let classic = mesh(&map, 1.0, |s| s.bold_connections = true);
+        let classic = mesh(&map, |s| s.bold_connections = true);
         assert!(classic.lines.chunks(2).all(|pair| {
             let (a, b) = (pair[0].world[0], pair[1].world[0]);
             (a.min(b) == 0.0 && a.max(b) == 50.0) || (a.min(b) == 50.0 && a.max(b) == 100.0)
         }));
         assert_eq!(
-            mesh(&pair(BLUE, BLUE), 1.0, |s| s.connection_style =
+            mesh(&pair(BLUE, BLUE), |s| s.connection_style =
                 ConnectionStyle::Guild)
             .triangles
             .len(),
@@ -500,8 +529,8 @@ mod tests {
     #[test]
     fn each_edge_is_drawn_once_and_hidden_connections_not_at_all() {
         let map = pair(RED, RED);
-        assert_eq!(mesh(&map, 1.0, |_| {}).lines.len(), 10);
-        let hidden = mesh(&map, 1.0, |s| s.show_connections = false);
+        assert_eq!(mesh(&map, |_| {}).lines.len(), 10);
+        let hidden = mesh(&map, |s| s.show_connections = false);
         assert!(hidden.lines.is_empty() && hidden.triangles.is_empty());
     }
 }

@@ -4,6 +4,7 @@
 //! cached instance buffers and the minimap terrain image. What to rebuild each frame is
 //! decided by the scene planner and passed in as a [`Rebuild`].
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -12,11 +13,11 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 use wgpu::util::DeviceExt;
 
 use sequoia_map_engine::claim_labels::{
-    self, CLAIM_LABEL_LETTER_SPACING_EM, build_claim_clusters, claim_label_zoom_active,
-    select_claim_label_candidates,
+    self, CLAIM_LABEL_LETTER_SPACING_EM, ClaimCluster, build_claim_clusters,
+    claim_label_zoom_active, select_claim_label_candidates,
 };
 use sequoia_map_engine::colors::{brighten, heat_color_for_count};
-use sequoia_map_engine::connections::{self, ConnectionMesh};
+use sequoia_map_engine::connections::{self, ConnectionMesh, ConnectionProjection};
 use sequoia_map_engine::defense::defense_tier_overlay_data;
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
 use sequoia_map_engine::label_layout::{
@@ -147,6 +148,34 @@ struct ConnectionVertex {
     color: [f32; 4],
     /// CSS pixels added after projection (solid strips' half-width).
     offset_px: [f32; 2],
+    /// Main-map CSS pixels, in world units at the main camera's scale (classic hairlines).
+    spread_px: [f32; 2],
+}
+
+const CONNECTION_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+    0 => Float32x2,
+    1 => Float32x4,
+    2 => Float32x2,
+    3 => Float32x2,
+];
+
+/// `connection.wgsl`'s per-frame projection of the camera-independent connection mesh.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct ConnectionProjectionUniform {
+    world_per_px: f32,
+    fade: f32,
+    _pad: [f32; 2],
+}
+
+impl ConnectionProjectionUniform {
+    /// For vertices that are not connections (minimap background and frame): no spread, no
+    /// fade.
+    const NEUTRAL: Self = Self {
+        world_per_px: 0.0,
+        fade: 1.0,
+        _pad: [0.0; 2],
+    };
 }
 
 /// A connection vertex buffer that grows to fit what is written to it.
@@ -193,6 +222,7 @@ impl ConnectionBuffer {
                 world_pos: vertex.world,
                 color: vertex.color,
                 offset_px: vertex.offset,
+                spread_px: vertex.spread,
             }));
         self.count = self.staging.len() as u32;
         if self.count > self.capacity {
@@ -218,12 +248,96 @@ struct GlyphMeta {
     draw_height: f32,
 }
 
+/// The glyph atlas's characters, metrics and pair kerning, indexed for per-glyph lookups
+/// in label layout. A character the atlas lacks draws as `?` and is not kerned.
+struct GlyphSet {
+    /// Atlas position of each ASCII character; `GlyphSet::ABSENT` where there is none.
+    ascii: [u8; 128],
+    /// Atlas characters outside ASCII and their positions.
+    other: Vec<(char, u8)>,
+    /// Metrics by atlas position.
+    metas: Vec<GlyphMeta>,
+    /// Kerning between the glyphs at positions `a` and `b`, at `a * metas.len() + b`.
+    kerning: Vec<f32>,
+    fallback: Option<u8>,
+}
+
+/// A character's glyph and, unless it was substituted, its kerning position.
+#[derive(Clone, Copy)]
+struct GlyphRef<'a> {
+    meta: &'a GlyphMeta,
+    kern_index: Option<u8>,
+}
+
+impl GlyphSet {
+    const ABSENT: u8 = u8::MAX;
+
+    /// `chars` are the atlas characters in atlas order (a repeated character keeps its last
+    /// position); `kerning` is row-major over those positions.
+    fn new(chars: &[char], metas: Vec<GlyphMeta>, kerning: Vec<f32>) -> Self {
+        debug_assert!(chars.len() == metas.len() && chars.len() < usize::from(Self::ABSENT));
+        debug_assert_eq!(kerning.len(), metas.len() * metas.len());
+        let mut ascii = [Self::ABSENT; 128];
+        let mut other: Vec<(char, u8)> = Vec::new();
+        for (position, &ch) in chars.iter().enumerate() {
+            let position = position as u8;
+            if ch.is_ascii() {
+                ascii[ch as usize] = position;
+            } else if let Some(entry) = other.iter_mut().find(|(known, _)| *known == ch) {
+                entry.1 = position;
+            } else {
+                other.push((ch, position));
+            }
+        }
+        let mut glyphs = Self {
+            ascii,
+            other,
+            metas,
+            kerning,
+            fallback: None,
+        };
+        glyphs.fallback = glyphs.position('?');
+        glyphs
+    }
+
+    fn position(&self, ch: char) -> Option<u8> {
+        if ch.is_ascii() {
+            Some(self.ascii[ch as usize]).filter(|&position| position != Self::ABSENT)
+        } else {
+            self.other
+                .iter()
+                .find(|(known, _)| *known == ch)
+                .map(|&(_, position)| position)
+        }
+    }
+
+    fn get(&self, ch: char) -> Option<GlyphRef<'_>> {
+        match self.position(ch) {
+            Some(position) => Some(GlyphRef {
+                meta: &self.metas[usize::from(position)],
+                kern_index: Some(position),
+            }),
+            None => self.fallback.map(|position| GlyphRef {
+                meta: &self.metas[usize::from(position)],
+                kern_index: None,
+            }),
+        }
+    }
+
+    /// Kerning between consecutive glyphs; nothing when either was substituted.
+    fn kern(&self, prev: Option<GlyphRef<'_>>, next: GlyphRef<'_>) -> f32 {
+        match (prev.and_then(|prev| prev.kern_index), next.kern_index) {
+            (Some(a), Some(b)) => self.kerning[usize::from(a) * self.metas.len() + usize::from(b)],
+            _ => 0.0,
+        }
+    }
+}
+
 struct GlyphAtlas {
     bind_group_layout: wgpu::BindGroupLayout,
     fill_bind_group: wgpu::BindGroup,
     halo_bind_group: wgpu::BindGroup,
-    glyphs: HashMap<char, GlyphMeta>,
-    kerning: HashMap<u32, f32>,
+    glyphs: GlyphSet,
     line_height: f32,
 }
 
@@ -247,8 +361,7 @@ struct GpuTextRenderer {
     dynamic_halo_count: u32,
     dynamic_halo_capacity: u32,
     dynamic_halo_instances: Vec<TextInstance>,
-    glyphs: HashMap<char, GlyphMeta>,
-    kerning: HashMap<u32, f32>,
+    glyphs: GlyphSet,
     line_height: f32,
 }
 
@@ -640,11 +753,6 @@ fn name_color_rgba(name_color: NameColor, guild_rgb: (u8, u8, u8)) -> [f32; 4] {
     }
 }
 
-#[inline]
-fn kerning_key(prev: char, next: char) -> u32 {
-    ((prev as u32) << 16) | (next as u32)
-}
-
 fn gpu_console_diag_enabled() -> bool {
     let Some(window) = web_sys::window() else {
         return false;
@@ -688,6 +796,23 @@ fn set_claim_label_debug(scale: f64, active: bool, cluster_count: usize, rendere
         &wasm_bindgen::JsValue::from_str("__SEQUOIA_CLAIM_LABEL_DEBUG__"),
         payload.as_ref(),
     );
+}
+
+/// The CSS font the glyph atlas is drawn and measured in.
+fn glyph_atlas_font(readable_font: bool) -> String {
+    if readable_font {
+        format!("{GLYPH_ATLAS_FONT_PX}px 'Inter', system-ui, sans-serif")
+    } else {
+        format!("{GLYPH_ATLAS_FONT_PX}px 'SilkscreenLocal', monospace")
+    }
+}
+
+/// Whether `font`'s faces have loaded; true where the browser cannot tell.
+fn font_loaded(font: &str) -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.fonts().check(font).ok())
+        .unwrap_or(true)
 }
 
 /// Logs an uncaptured wgpu error. A broken pipeline would repeat every frame, so only the
@@ -739,77 +864,60 @@ fn get_2d_context(
         .ok()
 }
 
-fn line_units_with_tracking(
-    text: &str,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
-    tracking_units: f32,
-) -> f32 {
+fn line_units_with_tracking(text: &str, glyphs: &GlyphSet, tracking_units: f32) -> f32 {
     let tracking_units = tracking_units.max(0.0);
     let mut units = 0.0f32;
-    let mut prev: Option<char> = None;
+    let mut prev: Option<GlyphRef<'_>> = None;
     for ch in text.chars() {
-        let Some(glyph) = glyphs.get(&ch).or_else(|| glyphs.get(&'?')) else {
+        let Some(glyph) = glyphs.get(ch) else {
             continue;
         };
-        if let Some(prev_ch) = prev {
-            units += tracking_units;
-            units += kerning
-                .get(&kerning_key(prev_ch, ch))
-                .copied()
-                .unwrap_or(0.0);
+        if prev.is_some() {
+            units += tracking_units + glyphs.kern(prev, glyph);
         }
-        units += glyph.advance;
-        prev = Some(ch);
+        units += glyph.meta.advance;
+        prev = Some(glyph);
     }
     units
 }
 
-fn fit_text_to_units_with_tracking(
-    text: &str,
+/// `text`, or as much of it as fits before an ellipsis; borrowed when it fits whole.
+fn fit_text_to_units_with_tracking<'a>(
+    text: &'a str,
     max_units: f32,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
+    glyphs: &GlyphSet,
     tracking_units: f32,
-) -> String {
+) -> Cow<'a, str> {
     let tracking_units = tracking_units.max(0.0);
-    if max_units <= 0.0
-        || line_units_with_tracking(text, glyphs, kerning, tracking_units) <= max_units
-    {
-        return text.to_string();
+    if max_units <= 0.0 || line_units_with_tracking(text, glyphs, tracking_units) <= max_units {
+        return Cow::Borrowed(text);
     }
     let ellipsis = "...";
-    let ellipsis_units = line_units_with_tracking(ellipsis, glyphs, kerning, tracking_units);
+    let ellipsis_units = line_units_with_tracking(ellipsis, glyphs, tracking_units);
     if ellipsis_units >= max_units {
-        return ellipsis.to_string();
+        return Cow::Borrowed(ellipsis);
     }
     let mut out = String::new();
     let mut used = 0.0f32;
-    let mut prev: Option<char> = None;
+    let mut prev: Option<GlyphRef<'_>> = None;
     for ch in text.chars() {
-        let Some(next_units) = glyphs
-            .get(&ch)
-            .or_else(|| glyphs.get(&'?'))
-            .map(|g| g.advance)
-        else {
+        let Some(glyph) = glyphs.get(ch) else {
             continue;
         };
-        let kern = prev
-            .and_then(|prev_ch| kerning.get(&kerning_key(prev_ch, ch)).copied())
-            .unwrap_or(0.0);
+        let kern = glyphs.kern(prev, glyph);
         let tracking = if prev.is_some() { tracking_units } else { 0.0 };
-        if used + tracking + kern + next_units + ellipsis_units > max_units {
+        if used + tracking + kern + glyph.meta.advance + ellipsis_units > max_units {
             break;
         }
-        used += tracking + kern + next_units;
+        used += tracking + kern + glyph.meta.advance;
         out.push(ch);
-        prev = Some(ch);
+        prev = Some(glyph);
     }
     if out.is_empty() {
-        ellipsis.to_string()
+        Cow::Borrowed(ellipsis)
     } else {
         out.push_str(ellipsis);
-        out
+        Cow::Owned(out)
     }
 }
 
@@ -819,8 +927,7 @@ fn fit_text_to_units_with_tracking(
 )]
 fn push_text_line_with_tracking(
     out: &mut Vec<TextInstance>,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
+    glyphs: &GlyphSet,
     line_height: f32,
     text: &str,
     cx: f32,
@@ -835,7 +942,7 @@ fn push_text_line_with_tracking(
     }
 
     let tracking_units = tracking_units.max(0.0);
-    let units = line_units_with_tracking(text, glyphs, kerning, tracking_units);
+    let units = line_units_with_tracking(text, glyphs, tracking_units);
     if units <= 0.0 {
         return;
     }
@@ -847,20 +954,18 @@ fn push_text_line_with_tracking(
     let mut cursor_x = cx - (units * scale) / 2.0;
     let line_top_y = cy - font_height_world * 0.5;
     color[3] = color[3].clamp(0.0, 1.0);
-    let mut prev: Option<char> = None;
+    let mut prev: Option<GlyphRef<'_>> = None;
 
     for ch in text.chars() {
-        let Some(glyph) = glyphs.get(&ch).or_else(|| glyphs.get(&'?')) else {
+        let Some(glyph) = glyphs.get(ch) else {
             continue;
         };
-        if let Some(prev_ch) = prev {
+        if prev.is_some() {
             cursor_x += tracking_units * scale;
-            cursor_x += kerning
-                .get(&kerning_key(prev_ch, ch))
-                .copied()
-                .unwrap_or(0.0)
-                * scale;
+            cursor_x += glyphs.kern(prev, glyph) * scale;
         }
+        prev = Some(glyph);
+        let glyph = glyph.meta;
         let step_world = glyph.advance * scale;
         let w_world = glyph.draw_width * scale;
         let x_world = cursor_x + glyph.draw_offset_x * scale;
@@ -868,7 +973,6 @@ fn push_text_line_with_tracking(
         let y_world = line_top_y + glyph.draw_offset_y * scale;
         if w_world <= 0.0 {
             cursor_x += step_world;
-            prev = Some(ch);
             continue;
         }
         out.push(TextInstance {
@@ -877,7 +981,6 @@ fn push_text_line_with_tracking(
             color,
         });
         cursor_x += step_world;
-        prev = Some(ch);
     }
 }
 
@@ -888,8 +991,7 @@ fn push_text_line_with_tracking(
 fn push_text_line_dual_with_tracking(
     fill_out: &mut Vec<TextInstance>,
     halo_out: &mut Vec<TextInstance>,
-    glyphs: &HashMap<char, GlyphMeta>,
-    kerning: &HashMap<u32, f32>,
+    glyphs: &GlyphSet,
     line_height: f32,
     text: &str,
     cx: f32,
@@ -903,7 +1005,6 @@ fn push_text_line_dual_with_tracking(
     push_text_line_with_tracking(
         halo_out,
         glyphs,
-        kerning,
         line_height,
         text,
         cx,
@@ -916,7 +1017,6 @@ fn push_text_line_dual_with_tracking(
     push_text_line_with_tracking(
         fill_out,
         glyphs,
-        kerning,
         line_height,
         text,
         cx,
@@ -1007,6 +1107,13 @@ pub struct GpuRenderer {
     // Connection line pipeline (full GPU mode only)
     connection_pipeline: wgpu::RenderPipeline,
     connection_fill_pipeline: wgpu::RenderPipeline,
+    /// Spread and fade of the connection mesh at the main camera's scale, and the value
+    /// last written to it.
+    connection_projection_buffer: wgpu::Buffer,
+    connection_projection_bind_group: wgpu::BindGroup,
+    connection_projection: Option<ConnectionProjectionUniform>,
+    /// For non-connection vertices drawn with the connection pipelines.
+    neutral_projection_bind_group: wgpu::BindGroup,
     /// Classic hairlines (line list) and solid strips (triangle list).
     connection_mesh: ConnectionMesh,
     connection_lines: ConnectionBuffer,
@@ -1027,7 +1134,11 @@ pub struct GpuRenderer {
     text_renderer: Option<GpuTextRenderer>,
     /// Font the glyph atlas was built with.
     text_readable_font: bool,
+    /// The atlas font, when it had not loaded yet as the atlas was drawn (fallback glyphs).
+    text_font_pending: Option<String>,
     territory_name_cache: HashMap<String, (String, String)>,
+    /// Zoomed-out guild-name clusters for one territory revision; they depend on nothing else.
+    claim_clusters: Option<(u64, Vec<ClaimCluster>)>,
 
     // Resource icon pipeline
     icon_renderer: Option<GpuIconRenderer>,
@@ -1546,28 +1657,49 @@ impl GpuRenderer {
         let connection_vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<ConnectionVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-            ],
+            attributes: &CONNECTION_VERTEX_ATTRIBUTES,
         };
+        let connection_projection_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("connection-projection-bgl"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let projection_bind_group = |label, contents: ConnectionProjectionUniform| {
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::bytes_of(&contents),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &connection_projection_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            (buffer, bind_group)
+        };
+        let (connection_projection_buffer, connection_projection_bind_group) =
+            projection_bind_group(
+                "connection-projection",
+                ConnectionProjectionUniform::NEUTRAL,
+            );
+        let (_, neutral_projection_bind_group) =
+            projection_bind_group("neutral-projection", ConnectionProjectionUniform::NEUTRAL);
         let connection_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("connection-pl"),
-                bind_group_layouts: &[&viewport_bind_group_layout],
+                bind_group_layouts: &[&viewport_bind_group_layout, &connection_projection_layout],
                 push_constant_ranges: &[],
             });
         let connection_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1576,7 +1708,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &connection_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[connection_vertex_layout],
+                buffers: &[connection_vertex_layout.clone()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -1606,27 +1738,7 @@ impl GpuRenderer {
                 vertex: wgpu::VertexState {
                     module: &connection_shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<ConnectionVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                offset: 0,
-                                shader_location: 0,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 8,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32x4,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 24,
-                                shader_location: 2,
-                                format: wgpu::VertexFormat::Float32x2,
-                            },
-                        ],
-                    }],
+                    buffers: &[connection_vertex_layout],
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -1793,6 +1905,10 @@ impl GpuRenderer {
             tiles_revision: 0,
             connection_pipeline,
             connection_fill_pipeline,
+            connection_projection_buffer,
+            connection_projection_bind_group,
+            connection_projection: None,
+            neutral_projection_bind_group,
             connection_mesh: ConnectionMesh::default(),
             connection_lines,
             connection_triangles,
@@ -1807,7 +1923,9 @@ impl GpuRenderer {
             minimap_terrain: None,
             text_renderer: None,
             text_readable_font: false,
+            text_font_pending: None,
             territory_name_cache: HashMap::new(),
+            claim_clusters: None,
             icon_renderer: None,
             supports_gpu_icons,
             marker_renderer: None,
@@ -1845,6 +1963,8 @@ impl GpuRenderer {
             return true;
         }
         let vertex_layout = Self::quad_vertex_layout();
+        let font = glyph_atlas_font(self.text_readable_font);
+        self.text_font_pending = (!font_loaded(&font)).then_some(font);
         self.text_renderer = Self::init_text_renderer(
             &self.device,
             &self.queue,
@@ -1854,6 +1974,20 @@ impl GpuRenderer {
             self.text_readable_font,
         );
         self.text_renderer.is_some()
+    }
+
+    /// The glyph atlas font, if the atlas was drawn before it loaded; the host calls
+    /// [`Self::text_font_loaded`] once it has.
+    pub fn pending_text_font(&self) -> Option<String> {
+        self.text_font_pending.clone()
+    }
+
+    /// Redraws the glyph atlas, and with it every label, in `font` now that it has loaded.
+    pub fn text_font_loaded(&mut self, font: &str) {
+        if self.text_font_pending.as_deref() == Some(font) {
+            self.text_font_pending = None;
+            self.text_renderer = None;
+        }
     }
 
     fn ensure_icon_renderer(&mut self, icons: &ResourceAtlas) -> bool {
@@ -1895,7 +2029,6 @@ impl GpuRenderer {
             fill_bind_group,
             halo_bind_group,
             glyphs,
-            kerning,
             line_height,
         }) = Self::build_glyph_atlas(device, queue, readable_font)
         else {
@@ -1999,7 +2132,6 @@ impl GpuRenderer {
             dynamic_halo_capacity: initial_capacity,
             dynamic_halo_instances: Vec::new(),
             glyphs,
-            kerning,
             line_height,
         })
     }
@@ -2387,11 +2519,7 @@ impl GpuRenderer {
         if chars.is_empty() {
             return None;
         }
-        let font = if readable_font {
-            format!("{GLYPH_ATLAS_FONT_PX}px 'Inter', system-ui, sans-serif")
-        } else {
-            format!("{GLYPH_ATLAS_FONT_PX}px 'SilkscreenLocal', monospace")
-        };
+        let font = glyph_atlas_font(readable_font);
         ctx.set_font(&font);
         ctx.set_text_align("left");
         ctx.set_text_baseline("alphabetic");
@@ -2446,16 +2574,31 @@ impl GpuRenderer {
             ink_bounds_y.insert(ch, (ascent, descent));
         }
 
-        let mut kerning = HashMap::new();
-        for &a in &chars {
-            for &b in &chars {
-                let pair = format!("{a}{b}");
+        // Row-major over atlas positions; a repeated character copies its first row and
+        // column instead of being measured again.
+        let n = chars.len();
+        let first: Vec<usize> = chars
+            .iter()
+            .map(|&ch| chars.iter().position(|&known| known == ch).unwrap_or(0))
+            .collect();
+        let mut kerning = vec![0.0f32; n * n];
+        let mut pair = String::with_capacity(8);
+        for (i, &a) in chars.iter().enumerate() {
+            for (j, &b) in chars.iter().enumerate() {
+                let (fa, fb) = (first[i], first[j]);
+                if (fa, fb) != (i, j) {
+                    kerning[i * n + j] = kerning[fa * n + fb];
+                    continue;
+                }
+                pair.clear();
+                pair.push(a);
+                pair.push(b);
                 let pair_w = ctx.measure_text(&pair).map(|m| m.width()).unwrap_or(0.0) as f32;
                 let aw = advances.get(&a).copied().unwrap_or(0.0);
                 let bw = advances.get(&b).copied().unwrap_or(0.0);
                 let kern = pair_w - (aw + bw);
                 if kern.abs() > 0.01 {
-                    kerning.insert(kerning_key(a, b), kern);
+                    kerning[i * n + j] = kern;
                 }
             }
         }
@@ -2478,7 +2621,7 @@ impl GpuRenderer {
         ctx.set_text_align("left");
         ctx.set_text_baseline("alphabetic");
 
-        let mut glyphs = HashMap::with_capacity(chars.len());
+        let mut metas = Vec::with_capacity(chars.len());
         let atlas_wf = atlas_w as f32;
         let atlas_hf = atlas_h as f32;
         for (i, ch) in chars.iter().copied().enumerate() {
@@ -2522,17 +2665,14 @@ impl GpuRenderer {
             let v0 = (v0_px as f32) / atlas_hf;
             let u1 = (u1_px as f32) / atlas_wf;
             let v1 = (v1_px as f32) / atlas_hf;
-            glyphs.insert(
-                ch,
-                GlyphMeta {
-                    uv_rect: [u0, v0, u1, v1],
-                    advance: raw_advance,
-                    draw_offset_x,
-                    draw_width,
-                    draw_offset_y,
-                    draw_height,
-                },
-            );
+            metas.push(GlyphMeta {
+                uv_rect: [u0, v0, u1, v1],
+                advance: raw_advance,
+                draw_offset_x,
+                draw_width,
+                draw_offset_y,
+                draw_height,
+            });
         }
 
         ctx.clear_rect(0.0, 0.0, atlas_w as f64, atlas_h as f64);
@@ -2659,8 +2799,7 @@ impl GpuRenderer {
             bind_group_layout,
             fill_bind_group,
             halo_bind_group,
-            glyphs,
-            kerning,
+            glyphs: GlyphSet::new(&chars, metas, kerning),
             line_height: line_height_px as f32,
         })
     }
@@ -2787,44 +2926,47 @@ impl GpuRenderer {
                 Ok(d) => d,
                 Err(_) => continue,
             };
-            let pixels = image_data.data();
             // Failed reads do not stage a GPU upload. Counting them against the budget
             // would retry the same failed prefix every frame and starve later tiles.
             uploaded_bytes += bytes;
 
+            let size = wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            };
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("tile-tex"),
-                size: wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
+                size,
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                // External image copies require a render-attachment destination.
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             });
-
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
+            // The read-back pixels go to the GPU straight from the browser's buffer rather
+            // than through a copy in WASM memory, which would grow for good to hold a tile.
+            // Uploading the <img> itself instead makes browsers decode the file again, as
+            // straight alpha, synchronously: slower than this draw and read-back.
+            self.queue.copy_external_image_to_texture(
+                &wgpu::CopyExternalImageSourceInfo {
+                    source: wgpu::ExternalImageSource::ImageData(image_data),
+                    origin: wgpu::Origin2d::ZERO,
+                    flip_y: false,
+                },
+                wgpu::CopyExternalImageDestInfo {
                     texture: &texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
+                    color_space: wgpu::PredefinedColorSpace::Srgb,
+                    premultiplied_alpha: false,
                 },
-                &pixels,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(4 * w),
-                    rows_per_image: Some(h),
-                },
-                wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
+                size,
             );
 
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -3091,10 +3233,21 @@ impl GpuRenderer {
     fn update_static_text_instances(
         &mut self,
         territories: &ClientTerritoryMap,
+        territory_revision: u64,
         vp: &Viewport,
         settings: &RenderSettings,
     ) {
         self.sync_territory_name_cache(territories);
+        // Clusters follow the territories only, not the camera: build them once per revision.
+        if settings.show_claim_labels
+            && claim_label_zoom_active(vp.scale)
+            && self
+                .claim_clusters
+                .as_ref()
+                .is_none_or(|(revision, _)| *revision != territory_revision)
+        {
+            self.claim_clusters = Some((territory_revision, build_claim_clusters(territories)));
+        }
         // Label screen rects are in CSS pixels, like the viewport.
         let viewport_screen_bounds = claim_labels::Rect {
             left: 0.0,
@@ -3125,20 +3278,22 @@ impl GpuRenderer {
         let scale = vp.scale as f32;
         {
             let glyphs = &text_renderer.glyphs;
-            let kerning = &text_renderer.kerning;
             let line_height = text_renderer.line_height;
             let tag_tracking_units = line_height * STATIC_TAG_LETTER_SPACING_EM;
             let name_tracking_units = line_height * STATIC_NAME_LETTER_SPACING_EM;
             let claim_label_zoom = claim_label_zoom_active(vp.scale);
             if settings.show_claim_labels && claim_label_zoom {
                 let claim_tracking_units = line_height * CLAIM_LABEL_LETTER_SPACING_EM;
-                let claim_clusters = build_claim_clusters(territories);
+                let claim_clusters = self
+                    .claim_clusters
+                    .as_ref()
+                    .map_or(&[][..], |(_, clusters)| clusters.as_slice());
                 let claim_labels = select_claim_label_candidates(
-                    &claim_clusters,
+                    claim_clusters,
                     vp,
                     viewport_screen_bounds,
                     line_height,
-                    |text| line_units_with_tracking(text, glyphs, kerning, claim_tracking_units),
+                    |text| line_units_with_tracking(text, glyphs, claim_tracking_units),
                 );
                 let rendered_claim_label_count = claim_labels.len();
                 for claim in claim_labels {
@@ -3152,7 +3307,6 @@ impl GpuRenderer {
                         &mut fill_instances,
                         &mut halo_instances,
                         glyphs,
-                        kerning,
                         line_height,
                         &claim.text,
                         claim.center_world[0],
@@ -3210,7 +3364,6 @@ impl GpuRenderer {
                             tag,
                             sizing.max_width_world * units_per_world,
                             glyphs,
-                            kerning,
                             tag_tracking_units,
                         );
                         if fitted == "..." {
@@ -3240,7 +3393,6 @@ impl GpuRenderer {
                             &mut fill_instances,
                             &mut halo_instances,
                             glyphs,
-                            kerning,
                             line_height,
                             &fitted,
                             loc.midpoint_x() as f32,
@@ -3323,7 +3475,6 @@ impl GpuRenderer {
                             &mut fill_instances,
                             &mut halo_instances,
                             glyphs,
-                            kerning,
                             line_height,
                             tag,
                             cx,
@@ -3362,7 +3513,6 @@ impl GpuRenderer {
                             base_name,
                             name_max_w * units_per_world,
                             glyphs,
-                            kerning,
                             name_tracking_units,
                         );
                         let name_y = tag_y
@@ -3384,7 +3534,6 @@ impl GpuRenderer {
                             &mut fill_instances,
                             &mut halo_instances,
                             glyphs,
-                            kerning,
                             line_height,
                             &fitted,
                             cx,
@@ -3459,7 +3608,6 @@ impl GpuRenderer {
         let mut text_buf = String::with_capacity(16);
         {
             let glyphs = &text_renderer.glyphs;
-            let kerning = &text_renderer.kerning;
             let line_height = text_renderer.line_height;
             for ct in territories.values() {
                 let loc = &ct.territory.location;
@@ -3637,7 +3785,6 @@ impl GpuRenderer {
                         &mut fill_instances,
                         &mut halo_instances,
                         glyphs,
-                        kerning,
                         line_height,
                         &text_buf,
                         cx,
@@ -3670,7 +3817,6 @@ impl GpuRenderer {
                         &mut fill_instances,
                         &mut halo_instances,
                         glyphs,
-                        kerning,
                         line_height,
                         &text_buf,
                         cx,
@@ -4040,10 +4186,9 @@ impl GpuRenderer {
     fn update_connection_vertices(
         &mut self,
         territories: &ClientTerritoryMap,
-        scale: f64,
         settings: &RenderSettings,
     ) -> u64 {
-        self.connection_mesh.rebuild(territories, scale, settings);
+        self.connection_mesh.rebuild(territories, settings);
         self.connection_lines
             .upload(&self.device, &self.queue, &self.connection_mesh.lines)
             + self.connection_triangles.upload(
@@ -4091,6 +4236,7 @@ impl GpuRenderer {
         // to avoid pipeline stalls from mid-pass buffer writes on WebGL2/glow.
         let (draw_sel_glow, draw_hov_glow) = self.write_glow_uniforms(frame, &mut stats);
         let draw_markers = self.prepare_markers(frame, &mut stats);
+        let draw_connections = self.write_connection_projection(frame, &mut stats);
 
         // Get surface texture
         let output = match self.surface.get_current_texture() {
@@ -4190,16 +4336,18 @@ impl GpuRenderer {
                 stats.draw();
             }
 
-            if self.connection_lines.count > 0 {
+            if draw_connections && self.connection_lines.count > 0 {
                 pass.set_pipeline(&self.connection_pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                pass.set_bind_group(1, &self.connection_projection_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.connection_lines.buffer.slice(..));
                 pass.draw(0..self.connection_lines.count, 0..1);
                 stats.draw();
             }
-            if self.connection_triangles.count > 0 {
+            if draw_connections && self.connection_triangles.count > 0 {
                 pass.set_pipeline(&self.connection_fill_pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                pass.set_bind_group(1, &self.connection_projection_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.connection_triangles.buffer.slice(..));
                 pass.draw(0..self.connection_triangles.count, 0..1);
                 stats.draw();
@@ -4279,7 +4427,14 @@ impl GpuRenderer {
 
         if let Some(layout) = frame.minimap {
             self.ensure_minimap_terrain(&mut encoder, layout, frame.tiles, &mut stats);
-            self.draw_minimap(&mut encoder, &view, layout, frame, &mut stats);
+            self.draw_minimap(
+                &mut encoder,
+                &view,
+                layout,
+                frame,
+                draw_connections,
+                &mut stats,
+            );
         }
 
         // Preserve the Intel overlay's ordering: symbols and their Canvas2D names
@@ -4340,6 +4495,27 @@ impl GpuRenderer {
         };
 
         outcome
+    }
+
+    /// Writes the connection spread and fade for this frame's main camera scale, when they
+    /// changed; returns whether connections show at all.
+    fn write_connection_projection(&mut self, frame: &Frame, stats: &mut DrawStats) -> bool {
+        let projection = ConnectionProjection::new(frame.settings, frame.camera.scale);
+        let uniform = ConnectionProjectionUniform {
+            world_per_px: projection.world_per_px,
+            fade: projection.fade,
+            _pad: [0.0; 2],
+        };
+        if self.connection_projection != Some(uniform) {
+            self.queue.write_buffer(
+                &self.connection_projection_buffer,
+                0,
+                bytemuck::bytes_of(&uniform),
+            );
+            stats.bytes_uploaded += std::mem::size_of::<ConnectionProjectionUniform>() as u64;
+            self.connection_projection = Some(uniform);
+        }
+        projection.visible()
     }
 
     /// Uploads a new marker set and this frame's marker sizes, before the render pass.
@@ -4410,8 +4586,7 @@ impl GpuRenderer {
                 (self.instance_count as u64) * std::mem::size_of::<TerritoryInstance>() as u64;
         }
         if rebuild.connections {
-            stats.bytes_uploaded +=
-                self.update_connection_vertices(frame.territories, vp.scale, settings);
+            stats.bytes_uploaded += self.update_connection_vertices(frame.territories, settings);
         }
         let text_bytes = |text: Option<&GpuTextRenderer>, dynamic: bool| {
             text.map_or(0, |text| {
@@ -4424,7 +4599,12 @@ impl GpuRenderer {
             })
         };
         if rebuild.static_labels {
-            self.update_static_text_instances(frame.territories, vp, settings);
+            self.update_static_text_instances(
+                frame.territories,
+                frame.territory_revision,
+                vp,
+                settings,
+            );
             stats.bytes_uploaded += text_bytes(self.text_renderer.as_ref(), false);
         }
         let mut next_refresh = NextRefresh::default();
@@ -4608,6 +4788,7 @@ impl GpuRenderer {
             world_pos: [x as f32 + pad_x, y as f32 + pad_y],
             color: bg_color,
             offset_px: [0.0, 0.0],
+            spread_px: [0.0, 0.0],
         };
         let bg_vertices = [
             corner(wmx, wmy, -pad, -pad),
@@ -4640,6 +4821,7 @@ impl GpuRenderer {
             });
             pass.set_pipeline(&self.connection_fill_pipeline);
             pass.set_bind_group(0, &self.minimap_terrain_viewport_bind_group, &[]);
+            pass.set_bind_group(1, &self.neutral_projection_bind_group, &[]);
             pass.set_vertex_buffer(0, self.minimap_bg_buffer.slice(..));
             pass.draw(0..6, 0..1);
             stats.draw();
@@ -4693,6 +4875,7 @@ impl GpuRenderer {
         view: &wgpu::TextureView,
         layout: MinimapLayout,
         frame: &Frame,
+        draw_connections: bool,
         stats: &mut DrawStats,
     ) {
         let Some(terrain) = self.minimap_terrain.as_ref() else {
@@ -4746,6 +4929,7 @@ impl GpuRenderer {
             world_pos: [x, y],
             color,
             offset_px: [0.0, 0.0],
+            spread_px: [0.0, 0.0],
         };
         let indicator_vertices = [
             corner(left, top),
@@ -4813,16 +4997,19 @@ impl GpuRenderer {
             stats.draw();
         }
 
-        if self.connection_lines.count > 0 {
+        // The same mesh as the main map, spread and faded for the main camera's scale.
+        if draw_connections && self.connection_lines.count > 0 {
             pass.set_pipeline(&self.connection_pipeline);
             pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+            pass.set_bind_group(1, &self.connection_projection_bind_group, &[]);
             pass.set_vertex_buffer(0, self.connection_lines.buffer.slice(..));
             pass.draw(0..self.connection_lines.count, 0..1);
             stats.draw();
         }
-        if self.connection_triangles.count > 0 {
+        if draw_connections && self.connection_triangles.count > 0 {
             pass.set_pipeline(&self.connection_fill_pipeline);
             pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+            pass.set_bind_group(1, &self.connection_projection_bind_group, &[]);
             pass.set_vertex_buffer(0, self.connection_triangles.buffer.slice(..));
             pass.draw(0..self.connection_triangles.count, 0..1);
             stats.draw();
@@ -4830,6 +5017,7 @@ impl GpuRenderer {
 
         pass.set_pipeline(&self.connection_pipeline);
         pass.set_bind_group(0, &self.minimap_viewport_bind_group, &[]);
+        pass.set_bind_group(1, &self.neutral_projection_bind_group, &[]);
         pass.set_vertex_buffer(0, self.minimap_indicator_buffer.slice(..));
         pass.draw(0..indicator_count, 0..1);
         stats.draw();

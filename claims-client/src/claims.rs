@@ -959,19 +959,20 @@ fn hash_import_boot_payload(
 }
 
 fn apply_live_state(
-    live_territories: RwSignal<ClientTerritoryMap>,
+    feed: LiveFeed,
     live_seq: RwSignal<u64>,
-    last_live_seq: RwSignal<Option<u64>>,
     live_bootstrap_pending: RwSignal<bool>,
     live_bootstrap_error: RwSignal<Option<String>>,
     state: LiveState,
 ) {
     stage_live_bootstrap(&state);
     live_seq.set(state.seq);
-    last_live_seq.set(Some(state.seq));
-    live_territories.set(sequoia_map_engine::territory::from_snapshot(
-        state.territories,
-    ));
+    feed.last_live_seq.set(Some(state.seq));
+    feed.snapshot_seq.set_value(Some(state.seq));
+    feed.territories
+        .set(sequoia_map_engine::territory::from_snapshot(
+            state.territories,
+        ));
     live_bootstrap_pending.set(false);
     live_bootstrap_error.set(None);
 }
@@ -1571,6 +1572,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
     // Claims boards follow live ownership but never replay history.
     let feed = LiveFeed::new(live_territories, Signal::stored(false));
     feed.last_live_seq.set(initial_last_live_seq);
+    feed.snapshot_seq.set_value(initial_last_live_seq);
     let last_live_seq = feed.last_live_seq;
 
     let render_settings = Memo::new(move |_| claims_render_settings(resource_highlight.get()));
@@ -1975,9 +1977,8 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
                 match live_feed::fetch_live_state().await {
                     Ok(state) => {
                         apply_live_state(
-                            live_territories,
+                            feed,
                             live_seq,
-                            last_live_seq,
                             live_bootstrap_pending,
                             live_bootstrap_error,
                             state,

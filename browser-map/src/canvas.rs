@@ -45,6 +45,9 @@ pub(crate) struct MapState {
     renderer: Option<GpuRenderer>,
     /// The camera has been fitted to the first territories that arrived.
     fitted: bool,
+    /// Counts changes to the territory map, so renderer caches derived from it alone know
+    /// when they are stale.
+    territory_revision: u64,
 }
 
 impl MapState {
@@ -57,6 +60,7 @@ impl MapState {
             surface: Surface::default(),
             planner: ScenePlanner::default(),
             renderer: None,
+            territory_revision: 0,
             fitted: false,
         }
     }
@@ -111,6 +115,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
     let disposed = Arc::new(AtomicBool::new(false));
 
     let gl_context = Rc::new(GlContext::default());
+    let pending_font: RwSignal<Option<(u32, String)>> = RwSignal::new(None);
 
     let scheduler = Rc::new(RenderScheduler::new({
         let state = state.clone();
@@ -127,9 +132,60 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
             let Some(canvas) = canvas_ref.get_untracked() else {
                 return false;
             };
-            render_frame(&map, &state, &canvas, render_stats)
+            let animating = render_frame(&map, &state, &canvas, render_stats);
+            let request = state
+                .borrow()
+                .renderer
+                .as_ref()
+                .and_then(GpuRenderer::pending_text_font)
+                .map(|font| (gl_context.generation.get(), font));
+            if pending_font.get_untracked() != request {
+                pending_font.set(request);
+            }
+            animating
         }
     }));
+
+    // Each atlas can be baked before its face arrives, including a persisted readable
+    // font or a switch during loading. Observe the renderer's actual pending face after
+    // every paint, rather than waiting only for the default face at renderer startup.
+    Effect::new({
+        let state = state.clone();
+        let scheduler = scheduler.clone();
+        let disposed = disposed.clone();
+        let gl_context = gl_context.clone();
+        move || {
+            let Some((generation, font)) = pending_font.get() else {
+                return;
+            };
+            let Some(fonts) = web_sys::window()
+                .and_then(|window| window.document())
+                .map(|document| document.fonts())
+            else {
+                return;
+            };
+            let state = state.clone();
+            let scheduler = scheduler.clone();
+            let disposed = disposed.clone();
+            let gl_context = gl_context.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if wasm_bindgen_futures::JsFuture::from(fonts.load(&font))
+                    .await
+                    .is_err()
+                    || disposed.load(Ordering::Relaxed)
+                    || gl_context.generation.get() != generation
+                {
+                    return;
+                }
+                {
+                    if let Some(renderer) = state.borrow_mut().renderer.as_mut() {
+                        renderer.text_font_loaded(&font);
+                    }
+                }
+                scheduler.mark_dirty();
+            });
+        }
+    });
 
     // HQ crowns come from the icon atlas, so it loads even with resource icons off.
     if map.icons.with_untracked(Option::is_none) {
@@ -147,6 +203,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 let mut state = state.borrow_mut();
                 state.grid = grid;
                 state.territory_bounds = bounds;
+                state.territory_revision = state.territory_revision.wrapping_add(1);
                 state.planner.invalidate(SceneChange::Territories);
                 let fit = bounds.filter(|_| !state.fitted);
                 state.fitted |= fit.is_some();
@@ -237,11 +294,12 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 }
                 match result {
                     Ok(renderer) => {
-                        let mut state = state.borrow_mut();
-                        state.renderer = Some(renderer);
-                        // A new renderer starts with empty caches.
-                        state.planner = ScenePlanner::default();
-                        drop(state);
+                        {
+                            let mut state = state.borrow_mut();
+                            state.renderer = Some(renderer);
+                            // A new renderer starts with empty caches.
+                            state.planner = ScenePlanner::default();
+                        }
                         gpu_error.set(None);
                         gl_context.lost.set(false);
                         scheduler.mark_dirty();
@@ -425,6 +483,7 @@ fn render_frame(
         planner,
         renderer,
         territory_bounds,
+        territory_revision,
         ..
     } = &mut *state;
     let Some(renderer) = renderer.as_mut() else {
@@ -459,6 +518,7 @@ fn render_frame(
                             &Frame {
                                 camera: &camera,
                                 territories,
+                                territory_revision: *territory_revision,
                                 hovered: hovered.as_deref(),
                                 selected: selected.as_deref(),
                                 settings: &settings,

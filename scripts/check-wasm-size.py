@@ -2,12 +2,10 @@
 # requires-python = ">=3.13"
 # dependencies = ["brotli==1.1.0"]
 # ///
-"""Measure optimized WASM without modifying Trunk's hashed release artifacts."""
+"""Measure the release client WASM as shipped; Trunk has already run wasm-opt on it."""
 
 import gzip
 from pathlib import Path
-import subprocess
-import tempfile
 
 import brotli
 
@@ -17,10 +15,7 @@ def main() -> None:
     if len(artifacts) != 1:
         raise SystemExit(f"Expected one client WASM artifact, found {len(artifacts)}")
 
-    with tempfile.TemporaryDirectory() as directory:
-        optimized = Path(directory) / "client.wasm"
-        subprocess.run(["wasm-opt", "-Oz", str(artifacts[0]), "-o", str(optimized)], check=True)
-        wasm = optimized.read_bytes()
+    wasm = artifacts[0].read_bytes()
 
     sizes = {"brotli": len(brotli.compress(wasm, quality=11)), "gzip": len(gzip.compress(wasm, compresslevel=9, mtime=0))}
     budgets = {"brotli": 1_900_000, "gzip": 2_800_000}

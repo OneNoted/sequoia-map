@@ -104,9 +104,9 @@ To use external PostgreSQL in CI or locally, set `TEST_DATABASE_URL` to a
 `DATABASE_URL` for tests. Running `cargo test` directly without a database skips
 some database integration coverage and is not a substitute for `mise run test`.
 
-The map size check optimizes a temporary copy of the release WASM, then measures
-Brotli and gzip sizes. It does not overwrite Trunk's hashed assets or their
-integrity metadata.
+Release builds run `wasm-opt -Oz` inside Trunk (`data-wasm-opt` on the Rust link,
+Binaryen pinned in `Trunk.toml`), before Trunk writes the bundles' integrity hashes.
+The map size check measures the shipped WASM's Brotli and gzip sizes.
 
 Iris uses Minecraft-specific dependency profiles and is tested separately; see
 [the reporter guide](../mods/wynn-iris/README.md). `mise run iris:dev` launches the
