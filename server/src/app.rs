@@ -359,12 +359,21 @@ fn public_asset_version() -> Option<&'static str> {
 }
 
 /// FNV-1a over every file under the versioned directories of `dist_dirs`, in path order:
-/// each file's path, length and bytes. `None` when there are no such files.
+/// each file's path, length and bytes. `None` when no assets exist or traversal fails.
 fn asset_content_version(dist_dirs: &[&Path]) -> Option<String> {
     let mut files = Vec::new();
     for dist in dist_dirs {
         for dir in VERSIONED_ASSET_DIRS {
-            collect_files(&dist.join(dir), &mut files);
+            let path = dist.join(dir);
+            if let Err(error) = collect_files(&path, &mut files) {
+                // A distribution may omit an optional asset directory. Never hash a
+                // partially enumerated directory as if it were a complete asset set.
+                if error.kind() == std::io::ErrorKind::NotFound && !path.exists() {
+                    continue;
+                }
+                tracing::warn!(path = %path.display(), %error, "cannot enumerate versioned assets");
+                return None;
+            }
         }
     }
     if files.is_empty() {
@@ -390,18 +399,17 @@ fn asset_content_version(dist_dirs: &[&Path]) -> Option<String> {
     Some(format!("{hash:016x}"))
 }
 
-fn collect_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+fn collect_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
         let path = entry.path();
-        match entry.file_type() {
-            Ok(kind) if kind.is_dir() => collect_files(&path, files),
-            Ok(kind) if kind.is_file() => files.push(path),
+        match entry.file_type()? {
+            kind if kind.is_dir() => collect_files(&path, files)?,
+            kind if kind.is_file() => files.push(path),
             _ => {}
         }
     }
+    Ok(())
 }
 
 fn versioned_asset_path(path: &str, asset_version: Option<&str>) -> String {
@@ -668,6 +676,9 @@ mod tests {
             asset_content_version(&[root.join("missing").as_path()]),
             None
         );
+        // An existing but invalid asset directory must not produce a partial digest.
+        std::fs::write(dist.join("icons"), b"not a directory").expect("write invalid icons");
+        assert_eq!(version(), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
