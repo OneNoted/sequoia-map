@@ -769,9 +769,12 @@ mod tests {
         assert!(body.contains("name=\"description\""));
         assert!(body.contains("rel=\"canonical\" href=\"https://map.example.com/\""));
         assert!(body.contains("property=\"og:url\" content=\"https://map.example.com/\""));
-        assert!(body.contains(
-            "property=\"og:image\" content=\"https://map.example.com/tiles/main-3-2.webp\""
-        ));
+        let expected_og_image = format!(
+            "property=\"og:image\" content=\"{}{}\"",
+            crate::config::map_public_base_url(),
+            versioned_asset_path(DEFAULT_OG_IMAGE_PATH, public_asset_version())
+        );
+        assert!(body.contains(&expected_og_image));
         assert!(body.contains("application/ld+json"));
         assert!(body.contains("Sequoia Map: Live Wynncraft Territory Map"));
         assert!(body.contains("id=\"app\""));
