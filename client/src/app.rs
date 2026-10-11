@@ -467,7 +467,8 @@ struct SettingsV2 {
     heat_selected_season_id: Option<i32>,
     #[serde(default)]
     readable_font: bool,
-    #[serde(default = "default_true")]
+    /// Off unless chosen: a blob saved before the setting existed holds no choice.
+    #[serde(default)]
     show_minimap: bool,
     #[serde(default = "default_name_color")]
     name_color: NameColor,
@@ -690,7 +691,7 @@ impl Default for SettingsV2 {
             heat_history_basis: default_heat_history_basis(),
             heat_selected_season_id: None,
             readable_font: false,
-            show_minimap: true,
+            show_minimap: false,
             name_color: default_name_color(),
             tag_color: default_tag_color(),
             label_scale_master: default_label_scale_master(),
@@ -826,7 +827,7 @@ impl From<LegacySettings> for SettingsV2 {
             heat_history_basis: default_heat_history_basis(),
             heat_selected_season_id: None,
             readable_font: value.readable_font,
-            show_minimap: true,
+            show_minimap: false,
             name_color: value.name_color,
             tag_color: default_tag_color(),
             label_scale_master: default_label_scale_master(),
@@ -3714,6 +3715,53 @@ mod tests {
         assert!(defaults.player_head_render_head);
         assert!(!defaults.player_head_render_label);
         assert_eq!(defaults.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
+    }
+
+    #[test]
+    fn new_and_reset_settings_hide_the_minimap() {
+        assert!(!SettingsV2::default().show_minimap);
+    }
+
+    #[test]
+    fn a_saved_minimap_on_choice_survives_loading() {
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "defaults_version": SETTINGS_DEFAULTS_VERSION,
+            "show_minimap": true,
+        }))
+        .unwrap();
+        assert!(parsed.with_current_defaults().show_minimap);
+    }
+
+    #[test]
+    fn a_saved_minimap_off_choice_survives_loading() {
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "defaults_version": SETTINGS_DEFAULTS_VERSION,
+            "show_minimap": false,
+        }))
+        .unwrap();
+        assert!(!parsed.with_current_defaults().show_minimap);
+    }
+
+    #[test]
+    fn a_saved_minimap_choice_survives_an_older_defaults_migration() {
+        let parsed: SettingsV2 = serde_json::from_value(
+            serde_json::json!({"defaults_version": 1, "show_minimap": true}),
+        )
+        .unwrap();
+        assert!(parsed.with_current_defaults().show_minimap);
+    }
+
+    #[test]
+    fn settings_saved_without_a_minimap_choice_start_without_the_minimap() {
+        let parsed: SettingsV2 =
+            serde_json::from_value(serde_json::json!({"defaults_version": 2})).unwrap();
+        assert!(!parsed.with_current_defaults().show_minimap);
+    }
+
+    #[test]
+    fn legacy_settings_start_without_the_minimap() {
+        let migrated: SettingsV2 = LegacySettings::default().into();
+        assert!(!migrated.show_minimap);
     }
 
     #[test]
