@@ -12,14 +12,14 @@ const FOCUS_CONTEXT_WORLD: f64 = 200.0;
 #[derive(Clone, Copy)]
 pub struct MapCamera {
     view: RwSignal<Viewport>,
-    canvas_size: StoredValue<Option<(f64, f64)>>,
+    canvas_size: RwSignal<Option<(f64, f64)>>,
 }
 
 impl MapCamera {
     pub(crate) fn new(view: Viewport) -> Self {
         Self {
             view: RwSignal::new(view),
-            canvas_size: StoredValue::new(None),
+            canvas_size: RwSignal::new(None),
         }
     }
 
@@ -87,14 +87,28 @@ impl MapCamera {
     }
 
     /// The map canvas size in CSS pixels; the window size before the canvas has laid out.
+    /// Untracked, as the camera moves above need it.
     pub fn canvas_size(&self) -> (f64, f64) {
         self.canvas_size
-            .get_value()
+            .get_untracked()
             .unwrap_or_else(window_inner_size)
     }
 
+    /// [`Self::canvas_size`], tracked: notifies when the map has drawn at a new size, which
+    /// includes a resize that changes the height only.
+    pub fn canvas_size_tracked(&self) -> (f64, f64) {
+        self.canvas_size.get().unwrap_or_else(window_inner_size)
+    }
+
+    /// Records the CSS size the map is drawing at; notifies only when it changed.
     pub(crate) fn set_canvas_size(&self, size: (f64, f64)) {
-        self.canvas_size.set_value(Some(size));
+        self.canvas_size.maybe_update(|current| {
+            let changed = *current != Some(size);
+            if changed {
+                *current = Some(size);
+            }
+            changed
+        });
     }
 }
 

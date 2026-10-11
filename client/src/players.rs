@@ -3,8 +3,8 @@
 //! The war controller feed already carries every teammate it knows about
 //! ([`sequoia_shared::WarPlayer`]). This places them and loads the faces of those on or near
 //! the screen; the map renderer draws them over the map and minimap with its own camera
-//! ([`sequoia_browser_map::overlay::Teammates`]), so panning only re-checks which faces to
-//! fetch.
+//! ([`sequoia_browser_map::overlay::Teammates`]), so panning or resizing only re-checks which
+//! faces to fetch.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -19,7 +19,7 @@ use web_sys::HtmlImageElement;
 
 use crate::app::{
     CurrentMode, MapMode, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize,
-    ShowPlayerHeads, WarControllerData, WarFeedVisible, WindowWidth, clamp_player_head_size,
+    ShowPlayerHeads, WarControllerData, WarFeedVisible, clamp_player_head_size,
 };
 use crate::territory::ClientTerritoryMap;
 use crate::viewport::Viewport;
@@ -180,7 +180,6 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
     let WarFeedVisible(war_feed_visible) = expect_context();
     let CurrentMode(map_mode) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let WindowWidth(window_width) = expect_context();
     let map = expect_context::<BrowserMap>();
 
     // The feed describes right now, so the heads must never be drawn over a past snapshot,
@@ -225,19 +224,19 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
 
     // Faces are fetched for teammates on or near the screen only, as the canvas overlay did,
     // so a roster spread across the map does not request every face up front. This scan runs
-    // on every camera change, but it is one projection per teammate, and what it returns only
-    // changes when a teammate comes into range; the fetch below runs only then. A face, once
-    // fetched, stays cached while its teammate stays in the roster.
+    // on every camera change and whenever the map draws at a new size, but it is one
+    // projection per teammate, and what it returns only changes when a teammate comes into
+    // range; the fetch below runs only then. A face, once fetched, stays cached while its
+    // teammate stays in the roster.
     let camera = map.camera();
     let near = Memo::new(move |_| {
         if !render_head.get() {
             return Vec::new();
         }
-        // The canvas size is not reactive; a resize that changes the width re-checks too.
-        window_width.track();
         let view = camera.get();
+        let screen = camera.canvas_size_tracked();
         let head_size = clamp_player_head_size(head_size.get());
-        points.with(|points| near_view(points, &view, camera.canvas_size(), head_size))
+        points.with(|points| near_view(points, &view, screen, head_size))
     });
     Effect::new({
         let faces = faces.clone();
