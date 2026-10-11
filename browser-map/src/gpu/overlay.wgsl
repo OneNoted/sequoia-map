@@ -24,7 +24,6 @@ var<uniform> params: vec4<f32>;
 
 // `OverlayKind` in overlay.rs.
 const SPRITE: u32 = 0u;
-const FILL: u32 = 1u;
 const DOT: u32 = 2u;
 
 // Teammate dot, CSS pixels: a filled circle with a centred one-pixel outline.
@@ -80,9 +79,6 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if in.kind == SPRITE {
         return textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
-    }
-    if in.kind == FILL {
-        return in.color;
     }
     // Canvas arc + fill + stroke: one device pixel of antialiasing on each edge.
     let dpr = params.x;

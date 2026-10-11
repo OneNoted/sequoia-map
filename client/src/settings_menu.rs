@@ -352,6 +352,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                         <SettingsSwitch label="Show Faces" hint="A dot when off" nested=true active=player_head_render_head />
                         <SettingsSwitch label="Show Names" hint="Hidden when zoomed far out" nested=true active=player_head_render_label />
                     </Show>
+                    <crate::players::PlayerRosterDetails />
                 </SettingsSection>
             </Show>
 
