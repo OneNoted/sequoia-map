@@ -4449,6 +4449,9 @@ impl GpuRenderer {
                 draw_connections,
                 &mut stats,
             );
+        } else {
+            // A hidden minimap keeps no terrain image; showing it again bakes a fresh one.
+            self.minimap_terrain = None;
         }
 
         // Map Intel symbols, their names and teammates sit above the map and the minimap,
