@@ -1,4 +1,3 @@
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -10,17 +9,13 @@ use sequoia_map_engine::map_markers::{
 use sequoia_shared::{
     GatheringNodeMarker, MapActivityMarker, MapIntelOverlay as MapIntelPayload, WorldEventMarker,
 };
-use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 use crate::app::{IsMobile, MapIntelModeEnabled, SidebarOpen, SidebarWidth, canvas_dimensions};
 use crate::viewport::Viewport;
 use sequoia_browser_map::BrowserMap;
-use sequoia_browser_map::render_loop::RenderScheduler;
+use sequoia_browser_map::overlay::{SiteLabel, SiteLabels};
 
 const NODE_BUCKET_WORLD_SIZE: f64 = 256.0;
-/// Event, raid and camp names show above this scale.
-const SITE_LABEL_MIN_SCALE: f64 = 0.58;
 const EVENT_COLOR: &str = "#f5c542";
 const RAID_COLOR: &str = "#b18cff";
 const CAMP_COLOR: &str = "#5bd6c8";
@@ -44,6 +39,8 @@ struct MapIntelModel {
     gathering_nodes: NodeIndex,
     /// Every marker, for the map renderer to draw.
     markers: Arc<MapMarkers>,
+    /// Event, raid and camp names, for the map renderer to draw.
+    site_labels: Arc<SiteLabels>,
 }
 
 impl MapIntelModel {
@@ -66,9 +63,33 @@ impl MapIntelModel {
                 .collect(),
             gathering_nodes: NodeIndex::from_markers(payload.gathering_nodes),
             markers: Arc::default(),
+            site_labels: Arc::default(),
         };
         model.markers = Arc::new(model.map_markers());
+        model.site_labels = Arc::new(model.site_labels());
         model
+    }
+
+    /// Every event location, raid and camp name, in the order the canvas overlay drew them.
+    fn site_labels(&self) -> SiteLabels {
+        let label = |x: f64, z: f64, text: &str, color: &str| SiteLabel {
+            world: [x as f32, z as f32],
+            text: text.to_string(),
+            rgb: hex_rgb(color),
+        };
+        let mut labels = Vec::new();
+        for event in &self.world_events {
+            for &(x, z) in &event.locations {
+                labels.push(label(x, z, &event.name, EVENT_COLOR));
+            }
+        }
+        for raid in &self.raids {
+            labels.push(label(raid.x, raid.z, &raid.name, RAID_COLOR));
+        }
+        for camp in &self.camps {
+            labels.push(label(camp.x, camp.z, &camp.name, CAMP_COLOR));
+        }
+        SiteLabels { labels }
     }
 
     /// Nodes in a stable order, one summary per area and profession, then events, raids
@@ -367,8 +388,6 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
     let loading: RwSignal<bool> = RwSignal::new(false);
     let error: RwSignal<Option<String>> = RwSignal::new(None);
     let retry_nonce: RwSignal<u64> = RwSignal::new(0);
-    let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
-    let cached_ctx: Rc<RefCell<Option<CanvasRenderingContext2d>>> = Rc::new(RefCell::new(None));
 
     Effect::new(move || {
         retry_nonce.track();
@@ -399,63 +418,22 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
         });
     });
 
-    // The map renderer draws the markers. A frame drawn on this canvas clears its whole
-    // DPR-sized surface (milliseconds in Firefox), so it only carries the site names and
-    // stays untouched while it has none.
+    // The map renderer draws the markers and their names, after the minimap, with the map
+    // camera: nothing here runs when the camera moves.
     Effect::new(move || {
-        let markers = if enabled.get() {
-            data.with(|payload| payload.as_ref().map(|payload| payload.markers.clone()))
+        let model = if enabled.get() {
+            data.with(|payload| payload.clone())
         } else {
             None
         };
-        map.markers().set(markers);
+        map.markers()
+            .set(model.as_ref().map(|model| model.markers.clone()));
+        map.site_labels()
+            .set(model.as_ref().map(|model| model.site_labels.clone()));
     });
     on_cleanup(move || {
         map.markers().try_set(None);
-    });
-
-    let labels_drawn = Rc::new(Cell::new(false));
-    let scheduler = Rc::new(RenderScheduler::new({
-        let cached_ctx = cached_ctx.clone();
-        move || {
-            let Some(canvas) = canvas_ref.get_untracked() else {
-                return false;
-            };
-            let canvas: &HtmlCanvasElement = &canvas;
-            let vp = camera.get_untracked();
-            let shown = enabled.get_untracked();
-            data.with_untracked(|payload| {
-                let width = f64::from(canvas.client_width().max(1));
-                let height = f64::from(canvas.client_height().max(1));
-                let labels = payload
-                    .as_ref()
-                    .filter(|_| shown)
-                    .map(|payload| site_labels(payload, &vp, width, height))
-                    .unwrap_or_default();
-                if labels.is_empty() && !labels_drawn.get() {
-                    return;
-                }
-                let Some((ctx, width, height)) = canvas_context(canvas, &cached_ctx) else {
-                    return;
-                };
-                ctx.clear_rect(0.0, 0.0, width, height);
-                for label in &labels {
-                    draw_label(&ctx, label.x, label.y, label.text, label.color);
-                }
-                labels_drawn.set(!labels.is_empty());
-            });
-            false
-        }
-    }));
-
-    Effect::new({
-        let scheduler = scheduler.clone();
-        move || {
-            enabled.track();
-            camera.track();
-            data.track();
-            scheduler.mark_dirty();
-        }
+        map.site_labels().try_set(None);
     });
 
     let hover = Memo::new(move |_| {
@@ -472,11 +450,6 @@ pub(crate) fn MapIntelOverlay() -> impl IntoView {
     });
 
     view! {
-        <canvas
-            node_ref=canvas_ref
-            style:display=move || if enabled.get() { "block" } else { "none" }
-            style="position: absolute; inset: 0; width: 100%; height: 100%; z-index: 7; pointer-events: none;"
-        />
         <Show when=move || enabled.get()>
             <div
                 style:right=move || {
@@ -598,93 +571,6 @@ async fn fetch_map_intel_overlay() -> Result<MapIntelPayload, String> {
         .json::<MapIntelPayload>()
         .await
         .map_err(|error| format!("decode failed: {error}"))
-}
-
-pub(crate) fn canvas_context(
-    canvas: &HtmlCanvasElement,
-    cached_ctx: &Rc<RefCell<Option<CanvasRenderingContext2d>>>,
-) -> Option<(CanvasRenderingContext2d, f64, f64)> {
-    let width = canvas.client_width().max(1) as f64;
-    let height = canvas.client_height().max(1) as f64;
-    let scale = web_sys::window()
-        .map(|window| window.device_pixel_ratio())
-        .unwrap_or(1.0)
-        .clamp(1.0, 3.0);
-    let expected_width = (width * scale).round() as u32;
-    let expected_height = (height * scale).round() as u32;
-
-    if canvas.width() != expected_width || canvas.height() != expected_height {
-        canvas.set_width(expected_width);
-        canvas.set_height(expected_height);
-        *cached_ctx.borrow_mut() = None;
-    }
-
-    let mut ctx_cache = cached_ctx.borrow_mut();
-    if ctx_cache.is_none() {
-        let ctx = canvas
-            .get_context("2d")
-            .ok()
-            .flatten()?
-            .dyn_into::<CanvasRenderingContext2d>()
-            .ok()?;
-        *ctx_cache = Some(ctx);
-    }
-    let ctx = ctx_cache.clone()?;
-    ctx.set_transform(scale, 0.0, 0.0, scale, 0.0, 0.0).ok()?;
-    Some((ctx, width, height))
-}
-
-struct SiteLabel<'a> {
-    x: f64,
-    y: f64,
-    text: &'a str,
-    color: &'static str,
-}
-
-/// Names of the events, raids and camps on screen, once zoomed in far enough.
-fn site_labels<'a>(
-    payload: &'a MapIntelModel,
-    viewport: &Viewport,
-    width: f64,
-    height: f64,
-) -> Vec<SiteLabel<'a>> {
-    let mut labels = Vec::new();
-    if viewport.scale <= SITE_LABEL_MIN_SCALE {
-        return labels;
-    }
-    let mut push = |x: f64, z: f64, text: &'a str, color: &'static str| {
-        let (sx, sy) = viewport.world_to_screen(x, z);
-        if in_screen_bounds(sx, sy, width, height, 24.0) {
-            labels.push(SiteLabel {
-                x: sx + 9.0,
-                y: sy - 7.0,
-                text,
-                color,
-            });
-        }
-    };
-    for event in &payload.world_events {
-        for &(x, z) in &event.locations {
-            push(x, z, &event.name, EVENT_COLOR);
-        }
-    }
-    for raid in &payload.raids {
-        push(raid.x, raid.z, &raid.name, RAID_COLOR);
-    }
-    for camp in &payload.camps {
-        push(camp.x, camp.z, &camp.name, CAMP_COLOR);
-    }
-    labels
-}
-
-fn draw_label(ctx: &CanvasRenderingContext2d, x: f64, y: f64, label: &str, color: &str) {
-    ctx.save();
-    ctx.set_font("10px 'JetBrains Mono', monospace");
-    ctx.set_shadow_color("rgba(0,0,0,0.85)");
-    ctx.set_shadow_blur(4.0);
-    ctx.set_fill_style_str(color);
-    let _ = ctx.fill_text(label, x, y);
-    ctx.restore();
 }
 
 #[derive(Clone, Copy)]
@@ -866,10 +752,6 @@ fn distance_sq(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let dx = ax - bx;
     let dy = ay - by;
     dx * dx + dy * dy
-}
-
-pub(crate) fn in_screen_bounds(x: f64, y: f64, width: f64, height: f64, margin: f64) -> bool {
-    x >= -margin && y >= -margin && x <= width + margin && y <= height + margin
 }
 
 fn event_meta(event: &WorldEventMarker) -> String {
@@ -1092,7 +974,7 @@ mod tests {
 
     use super::{
         MapIntelModel, NodeIndex, closest_node, format_count, hex_rgb, resource_profession_kind,
-        site_labels, title_label,
+        title_label,
     };
 
     fn node_marker(x: f64, z: f64, resource: &str) -> GatheringNodeMarker {
@@ -1192,20 +1074,23 @@ mod tests {
     }
 
     #[test]
-    fn site_names_show_zoomed_in_and_on_screen() {
+    fn site_labels_name_every_event_location_raid_and_camp_in_drawing_order() {
         let model = MapIntelModel::from_payload(payload());
-        let at = |scale: f64| Viewport {
-            offset_x: 0.0,
-            offset_y: 0.0,
-            scale,
-        };
-        assert!(site_labels(&model, &at(0.58), 400.0, 300.0).is_empty());
-
-        let labels = site_labels(&model, &at(1.0), 120.0, 300.0);
-        let names: Vec<_> = labels.iter().map(|label| (label.text, label.x)).collect();
-        // The camp at x = 200 is off this 120 px wide screen.
-        assert_eq!(names, [("Event", 9.0), ("Event", 59.0), ("Raid", 109.0)]);
-        assert_eq!(labels[0].y, 33.0);
+        let labels: Vec<_> = model
+            .site_labels
+            .labels
+            .iter()
+            .map(|label| (label.text.as_str(), label.world, label.rgb))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("Event", [0.0, 40.0], hex_rgb("#f5c542")),
+                ("Event", [50.0, 40.0], hex_rgb("#f5c542")),
+                ("Raid", [100.0, 40.0], hex_rgb("#b18cff")),
+                ("Camp", [200.0, 40.0], hex_rgb("#5bd6c8")),
+            ]
+        );
     }
 
     #[test]
