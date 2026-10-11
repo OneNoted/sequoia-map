@@ -2707,16 +2707,17 @@ fn HeatLegend() -> impl IntoView {
         }
         let scale = heat_scale.get();
         let stops = heat_legend_stops(&scale);
-        let last = stops.len().saturating_sub(1);
+        let uniform = stops.len() == 1;
         let labels = stops
             .into_iter()
-            .enumerate()
-            .map(|(index, (share, count))| {
+            .map(|(share, count)| {
                 // The ends align inside the bar; the quartiles centre on their stop.
-                let shift = match index {
-                    0 if last > 0 => 0,
-                    _ if index == last && last > 0 => 100,
-                    _ => 50,
+                let shift = if share <= 0.0 {
+                    0
+                } else if share >= 1.0 {
+                    100
+                } else {
+                    50
                 };
                 let style = format!(
                     "position: absolute; left: {}%; transform: translateX(-{shift}%); white-space: nowrap;",
@@ -2728,6 +2729,7 @@ fn HeatLegend() -> impl IntoView {
         let caption = match scale.len() {
             0 => "No captures in this period".to_string(),
             1 => "1 territory taken".to_string(),
+            ranked if uniform => format!("All {ranked} territories taken alike"),
             ranked => format!("Quartiles of {ranked} territories taken"),
         };
         let label = heat_window_label.get();
@@ -2751,8 +2753,9 @@ fn HeatLegend() -> impl IntoView {
 }
 
 /// The legend's labelled stops as (share of the bar, count): the counts where the colours at
-/// 0, 25, 50, 75 and 100% begin. One stop, centred, when every ranked territory has the same
-/// count; none without captures.
+/// 0, 25, 50, 75 and 100% begin. When every ranked territory has the same count they all
+/// colour as the hottest, so that count is the one stop, at the red end; none without
+/// captures.
 fn heat_legend_stops(scale: &HeatScale) -> Vec<(f64, String)> {
     let stops: Vec<(f64, u64)> = [0.0, 0.25, 0.5, 0.75, 1.0]
         .into_iter()
@@ -2760,7 +2763,7 @@ fn heat_legend_stops(scale: &HeatScale) -> Vec<(f64, String)> {
         .collect();
     match (stops.first(), stops.last()) {
         (Some(&(_, low)), Some(&(_, high))) if low == high => {
-            vec![(0.5, format_heat_count(high))]
+            vec![(1.0, format_heat_count(high))]
         }
         _ => stops
             .into_iter()
@@ -3790,12 +3793,27 @@ mod tests {
     }
 
     #[test]
-    fn heat_legend_shows_one_count_when_all_are_equal_and_none_without_captures() {
-        assert_eq!(
-            heat_legend_stops(&HeatScale::new([7; 12])),
-            [(0.5, "7".to_string())]
-        );
+    fn heat_legend_puts_a_single_or_uniform_count_where_it_renders() {
+        for scale in [HeatScale::new([7; 12]), HeatScale::new([0, 7, 0])] {
+            let stops = heat_legend_stops(&scale);
+            assert_eq!(stops, [(1.0, "7".to_string())]);
+            // The stop sits where the map colours that count.
+            assert_eq!(scale.intensity(7), stops[0].0);
+        }
         assert!(heat_legend_stops(&HeatScale::new([0, 0])).is_empty());
+        assert!(heat_legend_stops(&HeatScale::new([])).is_empty());
+    }
+
+    #[test]
+    fn heat_legend_stops_sit_where_their_counts_begin_to_render() {
+        let ordinary = [10, 20, 30, 40, 50]
+            .into_iter()
+            .flat_map(|level| [level; 8]);
+        let scale = HeatScale::new(ordinary.chain([200]));
+        for (share, label) in heat_legend_stops(&scale) {
+            let count: u64 = label.parse().expect("exact below ten thousand");
+            assert!(scale.intensity(count) >= share, "{label} at {share}");
+        }
     }
 
     #[test]
