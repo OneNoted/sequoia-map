@@ -69,18 +69,36 @@ impl HeatLayer {
     /// Colours each of `territories` by its count in `take_counts`, ranked among the
     /// territories of that map taken at least once. Counts for territories the map does not
     /// have (all-time data keeps retired ones) are left out of the ranking, and it covers the
-    /// whole map, so panning and zooming never change it. It is rebuilt when the counts or the
-    /// map change, and an unchanged ranking does not repaint.
+    /// whole map, so panning and zooming never change it. It is rebuilt only when the counts or
+    /// the map's set of territories change, and an unchanged ranking does not repaint.
     pub fn new(
         enabled: Signal<bool>,
         take_counts: Signal<HashMap<String, u64>>,
         territories: Signal<ClientTerritoryMap>,
     ) -> Self {
+        // The map's territory names, sorted. Live updates mostly change owners, which leave
+        // the names as they were: the check then hands back the same list, unchanged, and the
+        // ranking below is not rebuilt.
+        let members = Memo::new_owning(move |previous: Option<Vec<String>>| {
+            territories.with(|map| match previous {
+                Some(names)
+                    if names.len() == map.len()
+                        && map.keys().all(|name| names.binary_search(name).is_ok()) =>
+                {
+                    (names, false)
+                }
+                _ => {
+                    let mut names: Vec<String> = map.keys().cloned().collect();
+                    names.sort_unstable();
+                    (names, true)
+                }
+            })
+        });
         let scale = Memo::new(move |_| {
             take_counts.with(|counts| {
-                territories.with(|map| {
+                members.with(|names| {
                     Arc::new(HeatScale::new(
-                        map.keys().filter_map(|name| counts.get(name).copied()),
+                        names.iter().filter_map(|name| counts.get(name).copied()),
                     ))
                 })
             })
@@ -206,5 +224,86 @@ impl BrowserMap {
             self.tiles,
             tiles::TileFetchContext::new(self.camera.get_untracked(), width, height),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use leptos::prelude::*;
+    use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap};
+
+    use super::HeatLayer;
+
+    fn territory(name: &str, guild: &str) -> (String, ClientTerritory) {
+        let territory = serde_json::from_value(serde_json::json!({
+            "guild": {"uuid": "0", "name": guild, "prefix": "TST"},
+            "acquired": "2026-10-11T00:00:00Z",
+            "location": {"start": [0, 0], "end": [10, 10]},
+        }))
+        .expect("territory json");
+        (
+            name.to_string(),
+            ClientTerritory::from_territory(name, territory),
+        )
+    }
+
+    fn map(entries: &[(&str, &str)]) -> ClientTerritoryMap {
+        entries
+            .iter()
+            .map(|&(name, guild)| territory(name, guild))
+            .collect()
+    }
+
+    #[test]
+    fn heat_ranking_follows_counts_and_membership_but_not_ownership() {
+        let owner = Owner::new();
+        owner.set();
+        let territories = RwSignal::new(map(&[("A", "One"), ("B", "One"), ("C", "Two")]));
+        let counts = RwSignal::new(HashMap::from([
+            ("A".to_string(), 5),
+            ("B".to_string(), 9),
+            ("Retired".to_string(), 100),
+        ]));
+        let heat = HeatLayer::new(Signal::stored(true), counts.into(), territories.into());
+
+        let first = heat.scale().get_untracked();
+        assert_eq!(
+            first.len(),
+            2,
+            "C has no captures and Retired is not on the map"
+        );
+        assert_eq!(first.intensity(9), 1.0);
+
+        // A capture changes an owner but not which territories the map has.
+        territories.update(|map| {
+            map.insert("A".to_string(), territory("A", "Two").1);
+        });
+        assert!(Arc::ptr_eq(&first, &heat.scale().get_untracked()));
+
+        // A territory the counts mention joins the map.
+        territories.update(|map| {
+            map.insert("Retired".to_string(), territory("Retired", "One").1);
+        });
+        let joined = heat.scale().get_untracked();
+        assert_eq!(joined.len(), 3);
+        assert_eq!(joined.intensity(9), 2.0 / 3.0);
+        assert_eq!(joined.intensity(100), 1.0);
+
+        // New counts re-rank the same map.
+        counts.update(|counts| {
+            counts.insert("C".to_string(), 1_000);
+        });
+        let recounted = heat.scale().get_untracked();
+        assert_eq!(recounted.len(), 4);
+        assert_eq!(recounted.intensity(100), 0.75);
+
+        // And a territory leaving the map leaves the ranking.
+        territories.update(|map| {
+            map.remove("C");
+        });
+        assert_eq!(heat.scale().get_untracked().len(), 3);
     }
 }
