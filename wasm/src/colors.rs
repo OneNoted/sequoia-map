@@ -19,6 +19,7 @@ fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
 
+/// The heat gradient, from blue at 0 to red at 1; see [`crate::heat::HeatScale`] for counts.
 pub fn heat_color_for_intensity(intensity: f64) -> (u8, u8, u8) {
     const STOPS: &[(f64, (u8, u8, u8))] = &[
         (0.00, (30, 80, 220)),
@@ -49,22 +50,9 @@ pub fn heat_color_for_intensity(intensity: f64) -> (u8, u8, u8) {
         .unwrap_or((220, 40, 35))
 }
 
-pub fn heat_color_for_count(take_count: u64, max_take_count: u64) -> (u8, u8, u8) {
-    if max_take_count == 0 {
-        return heat_color_for_intensity(0.0);
-    }
-    let intensity = (take_count as f64 / max_take_count as f64).clamp(0.0, 1.0);
-    heat_color_for_intensity(intensity)
-}
-
 #[cfg(test)]
 mod heat_tests {
     use super::*;
-    #[test]
-    fn heat_color_handles_zero_max() {
-        assert_eq!(heat_color_for_count(0, 0), (30, 80, 220));
-        assert_eq!(heat_color_for_count(10, 0), (30, 80, 220));
-    }
     #[test]
     fn heat_color_matches_gradient_edges() {
         assert_eq!(heat_color_for_intensity(0.0), (30, 80, 220));
