@@ -17,6 +17,8 @@ use crate::tiles::LoadedTile;
 pub struct Frame<'a> {
     pub camera: &'a Viewport,
     pub territories: &'a ClientTerritoryMap,
+    /// Changes whenever `territories` does.
+    pub territory_revision: u64,
     pub hovered: Option<&'a str>,
     pub selected: Option<&'a str>,
     pub settings: &'a RenderSettings,

@@ -158,13 +158,7 @@ impl ScenePlanner {
 
         match self.scale.replace(camera.scale) {
             Some(previous) if previous == camera.scale => {}
-            Some(previous) => {
-                rebuild |= scale_change(
-                    previous,
-                    camera.scale,
-                    settings.connection_style.follows_zoom(),
-                )
-            }
+            Some(previous) => rebuild |= scale_change(previous, camera.scale),
             None => rebuild = Rebuild::ALL,
         }
 
@@ -199,14 +193,14 @@ impl ScenePlanner {
     }
 }
 
-fn scale_change(previous: f64, scale: f64, connections_follow_zoom: bool) -> Rebuild {
+fn scale_change(previous: f64, scale: f64) -> Rebuild {
     let timers_toggled =
         (previous >= TIMER_VISIBILITY_MIN_SCALE) != (scale >= TIMER_VISIBILITY_MIN_SCALE);
     Rebuild {
         territories: false,
-        // Classic connection spacing and fade are baked into vertices at the exact scale;
-        // solid strips are widened in screen space and stay valid.
-        connections: connections_follow_zoom,
+        // Connection vertices do not depend on the camera; the renderer applies the classic
+        // spacing and fade for the exact scale when it draws them.
+        connections: false,
         static_labels: timers_toggled
             || static_label_bucket(previous) != static_label_bucket(scale),
         // Timer text and icons honour on-screen pixel minimums at the exact scale.
@@ -265,7 +259,6 @@ mod tests {
         assert_eq!(
             planner.plan(&at(0.5001), &settings(), 100, true),
             only(|r| {
-                r.connections = true;
                 r.dynamic_labels = true;
                 r.icons = true;
             })
@@ -284,35 +277,17 @@ mod tests {
     }
 
     #[test]
-    fn zooming_within_a_coarse_bucket_refreshes_connection_width_and_fade() {
-        let mut planner = settled(0.25, 100, 200);
-        for scale in [0.263, 0.277, 0.290] {
-            assert!(planner.plan(&at(scale), &settings(), 100, true).connections);
-        }
-        // A repaint or translation at the same scale still reuses the connection buffer.
-        assert_eq!(
-            planner.plan(&at(0.290), &settings(), 100, false),
-            Rebuild::NONE
-        );
-        let mut camera = at(0.290);
-        camera.pan(120.0, 40.0);
-        assert_eq!(planner.plan(&camera, &settings(), 100, true), Rebuild::NONE);
-    }
-
-    #[test]
-    fn zooming_keeps_solid_connection_strips() {
+    fn zooming_never_rebuilds_connections_in_any_style() {
         let mut solid = settings();
         solid.connection_style = crate::settings::ConnectionStyle::White;
-        let mut planner = ScenePlanner::default();
-        assert_eq!(planner.plan(&at(0.25), &solid, 100, false), Rebuild::ALL);
-        for scale in [0.263, 0.6, 2.0] {
-            let rebuild = planner.plan(&at(scale), &solid, 100, true);
-            assert!(!rebuild.connections && rebuild.dynamic_labels);
+        for style in [settings(), solid] {
+            let mut planner = ScenePlanner::default();
+            assert_eq!(planner.plan(&at(0.25), &style, 100, false), Rebuild::ALL);
+            for scale in [0.263, 0.277, 0.6, 2.0] {
+                let rebuild = planner.plan(&at(scale), &style, 100, true);
+                assert!(!rebuild.connections && rebuild.dynamic_labels, "{scale}");
+            }
         }
-        // Back to classic: its hairlines follow the zoom again.
-        let classic = settings();
-        assert!(planner.plan(&at(2.0), &classic, 100, true).connections);
-        assert!(planner.plan(&at(1.5), &classic, 100, true).connections);
     }
 
     #[test]
