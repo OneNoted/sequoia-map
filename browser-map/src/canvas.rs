@@ -272,6 +272,8 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
             inputs.minimap_inset.track();
             map.tiles.track();
             map.markers.track();
+            map.site_labels.track();
+            map.teammates.track();
             scheduler.mark_dirty();
         }
     });
@@ -508,6 +510,8 @@ fn render_frame(
     let icons = map.icons.get_untracked();
     let heat = inputs.heat.filter(|heat| heat.enabled.get_untracked());
     let max_take_count = heat.map_or(0, |heat| heat.max_take_count.get_untracked());
+    let site_labels = map.site_labels.get_untracked();
+    let teammates = map.teammates.get_untracked();
 
     let outcome = inputs.territories.with_untracked(|territories| {
         map.tiles.with_untracked(|tiles| {
@@ -531,6 +535,8 @@ fn render_frame(
                                 tiles,
                                 icons: icons.as_ref(),
                                 markers: markers.as_ref(),
+                                site_labels: site_labels.as_ref(),
+                                teammates: teammates.as_ref(),
                                 minimap,
                                 clock_secs,
                                 now_ms,

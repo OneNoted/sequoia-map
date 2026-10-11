@@ -11,6 +11,7 @@ use sequoia_map_engine::territory::ClientTerritoryMap;
 use sequoia_map_engine::viewport::Viewport;
 
 use crate::icons::ResourceAtlas;
+use crate::overlay::{SiteLabels, Teammates};
 use crate::tiles::LoadedTile;
 
 /// One frame's view of the map, borrowed from the map's signals.
@@ -32,6 +33,10 @@ pub struct Frame<'a> {
     pub icons: Option<&'a ResourceAtlas>,
     /// Map Intel markers over the map.
     pub markers: Option<&'a Arc<MapMarkers>>,
+    /// Map Intel site names, over the markers.
+    pub site_labels: Option<&'a Arc<SiteLabels>>,
+    /// Teammates, over everything else drawn on the map.
+    pub teammates: Option<&'a Arc<Teammates>>,
     pub minimap: Option<MinimapLayout>,
     /// Seconds the timers count against: now, or the history timestamp.
     pub clock_secs: i64,
