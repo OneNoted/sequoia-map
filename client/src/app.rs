@@ -2707,19 +2707,24 @@ fn HeatLegend() -> impl IntoView {
         }
         let scale = heat_scale.get();
         let stops = heat_legend_stops(&scale);
+        let rows = heat_legend_rows(&stops);
+        let row_count = rows.iter().max().map_or(1, |row| row + 1);
         let uniform = stops.len() == 1;
         let labels = stops
             .into_iter()
-            .map(|(share, count)| {
+            .zip(rows)
+            .map(|((share, count), row)| {
                 // The label's own point at the same share sits on its colour, so labels at the
                 // ends stay inside the bar and one in the middle centres.
                 let percent = share * 100.0;
+                let top = row as f64 * HEAT_LEGEND_ROW_REM;
                 let style = format!(
-                    "position: absolute; left: {percent}%; transform: translateX(-{percent}%); white-space: nowrap;"
+                    "position: absolute; left: {percent}%; top: {top}rem; transform: translateX(-{percent}%); white-space: nowrap;"
                 );
                 view! { <span style=style>{count}</span> }
             })
             .collect_view();
+        let label_rows_height = format!("{}rem", row_count as f64 * HEAT_LEGEND_ROW_REM);
         let caption = match scale.len() {
             0 => "No captures in this period".to_string(),
             1 => "1 territory taken".to_string(),
@@ -2731,7 +2736,10 @@ fn HeatLegend() -> impl IntoView {
             <div style="position: absolute; top: calc(var(--nav-height, 0px) + 16px); left: 16px; z-index: 22; pointer-events: none; background: rgba(10,12,20,0.82); border: 1px solid rgba(245,197,66,0.25); border-radius: 6px; padding: 8px 10px; min-width: 172px;">
                 <div style="font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); margin-bottom: 5px;">"Heat"</div>
                 <div style="height: 8px; border-radius: 0; background: linear-gradient(90deg, #1e50dc 0%, #28c8f0 25%, #f5dc46 50%, #f58c32 75%, #dc2823 100%);" />
-                <div style="position: relative; height: 0.9rem; margin-top: 5px; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);">
+                <div
+                    style="position: relative; margin-top: 5px; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);"
+                    style:height=label_rows_height
+                >
                     {labels}
                 </div>
                 <div style="margin-top: 3px; font-family: var(--font-mono); font-size: 0.6rem; color: var(--color-text-secondary);">
@@ -2760,6 +2768,37 @@ fn heat_legend_stops(scale: &HeatScale) -> Vec<(f64, String)> {
     counts
         .into_iter()
         .map(|count| (scale.intensity(count), format_heat_count(count)))
+        .collect()
+}
+
+/// Height of one row of legend labels.
+const HEAT_LEGEND_ROW_REM: f64 = 0.9;
+/// The legend's bar in label characters, at its narrowest: 172 px less 20 px of padding, at
+/// about 6 px per character of the 0.62rem monospace labels.
+const HEAT_LEGEND_BAR_CHARS: f64 = 25.0;
+
+/// A row for each of the legend's labels, in bar order. Labels keep their positions; each goes
+/// on the first row where it clears the last label by a character, and on a new row below
+/// when none has room, as when nearly every territory shares one count and the next is at the
+/// red end. A label at share `s` is shifted back by `s` of its own width, so in characters it
+/// spans `s * (bar - len)` to that plus `len`.
+fn heat_legend_rows(stops: &[(f64, String)]) -> Vec<usize> {
+    let mut row_ends: Vec<f64> = Vec::new();
+    stops
+        .iter()
+        .map(|(share, label)| {
+            let len = label.chars().count() as f64;
+            let start = share * (HEAT_LEGEND_BAR_CHARS - len);
+            let row = row_ends
+                .iter()
+                .position(|&end| start - end >= 1.0)
+                .unwrap_or_else(|| {
+                    row_ends.push(0.0);
+                    row_ends.len() - 1
+                });
+            row_ends[row] = start + len;
+            row
+        })
         .collect()
 }
 
@@ -3589,7 +3628,9 @@ mod tests {
         clamp_resource_highlight_opacity, clamp_sidebar_width, clamp_war_panel_width,
         map_mode_from_path, normalize_heat_selected_season_id, should_wait_for_history_probe,
     };
-    use super::{HeatScale, format_heat_count, heat_legend_stops};
+    use super::{
+        HEAT_LEGEND_BAR_CHARS, HeatScale, format_heat_count, heat_legend_rows, heat_legend_stops,
+    };
     use super::{SHEET_DISMISS_DRAG_PX, SheetDrag, sidebar_transform};
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
 
@@ -3840,6 +3881,60 @@ mod tests {
                 Some(1.0),
                 "{counts:?}"
             );
+        }
+    }
+
+    #[test]
+    fn heat_legend_staggers_a_count_that_would_touch_its_neighbour() {
+        // Ninety-nine territories at 1 and one at 2: distinct counts at 0.99 and 1.
+        let concentrated = HeatScale::new([1; 99].into_iter().chain([2]));
+        let stops = heat_legend_stops(&concentrated);
+        assert_eq!(stops, [(0.99, "1".to_string()), (1.0, "2".to_string())]);
+        assert_eq!(heat_legend_rows(&stops), [0, 1]);
+    }
+
+    #[test]
+    fn heat_legend_keeps_spread_labels_on_one_row() {
+        let season = [4, 16, 31, 51, 209].map(|count| count.to_string());
+        let stops: Vec<(f64, String)> = [0.014, 0.263, 0.503, 0.753, 1.0]
+            .into_iter()
+            .zip(season)
+            .collect();
+        assert_eq!(heat_legend_rows(&stops), [0; 5]);
+        assert_eq!(heat_legend_rows(&[(1.0, "7".to_string())]), [0]);
+        assert!(heat_legend_rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn heat_legend_labels_on_one_row_never_touch() {
+        let periods: [Vec<u64>; 4] = [
+            [1; 99].into_iter().chain([2]).collect(),
+            [1].into_iter().chain([2; 98]).chain([3]).collect(),
+            // Long labels bunched around the first quarter.
+            [9_999; 24]
+                .into_iter()
+                .chain([10_000])
+                .chain([12_500; 25])
+                .chain([30_000; 25])
+                .chain([44_167; 25])
+                .collect(),
+            [744, 2_246, 2_246, 3_280, 6_156, 6_156, 44_167].to_vec(),
+        ];
+        for counts in periods {
+            let stops = heat_legend_stops(&HeatScale::new(counts.iter().copied()));
+            let rows = heat_legend_rows(&stops);
+            for row in 0..stops.len() {
+                let mut end: Option<f64> = None;
+                for ((share, label), _) in stops.iter().zip(&rows).filter(|(_, r)| **r == row) {
+                    let len = label.len() as f64;
+                    let start = share * (HEAT_LEGEND_BAR_CHARS - len);
+                    assert!(
+                        end.is_none_or(|end| start - end >= 1.0),
+                        "{stops:?} {rows:?}"
+                    );
+                    end = Some(start + len);
+                }
+            }
         }
     }
 
