@@ -17,6 +17,7 @@ mod gpu;
 mod icons;
 mod input;
 pub mod live_feed;
+pub mod overlay;
 pub mod render_loop;
 mod tiles;
 
@@ -112,6 +113,8 @@ pub struct BrowserMap {
     tiles: RwSignal<Vec<tiles::LoadedTile>>,
     icons: RwSignal<Option<icons::ResourceAtlas>>,
     markers: RwSignal<Option<Arc<MapMarkers>>>,
+    site_labels: RwSignal<Option<Arc<overlay::SiteLabels>>>,
+    teammates: RwSignal<Option<Arc<overlay::Teammates>>>,
     inputs: MapInputs,
 }
 
@@ -124,6 +127,8 @@ impl BrowserMap {
             tiles: RwSignal::new(Vec::new()),
             icons: RwSignal::new(None),
             markers: RwSignal::new(None),
+            site_labels: RwSignal::new(None),
+            teammates: RwSignal::new(None),
             inputs,
         }
     }
@@ -141,6 +146,18 @@ impl BrowserMap {
     /// renderer uploads a set once and keeps it until a different one is set.
     pub fn markers(&self) -> RwSignal<Option<Arc<MapMarkers>>> {
         self.markers
+    }
+
+    /// Map Intel site names over the map; `None` draws none. The renderer prepares a set
+    /// once and keeps it until a different one is set.
+    pub fn site_labels(&self) -> RwSignal<Option<Arc<overlay::SiteLabels>>> {
+        self.site_labels
+    }
+
+    /// Teammates over the map; `None` draws none. Set a new value when the roster, a face or
+    /// the head settings change.
+    pub fn teammates(&self) -> RwSignal<Option<Arc<overlay::Teammates>>> {
+        self.teammates
     }
 
     /// Last pointer position over the map, in canvas CSS pixels.

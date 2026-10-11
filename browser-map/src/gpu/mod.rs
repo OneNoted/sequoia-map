@@ -49,7 +49,9 @@ use crate::icons::ResourceAtlas;
 use crate::tiles::{LoadedTile, TileQuality};
 
 mod markers;
+mod overlay;
 use markers::GpuMarkerRenderer;
+use overlay::GpuOverlayRenderer;
 
 // --- GPU data types ---
 
@@ -1146,6 +1148,8 @@ pub struct GpuRenderer {
 
     /// Map Intel markers, created when the host first shows some.
     marker_renderer: Option<GpuMarkerRenderer>,
+    /// Map Intel site names and teammates, created with the first of them.
+    overlay_renderer: Option<GpuOverlayRenderer>,
 
     // Track current dimensions
     width: u32,
@@ -1929,6 +1933,7 @@ impl GpuRenderer {
             icon_renderer: None,
             supports_gpu_icons,
             marker_renderer: None,
+            overlay_renderer: None,
             width,
             height,
             dpr,
@@ -1976,17 +1981,25 @@ impl GpuRenderer {
         self.text_renderer.is_some()
     }
 
-    /// The glyph atlas font, if the atlas was drawn before it loaded; the host calls
+    /// A font an atlas was drawn in before it loaded, the map labels' first; the host calls
     /// [`Self::text_font_loaded`] once it has.
     pub fn pending_text_font(&self) -> Option<String> {
-        self.text_font_pending.clone()
+        self.text_font_pending.clone().or_else(|| {
+            self.overlay_renderer
+                .as_ref()
+                .and_then(GpuOverlayRenderer::pending_font)
+                .map(str::to_string)
+        })
     }
 
-    /// Redraws the glyph atlas, and with it every label, in `font` now that it has loaded.
+    /// Redraws every atlas drawn in `font`, and with it their labels, now that it has loaded.
     pub fn text_font_loaded(&mut self, font: &str) {
         if self.text_font_pending.as_deref() == Some(font) {
             self.text_font_pending = None;
             self.text_renderer = None;
+        }
+        if let Some(overlay) = self.overlay_renderer.as_mut() {
+            overlay.font_loaded(font);
         }
     }
 
@@ -4236,6 +4249,7 @@ impl GpuRenderer {
         // to avoid pipeline stalls from mid-pass buffer writes on WebGL2/glow.
         let (draw_sel_glow, draw_hov_glow) = self.write_glow_uniforms(frame, &mut stats);
         let draw_markers = self.prepare_markers(frame, &mut stats);
+        let draw_overlay = self.prepare_overlay(frame, &mut stats);
         let draw_connections = self.write_connection_projection(frame, &mut stats);
 
         // Get surface texture
@@ -4437,11 +4451,11 @@ impl GpuRenderer {
             );
         }
 
-        // Preserve the Intel overlay's ordering: symbols and their Canvas2D names
-        // both sit above the map and minimap, using the main-map projection.
-        if draw_markers && let Some(markers) = self.marker_renderer.as_ref() {
+        // Map Intel symbols, their names and teammates sit above the map and the minimap,
+        // in that order, with the main projection and without the minimap's scissor.
+        if draw_markers || draw_overlay {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("map-intel-pass"),
+                label: Some("overlay-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -4452,12 +4466,23 @@ impl GpuRenderer {
                 })],
                 ..Default::default()
             });
-            let draws = markers.draw(
-                &mut pass,
-                &self.viewport_bind_group,
-                &self.vertex_buffer,
-                &self.index_buffer,
-            );
+            let mut draws = 0;
+            if draw_markers && let Some(markers) = self.marker_renderer.as_ref() {
+                draws += markers.draw(
+                    &mut pass,
+                    &self.viewport_bind_group,
+                    &self.vertex_buffer,
+                    &self.index_buffer,
+                );
+            }
+            if draw_overlay && let Some(overlay) = self.overlay_renderer.as_ref() {
+                draws += overlay.draw(
+                    &mut pass,
+                    &self.viewport_bind_group,
+                    &self.vertex_buffer,
+                    &self.index_buffer,
+                );
+            }
             for _ in 0..draws {
                 stats.draw();
             }
@@ -4538,6 +4563,33 @@ impl GpuRenderer {
             f64::from(self.height) / f64::from(self.dpr),
         );
         markers.prepare(&self.queue, frame.camera, css_size, self.dpr)
+    }
+
+    /// Brings the host overlays up to date, before the render pass. Returns whether any of
+    /// them draws.
+    fn prepare_overlay(&mut self, frame: &Frame, stats: &mut DrawStats) -> bool {
+        if frame.site_labels.is_none()
+            && frame.teammates.is_none()
+            && self.overlay_renderer.is_none()
+        {
+            return false;
+        }
+        let overlay = self.overlay_renderer.get_or_insert_with(|| {
+            GpuOverlayRenderer::new(
+                &self.device,
+                self.surface_config.format,
+                &self.viewport_bind_group_layout,
+                &Self::quad_vertex_layout(),
+            )
+        });
+        stats.bytes_uploaded += overlay.sync(
+            &self.device,
+            &self.queue,
+            frame.site_labels,
+            frame.teammates,
+            self.dpr,
+        );
+        overlay.has_instances()
     }
 
     /// Seconds since init, as the shaders' animation clock.
