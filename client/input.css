@@ -1012,6 +1012,21 @@ button.settings-row:hover {
 .settings-disclosure-body {
   padding-bottom: 6px;
 }
+.settings-player-list {
+  max-height: 14rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 10px;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 0.719rem;
+}
+.settings-player-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
 .settings-info {
   font-family: var(--font-body);
 }

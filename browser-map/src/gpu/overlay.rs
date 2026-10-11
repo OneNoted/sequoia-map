@@ -1,4 +1,4 @@
-//! Host overlays: Map Intel site names, then teammates (faces on plates or dots, and names),
+//! Host overlays: Map Intel site names, then teammates (faces or dots, and names),
 //! drawn after the map and minimap with the main projection (`overlay.wgsl`).
 //!
 //! Each layer owns one atlas of sprites: text with its shadow, rasterized by Canvas2D in the
@@ -39,8 +39,6 @@ const TEAMMATE_RGB: [u8; 3] = [0xf5, 0xc5, 0x42];
 /// outline and its antialiasing within `DOT_HALF_EXTENT`).
 const DOT_RADIUS: f64 = 3.0;
 const DOT_HALF_EXTENT: f64 = DOT_RADIUS + 1.5;
-/// The plate behind a face: skins have light pixels, and so do the map tiles.
-const PLATE_RGBA: [u8; 4] = [12, 14, 23, 217];
 /// Radius of the ring co-located teammates are fanned onto, as a fraction of the head size.
 const FAN_RADIUS_FACTOR: f64 = 0.65;
 /// Face images are drawn into the atlas at this size, as requested from the skin renderer.
@@ -52,7 +50,6 @@ const ATLAS_WIDTH: u32 = 2048;
 #[repr(u32)]
 enum OverlayKind {
     Sprite = 0,
-    Fill = 1,
     Dot = 2,
 }
 
@@ -402,7 +399,7 @@ impl GpuOverlayRenderer {
             .split_at(face_count.min(self.teammates.sprites.len()));
         let mut faces = face_sprites.iter();
         let mut names = name_sprites.iter();
-        let mut instances = Vec::with_capacity(team.players.len() * 3);
+        let mut instances = Vec::with_capacity(team.players.len() * 2);
         for (index, player) in team.players.iter().enumerate() {
             let fan = (
                 f64::from(player.fan[0]) * fan_radius,
@@ -424,13 +421,6 @@ impl GpuOverlayRenderer {
             let below = if key.faces[index].is_some()
                 && let Some(face) = faces.next()
             {
-                let plate = (size + 2.0) * dpr;
-                instances.push(quad(
-                    (-plate / 2.0, -plate / 2.0),
-                    plate,
-                    OverlayKind::Fill,
-                    PLATE_RGBA,
-                ));
                 let edge = size * dpr;
                 instances.push(OverlayInstance {
                     uv_rect: face.uv_rect,
