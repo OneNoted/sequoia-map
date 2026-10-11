@@ -68,6 +68,12 @@ the minute hold times are measured from; all come from one snapshot read.
 `Cache-Control` is `public, max-age=5`. Invalid widths answer 400, an empty
 snapshot or a full render queue 503 with `Retry-After`, and render failures 500.
 
+WebP exports up to 12 megapixels use libwebp's sharp YUV conversion, which keeps thin
+saturated borders and legend swatches close to the lossless colours; the 4096-pixel
+default keeps plain conversion to bound memory. The Discord `/map` command attaches
+`?width=2657`, the widest export no taller than 4096 pixels: Discord's media proxy
+serves at most 4096 pixels per side, so a taller attachment is only shown resampled.
+
 One render runs at a time on the blocking pool behind a queue of four requests.
 A render at the default width takes about 3 s and peaks about 270 MB above the
 server's baseline, inside the 768 MB container limit; the latest image per format
