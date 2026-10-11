@@ -46,6 +46,10 @@ bind to loopback. Development ingest credentials are public local defaults,
 not production secrets. Set `INTERNAL_INGEST_TOKEN` to override the shared
 API/gateway token.
 
+Map image exports (`/api/live/map.webp`) read tiles, fonts and icons from the built
+client in `client/dist`. Without a client build, run the API with
+`MAP_IMAGE_ASSETS_DIR=client/public`.
+
 `SEQUOIA_BACKEND_BASE_URL` enables backend-dependent features. Without it, live
 territory data still works, but sign-in and the war-controller feed do not.
 Do not add production credentials to `mise.toml`. Use exported variables or the
