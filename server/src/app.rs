@@ -358,8 +358,10 @@ fn public_asset_version() -> Option<&'static str> {
         .as_deref()
 }
 
-/// FNV-1a over every file under the versioned directories of `dist_dirs`, in path order:
-/// each file's path, length and bytes. `None` when no assets exist or traversal fails.
+/// FNV-1a over source assets under the versioned directories of `dist_dirs`, in path
+/// order: each file's path, length and bytes. Generated compression sidecars are ignored;
+/// their gzip headers can change with build timestamps without changing the asset.
+/// `None` when no assets exist or traversal fails.
 fn asset_content_version(dist_dirs: &[&Path]) -> Option<String> {
     let mut files = Vec::new();
     for dist in dist_dirs {
@@ -405,7 +407,14 @@ fn collect_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Re
         let path = entry.path();
         match entry.file_type()? {
             kind if kind.is_dir() => collect_files(&path, files)?,
-            kind if kind.is_file() => files.push(path),
+            kind if kind.is_file() => {
+                if !matches!(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    Some("br" | "gz")
+                ) {
+                    files.push(path);
+                }
+            }
             _ => {}
         }
     }
@@ -664,6 +673,13 @@ mod tests {
         // A new bundle or page leaves the asset version alone.
         std::fs::write(dist.join("index.html"), b"<html>").expect("write html");
         std::fs::write(dist.join("sequoia-client-0123456789abcdef.js"), b"js").expect("write js");
+        assert_eq!(version().as_deref(), Some(first.as_str()));
+        // Encoded variants are generated at build time; gzip timestamps must not bust
+        // the canonical asset URL when its decoded contents have not changed.
+        let encoded = dist.join("fonts/font.woff2.gz");
+        std::fs::write(&encoded, b"encoded-at-build-one").expect("write encoding");
+        assert_eq!(version().as_deref(), Some(first.as_str()));
+        std::fs::write(&encoded, b"encoded-at-build-two").expect("rewrite encoding");
         assert_eq!(version().as_deref(), Some(first.as_str()));
         // Any changed or added asset changes it.
         std::fs::write(dist.join("tiles/main-1-1.webp"), b"tile2").expect("rewrite tile");
