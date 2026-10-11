@@ -47,10 +47,31 @@ settings not listed here.
 | `GUILDS_ONLINE_CACHE_TTL_SECS` | Online-guild cache lifetime | `120` |
 | `GUILDS_ONLINE_MAX_CONCURRENCY` | Concurrent upstream guild requests | `8` |
 | `GUILD_SEASONS_CACHE_TTL_SECS` | Season-definition cache lifetime | `130` |
+| `MAP_IMAGE_ASSETS_DIR` | Tiles, fonts and icons for map image exports | `client/dist` |
 
 Coolify defaults territory-history retention to `36500` days to preserve imported
 history; ordinary production Compose defaults to `365`. Confirm the deployed
 value before importing old history.
+
+## Map image export
+
+`GET /api/live/map.webp` and `GET /api/live/map.png` render the public live
+territory map. Only the public live snapshot is drawn: no Intel, player
+positions or other signed-in overlays. `?width=` takes 800 to 4096 pixels and
+defaults to 4096, about one pixel per block; the WebP is about 7 MB there.
+
+Responses carry a strong `ETag` over the drawn content (ownership, headquarters,
+connections and hold times to the minute), the deployed `SOURCE_COMMIT` and the
+asset contents, so `If-None-Match` answers 304 only for identical bytes.
+`X-Map-Seq` and `X-Map-Timestamp` describe the live snapshot and `X-Map-As-Of`
+the minute hold times are measured from; all come from one snapshot read.
+`Cache-Control` is `public, max-age=5`. Invalid widths answer 400, an empty
+snapshot or a full render queue 503 with `Retry-After`, and render failures 500.
+
+One render runs at a time on the blocking pool behind a queue of four requests.
+A render at the default width takes about 3 s and peaks about 270 MB above the
+server's baseline, inside the 768 MB container limit; the latest image per format
+and width is kept.
 
 ## Gateway and deployment settings
 

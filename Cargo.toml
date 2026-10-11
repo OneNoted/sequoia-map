@@ -54,3 +54,41 @@ opt-level = 3
 [profile.dev.package."sequoia-map-engine"]
 opt-level = 1
 debug = 0
+
+# The map image renderer decodes, resamples, draws and encodes megapixel images; keep those
+# crates fast in tests and in the size-optimised release dependency profile.
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+
+[profile.dev.package.image-webp]
+opt-level = 3
+
+[profile.dev.package.libwebp-sys]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.tiny-skia]
+opt-level = 3
+
+[profile.dev.package.tiny-skia-path]
+opt-level = 3
+
+[profile.release.package.fast_image_resize]
+opt-level = 3
+
+[profile.release.package.image-webp]
+opt-level = 3
+
+[profile.release.package.libwebp-sys]
+opt-level = 3
+
+[profile.release.package.png]
+opt-level = 3
+
+[profile.release.package.tiny-skia]
+opt-level = 3
+
+[profile.release.package.tiny-skia-path]
+opt-level = 3

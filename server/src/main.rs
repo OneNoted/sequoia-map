@@ -1,7 +1,9 @@
 mod app;
+mod asset_version;
 mod config;
 mod db_migrations;
 mod db_sqlx;
+mod map_image;
 mod routes;
 mod services;
 mod state;
