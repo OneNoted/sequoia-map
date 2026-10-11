@@ -89,11 +89,43 @@ impl<T> Prepared<T> {
     }
 }
 
+/// The whole-pixel size of an atlas measured at `width` by `height` device pixels, or `None`
+/// unless both sides are finite, at least one pixel and within `max_side`, the device's largest
+/// texture side. Checked before the scratch canvas or the texture is sized.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn atlas_extent(width: f64, height: f64, max_side: u32) -> Option<(u32, u32)> {
+    let side = |length: f64| {
+        (length.is_finite() && (1.0..=f64::from(max_side)).contains(&length))
+            .then(|| length.ceil() as u32)
+    };
+    Some((side(width)?, side(height)?))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
-    use super::Prepared;
+    use super::{Prepared, atlas_extent};
+
+    #[test]
+    fn an_atlas_within_the_device_limit_keeps_its_size() {
+        assert_eq!(atlas_extent(2048.0, 96.0, 4096), Some((2048, 96)));
+        assert_eq!(atlas_extent(4096.0, 4096.0, 4096), Some((4096, 4096)));
+    }
+
+    #[test]
+    fn an_atlas_wider_or_taller_than_the_device_limit_is_refused() {
+        assert_eq!(atlas_extent(4097.0, 96.0, 4096), None);
+        assert_eq!(atlas_extent(2048.0, 4097.0, 4096), None);
+    }
+
+    #[test]
+    fn an_atlas_with_an_invalid_side_is_refused() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, 0.5, -64.0] {
+            assert_eq!(atlas_extent(bad, 96.0, 4096), None, "width {bad}");
+            assert_eq!(atlas_extent(96.0, bad, 4096), None, "height {bad}");
+        }
+    }
 
     #[test]
     fn an_unchanged_input_is_not_prepared_again() {

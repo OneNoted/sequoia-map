@@ -14,7 +14,7 @@ use std::sync::Arc;
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, HtmlImageElement};
 
-use crate::overlay::{Prepared, SiteLabels, Teammates};
+use crate::overlay::{Prepared, SiteLabels, Teammates, atlas_extent};
 
 /// The canvas overlays' font, which is kept: 10 CSS pixels of the monospace UI face.
 const FONT_CSS: &str = "10px 'JetBrains Mono', monospace";
@@ -495,14 +495,21 @@ impl GpuOverlayRenderer {
             Which::Sites => &mut self.sites,
             Which::Teammates => &mut self.teammates,
         };
-        let Some((image, sprites)) = baked else {
+        let Some((image, sprites, (width, height))) = baked.and_then(|(image, sprites)| {
+            let extent = atlas_extent(
+                f64::from(image.width()),
+                f64::from(image.height()),
+                max_side,
+            )?;
+            Some((image, sprites, extent))
+        }) else {
             web_sys::console::warn_1(&"map overlay: could not prepare its atlas".into());
             layer.clear();
             return 0;
         };
         let size = wgpu::Extent3d {
-            width: image.width(),
-            height: image.height(),
+            width,
+            height,
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -628,12 +635,16 @@ fn font_loaded(font: &str) -> bool {
 
 /// Lays `sources` out in rows and draws them on a scratch canvas: text with the canvas
 /// overlays' fill and shadow, faces at their own size without smoothing. Returns the pixels
-/// and each source's sprite, or `None` when the document cannot provide a 2D canvas.
+/// and each source's sprite, or `None` when the document cannot provide a 2D canvas or a
+/// sprite or the atlas would not fit in a `max_side` texture (or measured nonsense).
 fn bake_atlas(
     sources: &[SpriteSource],
     dpr: f64,
     max_side: u32,
 ) -> Option<(web_sys::ImageData, Vec<Sprite>)> {
+    if !(dpr.is_finite() && dpr > 0.0) {
+        return None;
+    }
     let canvas = web_sys::window()?
         .document()?
         .create_element("canvas")
@@ -669,6 +680,8 @@ fn bake_atlas(
             }
             SpriteSource::Face(_) => (f64::from(FACE_PX), f64::from(FACE_PX), (0.0, 0.0), 0.0),
         };
+        // Every sprite has to fit on its own; this also keeps NaN out of the sums below.
+        atlas_extent(w, h, max_side)?;
         if x > 0.0 && x + w > atlas_width {
             x = 0.0;
             y += row_height;
@@ -679,13 +692,11 @@ fn bake_atlas(
         width = width.max(x);
         row_height = row_height.max(h);
     }
-    let height = (y + row_height).max(1.0);
-    if height > f64::from(max_side) {
-        return None;
-    }
+    let (width_px, height_px) = atlas_extent(width, (y + row_height).max(1.0), max_side)?;
+    let (width, height) = (f64::from(width_px), f64::from(height_px));
     // Resizing resets the context's state.
-    canvas.set_width(width as u32);
-    canvas.set_height(height as u32);
+    canvas.set_width(width_px);
+    canvas.set_height(height_px);
     ctx.set_font(&font);
     ctx.set_text_align("left");
     ctx.set_text_baseline("alphabetic");
