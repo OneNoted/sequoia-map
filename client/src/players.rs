@@ -1,43 +1,40 @@
 //! Teammate heads on the map.
 //!
 //! The war controller feed already carries every teammate it knows about
-//! ([`sequoia_shared::WarPlayer`]); this draws them. It is a 2D overlay canvas over the
-//! wgpu map, the same arrangement [`crate::map_intel`] uses - the heads are a handful of
-//! screen-space sprites that change every few seconds, which is not worth an instance
-//! buffer and a bind group in the GPU renderer.
+//! ([`sequoia_shared::WarPlayer`]). This places them and loads the faces of those on or near
+//! the screen; the map renderer draws them over the map and minimap with its own camera
+//! ([`sequoia_browser_map::overlay::Teammates`]), so panning or resizing only re-checks which
+//! faces to fetch.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use leptos::prelude::*;
 use sequoia_shared::WarPlayer;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlImageElement};
+use web_sys::HtmlImageElement;
 
 use crate::app::{
     CurrentMode, MapMode, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize,
     ShowPlayerHeads, WarControllerData, WarFeedVisible, clamp_player_head_size,
 };
-use crate::map_intel::{canvas_context, in_screen_bounds};
 use crate::territory::ClientTerritoryMap;
+use crate::viewport::Viewport;
 use sequoia_browser_map::BrowserMap;
-use sequoia_browser_map::render_loop::RenderScheduler;
+use sequoia_browser_map::overlay::{Teammate, Teammates};
 
 /// Edge length of the face we ask the skin renderer for, in pixels. Fixed rather than
-/// derived from the size setting so dragging the slider rescales what is already cached
+/// derived from the size setting so dragging the slider rescales what is already loaded
 /// instead of refetching every head on every step.
 const FACE_TEXTURE_PX: u32 = 64;
-/// Screen-space radius of the ring co-located teammates are fanned out onto, as a fraction
-/// of the head size. A war party shares one territory centre, and stacked heads would read
-/// as a single player.
-const FAN_RADIUS_FACTOR: f64 = 0.65;
-/// Below this viewport scale the labels are dropped - the same clutter rule the map intel
-/// markers follow.
-const LABEL_MIN_SCALE: f64 = 0.35;
-/// Radius of the dot drawn in place of a head when "Render Head" is off, in screen pixels.
-const DOT_RADIUS: f64 = 3.0;
+/// How far past the screen edge a teammate still counts as in view for fetching their face:
+/// two head sizes (the head, plus its fan offset of at most 0.65 of one) and the 16 CSS
+/// pixels of slack the canvas overlay allowed.
+const NEAR_VIEW_HEADS: f64 = 2.0;
+const NEAR_VIEW_PX: f64 = 16.0;
 
 /// A teammate resolved to a world position, ready to project.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,27 +113,46 @@ pub(crate) fn resolve_player_points(
     points
 }
 
+/// Indices of the `points` on or near a `width` x `height` CSS-pixel screen under `view`,
+/// for heads of `head_size` CSS pixels.
+fn near_view(
+    points: &[PlayerPoint],
+    view: &Viewport,
+    (width, height): (f64, f64),
+    head_size: f64,
+) -> Vec<usize> {
+    let margin = head_size * NEAR_VIEW_HEADS + NEAR_VIEW_PX;
+    points
+        .iter()
+        .enumerate()
+        .filter(|(_, point)| {
+            let (sx, sy) = view.world_to_screen(point.x, point.z);
+            (-margin..=width + margin).contains(&sx) && (-margin..=height + margin).contains(&sy)
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
 type FaceCache = Rc<RefCell<HashMap<String, HtmlImageElement>>>;
 
-/// Returns the cached face for `username`, starting the fetch on first sight.
+/// Starts fetching `username`'s face unless it is cached already, loaded or not.
 ///
-/// The image is handed back before it has loaded; [`image_ready`] is what decides whether
-/// there is anything to paint, and `on_settled` brings the frame back once the fetch has
-/// resolved either way. `None` only when the document will not hand out an element at all,
-/// which is not a case that renders.
-fn face_image(
-    cache: &FaceCache,
-    username: &str,
-    on_settled: Rc<dyn Fn()>,
-) -> Option<HtmlImageElement> {
-    if let Some(image) = cache.borrow().get(username) {
-        return Some(image.clone());
+/// [`image_ready`] decides whether a cached face has anything to draw, and `on_settled` runs
+/// once the fetch has resolved either way.
+fn request_face(cache: &FaceCache, username: &str, on_settled: Rc<dyn Fn()>) {
+    if cache.borrow().contains_key(username) {
+        return;
     }
-
-    let image = HtmlImageElement::new().ok()?;
+    let Ok(image) = HtmlImageElement::new() else {
+        return;
+    };
+    // The map renderer copies faces into a GPU texture, which needs CORS-clean pixels: the
+    // request mode has to be set before the source. The skin renderer answers with
+    // `Access-Control-Allow-Origin: *`; a response without it fails like any other error.
+    image.set_cross_origin(Some("anonymous"));
     // NMSR 404s on a name it cannot resolve and rate-limits under load, so the error path
     // has to be wired too - `tiles.rs` does the same. A failed element stays in the cache
-    // reporting `natural_width() == 0`, which keeps it from being refetched every frame.
+    // reporting `natural_width() == 0`, which keeps it from being refetched.
     let on_error = on_settled.clone();
     let onload = Closure::<dyn FnMut()>::new(move || on_settled());
     let onerror = Closure::<dyn FnMut()>::new(move || on_error());
@@ -145,60 +161,13 @@ fn face_image(
     image.set_onload(Some(onload.into_js_value().unchecked_ref()));
     image.set_onerror(Some(onerror.into_js_value().unchecked_ref()));
     image.set_src(&crate::auth::nmsr_face(username, FACE_TEXTURE_PX));
-    cache
-        .borrow_mut()
-        .insert(username.to_string(), image.clone());
-    Some(image)
+    cache.borrow_mut().insert(username.to_string(), image);
 }
 
-/// Whether the face has pixels to draw.
-///
-/// `draw_image` on an element that has not loaded is a silent no-op, so drawing the plate
-/// unconditionally would leave a solid dark square where the head should be - for the
-/// whole roster on the first war of a session, and permanently for a fetch that failed.
+/// Whether the face has pixels to draw. One still loading, or one that failed, is drawn as
+/// a dot instead of an empty plate.
 fn image_ready(image: &HtmlImageElement) -> bool {
     image.complete() && image.natural_width() > 0
-}
-
-fn draw_head(
-    ctx: &CanvasRenderingContext2d,
-    image: &HtmlImageElement,
-    sx: f64,
-    sy: f64,
-    size: f64,
-) {
-    let half = size / 2.0;
-    // A dark plate behind the face: skins have light pixels, and so do the map tiles.
-    ctx.set_fill_style_str("rgba(12,14,23,0.85)");
-    ctx.fill_rect(sx - half - 1.0, sy - half - 1.0, size + 2.0, size + 2.0);
-    let _ = ctx.draw_image_with_html_image_element_and_dw_and_dh(
-        image,
-        sx - half,
-        sy - half,
-        size,
-        size,
-    );
-}
-
-fn draw_dot(ctx: &CanvasRenderingContext2d, sx: f64, sy: f64) {
-    ctx.begin_path();
-    let _ = ctx.arc(sx, sy, DOT_RADIUS, 0.0, std::f64::consts::TAU);
-    ctx.set_fill_style_str("#f5c542");
-    ctx.fill();
-    ctx.set_line_width(1.0);
-    ctx.set_stroke_style_str("rgba(12,14,23,0.9)");
-    ctx.stroke();
-}
-
-fn draw_name(ctx: &CanvasRenderingContext2d, sx: f64, sy: f64, username: &str) {
-    ctx.save();
-    ctx.set_font("10px 'JetBrains Mono', monospace");
-    ctx.set_text_align("center");
-    ctx.set_shadow_color("rgba(0,0,0,0.85)");
-    ctx.set_shadow_blur(4.0);
-    ctx.set_fill_style_str("#f5c542");
-    let _ = ctx.fill_text(username, sx, sy);
-    ctx.restore();
 }
 
 #[component]
@@ -211,7 +180,7 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
     let WarFeedVisible(war_feed_visible) = expect_context();
     let CurrentMode(map_mode) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let camera = expect_context::<BrowserMap>().camera();
+    let map = expect_context::<BrowserMap>();
 
     // The feed describes right now, so the heads must never be drawn over a past snapshot,
     // and never for a viewer the war feed is closed to - the same rule `WarQueuePanel`
@@ -220,8 +189,7 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
         show_heads.get() && war_feed_visible.get() && map_mode.get() == MapMode::Live
     });
 
-    // World positions only move with the feed or the territories teammates stand in; a pan
-    // just re-projects them.
+    // World positions only move with the feed or the territories teammates stand in.
     let points = Memo::new(move |_| {
         if !visible.get() {
             return Vec::new();
@@ -233,13 +201,15 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
         })
     });
 
-    let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
-    let cached_ctx: Rc<RefCell<Option<CanvasRenderingContext2d>>> = Rc::new(RefCell::new(None));
     let faces: FaceCache = Rc::new(RefCell::new(HashMap::new()));
+    // Bumped when a face finishes loading or fails, so the renderer gets the face or the dot.
+    let faces_settled = RwSignal::new(0u64);
+    let on_settled: Rc<dyn Fn()> =
+        Rc::new(move || faces_settled.update(|count| *count = count.wrapping_add(1)));
 
     // Faces are cached per username; drop the ones no longer in the feed so a session left
     // open all evening does not accumulate every teammate who logged on at some point.
-    // Nothing on screen means nothing worth keeping warm either.
+    // Nothing on screen means nothing worth keeping either.
     Effect::new({
         let faces = faces.clone();
         move || {
@@ -252,106 +222,70 @@ pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
         }
     });
 
-    // The render closure needs to schedule frames of its own - a face that finishes
-    // loading has to bring one back - and the scheduler owns that closure. It therefore
-    // reaches the scheduler weakly; the only strong handle lives in the tracking effect
-    // below, so the whole thing is dropped with the component instead of leaking.
-    let scheduler: Rc<RefCell<Option<Rc<RenderScheduler>>>> = Rc::new(RefCell::new(None));
-    let repaint: Rc<dyn Fn()> = {
-        let weak = Rc::downgrade(&scheduler);
-        Rc::new(move || {
-            if let Some(cell) = weak.upgrade()
-                && let Some(scheduler) = cell.borrow().as_ref()
-            {
-                scheduler.mark_dirty();
-            }
-        })
-    };
-
-    let render = {
-        let cached_ctx = cached_ctx.clone();
-        let faces = faces.clone();
-        let repaint = repaint.clone();
-        move || {
-            let Some(canvas) = canvas_ref.get_untracked() else {
-                return false;
-            };
-            let canvas: &HtmlCanvasElement = &canvas;
-            let Some((ctx, width, height)) = canvas_context(canvas, &cached_ctx) else {
-                return false;
-            };
-            ctx.clear_rect(0.0, 0.0, width, height);
-            if !visible.get_untracked() {
-                return false;
-            }
-
-            let size = clamp_player_head_size(head_size.get_untracked());
-            let vp = camera.get_untracked();
-            let with_head = render_head.get_untracked();
-            let with_label = render_label.get_untracked() && vp.scale >= LABEL_MIN_SCALE;
-
-            ctx.set_image_smoothing_enabled(false);
-            let fan_radius = size * FAN_RADIUS_FACTOR;
-            points.with_untracked(|points| {
-                for point in points {
-                    let (sx, sy) = vp.world_to_screen(point.x, point.z);
-                    let (sx, sy) = (sx + point.fan.0 * fan_radius, sy + point.fan.1 * fan_radius);
-                    if !in_screen_bounds(sx, sy, width, height, size + 16.0) {
-                        continue;
-                    }
-                    // The dot stands in for a face that is still loading or never arrived, as
-                    // well as for a label-only - or all-off - configuration, which would
-                    // otherwise leave the master toggle looking broken.
-                    let drew_head = with_head
-                        && face_image(&faces, &point.username, repaint.clone()).is_some_and(
-                            |image| {
-                                let ready = image_ready(&image);
-                                if ready {
-                                    draw_head(&ctx, &image, sx, sy, size);
-                                }
-                                ready
-                            },
-                        );
-                    if !drew_head {
-                        draw_dot(&ctx, sx, sy);
-                    }
-                    if with_label {
-                        let anchor = if drew_head { size / 2.0 } else { DOT_RADIUS };
-                        draw_name(&ctx, sx, sy + anchor + 11.0, &point.username);
-                    }
-                }
-            });
-            ctx.set_image_smoothing_enabled(true);
-            false
+    // Faces are fetched for teammates on or near the screen only, as the canvas overlay did,
+    // so a roster spread across the map does not request every face up front. This scan runs
+    // on every camera change and whenever the map draws at a new size, but it is one
+    // projection per teammate, and what it returns only changes when a teammate comes into
+    // range; the fetch below runs only then. A face, once fetched, stays cached while its
+    // teammate stays in the roster.
+    let camera = map.camera();
+    let near = Memo::new(move |_| {
+        if !render_head.get() {
+            return Vec::new();
         }
-    };
-    *scheduler.borrow_mut() = Some(Rc::new(RenderScheduler::new(render)));
-
+        let view = camera.get();
+        let screen = camera.canvas_size_tracked();
+        let head_size = clamp_player_head_size(head_size.get());
+        points.with(|points| near_view(points, &view, screen, head_size))
+    });
     Effect::new({
-        let scheduler = scheduler.clone();
+        let faces = faces.clone();
         move || {
-            visible.track();
-            camera.track();
-            points.track();
-            head_size.track();
-            render_head.track();
-            render_label.track();
-            if let Some(scheduler) = scheduler.borrow().as_ref() {
-                scheduler.mark_dirty();
-            }
+            near.with(|near| {
+                points.with(|points| {
+                    for &index in near {
+                        request_face(&faces, &points[index].username, on_settled.clone());
+                    }
+                });
+            });
         }
     });
 
-    // `z-index: 7` rather than 8: the overlay is mounted after `DefenseLegend`, which sits
-    // at 8, and equal z-index means later DOM order wins - a teammate near the corner would
-    // paint over the legend panel. `MapIntelOverlay` stays under it for the same reason.
-    view! {
-        <canvas
-            node_ref=canvas_ref
-            style:display=move || if visible.get() { "block" } else { "none" }
-            style="position: absolute; inset: 0; width: 100%; height: 100%; z-index: 7; pointer-events: none;"
-        />
-    }
+    // What the renderer draws, republished when the roster, a setting or a face's load state
+    // changes, never with the camera.
+    Effect::new(move || {
+        faces_settled.track();
+        let show_faces = render_head.get();
+        let show_names = render_label.get();
+        let head_size = clamp_player_head_size(head_size.get()) as f32;
+        let teammates = points.with(|points| {
+            (!points.is_empty()).then(|| {
+                let faces = faces.borrow();
+                let players = points
+                    .iter()
+                    .map(|point| Teammate {
+                        world: [point.x as f32, point.z as f32],
+                        fan: [point.fan.0 as f32, point.fan.1 as f32],
+                        username: point.username.clone(),
+                        face: faces
+                            .get(&point.username)
+                            .filter(|image| show_faces && image_ready(image))
+                            .cloned(),
+                    })
+                    .collect();
+                Arc::new(Teammates {
+                    players,
+                    head_size,
+                    show_faces,
+                    show_names,
+                })
+            })
+        });
+        map.teammates().set(teammates);
+    });
+    on_cleanup(move || {
+        map.teammates().try_set(None);
+    });
 }
 
 #[cfg(test)]
@@ -391,6 +325,50 @@ mod tests {
             ClientTerritory::from_territory(name, territory),
         );
         map
+    }
+
+    fn point_at(username: &str, x: f64, z: f64) -> PlayerPoint {
+        PlayerPoint {
+            username: username.to_string(),
+            x,
+            z,
+            fan: (0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn faces_are_wanted_on_screen_and_just_past_its_edge_only() {
+        let view = Viewport {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale: 1.0,
+        };
+        // A 400 x 800 screen with 24 px heads: the margin is 2 * 24 + 16 = 64 px.
+        let points = [
+            point_at("Centre", 200.0, 400.0),
+            point_at("JustPastLeft", -60.0, 400.0),
+            point_at("BeyondLeft", -70.0, 400.0),
+            point_at("JustPastBottom", 200.0, 864.0),
+            point_at("FarAway", 5000.0, -5000.0),
+        ];
+        assert_eq!(
+            near_view(&points, &view, (400.0, 800.0), 24.0),
+            vec![0, 1, 3]
+        );
+    }
+
+    #[test]
+    fn panning_a_teammate_into_view_wants_their_face() {
+        let points = [point_at("Roamer", 1000.0, 0.0)];
+        let mut view = Viewport {
+            offset_x: 0.0,
+            offset_y: 100.0,
+            scale: 0.5,
+        };
+        assert!(near_view(&points, &view, (400.0, 800.0), 24.0).is_empty());
+        // Panning 300 px left brings world x = 1000 to screen x = 200.
+        view.offset_x -= 300.0;
+        assert_eq!(near_view(&points, &view, (400.0, 800.0), 24.0), vec![0]);
     }
 
     #[test]

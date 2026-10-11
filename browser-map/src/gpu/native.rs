@@ -53,6 +53,8 @@ impl GpuRenderer {
             frame.tiles,
             frame.icons,
             frame.markers,
+            frame.site_labels,
+            frame.teammates,
             frame.minimap,
             frame.clock_secs,
             frame.now_ms,
