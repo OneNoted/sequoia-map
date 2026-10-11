@@ -1,4 +1,5 @@
 use std::env::VarError;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -91,6 +92,16 @@ pub struct SeasonScalarOverridePoint {
     pub season_id: i32,
     pub starts_at: DateTime<Utc>,
     pub scalar_weighted: f64,
+}
+
+/// Website asset directory the map image renderer reads tiles, fonts and icons from.
+///
+/// Defaults to the built map client the server also serves; a source checkout without a
+/// client build can point `MAP_IMAGE_ASSETS_DIR` at `client/public`.
+pub fn map_image_assets_dir() -> PathBuf {
+    std::env::var_os("MAP_IMAGE_ASSETS_DIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| PathBuf::from("client/dist"), PathBuf::from)
 }
 
 pub fn server_bind() -> String {

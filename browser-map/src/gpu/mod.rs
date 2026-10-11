@@ -37,7 +37,7 @@ use sequoia_map_engine::scene::{
     LABEL_VISIBILITY_MIN_SCALE, NextRefresh, Rebuild, TIMER_VISIBILITY_MIN_SCALE,
 };
 use sequoia_map_engine::settings::{NameColor, RenderSettings};
-use sequoia_map_engine::territory::{ClientTerritoryMap, is_sequoia_guild, is_unclaimed_guild};
+use sequoia_map_engine::territory::{ClientTerritoryMap, is_sequoia_guild};
 use sequoia_map_engine::time_format::write_hms;
 use sequoia_map_engine::viewport::Viewport;
 use sequoia_shared::TreasuryLevel;
@@ -3356,11 +3356,7 @@ impl GpuRenderer {
                         continue;
                     }
                     if show_far_zoom_tags {
-                        if is_unclaimed_guild(
-                            &ct.territory.guild.uuid,
-                            &ct.territory.guild.name,
-                            &ct.territory.guild.prefix,
-                        ) {
+                        if ct.territory.guild.is_unclaimed() {
                             continue;
                         }
                         let tag = ct.territory.guild.prefix.trim();

@@ -16,10 +16,12 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::warn;
 
 use crate::config::{
-    WYNNCRAFT_GUILD_LIST_URL, internal_ingest_token, max_history_replay_events,
-    max_history_sr_sample_rows, max_ingest_updates_per_request, seq_live_handoff_v1_enabled,
-    sse_broadcast_buffer, upstream_connect_timeout, upstream_http_timeout,
+    WYNNCRAFT_GUILD_LIST_URL, internal_ingest_token, map_image_assets_dir,
+    max_history_replay_events, max_history_sr_sample_rows, max_ingest_updates_per_request,
+    seq_live_handoff_v1_enabled, sse_broadcast_buffer, upstream_connect_timeout,
+    upstream_http_timeout,
 };
+use crate::map_image::MapImages;
 use crate::services::wynncraft_api::GuildSeasonDefinition;
 
 pub type GuildColor = (u8, u8, u8);
@@ -216,6 +218,8 @@ pub struct AppState {
     pub next_claim_id: Arc<AtomicU64>,
     pub guild_catalog_url: Arc<String>,
     pub observability: Arc<ObservabilityCounters>,
+    /// Renderer and caches behind the public map image endpoints.
+    pub map_images: MapImages,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,6 +477,7 @@ impl AppState {
             next_claim_id: Arc::new(AtomicU64::new(initial_claim_id_seed())),
             guild_catalog_url: Arc::new(WYNNCRAFT_GUILD_LIST_URL.to_string()),
             observability: Arc::new(ObservabilityCounters::default()),
+            map_images: MapImages::new(map_image_assets_dir()),
         }
     }
 }

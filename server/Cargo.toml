@@ -25,6 +25,16 @@ sqlx-postgres = { version = "0.8", default-features = false, features = ["chrono
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
+thiserror = "2"
+# Command-map image rendering: source tiles decode, resampling, vector drawing, glyph outlines
+# and output codecs. libwebp (through `webp`) is the one native dependency; it is used through
+# its safe encoder API for compact lossy WebP that Discord displays inline.
+fast_image_resize = "6.1"
+image-webp = "0.2.4"
+png = "0.18.1"
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
+webp = { version = "0.3.1", default-features = false }
 
 [dev-dependencies]
 temp-env = "0.3"

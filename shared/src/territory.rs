@@ -142,6 +142,22 @@ pub struct GuildRef {
     pub color: Option<(u8, u8, u8)>,
 }
 
+const UNCLAIMED_GUILD_UUID: &str = "00000000-0000-0000-0000-000000000000";
+const UNCLAIMED_GUILD_NAME: &str = "Unclaimed";
+const UNCLAIMED_GUILD_PREFIX: &str = "NONE";
+
+impl GuildRef {
+    /// Whether this is the server's placeholder owner for an unclaimed territory.
+    pub fn is_unclaimed(&self) -> bool {
+        self.uuid.trim().eq_ignore_ascii_case(UNCLAIMED_GUILD_UUID)
+            || (self.name.trim().eq_ignore_ascii_case(UNCLAIMED_GUILD_NAME)
+                && self
+                    .prefix
+                    .trim()
+                    .eq_ignore_ascii_case(UNCLAIMED_GUILD_PREFIX))
+    }
+}
+
 /// Axis-aligned rectangle in world coordinates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Region {
@@ -201,7 +217,28 @@ impl Region {
 
 #[cfg(test)]
 mod tests {
-    use super::Resources;
+    use super::{GuildRef, Resources};
+
+    fn guild(uuid: &str, name: &str, prefix: &str) -> GuildRef {
+        GuildRef {
+            uuid: uuid.to_string(),
+            name: name.to_string(),
+            prefix: prefix.to_string(),
+            color: None,
+        }
+    }
+
+    #[test]
+    fn unclaimed_guild_match_accepts_server_sentinels() {
+        assert!(guild("00000000-0000-0000-0000-000000000000", "Other", "TAG").is_unclaimed());
+        assert!(guild("", " unclaimed ", " none ").is_unclaimed());
+    }
+
+    #[test]
+    fn unclaimed_guild_match_rejects_claimed_guilds() {
+        assert!(!guild("guild-1", "Unclaimed", "SEQ").is_unclaimed());
+        assert!(!guild("", "Sequoia", "NONE").is_unclaimed());
+    }
 
     #[test]
     fn highlight_data_mode0_no_resources() {
