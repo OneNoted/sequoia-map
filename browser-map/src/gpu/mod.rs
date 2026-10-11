@@ -16,7 +16,7 @@ use sequoia_map_engine::claim_labels::{
     self, CLAIM_LABEL_LETTER_SPACING_EM, ClaimCluster, build_claim_clusters,
     claim_label_zoom_active, select_claim_label_candidates,
 };
-use sequoia_map_engine::colors::{brighten, heat_color_for_count};
+use sequoia_map_engine::colors::brighten;
 use sequoia_map_engine::connections::{self, ConnectionMesh, ConnectionProjection};
 use sequoia_map_engine::defense::defense_tier_overlay_data;
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
@@ -3050,7 +3050,7 @@ impl GpuRenderer {
                 let (r, g, b) = match frame.heat {
                     Some(heat) => {
                         let take_count = heat.take_counts.get(name).copied().unwrap_or(0);
-                        heat_color_for_count(take_count, heat.max_take_count)
+                        heat.scale.color(take_count)
                     }
                     None => ct.guild_color,
                 };

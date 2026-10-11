@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use sequoia_map_engine::heat::HeatScale;
 use sequoia_map_engine::map_markers::MapMarkers;
 use sequoia_map_engine::settings::RenderSettings;
 use sequoia_map_engine::territory::ClientTerritoryMap;
@@ -59,9 +60,42 @@ pub struct MapInputs {
 /// Territory recolouring by how often each was taken.
 #[derive(Clone, Copy)]
 pub struct HeatLayer {
-    pub enabled: Signal<bool>,
-    pub take_counts: Signal<HashMap<String, u64>>,
-    pub max_take_count: Signal<u64>,
+    pub(crate) enabled: Signal<bool>,
+    pub(crate) take_counts: Signal<HashMap<String, u64>>,
+    scale: Signal<Arc<HeatScale>>,
+}
+
+impl HeatLayer {
+    /// Colours each of `territories` by its count in `take_counts`, ranked among the
+    /// territories of that map taken at least once. Counts for territories the map does not
+    /// have (all-time data keeps retired ones) are left out of the ranking, and it covers the
+    /// whole map, so panning and zooming never change it. It is rebuilt when the counts or the
+    /// map change, and an unchanged ranking does not repaint.
+    pub fn new(
+        enabled: Signal<bool>,
+        take_counts: Signal<HashMap<String, u64>>,
+        territories: Signal<ClientTerritoryMap>,
+    ) -> Self {
+        let scale = Memo::new(move |_| {
+            take_counts.with(|counts| {
+                territories.with(|map| {
+                    Arc::new(HeatScale::new(
+                        map.keys().filter_map(|name| counts.get(name).copied()),
+                    ))
+                })
+            })
+        });
+        Self {
+            enabled,
+            take_counts,
+            scale: scale.into(),
+        }
+    }
+
+    /// The ranking the colours use, for a legend.
+    pub fn scale(&self) -> Signal<Arc<HeatScale>> {
+        self.scale
+    }
 }
 
 /// Editing behaviour of primary presses. Presses that do not edit pan the map.

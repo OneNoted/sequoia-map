@@ -7,6 +7,7 @@ use wasm_bindgen::JsCast;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub(crate) const DEFAULT_SIDEBAR_WIDTH: f64 = 420.0;
 pub(crate) const SIDEBAR_WIDTH_MIN: f64 = 320.0;
@@ -245,8 +246,9 @@ pub(crate) struct HeatHistoryBasisSetting(pub RwSignal<HeatHistoryBasis>);
 pub(crate) struct HeatSelectedSeasonId(pub RwSignal<Option<i32>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HeatEntriesByTerritory(pub RwSignal<HashMap<String, u64>>);
+/// How heat mode ranks capture counts, for its legend.
 #[derive(Clone, Copy)]
-pub(crate) struct HeatMaxTakeCount(pub RwSignal<u64>);
+pub(crate) struct HeatScaleSignal(pub Signal<Arc<HeatScale>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HeatFallbackApplied(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -867,6 +869,7 @@ use crate::viewport::Viewport;
 use crate::warcontroller;
 use sequoia_browser_map::live_feed::{self, LiveFeed};
 use sequoia_browser_map::{BrowserMap, HeatLayer, MapCanvas, MapEvent, MapInputs};
+use sequoia_map_engine::heat::HeatScale;
 pub(crate) use sequoia_map_engine::settings::ConnectionStyle;
 use sequoia_map_engine::settings::{LabelScales, RenderSettings};
 
@@ -1056,7 +1059,6 @@ pub fn MapPage() -> impl IntoView {
     let heat_selected_season_id: RwSignal<Option<i32>> =
         RwSignal::new(saved.heat_selected_season_id);
     let heat_entries_by_territory: RwSignal<HashMap<String, u64>> = RwSignal::new(HashMap::new());
-    let heat_max_take_count: RwSignal<u64> = RwSignal::new(0);
     let heat_fallback_applied: RwSignal<bool> = RwSignal::new(false);
     let heat_window_label: RwSignal<String> = RwSignal::new(String::new());
     let heat_meta: RwSignal<Option<HistoryHeatMeta>> = RwSignal::new(None);
@@ -1171,6 +1173,11 @@ pub fn MapPage() -> impl IntoView {
             MapMode::Live => MINIMAP_LIVE_INSET,
         })
     });
+    let heat_layer = HeatLayer::new(
+        heat_mode_enabled.into(),
+        heat_entries_by_territory.into(),
+        territories.into(),
+    );
     let map = BrowserMap::new(
         MapInputs {
             territories: territories.into(),
@@ -1180,11 +1187,7 @@ pub fn MapPage() -> impl IntoView {
             clock_secs: map_clock.into(),
             // Paused history holds `map_clock` still; cooldown pulses keep animating.
             animation_tick: Some(tick.into()),
-            heat: Some(HeatLayer {
-                enabled: heat_mode_enabled.into(),
-                take_counts: heat_entries_by_territory.into(),
-                max_take_count: heat_max_take_count.into(),
-            }),
+            heat: Some(heat_layer),
             wars: Some(war_outlines.into()),
             minimap_inset: minimap_inset.into(),
             edit: Signal::stored(Default::default()),
@@ -1370,7 +1373,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(HeatHistoryBasisSetting(heat_history_basis));
     provide_context(HeatSelectedSeasonId(heat_selected_season_id));
     provide_context(HeatEntriesByTerritory(heat_entries_by_territory));
-    provide_context(HeatMaxTakeCount(heat_max_take_count));
+    provide_context(HeatScaleSignal(heat_layer.scale()));
     provide_context(HeatFallbackApplied(heat_fallback_applied));
     provide_context(HeatWindowLabel(heat_window_label));
     provide_context(HeatMetaState(heat_meta));
@@ -1661,7 +1664,6 @@ pub fn MapPage() -> impl IntoView {
                             .map(|entry| (entry.territory.clone(), entry.take_count))
                             .collect();
                         heat_entries_by_territory.set(entries_map);
-                        heat_max_take_count.set(payload.max_take_count);
                         heat_fallback_applied.set(payload.fallback_applied);
                         heat_window_label.set(format_heat_window_label(&payload, mode_now));
                     }
@@ -1671,7 +1673,6 @@ pub fn MapPage() -> impl IntoView {
                         }
                         web_sys::console::warn_1(&format!("heat fetch failed: {e}").into());
                         heat_entries_by_territory.set(HashMap::new());
-                        heat_max_take_count.set(0);
                         heat_fallback_applied.set(false);
                         heat_window_label.set(String::new());
                     }
@@ -1690,7 +1691,6 @@ pub fn MapPage() -> impl IntoView {
         move || {
             if !heat_mode_enabled.get() {
                 heat_entries_by_territory.set(HashMap::new());
-                heat_max_take_count.set(0);
                 heat_fallback_applied.set(false);
                 heat_window_label.set(String::new());
                 return;
@@ -2691,25 +2691,55 @@ pub fn MapPage() -> impl IntoView {
 }
 
 /// Colour scale for heat mode, over the top-left of the map.
+///
+/// Heat colours rank territories by their counts rather than scale the counts (see
+/// [`HeatScale`]), so the bar is labelled with the counts at each quarter of the ranked
+/// territories, which are not evenly spaced counts.
 #[component]
 fn HeatLegend() -> impl IntoView {
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
-    let HeatMaxTakeCount(heat_max_take_count) = expect_context();
+    let HeatScaleSignal(heat_scale) = expect_context();
     let HeatWindowLabel(heat_window_label) = expect_context();
 
     move || {
         if !heat_mode_enabled.get() {
             return ().into_any();
         }
-        let max_count = heat_max_take_count.get();
+        let scale = heat_scale.get();
+        let stops = heat_legend_stops(&scale);
+        let last = stops.len().saturating_sub(1);
+        let labels = stops
+            .into_iter()
+            .enumerate()
+            .map(|(index, (share, count))| {
+                // The ends align inside the bar; the quartiles centre on their stop.
+                let shift = match index {
+                    0 if last > 0 => 0,
+                    _ if index == last && last > 0 => 100,
+                    _ => 50,
+                };
+                let style = format!(
+                    "position: absolute; left: {}%; transform: translateX(-{shift}%); white-space: nowrap;",
+                    share * 100.0
+                );
+                view! { <span style=style>{count}</span> }
+            })
+            .collect_view();
+        let caption = match scale.len() {
+            0 => "No captures in this period".to_string(),
+            1 => "1 territory taken".to_string(),
+            ranked => format!("Quartiles of {ranked} territories taken"),
+        };
         let label = heat_window_label.get();
         view! {
             <div style="position: absolute; top: calc(var(--nav-height, 0px) + 16px); left: 16px; z-index: 22; pointer-events: none; background: rgba(10,12,20,0.82); border: 1px solid rgba(245,197,66,0.25); border-radius: 6px; padding: 8px 10px; min-width: 172px;">
                 <div style="font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); margin-bottom: 5px;">"Heat"</div>
                 <div style="height: 8px; border-radius: 0; background: linear-gradient(90deg, #1e50dc 0%, #28c8f0 25%, #f5dc46 50%, #f58c32 75%, #dc2823 100%);" />
-                <div style="margin-top: 6px; display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);">
-                    <span>"Low"</span>
-                    <span>{format!("Max {max_count}")}</span>
+                <div style="position: relative; height: 0.9rem; margin-top: 5px; font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-text-secondary);">
+                    {labels}
+                </div>
+                <div style="margin-top: 3px; font-family: var(--font-mono); font-size: 0.6rem; color: var(--color-text-secondary);">
+                    {caption}
                 </div>
                 <div style="margin-top: 4px; font-family: var(--font-mono); font-size: 0.6rem; color: #6f748f; line-height: 1.25;">
                     {label}
@@ -2717,6 +2747,34 @@ fn HeatLegend() -> impl IntoView {
             </div>
         }
         .into_any()
+    }
+}
+
+/// The legend's labelled stops as (share of the bar, count): the counts where the colours at
+/// 0, 25, 50, 75 and 100% begin. One stop, centred, when every ranked territory has the same
+/// count; none without captures.
+fn heat_legend_stops(scale: &HeatScale) -> Vec<(f64, String)> {
+    let stops: Vec<(f64, u64)> = [0.0, 0.25, 0.5, 0.75, 1.0]
+        .into_iter()
+        .filter_map(|share| scale.count_at(share).map(|count| (share, count)))
+        .collect();
+    match (stops.first(), stops.last()) {
+        (Some(&(_, low)), Some(&(_, high))) if low == high => {
+            vec![(0.5, format_heat_count(high))]
+        }
+        _ => stops
+            .into_iter()
+            .map(|(share, count)| (share, format_heat_count(count)))
+            .collect(),
+    }
+}
+
+/// Exact below ten thousand, then thousands to one decimal ("44.2k").
+fn format_heat_count(count: u64) -> String {
+    if count < 10_000 {
+        count.to_string()
+    } else {
+        format!("{:.1}k", count as f64 / 1000.0)
     }
 }
 
@@ -3537,6 +3595,7 @@ mod tests {
         clamp_resource_highlight_opacity, clamp_sidebar_width, clamp_war_panel_width,
         map_mode_from_path, normalize_heat_selected_season_id, should_wait_for_history_probe,
     };
+    use super::{HeatScale, format_heat_count, heat_legend_stops};
     use super::{SHEET_DISMISS_DRAG_PX, SheetDrag, sidebar_transform};
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
 
@@ -3715,6 +3774,38 @@ mod tests {
         assert!(defaults.player_head_render_head);
         assert!(!defaults.player_head_render_label);
         assert_eq!(defaults.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
+    }
+
+    #[test]
+    fn heat_legend_labels_the_uneven_quartile_counts_of_a_skewed_period() {
+        let ordinary = [10, 20, 30, 40, 50]
+            .into_iter()
+            .flat_map(|level| [level; 8]);
+        let scale = HeatScale::new(ordinary.chain([200]));
+        let stops = heat_legend_stops(&scale);
+        let shares: Vec<f64> = stops.iter().map(|(share, _)| *share).collect();
+        let labels: Vec<&str> = stops.iter().map(|(_, label)| label.as_str()).collect();
+        assert_eq!(shares, [0.0, 0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(labels, ["10", "20", "30", "40", "200"]);
+    }
+
+    #[test]
+    fn heat_legend_shows_one_count_when_all_are_equal_and_none_without_captures() {
+        assert_eq!(
+            heat_legend_stops(&HeatScale::new([7; 12])),
+            [(0.5, "7".to_string())]
+        );
+        assert!(heat_legend_stops(&HeatScale::new([0, 0])).is_empty());
+    }
+
+    #[test]
+    fn heat_counts_are_exact_until_ten_thousand() {
+        assert_eq!(format_heat_count(9_999), "9999");
+        assert_eq!(format_heat_count(44_167), "44.2k");
+        assert_eq!(
+            format_heat_count(u64::MAX),
+            format!("{:.1}k", u64::MAX as f64 / 1000.0)
+        );
     }
 
     #[test]

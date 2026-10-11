@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use sequoia_map_engine::heat::HeatScale;
 use sequoia_map_engine::map_markers::MapMarkers;
 use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::NextRefresh;
@@ -46,7 +47,7 @@ pub struct Frame<'a> {
 #[derive(Clone, Copy)]
 pub struct HeatColors<'a> {
     pub take_counts: &'a HashMap<String, u64>,
-    pub max_take_count: u64,
+    pub scale: &'a HeatScale,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

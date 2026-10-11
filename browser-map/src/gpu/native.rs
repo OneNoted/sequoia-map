@@ -45,9 +45,7 @@ impl GpuRenderer {
             frame.hovered,
             frame.selected,
             frame.settings,
-            frame
-                .heat
-                .map(|heat| (heat.take_counts, heat.max_take_count)),
+            frame.heat.map(|heat| (heat.take_counts, heat.scale)),
             frame.wars,
             frame.territory_bounds,
             frame.tiles,

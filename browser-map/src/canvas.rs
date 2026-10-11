@@ -237,7 +237,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
             if let Some(heat) = inputs.heat {
                 heat.enabled.track();
                 heat.take_counts.track();
-                heat.max_take_count.track();
+                heat.scale.track();
             }
             if let Some(wars) = inputs.wars {
                 wars.track();
@@ -509,7 +509,7 @@ fn render_frame(
     let selected = inputs.selected.get_untracked();
     let icons = map.icons.get_untracked();
     let heat = inputs.heat.filter(|heat| heat.enabled.get_untracked());
-    let max_take_count = heat.map_or(0, |heat| heat.max_take_count.get_untracked());
+    let heat_scale = heat.map(|heat| heat.scale.get_untracked());
     let site_labels = map.site_labels.get_untracked();
     let teammates = map.teammates.get_untracked();
 
@@ -526,10 +526,9 @@ fn render_frame(
                                 hovered: hovered.as_deref(),
                                 selected: selected.as_deref(),
                                 settings: &settings,
-                                heat: take_counts.map(|take_counts| HeatColors {
-                                    take_counts,
-                                    max_take_count,
-                                }),
+                                heat: take_counts
+                                    .zip(heat_scale.as_deref())
+                                    .map(|(take_counts, scale)| HeatColors { take_counts, scale }),
                                 wars,
                                 territory_bounds: *territory_bounds,
                                 tiles,
