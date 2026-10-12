@@ -58,7 +58,7 @@ value before importing old history.
 `GET /api/live/map.webp` and `GET /api/live/map.png` render the public live
 territory map. Only the public live snapshot is drawn: no Intel, player
 positions or other signed-in overlays. `?width=` takes 800 to 4096 pixels and
-defaults to 4096, about one pixel per block; the WebP is about 7 MB there.
+defaults to 4096, about one pixel per block; the WebP is about 7.5 MB there.
 
 Responses carry a strong `ETag` over the drawn content (ownership, headquarters,
 connections and hold times to the minute), the deployed `SOURCE_COMMIT` and the

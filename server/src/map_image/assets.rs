@@ -71,11 +71,7 @@ fn icon(path: &Path) -> Result<Pixmap, AssetError> {
         reason: "icon is empty",
     };
     let size = IntSize::from_wh(image.width, image.height).ok_or_else(invalid)?;
-    Pixmap::from_vec(
-        premultiplied(&image.pixels, image.channels, |value| value),
-        size,
-    )
-    .ok_or_else(invalid)
+    Pixmap::from_vec(premultiplied(&image.pixels, image.channels), size).ok_or_else(invalid)
 }
 
 /// Decoded straight-alpha WebP pixels: RGB, or RGBA when the file has alpha.
@@ -104,18 +100,16 @@ pub(super) fn read_webp(path: &Path) -> Result<DecodedImage, AssetError> {
     })
 }
 
-/// Converts straight RGB(A) to premultiplied RGBA, passing each colour through `grade`.
-pub(super) fn premultiplied(
-    pixels: &[u8],
-    channels: usize,
-    grade: impl Fn([f32; 3]) -> [f32; 3],
-) -> Vec<u8> {
+/// Converts straight RGB(A) to premultiplied RGBA without changing the colours.
+pub(super) fn premultiplied(pixels: &[u8], channels: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(pixels.len() / channels * 4);
     for pixel in pixels.chunks_exact(channels) {
         let alpha = pixel.get(3).copied().unwrap_or(u8::MAX);
-        let coverage = f32::from(alpha) / 255.0;
-        let graded = grade([pixel[0], pixel[1], pixel[2]].map(f32::from));
-        out.extend(graded.map(|channel| (channel * coverage).round().clamp(0.0, 255.0) as u8));
+        out.extend(
+            pixel[..3]
+                .iter()
+                .map(|&channel| ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8),
+        );
         out.push(alpha);
     }
     out
