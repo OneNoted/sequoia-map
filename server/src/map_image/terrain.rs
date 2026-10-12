@@ -1,6 +1,9 @@
 //! Terrain base layer, resampled from the bundled one-block-per-pixel source tiles.
 
+use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 
 use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
@@ -16,7 +19,17 @@ use super::palette;
 const SATURATION: f32 = 0.72;
 const BRIGHTNESS: f32 = 0.84;
 
+/// Most tiles decoded and resampled at once. Each worker holds at most two tile-sized buffers
+/// (under 17 MB at the default width); finished tiles are handed over one at a time.
+const TERRAIN_WORKERS: usize = 4;
+
+/// A resampled tile and the canvas position of its top-left corner.
+type PlacedTile = (i32, i32, Pixmap);
+
 /// A background-filled canvas of the frame's size with every tile drawn into it.
+///
+/// Tiles are decoded and resampled in parallel but drawn in table order, so the result is
+/// identical to a sequential composition.
 ///
 /// # Errors
 ///
@@ -25,21 +38,69 @@ const BRIGHTNESS: f32 = 0.84;
 pub(super) fn compose(tiles: &Path, frame: Frame) -> Result<Pixmap, MapImageError> {
     let mut canvas = Pixmap::new(frame.width(), frame.height()).ok_or(MapImageError::Canvas)?;
     canvas.fill(palette::color(palette::BACKGROUND));
-    let mut resizer = Resizer::new();
-    for tile in MAP_TILES {
-        let (left, top) = frame.grid_pixel(tile.x1, tile.z1);
-        let (right, bottom) = frame.grid_pixel(tile.x2 + 1, tile.z2 + 1);
-        let resampled = resample(&mut resizer, tiles, tile, (right - left, bottom - top))?;
-        canvas.draw_pixmap(
-            i32::try_from(left).map_err(|_| MapImageError::Canvas)?,
-            i32::try_from(top).map_err(|_| MapImageError::Canvas)?,
-            resampled.as_ref(),
-            &PixmapPaint::default(),
-            Transform::identity(),
-            None,
-        );
-    }
+    let workers = std::thread::available_parallelism()
+        .map_or(1, NonZeroUsize::get)
+        .min(TERRAIN_WORKERS);
+    let next = AtomicUsize::new(0);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let (sender, next) = (sender.clone(), &next);
+            scope.spawn(move || {
+                let mut resizer = Resizer::new();
+                // Claim each immutable tile once; composition below preserves table order.
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(tile) = MAP_TILES.get(index) else {
+                        break;
+                    };
+                    let result = place(&mut resizer, tiles, tile, frame);
+                    if sender.send((index, result)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        // The Realm of Light overlaps the main grid's empty northern edge: keep table order.
+        // A slow earlier tile can retain later results up to the fixed MAP_TILES table size;
+        // the channel bounds handoff, not this reorder buffer.
+        let mut waiting = Vec::new();
+        let mut drawn = 0;
+        for (index, result) in receiver {
+            waiting.push((index, result));
+            while let Some(position) = waiting.iter().position(|(index, _)| *index == drawn) {
+                let (left, top, pixmap) = waiting.swap_remove(position).1?;
+                canvas.draw_pixmap(
+                    left,
+                    top,
+                    pixmap.as_ref(),
+                    &PixmapPaint::default(),
+                    Transform::identity(),
+                    None,
+                );
+                drawn += 1;
+            }
+        }
+        Ok::<(), MapImageError>(())
+    })?;
     Ok(canvas)
+}
+
+fn place(
+    resizer: &mut Resizer,
+    tiles: &Path,
+    tile: &MapTile,
+    frame: Frame,
+) -> Result<PlacedTile, MapImageError> {
+    let (left, top) = frame.grid_pixel(tile.x1, tile.z1);
+    let (right, bottom) = frame.grid_pixel(tile.x2 + 1, tile.z2 + 1);
+    let resampled = resample(resizer, tiles, tile, (right - left, bottom - top))?;
+    Ok((
+        i32::try_from(left).map_err(|_| MapImageError::Canvas)?,
+        i32::try_from(top).map_err(|_| MapImageError::Canvas)?,
+        resampled,
+    ))
 }
 
 fn resample(
@@ -73,7 +134,11 @@ fn resample(
             &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3)),
         )
         .map_err(|error| resample_error(&error))?;
-    let pixels = premultiplied(target.buffer(), source.channels, grade);
+    let channels = source.channels;
+    // Release the decoded tile before allocating its graded copy: with several workers the
+    // terrain phase otherwise holds three tile-sized buffers per worker.
+    drop(source);
+    let pixels = premultiplied(target.buffer(), channels, grade);
     Pixmap::from_vec(pixels, size).ok_or(MapImageError::Canvas)
 }
 
@@ -81,4 +146,36 @@ fn grade(rgb: [f32; 3]) -> [f32; 3] {
     let [r, g, b] = rgb;
     let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     rgb.map(|channel| (luma + (channel - luma) * SATURATION) * BRIGHTNESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parallel_composition_matches_drawing_in_table_order() {
+        let tiles = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../client/public/tiles"
+        ));
+        let frame = Frame::for_width(800);
+
+        let parallel = compose(tiles, frame).expect("parallel terrain");
+
+        let mut sequential = Pixmap::new(frame.width(), frame.height()).expect("canvas");
+        sequential.fill(palette::color(palette::BACKGROUND));
+        let mut resizer = Resizer::new();
+        for tile in MAP_TILES {
+            let (left, top, pixmap) = place(&mut resizer, tiles, tile, frame).expect("tile");
+            sequential.draw_pixmap(
+                left,
+                top,
+                pixmap.as_ref(),
+                &PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+        }
+        assert!(parallel.data() == sequential.data());
+    }
 }

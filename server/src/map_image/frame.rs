@@ -132,6 +132,14 @@ mod tests {
     }
 
     #[test]
+    fn discord_attachment_width_is_the_widest_frame_at_most_4096_tall() {
+        // Sierra attaches width 2657 to fit the observed 4096-per-side limit for explicit
+        // media-proxy resize requests, while linking the full-resolution export separately.
+        assert!(Frame::for_width(2657).height() <= 4096);
+        assert!(Frame::for_width(2658).height() > 4096);
+    }
+
+    #[test]
     fn frame_content_is_centred_horizontally() {
         let frame = Frame::for_width(2400);
         let (left, _) = frame.point(FRAME_LEFT as f32, 0.0);
