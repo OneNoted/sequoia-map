@@ -11,10 +11,10 @@ use super::glyphs::{CAP_CELLS, Face, TextStyle, draw_text};
 use super::palette::{self, color};
 use super::scene::{Guild, MapScene, Plot};
 
-const FILL_ALPHA: u8 = 84;
-const BORDER_ALPHA: u8 = 235;
-/// Darker guild colours are lifted to this luma for borders so they read on dark terrain.
-const MIN_BORDER_LUMA: f32 = 112.0;
+/// How strongly a guild's own colour covers the terrain inside its territories and along
+/// their edges, as on the website's map: a light wash with a clearly stronger edge.
+const FILL_OPACITY: f32 = 0.26;
+const BORDER_OPACITY: f32 = 0.72;
 const CROWN_ART_PIXELS: u32 = 16;
 /// Smallest label cell: two pixels per font cell gives 14-pixel capitals.
 const MIN_CELL: u32 = 2;
@@ -35,17 +35,25 @@ pub(super) fn paint(canvas: &mut Pixmap, scene: &MapScene, frame: Frame, assets:
     for (plot, rect) in scene.territories().iter().zip(&rects) {
         if let (Some(rect), Some(guild)) = (rect, owner(guilds, plot)) {
             let [r, g, b] = guild.color;
-            fill_rect(canvas, *rect, ColorU8::from_rgba(r, g, b, FILL_ALPHA));
+            fill_rect(
+                canvas,
+                *rect,
+                ColorU8::from_rgba(r, g, b, alpha(FILL_OPACITY)),
+            );
         }
     }
     draw_connections(canvas, scene, frame, ui);
     let border = border_width(ui);
+    // Borders are stroked over the fill, so their own alpha only makes up the difference.
+    let border_alpha = alpha(1.0 - (1.0 - BORDER_OPACITY) / (1.0 - FILL_OPACITY));
     for (plot, rect) in scene.territories().iter().zip(&rects) {
         let Some(rect) = rect else {
             continue;
         };
-        let outline =
-            owner(guilds, plot).map_or(palette::UNCLAIMED, |guild| border_color(guild.color));
+        let outline = owner(guilds, plot).map_or(palette::UNCLAIMED, |guild| {
+            let [r, g, b] = guild.color;
+            ColorU8::from_rgba(r, g, b, border_alpha)
+        });
         stroke_inset(canvas, *rect, outline, border, 0.0);
         if plot.headquarters {
             stroke_inset(canvas, *rect, palette::GOLD, border, border);
@@ -78,12 +86,8 @@ fn border_width(ui: u32) -> f32 {
     (ui as f32 * 0.5).round().max(2.0)
 }
 
-fn border_color([r, g, b]: [u8; 3]) -> ColorU8 {
-    let [rf, gf, bf] = [r, g, b].map(f32::from);
-    let luma = 0.2126 * rf + 0.7152 * gf + 0.0722 * bf;
-    let lift = ((MIN_BORDER_LUMA - luma) / (255.0 - luma)).clamp(0.0, 1.0);
-    let [r, g, b] = [rf, gf, bf].map(|channel| (channel + (255.0 - channel) * lift).round() as u8);
-    ColorU8::from_rgba(r, g, b, BORDER_ALPHA)
+fn alpha(opacity: f32) -> u8 {
+    (opacity * 255.0).round() as u8
 }
 
 fn solid_paint(value: ColorU8) -> Paint<'static> {
@@ -503,5 +507,75 @@ fn draw_legend(canvas: &mut Pixmap, assets: &Assets, guilds: &[Guild], area: Rec
         let (_, x, y) = slot(layout.shown);
         let summary = more_guilds(guilds.len() - layout.shown);
         draw_text(canvas, &assets.regular, &summary, (x, y), muted);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use sequoia_shared::{Region, TerritoryMap};
+    use tiny_skia::Color;
+
+    use super::super::scene::tests::territory;
+    use super::*;
+
+    /// How far each channel of `pixel` moved from `terrain` toward `guild` (0 to 1).
+    fn coverage(pixel: &[u8], terrain: [u8; 3], guild: [u8; 3]) -> [f32; 3] {
+        std::array::from_fn(|channel| {
+            (f32::from(pixel[channel]) - f32::from(terrain[channel]))
+                / (f32::from(guild[channel]) - f32::from(terrain[channel]))
+        })
+    }
+
+    #[test]
+    fn territories_keep_their_guild_hue_with_a_clear_edge() {
+        // Sequoia's dark purple; borders were once lifted toward white, turning it lavender.
+        let purple = [58, 38, 81];
+        let terrain = [160, 160, 160];
+        let mut held = territory("Sequoia", "SEQ", chrono::Utc::now());
+        held.guild.color = Some((purple[0], purple[1], purple[2]));
+        held.location = Region {
+            start: [-1000, -3000],
+            end: [0, -2000],
+        };
+        let scene = MapScene::new(
+            &TerritoryMap::from([("Ragni".to_string(), held)]),
+            chrono::Utc::now(),
+        );
+        let frame = Frame::for_width(800);
+        let assets = Assets::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../client/public"
+        )))
+        .expect("assets");
+        let mut canvas = Pixmap::new(frame.width(), frame.height()).expect("canvas");
+        let [r, g, b] = terrain;
+        canvas.fill(Color::from_rgba8(r, g, b, 255));
+
+        paint(&mut canvas, &scene, frame, &assets);
+
+        let [left, top, right, bottom] = scene.territories()[0].bounds;
+        let rect = frame.rect(left, top, right, bottom).expect("territory");
+        let at = |x: f32, y: f32| {
+            let index = (y as usize * canvas.width() as usize + x as usize) * 4;
+            coverage(&canvas.data()[index..index + 3], terrain, purple)
+        };
+        // A pixel wholly inside the left border, and one in the fill clear of the label.
+        let edge = at(rect.left().floor() + 1.0, rect.top() + rect.height() / 2.0);
+        let fill = at(rect.left() + 12.0, rect.top() + 12.0);
+
+        for amounts in [edge, fill] {
+            let spread = amounts.iter().copied().fold(f32::MIN, f32::max)
+                - amounts.iter().copied().fold(f32::MAX, f32::min);
+            assert!(
+                spread <= 0.05 && amounts.iter().all(|amount| *amount <= 1.0),
+                "not the guild colour: {amounts:?}"
+            );
+        }
+        assert!(
+            fill[0] > 0.1 && fill[0] < 0.5 && edge[0] > fill[0] + 0.3,
+            "edge {edge:?}, fill {fill:?}"
+        );
     }
 }

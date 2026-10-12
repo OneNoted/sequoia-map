@@ -15,10 +15,6 @@ use super::assets::{premultiplied, read_webp};
 use super::frame::Frame;
 use super::palette;
 
-/// Terrain stays recognisable but recedes slightly, so guild colour and labels lead.
-const SATURATION: f32 = 0.72;
-const BRIGHTNESS: f32 = 0.84;
-
 /// Most tiles decoded and resampled at once. Each worker holds at most two tile-sized buffers
 /// (under 17 MB at the default width); finished tiles are handed over one at a time.
 const TERRAIN_WORKERS: usize = 4;
@@ -135,29 +131,56 @@ fn resample(
         )
         .map_err(|error| resample_error(&error))?;
     let channels = source.channels;
-    // Release the decoded tile before allocating its graded copy: with several workers the
-    // terrain phase otherwise holds three tile-sized buffers per worker.
+    // Release the decoded tile before allocating its premultiplied copy: with several workers
+    // the terrain phase otherwise holds three tile-sized buffers per worker.
     drop(source);
-    let pixels = premultiplied(target.buffer(), channels, grade);
+    let pixels = premultiplied(target.buffer(), channels);
     Pixmap::from_vec(pixels, size).ok_or(MapImageError::Canvas)
-}
-
-fn grade(rgb: [f32; 3]) -> [f32; 3] {
-    let [r, g, b] = rgb;
-    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    rgb.map(|channel| (luma + (channel - luma) * SATURATION) * BRIGHTNESS)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const TILES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../client/public/tiles");
+
+    /// Mean of each colour channel over premultiplied RGBA pixels.
+    fn mean_colour(rgba: &[u8]) -> [f64; 3] {
+        let pixels = (rgba.len() / 4) as f64;
+        std::array::from_fn(|channel| {
+            rgba.chunks_exact(4)
+                .map(|pixel| f64::from(pixel[channel]))
+                .sum::<f64>()
+                / pixels
+        })
+    }
+
+    #[test]
+    fn resampled_terrain_keeps_the_source_tile_colours() {
+        // The website draws the bundled tiles unchanged; exports must not dim or desaturate them.
+        let tiles = Path::new(TILES);
+        let tile = MAP_TILES
+            .iter()
+            .find(|tile| tile.file == "main-2-2.webp")
+            .expect("central tile");
+        let source = read_webp(&tiles.join(tile.file)).expect("source tile");
+        let expected = mean_colour(&premultiplied(&source.pixels, source.channels));
+
+        let (_, _, resampled) =
+            place(&mut Resizer::new(), tiles, tile, Frame::for_width(800)).expect("tile");
+        let actual = mean_colour(resampled.data());
+
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() <= 2.0,
+                "resampled {actual:.1}, source {expected:.1}"
+            );
+        }
+    }
+
     #[test]
     fn parallel_composition_matches_drawing_in_table_order() {
-        let tiles = Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../client/public/tiles"
-        ));
+        let tiles = Path::new(TILES);
         let frame = Frame::for_width(800);
 
         let parallel = compose(tiles, frame).expect("parallel terrain");
