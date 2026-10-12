@@ -133,8 +133,8 @@ mod tests {
 
     #[test]
     fn discord_attachment_width_is_the_widest_frame_at_most_4096_tall() {
-        // Sierra attaches width 2657: Discord's media proxy serves at most 4096 pixels per
-        // side, and within that it can show the attachment's own pixels instead of a resample.
+        // Sierra attaches width 2657 to fit the observed 4096-per-side limit for explicit
+        // media-proxy resize requests, while linking the full-resolution export separately.
         assert!(Frame::for_width(2657).height() <= 4096);
         assert!(Frame::for_width(2658).height() > 4096);
     }

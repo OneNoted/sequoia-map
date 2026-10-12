@@ -71,13 +71,17 @@ snapshot or a full render queue 503 with `Retry-After`, and render failures 500.
 WebP exports up to 12 megapixels use libwebp's sharp YUV conversion, which keeps thin
 saturated borders and legend swatches close to the lossless colours; the 4096-pixel
 default keeps plain conversion to bound memory. The Discord `/map` command attaches
-`?width=2657`, the widest export no taller than 4096 pixels: Discord's media proxy
-serves at most 4096 pixels per side, so a taller attachment is only shown resampled.
+`?width=2657`, the widest export no taller than 4096 pixels. This fits the media
+proxy's observed limit for explicit width/height transformations; other proxy
+renditions can be larger. The command links the full-resolution export separately.
 
 One render runs at a time on the blocking pool behind a queue of four requests.
-A render at the default width takes about 3 s and peaks about 270 MB above the
-server's baseline, inside the 768 MB container limit; the latest image per format
-and width is kept.
+Local release measurements at the default width took about 2.4 s for WebP and
+1.9 s for PNG, with total process peaks of 309 MiB and 267 MiB respectively.
+Terrain uses up to four workers; table-ordered composition can retain completed
+tiles until an earlier tile finishes. No decoded terrain cache is retained.
+The encoded cache is capped at four entries and 48 MiB; production's container
+limit is 768 MiB.
 
 ## Gateway and deployment settings
 

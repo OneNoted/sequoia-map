@@ -48,7 +48,7 @@ pub(super) fn compose(tiles: &Path, frame: Frame) -> Result<Pixmap, MapImageErro
             let (sender, next) = (sender.clone(), &next);
             scope.spawn(move || {
                 let mut resizer = Resizer::new();
-                // Tiles are claimed in table order, so few results ever wait for a predecessor.
+                // Claim each immutable tile once; composition below preserves table order.
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(tile) = MAP_TILES.get(index) else {
@@ -63,6 +63,8 @@ pub(super) fn compose(tiles: &Path, frame: Frame) -> Result<Pixmap, MapImageErro
         }
         drop(sender);
         // The Realm of Light overlaps the main grid's empty northern edge: keep table order.
+        // A slow earlier tile can retain later results up to the fixed MAP_TILES table size;
+        // the channel bounds handoff, not this reorder buffer.
         let mut waiting = Vec::new();
         let mut drawn = 0;
         for (index, result) in receiver {
