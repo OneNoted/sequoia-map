@@ -52,21 +52,23 @@ const ENCODED_CACHE_BYTES: usize = 48 * 1024 * 1024;
 pub enum ImageFormat {
     /// Lossless and large; for archiving or further editing.
     Png,
-    /// Lossy and compact; what the Discord command attaches.
+    /// Lossy and compact; a fallback for attachments exceeding the PNG byte budget.
     Webp,
+    /// Full-resolution PNG with bounded RGB precision reduction for Discord delivery.
+    CompactPng,
 }
 
 impl ImageFormat {
     pub fn content_type(self) -> &'static str {
         match self {
-            Self::Png => "image/png",
+            Self::Png | Self::CompactPng => "image/png",
             Self::Webp => "image/webp",
         }
     }
 
     pub fn extension(self) -> &'static str {
         match self {
-            Self::Png => "png",
+            Self::Png | Self::CompactPng => "png",
             Self::Webp => "webp",
         }
     }
@@ -388,6 +390,7 @@ mod tests {
         for width in widths {
             let formats = match std::env::var("MAP_IMAGE_PREVIEW_FORMATS").as_deref() {
                 Ok("png") => vec![ImageFormat::Png],
+                Ok("compact") => vec![ImageFormat::CompactPng],
                 Ok("webp") => vec![ImageFormat::Webp],
                 _ => vec![ImageFormat::Webp, ImageFormat::Png],
             };
