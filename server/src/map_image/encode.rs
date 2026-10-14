@@ -35,6 +35,7 @@ pub(super) fn encode(canvas: &Pixmap, format: ImageFormat) -> Result<Vec<u8>, Ma
     }
 }
 
+/// Streams opaque RGB rows, optionally reducing precision without spatial resampling.
 fn png(canvas: &Pixmap, compact: bool) -> Result<Vec<u8>, MapImageError> {
     let encode_error = |error: &dyn std::fmt::Display| MapImageError::Encode(error.to_string());
     let mut out = Vec::new();

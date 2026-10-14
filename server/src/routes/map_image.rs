@@ -24,6 +24,7 @@ const X_MAP_TIMESTAMP: HeaderName = HeaderName::from_static("x-map-timestamp");
 const X_MAP_AS_OF: HeaderName = HeaderName::from_static("x-map-as-of");
 
 #[derive(Debug, Deserialize)]
+/// Export dimensions and opt-in PNG colour precision; omission selects exact output.
 pub struct ImageQuery {
     width: Option<u32>,
     #[serde(default)]
@@ -38,6 +39,7 @@ enum PngQuality {
     Compact,
 }
 
+/// Returns the live WebP export; compact precision is a PNG-only option.
 pub async fn get_map_webp(
     State(state): State<AppState>,
     query: Result<Query<ImageQuery>, QueryRejection>,
@@ -46,6 +48,7 @@ pub async fn get_map_webp(
     map_image(&state, ImageFormat::Webp, query, &headers).await
 }
 
+/// Returns the live PNG export, exact by default or bounded-precision when requested.
 pub async fn get_map_png(
     State(state): State<AppState>,
     query: Result<Query<ImageQuery>, QueryRejection>,
