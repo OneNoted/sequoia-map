@@ -1,6 +1,8 @@
 //! The public live territory map as an image: `GET /api/live/map.webp` and `/api/live/map.png`.
 //!
-//! Optional `?width=` (800 to 4096 pixels, default 4096). Responses carry a strong `ETag`, honour
+//! Optional `?width=` (800 to 4096 pixels, default 4096). PNG accepts `quality=compact` for
+//! bounded RGB precision reduction; omitted or `quality=exact` preserves every pixel.
+//! Responses carry a strong `ETag`, honour
 //! `If-None-Match`, and describe the snapshot they show in `X-Map-Seq`, `X-Map-Timestamp`
 //! (the live state's) and `X-Map-As-Of` (the minute hold times are measured from).
 
@@ -24,6 +26,16 @@ const X_MAP_AS_OF: HeaderName = HeaderName::from_static("x-map-as-of");
 #[derive(Debug, Deserialize)]
 pub struct ImageQuery {
     width: Option<u32>,
+    #[serde(default)]
+    quality: PngQuality,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum PngQuality {
+    #[default]
+    Exact,
+    Compact,
 }
 
 pub async fn get_map_webp(
@@ -58,10 +70,29 @@ async fn map_image_at(
     request_headers: &HeaderMap,
     now: DateTime<Utc>,
 ) -> Response {
-    let spec = match query
-        .map_err(|_| InvalidWidth)
-        .and_then(|Query(query)| ImageSpec::new(format, query.width))
-    {
+    let query = match query {
+        Ok(Query(query)) => query,
+        Err(_) => {
+            return plain(
+                StatusCode::BAD_REQUEST,
+                &format!("{InvalidWidth}; PNG quality must be exact or compact"),
+                None,
+            );
+        }
+    };
+    let format = if query.quality == PngQuality::Compact {
+        if format == ImageFormat::Webp {
+            return plain(
+                StatusCode::BAD_REQUEST,
+                "compact quality is only supported for PNG",
+                None,
+            );
+        }
+        ImageFormat::CompactPng
+    } else {
+        format
+    };
+    let spec = match ImageSpec::new(format, query.width) {
         Ok(spec) => spec,
         Err(error) => return plain(StatusCode::BAD_REQUEST, &error.to_string(), None),
     };
@@ -239,6 +270,14 @@ mod tests {
         // clock; a slow image render must not make cache assertions cross a minute.
         axum::Router::new()
             .route(
+                "/api/live/map.png",
+                axum::routing::get(
+                    move |State(state): State<AppState>, query, headers: HeaderMap| async move {
+                        map_image_at(&state, ImageFormat::Png, query, &headers, now).await
+                    },
+                ),
+            )
+            .route(
                 "/api/live/map.webp",
                 axum::routing::get(
                     move |State(state): State<AppState>, query, headers: HeaderMap| async move {
@@ -401,6 +440,89 @@ mod tests {
             .expect("png header");
         assert_eq!(reader.info().width, 800);
         assert!(reader.info().height > 1_000);
+    }
+
+    #[tokio::test]
+    async fn compact_png_is_opt_in_and_has_an_independent_cache_and_validator() {
+        let state = state_with(ragni_and_detlas(), 3).await;
+        let exact = get_at(&state, "/api/live/map.png?width=800", None, fixed_time()).await;
+        assert_eq!(exact.status(), StatusCode::OK);
+        let exact_tag = header_value(&exact, "etag").to_string();
+        let exact_bytes = body_bytes(exact).await;
+        let explicitly_exact = get_at(
+            &state,
+            "/api/live/map.png?width=800&quality=exact",
+            Some(&exact_tag),
+            fixed_time(),
+        )
+        .await;
+        assert_eq!(explicitly_exact.status(), StatusCode::NOT_MODIFIED);
+
+        let compact = get_at(
+            &state,
+            "/api/live/map.png?width=800&quality=compact",
+            Some(&exact_tag),
+            fixed_time(),
+        )
+        .await;
+        assert_eq!(compact.status(), StatusCode::OK);
+        assert_eq!(header_value(&compact, "content-type"), "image/png");
+        let compact_tag = header_value(&compact, "etag").to_string();
+        assert_ne!(compact_tag, exact_tag);
+        let compact_bytes = body_bytes(compact).await;
+        let decode = |bytes| {
+            let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+                .read_info()
+                .expect("header");
+            let mut pixels = vec![0; reader.output_buffer_size().expect("size")];
+            let info = reader.next_frame(&mut pixels).expect("pixels");
+            assert_eq!(info.width, 800);
+            pixels
+        };
+        let exact_pixels = decode(&exact_bytes);
+        let compact_pixels = decode(&compact_bytes);
+        assert_eq!(exact_pixels.len(), compact_pixels.len());
+        assert_ne!(exact_pixels, compact_pixels);
+        assert!(
+            exact_pixels
+                .iter()
+                .zip(compact_pixels)
+                .all(|(&exact, compact)| exact.abs_diff(compact) <= 4)
+        );
+        let compact_cached = get_at(
+            &state,
+            "/api/live/map.png?width=800&quality=compact",
+            Some(&format!("W/{compact_tag}")),
+            fixed_time(),
+        )
+        .await;
+        assert_eq!(compact_cached.status(), StatusCode::NOT_MODIFIED);
+        assert!(body_bytes(compact_cached).await.is_empty());
+
+        let exact_cached = get_at(
+            &state,
+            "/api/live/map.png?width=800",
+            Some(&compact_tag),
+            fixed_time(),
+        )
+        .await;
+        assert_eq!(exact_cached.status(), StatusCode::OK);
+        assert_eq!(header_value(&exact_cached, "etag"), exact_tag);
+        assert_eq!(body_bytes(exact_cached).await, exact_bytes);
+    }
+
+    #[tokio::test]
+    async fn unsupported_quality_options_fail_before_rendering() {
+        let mut state = state_with(ragni_and_detlas(), 3).await;
+        state.map_images = MapImages::new("/nonexistent-map-assets");
+        for uri in [
+            "/api/live/map.png?quality=low",
+            "/api/live/map.webp?quality=compact",
+        ] {
+            let response = get(&state, uri, None).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+            assert_eq!(header_value(&response, "cache-control"), "no-store");
+        }
     }
 
     #[tokio::test]
