@@ -16,8 +16,8 @@ pub(super) fn color(value: ColorU8) -> Color {
     Color::from_rgba8(value.red(), value.green(), value.blue(), value.alpha())
 }
 
-/// Chooses the opaque black or white halo with higher contrast against the guild colour.
-pub(super) fn contrasting_outline(rgb: [u8; 3]) -> Color {
+/// Keeps dark guild hues readable as filled lettering over a consistent black outline.
+pub(super) fn label_color(rgb: [u8; 3]) -> Color {
     // Relative luminance: https://www.w3.org/WAI/WCAG22/Techniques/general/G18
     let [r, g, b] = rgb.map(|channel| {
         let value = f32::from(channel) / 255.0;
@@ -28,9 +28,10 @@ pub(super) fn contrasting_outline(rgb: [u8; 3]) -> Color {
         }
     });
     let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    if (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) {
-        color(OUTLINE)
+    let [r, g, b] = if luminance >= 0.18 {
+        rgb
     } else {
-        Color::from_rgba8(255, 255, 255, 255)
-    }
+        rgb.map(|channel| ((u16::from(channel) + 255).div_ceil(2)) as u8)
+    };
+    Color::from_rgba8(r, g, b, 255)
 }
