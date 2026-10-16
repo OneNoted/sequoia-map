@@ -11,10 +11,9 @@ use super::glyphs::{CAP_CELLS, Face, TextStyle, draw_text};
 use super::palette::{self, color};
 use super::scene::{Guild, MapScene, Plot};
 
-/// How strongly a guild's own colour covers the terrain inside its territories and along
-/// their edges, as on the website's map: a light wash with a clearly stronger edge.
-const FILL_OPACITY: f32 = 0.26;
-const BORDER_OPACITY: f32 = 0.72;
+/// Keep terrain visible beneath a guild-coloured wash; opaque, dark-rimmed edges separate
+/// territories from both their neighbours and the terrain.
+const FILL_OPACITY: f32 = 0.30;
 const CROWN_ART_PIXELS: u32 = 16;
 /// Smallest label cell: two pixels per font cell gives 14-pixel capitals.
 const MIN_CELL: u32 = 2;
@@ -44,24 +43,24 @@ pub(super) fn paint(canvas: &mut Pixmap, scene: &MapScene, frame: Frame, assets:
     }
     draw_connections(canvas, scene, frame, ui);
     let border = border_width(ui);
-    // Borders are stroked over the fill, so their own alpha only makes up the difference.
-    let border_alpha = alpha(1.0 - (1.0 - BORDER_OPACITY) / (1.0 - FILL_OPACITY));
+    let rim = (ui as f32 * 0.25).round().max(1.0);
     for (plot, rect) in scene.territories().iter().zip(&rects) {
         let Some(rect) = rect else {
             continue;
         };
         let outline = owner(guilds, plot).map_or(palette::UNCLAIMED, |guild| {
             let [r, g, b] = guild.color;
-            ColorU8::from_rgba(r, g, b, border_alpha)
+            ColorU8::from_rgba(r, g, b, 255)
         });
-        stroke_inset(canvas, *rect, outline, border, 0.0);
+        stroke_inset(canvas, *rect, palette::OUTLINE, border + 2.0 * rim, 0.0);
+        stroke_inset(canvas, *rect, outline, border, rim);
         if plot.headquarters {
-            stroke_inset(canvas, *rect, palette::GOLD, border, border);
+            stroke_inset(canvas, *rect, palette::GOLD, border, border + 2.0 * rim);
         }
     }
     for (plot, rect) in scene.territories().iter().zip(&rects) {
         if let (Some(rect), Some(guild)) = (rect, owner(guilds, plot)) {
-            label_territory(canvas, assets, plot, &guild.prefix, *rect, ui);
+            label_territory(canvas, assets, plot, guild, *rect, ui);
         }
     }
     if let Some(area) = frame.title_area() {
@@ -83,7 +82,7 @@ fn ui_cell(frame: Frame) -> u32 {
 }
 
 fn border_width(ui: u32) -> f32 {
-    (ui as f32 * 0.5).round().max(2.0)
+    (ui as f32 * 0.75).round().max(2.0)
 }
 
 fn alpha(opacity: f32) -> u8 {
@@ -140,7 +139,7 @@ fn draw_connections(canvas: &mut Pixmap, scene: &MapScene, frame: Frame, ui: u32
         return;
     };
     let stroke = Stroke {
-        width: (ui as f32 * 0.45).max(1.5),
+        width: (ui as f32 * 0.65).max(1.5),
         line_cap: LineCap::Round,
         ..Stroke::default()
     };
@@ -170,8 +169,12 @@ impl LabelPlan {
 
     /// Width and height of the stacked parts, including the text halo.
     fn size(self, assets: &Assets, tag: &str, held: &str) -> (f32, f32) {
-        let halo = 2.0 * self.tag.halo_width();
-        let mut width = assets.bold.width(tag, self.tag.cell) + halo;
+        let halo = 2.0
+            * self
+                .tag
+                .halo_width
+                .max(self.held.map_or(0.0, |style| style.halo_width));
+        let mut width = assets.regular.width(tag, self.tag.cell) + halo;
         let mut height = self.tag.cap_height() + halo;
         if let Some(style) = self.held {
             width = width.max(assets.regular.width(held, style.cell) + halo);
@@ -190,6 +193,7 @@ fn label_style(cell: u32, fill: ColorU8) -> TextStyle {
         cell,
         fill: color(fill),
         halo: color(palette::HALO),
+        halo_width: (cell / 2 + 1).clamp(2, 3) as f32,
     }
 }
 
@@ -197,28 +201,35 @@ fn label_territory(
     canvas: &mut Pixmap,
     assets: &Assets,
     plot: &Plot,
-    tag: &str,
+    guild: &Guild,
     rect: Rect,
     max_cell: u32,
 ) {
+    let tag = guild.prefix.as_str();
     if tag.is_empty() {
         return;
     }
-    let Some(plan) = plan_label(assets, plot, tag, rect, max_cell) else {
+    let Some(mut plan) = plan_label(assets, plot, tag, rect, max_cell) else {
         return;
     };
+    let [r, g, b] = guild.color;
+    plan.tag.fill = color(ColorU8::from_rgba(r, g, b, 255));
+    plan.tag.halo = palette::contrasting_outline(guild.color);
+    if plan.tag.halo != color(palette::OUTLINE) {
+        plan.tag.halo_width = 1.0;
+    }
     let (_, height) = plan.size(assets, tag, &plot.held);
     let centre_x = rect.left() + rect.width() / 2.0;
-    let mut top = (rect.top() + (rect.height() - height) / 2.0 + plan.tag.halo_width()).round();
+    let mut top = (rect.top() + (rect.height() - height) / 2.0 + plan.tag.halo_width).round();
     if let Some(size) = plan.crown {
         let left = centre_x - size as f32 / 2.0;
         draw_crown(canvas, &assets.crown, (left, top), size);
         top += size as f32 + plan.gap();
     }
-    let width = assets.bold.width(tag, plan.tag.cell);
+    let width = assets.regular.width(tag, plan.tag.cell);
     draw_text(
         canvas,
-        &assets.bold,
+        &assets.regular,
         tag,
         (centre_x - width / 2.0, top),
         plan.tag,
@@ -529,6 +540,40 @@ mod tests {
     }
 
     #[test]
+    fn guild_labels_keep_their_colour_with_a_contrasting_outline() {
+        let assets = Assets::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../client/public"
+        )))
+        .expect("assets");
+        let plot = Plot {
+            bounds: [0; 4],
+            owner: None,
+            held: String::new(),
+            headquarters: false,
+        };
+        for (rgb, outline) in [
+            ([0, 0, 0], [255, 255, 255, 255]),
+            ([58, 38, 81], [255, 255, 255, 255]),
+            ([255, 255, 255], [0, 0, 0, 255]),
+            ([255, 255, 0], [0, 0, 0, 255]),
+        ] {
+            let guild = Guild {
+                prefix: "SEQ".to_string(),
+                name: "Sequoia".to_string(),
+                color: rgb,
+                territories: 1,
+            };
+            let mut canvas = Pixmap::new(160, 80).expect("canvas");
+            let rect = Rect::from_xywh(8.0, 8.0, 144.0, 64.0).expect("rectangle");
+            label_territory(&mut canvas, &assets, &plot, &guild, rect, MIN_CELL);
+            let [r, g, b] = rgb;
+            assert!(canvas.data().chunks_exact(4).any(|p| p == [r, g, b, 255]));
+            assert!(canvas.data().chunks_exact(4).any(|p| p == outline));
+        }
+    }
+
+    #[test]
     fn territories_keep_their_guild_hue_with_a_clear_edge() {
         // Sequoia's dark purple; borders were once lifted toward white, turning it lavender.
         let purple = [58, 38, 81];
@@ -562,7 +607,7 @@ mod tests {
             coverage(&canvas.data()[index..index + 3], terrain, purple)
         };
         // A pixel wholly inside the left border, and one in the fill clear of the label.
-        let edge = at(rect.left().floor() + 1.0, rect.top() + rect.height() / 2.0);
+        let edge = at(rect.left().floor() + 2.0, rect.top() + rect.height() / 2.0);
         let fill = at(rect.left() + 12.0, rect.top() + 12.0);
 
         for amounts in [edge, fill] {

@@ -100,16 +100,13 @@ pub(super) struct TextStyle {
     pub(super) cell: u32,
     pub(super) fill: Color,
     pub(super) halo: Color,
+    /// Distance the outline extends past the glyphs, in pixels.
+    pub(super) halo_width: f32,
 }
 
 impl TextStyle {
     pub(super) fn cap_height(self) -> f32 {
         (CAP_CELLS * self.cell) as f32
-    }
-
-    /// Distance the halo extends past the glyphs: two pixels for small text, three for large.
-    pub(super) fn halo_width(self) -> f32 {
-        (self.cell / 2 + 1).clamp(2, 3) as f32
     }
 }
 
@@ -131,7 +128,7 @@ pub(super) fn draw_text(
     };
     paint.set_color(style.halo);
     let halo = Stroke {
-        width: style.halo_width() * 2.0,
+        width: style.halo_width * 2.0,
         line_join: LineJoin::Miter,
         ..Stroke::default()
     };
