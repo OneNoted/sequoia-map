@@ -218,7 +218,8 @@ fn label_territory(
         return;
     }
     let mut plan = plan_label(assets, plot, tag, rect, max_cell);
-    plan.tag.fill = palette::label_color(guild.color);
+    let [r, g, b] = guild.color;
+    plan.tag.fill = color(ColorU8::from_rgba(r, g, b, 255));
     let (_, height) = plan.size(assets, tag, &plot.held);
     let centre_x = rect.left() + rect.width() / 2.0;
     let mut top = (rect.top() + (rect.height() - height) / 2.0 + plan.tag.halo_width)
@@ -544,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn guild_labels_use_filled_colours_and_only_dark_outlines() {
+    fn guild_labels_use_exact_guild_colours_with_dark_outlines() {
         let assets = Assets::load(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../client/public"
@@ -556,11 +557,12 @@ mod tests {
             held: String::new(),
             headquarters: false,
         };
-        for (rgb, fill) in [
-            ([0, 0, 0], [128, 128, 128, 255]),
-            ([58, 38, 81], [157, 147, 168, 255]),
-            ([255, 255, 255], [255, 255, 255, 255]),
-            ([255, 255, 0], [255, 255, 0, 255]),
+        for rgb in [
+            [0, 0, 255],
+            [58, 38, 81],
+            [0, 0, 0],
+            [255, 255, 255],
+            [255, 255, 0],
         ] {
             let guild = Guild {
                 prefix: "SEQ".to_string(),
@@ -571,8 +573,15 @@ mod tests {
             let mut canvas = Pixmap::new(160, 80).expect("canvas");
             let rect = Rect::from_xywh(8.0, 8.0, 144.0, 64.0).expect("rectangle");
             label_territory(&mut canvas, &assets, &plot, &guild, rect, MIN_CELL);
-            assert!(canvas.data().chunks_exact(4).any(|p| p == fill));
+            let [r, g, b] = rgb;
+            assert!(canvas.data().chunks_exact(4).any(|p| p == [r, g, b, 255]));
             assert!(canvas.data().chunks_exact(4).any(|p| p == [0, 0, 0, 255]));
+            assert!(
+                canvas
+                    .data()
+                    .chunks_exact(4)
+                    .all(|p| { p[3] == 0 || p == [r, g, b, 255] || p == [0, 0, 0, 255] })
+            );
             if rgb[0] < 60 {
                 assert!(!canvas.data().chunks_exact(4).any(|p| p == [255; 4]));
             }
