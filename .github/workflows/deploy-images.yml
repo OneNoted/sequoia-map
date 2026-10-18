@@ -213,6 +213,7 @@ jobs:
           COOLIFY_API_BASE="${COOLIFY_WEBHOOK%%/api/v1/deploy*}"
           PROBE_URL="${COOLIFY_API_BASE}/api/v1/deploy?uuid=auth-probe-missing-resource"
           PROBE_STATUS="$(curl --proto '=https' --tlsv1.2 --silent --show-error --connect-timeout 10 --max-time 30 --output /tmp/coolify-probe.json --write-out '%{http_code}' \
+            --request POST \
             -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
             "${PROBE_URL}")"
 
@@ -437,5 +438,6 @@ jobs:
           current_head="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main)" || exit 1
           [ "${current_head}" = "${GITHUB_SHA}"$'\trefs/heads/main' ] || { echo "Refusing trigger: candidate is superseded or main is unknown." >&2; exit 1; }
           curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error --connect-timeout 10 --max-time 60 \
+            --request POST \
             -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
             "${COOLIFY_WEBHOOK}"
