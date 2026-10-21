@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    runs-on: apollo-sequoia-demeter
     services:
       postgres:
         image: public.ecr.aws/docker/library/postgres:18.3-alpine
@@ -50,7 +50,7 @@ jobs:
       - run: mise run verify
 
   iris:
-    runs-on: ubuntu-latest
+    runs-on: apollo-sequoia-demeter
     strategy:
       fail-fast: false
       matrix:
