@@ -2006,13 +2006,12 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
             loop {
                 match gloo_net::http::Request::get("/api/health").send().await {
                     Ok(response) if response.ok() => {
-                        if let Ok(json) = response.json::<serde_json::Value>().await {
-                            if let Some(value) = json
+                        if let Ok(json) = response.json::<serde_json::Value>().await
+                            && let Some(value) = json
                                 .get("claims_persistence_available")
                                 .and_then(|value| value.as_bool())
-                            {
-                                claims_persistence_available.set(value);
-                            }
+                        {
+                            claims_persistence_available.set(value);
                         }
                     }
                     _ => {}

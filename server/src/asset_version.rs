@@ -62,13 +62,13 @@ fn collect_files(dir: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Re
         let path = entry.path();
         match entry.file_type()? {
             kind if kind.is_dir() => collect_files(&path, files)?,
-            kind if kind.is_file() => {
-                if !matches!(
+            kind if kind.is_file()
+                && !matches!(
                     path.extension().and_then(|ext| ext.to_str()),
                     Some("br" | "gz")
-                ) {
-                    files.push(path);
-                }
+                ) =>
+            {
+                files.push(path);
             }
             _ => {}
         }

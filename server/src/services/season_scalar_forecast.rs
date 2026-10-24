@@ -399,7 +399,7 @@ fn infer_future_step_points(
 }
 
 fn deduplicate_scalar_points(points: &mut Vec<ScalarPointInternal>) {
-    points.sort_by(|left, right| left.sampled_at.cmp(&right.sampled_at));
+    points.sort_by_key(|point| point.sampled_at);
     let mut deduped: Vec<ScalarPointInternal> = Vec::with_capacity(points.len());
     for point in points.iter() {
         if let Some(last) = deduped.last_mut()
@@ -441,7 +441,7 @@ fn median(values: &mut [f64]) -> Option<f64> {
     }
     values.sort_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal));
     let midpoint = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         Some((values[midpoint - 1] + values[midpoint]) / 2.0)
     } else {
         Some(values[midpoint])

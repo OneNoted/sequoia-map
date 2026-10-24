@@ -1,5 +1,20 @@
-FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS workspace-deps
+FROM public.ecr.aws/docker/library/rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS rust-base
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2 \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_USE_CURL=1
+RUN case "$(uname -m)" in \
+        x86_64) rustup_sha=5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4 ;; \
+        aarch64) rustup_sha=a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697 ;; \
+        *) exit 1 ;; \
+    esac \
+    && curl --proto '=https' --tlsv1.2 -fsSLo /rustup-init "https://static.rust-lang.org/rustup/archive/1.29.2/$(uname -m)-unknown-linux-gnu/rustup-init" \
+    && echo "$rustup_sha  /rustup-init" | sha256sum -c - \
+    && chmod +x /rustup-init && /rustup-init -y --no-modify-path --default-toolchain none \
+    && rm /rustup-init \
+    && rustup --version | grep -E '^rustup 1\.29\.2 '
 
+FROM rust-base AS workspace-deps
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY shared/Cargo.toml shared/Cargo.toml
@@ -16,16 +31,18 @@ RUN mkdir -p shared/src wasm/src browser-map/src client/src claims-client/src se
     && echo 'fn main() {}' > server/src/main.rs
 
 ### Client tooling is independent of the application dependency manifests.
-FROM public.ecr.aws/docker/library/rust:1.88-bookworm AS client-tools
+FROM rust-base AS client-tools
 
 ARG TARGETARCH
 ARG BINARYEN_VERSION=126
 ARG BINARYEN_ARCH=
 ARG TAILWINDCSS_VERSION=4.2.0
 ARG WASM_BINDGEN_VERSION=0.2.113
-ARG TRUNK_VERSION=0.21.14
+ARG TRUNK_VERSION=0.22.0
 
-RUN apt-get update && apt-get install -y --no-install-recommends brotli gzip ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends brotli gzip ca-certificates curl pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY .ci/binaryen/ /tmp/binaryen-assets/
 COPY .ci/tailwindcss/ /tmp/tailwindcss-assets/
 COPY .ci/wasm-bindgen/ /tmp/wasm-bindgen-assets/
@@ -119,7 +136,7 @@ RUN set -eux; \
 RUN rustup target add wasm32-unknown-unknown
 RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=sequoia-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    cargo install trunk --version "${TRUNK_VERSION}" --locked
+    cargo install trunk --version "${TRUNK_VERSION}" --locked --no-default-features --features native-tls
 
 FROM client-tools AS client-build
 
@@ -163,11 +180,14 @@ RUN cargo build --release --locked --bin sequoia-server && \
     strip /app/sequoia-server
 
 ### Stage 3: Runtime
-FROM public.ecr.aws/docker/library/debian:bookworm-slim
+FROM public.ecr.aws/docker/library/debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 
 ARG SOURCE_COMMIT=
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2 \
+    && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 sequoia \
     && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/sequoia sequoia
 

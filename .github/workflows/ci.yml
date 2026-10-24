@@ -40,6 +40,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
+          version: 2026.10.17
           cache_save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -61,10 +62,15 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
         with:
+          version: 2026.10.17
           install: false
           cache_save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
         with:
           cache-provider: basic
           cache-read-only: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
+      - name: Apply the vendor Java certificate distrust update
+        run: |
+          mise install java@temurin-21.0.13+9.0.LTS
+          install -m 644 config/security/blocked.certs "$(mise where java@temurin-21.0.13+9.0.LTS)/lib/security/blocked.certs"
       - run: mise run iris:build "${{ matrix.profile }}"

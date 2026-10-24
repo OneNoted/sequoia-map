@@ -811,9 +811,8 @@ mod tests {
         let mut a = (150.0, 400.0);
         let mut b = (250.0, 400.0);
         gestures.press(touch(1, a.0, a.1), Press::Pan, 0.0);
-        let mut next_id = 2;
         let mut t = 0.0;
-        for cycle in 0..4 {
+        for (next_id, cycle) in (2..).zip(0..4) {
             // Second finger joins, pinch and drag.
             gestures.press(touch(next_id, b.0, b.1), Press::Pan, t);
             let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
@@ -840,7 +839,6 @@ mod tests {
                 assert_close(cam.scale, before_lift.scale);
             }
             b = (a.0 + 90.0, a.1 + 5.0);
-            next_id += 1;
         }
     }
 

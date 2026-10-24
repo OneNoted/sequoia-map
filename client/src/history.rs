@@ -49,15 +49,14 @@ pub fn check_availability_with_probe(
     spawn_local(async move {
         let mut history_available = false;
 
-        if let Ok(resp) = gloo_net::http::Request::get("/api/health").send().await {
-            if resp.ok() {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    history_available = json
-                        .get("history_available")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                }
-            }
+        if let Ok(resp) = gloo_net::http::Request::get("/api/health").send().await
+            && resp.ok()
+            && let Ok(json) = resp.json::<serde_json::Value>().await
+        {
+            history_available = json
+                .get("history_available")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
         }
 
         if history_available {

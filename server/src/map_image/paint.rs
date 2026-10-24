@@ -377,7 +377,7 @@ impl LegendLayout {
             })
             .collect();
         if let Some(width) = summary {
-            if shown % rows == 0 {
+            if shown.is_multiple_of(rows) {
                 widths.push(LegendColumn::default());
             }
             if let Some(last) = widths.last_mut() {

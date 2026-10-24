@@ -1,3 +1,10 @@
-FROM public.ecr.aws/docker/library/caddy:2.10-alpine
+# Rebuild the existing Caddy release with the vendor-fixed Go TLS verifier.
+FROM public.ecr.aws/docker/library/golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS builder
+RUN apk add --no-cache 'ca-certificates>=20261020-r0'
+ENV GOTOOLCHAIN=local
+RUN GOBIN=/out go install -p 1 -ldflags="-X github.com/caddyserver/caddy/v2.CustomVersion=v2.10.2" github.com/caddyserver/caddy/v2/cmd/caddy@v2.10.2
 
+FROM public.ecr.aws/docker/library/caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+RUN apk add --no-cache 'ca-certificates>=20261020-r0'
+COPY --from=builder /out/caddy /usr/bin/caddy
 COPY ops/caddy/Caddyfile.coolify /etc/caddy/Caddyfile

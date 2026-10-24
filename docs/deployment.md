@@ -61,10 +61,10 @@ proof that Coolify has completed the rollout. Verify running image digests and
 the real service health after deployment.
 
 The published images use Docker Official Images from Amazon ECR Public
-(`public.ecr.aws/docker/library`) for their Rust, Debian and Caddy bases. This
+(`public.ecr.aws/docker/library`) for their Rust, Debian, Go and Caddy bases. This
 avoids Docker Hub's shared anonymous pull limit on GitHub-hosted builders while
-retaining the same upstream images and version tags. The tags remain mutable
-so rebuilds can pick up upstream base-image security updates.
+retaining the same upstream images and version tags. Each base is pinned to its
+digest, so base-image security updates arrive through a reviewed digest change.
 The CI PostgreSQL service uses the same official mirror for its existing
 `18.3-alpine` tag; database test coverage and service configuration are unchanged.
 

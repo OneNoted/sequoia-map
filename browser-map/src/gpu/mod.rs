@@ -1534,7 +1534,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &glow_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[vertex_layout.clone()],
+                buffers: std::slice::from_ref(&vertex_layout),
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -1629,7 +1629,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &tile_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[vertex_layout.clone()],
+                buffers: std::slice::from_ref(&vertex_layout),
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -1712,7 +1712,7 @@ impl GpuRenderer {
             vertex: wgpu::VertexState {
                 module: &connection_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[connection_vertex_layout.clone()],
+                buffers: std::slice::from_ref(&connection_vertex_layout),
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -1852,7 +1852,7 @@ impl GpuRenderer {
                 vertex: wgpu::VertexState {
                     module: &minimap_blit_shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[vertex_layout.clone()],
+                    buffers: std::slice::from_ref(&vertex_layout),
                     compilation_options: Default::default(),
                 },
                 fragment: Some(wgpu::FragmentState {

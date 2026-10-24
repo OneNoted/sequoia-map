@@ -831,12 +831,11 @@ async fn enroll(
         .map(|authed| authed.reporter_id);
 
     let mut reporter_id = authed_reporter.unwrap_or_else(|| Uuid::new_v4().to_string());
-    if state.cfg.single_reporter_mode {
-        if let Some(existing_reporter_id) =
+    if state.cfg.single_reporter_mode
+        && let Some(existing_reporter_id) =
             enforce_single_reporter_mode(&state, &device_pubkey_hash, &mojang_uuid, now).await?
-        {
-            reporter_id = existing_reporter_id;
-        }
+    {
+        reporter_id = existing_reporter_id;
     }
 
     let token = new_token();
