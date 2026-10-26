@@ -149,6 +149,33 @@ fn war_accent_color(guild: vec3<f32>) -> vec3<f32> {
     return pink;
 }
 
+// Queued territories are lavender, entered ones amber: an escalation toward the war red
+// that stays clear of the HQ gold.
+fn pending_war_color(entered: bool) -> vec3<f32> {
+    if entered {
+        return vec3<f32>(1.0, 0.631, 0.239);   // #ffa13d
+    }
+    return vec3<f32>(0.780, 0.639, 0.941);     // #c7a3f0
+}
+
+// 1.0 on a dash, 0.0 in a gap, measured along whichever edge this border pixel sits on, in
+// screen pixels so the rhythm holds at every zoom.
+fn pending_dash(uv: vec2<f32>, size_px: vec2<f32>, border_width: f32) -> f32 {
+    let px = uv * size_px;
+    let near_x_edge = min(px.x, size_px.x - px.x) <= border_width + 0.5;
+    let near_y_edge = min(px.y, size_px.y - px.y) <= border_width + 0.5;
+    if near_x_edge && near_y_edge {
+        return 1.0;
+    }
+    var along = px.x;
+    if near_x_edge {
+        along = px.y;
+    }
+    let period = 9.0;
+    let phase = fract(along / period);
+    return 1.0 - smoothstep(0.58, 0.66, phase) * (1.0 - smoothstep(0.92, 1.0, phase));
+}
+
 fn count_bits_5(mask: u32) -> u32 {
     var m = mask & 31u;
     var c = 0u;
@@ -255,6 +282,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let is_selected = (u32(flags) & 2u) != 0u;
     let is_headquarters = (u32(flags) & 4u) != 0u;
     let is_at_war = (u32(flags) & 8u) != 0u;
+    let is_entered = (u32(flags) & 16u) != 0u;
+    let is_queued = (u32(flags) & 32u) != 0u;
+    let is_pending_war = is_entered || is_queued;
 
     // GPU-side color animation
     var base_color = in.color.rgb;
@@ -285,7 +315,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if cooldown_frac > 0.0 {
         border_mult = in.state.w;
     }
-    let border_width = max(3.2 * border_mult * vp.scale, 0.8);
+    var border_width = max(3.2 * border_mult * vp.scale, 0.8);
+    // War stages and headquarters have to read at far zoom too, where a world-scaled border
+    // thins to a hairline.
+    if is_pending_war || is_at_war || is_headquarters {
+        border_width = max(border_width, 2.0);
+    }
     let feather = max(0.4 * vp.scale, 0.15);
 
     // Outer edge AA: fade alpha at territory boundary
@@ -307,7 +342,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         b_alpha = border_alpha;
     }
-    if is_headquarters || is_at_war {
+    if is_headquarters || is_at_war || is_pending_war {
         b_alpha = max(b_alpha, 0.88);
     }
 
@@ -317,6 +352,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let war_color = war_accent_color(base_color);
     if is_at_war {
         fill_color = mix(fill_color, war_color, 0.06);
+    } else if is_pending_war {
+        fill_color = mix(fill_color, pending_war_color(is_entered), select(0.05, 0.08, is_entered));
     } else if is_headquarters {
         let hq_tint = vec3<f32>(0.973, 0.831, 0.275);
         fill_color = mix(fill_color, hq_tint, 0.06);
@@ -407,6 +444,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Distinct from the cooldown/defense reds, which only ever tint the fill. Mixed
         // hard toward the accent so a same-hue guild color can't wash it back out.
         border_color = mix(base_color, war_color, 0.92);
+    } else if is_pending_war {
+        // Dashed so a queued territory never reads as a war in progress, whatever its
+        // guild color; the gaps keep the guild's own border visible.
+        let on = pending_dash(in.uv, in.size_px, border_width);
+        border_color = mix(base_color, pending_war_color(is_entered), on);
     } else if is_headquarters {
         border_color = mix(base_color, vec3<f32>(0.973, 0.831, 0.275), 0.8);
     }

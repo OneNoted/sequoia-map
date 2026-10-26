@@ -21,7 +21,7 @@ pub mod overlay;
 pub mod render_loop;
 mod tiles;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use leptos::prelude::*;
@@ -30,6 +30,7 @@ use sequoia_map_engine::map_markers::MapMarkers;
 use sequoia_map_engine::settings::RenderSettings;
 use sequoia_map_engine::territory::ClientTerritoryMap;
 use sequoia_map_engine::viewport::Viewport;
+use sequoia_shared::war_board::StageKind;
 
 pub use assets::versioned_app_asset_url;
 pub use camera::MapCamera;
@@ -49,8 +50,9 @@ pub struct MapInputs {
     /// cooldowns are on screen, as in paused history; `None` when nothing animates.
     pub animation_tick: Option<Signal<i64>>,
     pub heat: Option<HeatLayer>,
-    /// Territories to outline as being at war.
-    pub wars: Option<Signal<HashSet<String>>>,
+    /// War stage per territory: queued and entered territories get a dashed border, fighting
+    /// ones a red one.
+    pub war_stages: Option<Signal<HashMap<String, StageKind>>>,
     /// Gap below the minimap in CSS pixels, or `None` to hide it.
     pub minimap_inset: Signal<Option<f32>>,
     /// What primary-button presses on the map do.
@@ -167,6 +169,7 @@ pub struct BrowserMap {
     markers: RwSignal<Option<Arc<MapMarkers>>>,
     site_labels: RwSignal<Option<Arc<overlay::SiteLabels>>>,
     teammates: RwSignal<Option<Arc<overlay::Teammates>>>,
+    war_plates: RwSignal<Option<Arc<overlay::WarPlates>>>,
     inputs: MapInputs,
 }
 
@@ -181,6 +184,7 @@ impl BrowserMap {
             markers: RwSignal::new(None),
             site_labels: RwSignal::new(None),
             teammates: RwSignal::new(None),
+            war_plates: RwSignal::new(None),
             inputs,
         }
     }
@@ -210,6 +214,12 @@ impl BrowserMap {
     /// the head settings change.
     pub fn teammates(&self) -> RwSignal<Option<Arc<overlay::Teammates>>> {
         self.teammates
+    }
+
+    /// Plates on war territories: countdowns, elapsed war time and recent outcomes; `None`
+    /// draws none. Set a new value when a plate's text changes.
+    pub fn war_plates(&self) -> RwSignal<Option<Arc<overlay::WarPlates>>> {
+        self.war_plates
     }
 
     /// Last pointer position over the map, in canvas CSS pixels.

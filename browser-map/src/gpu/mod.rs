@@ -19,6 +19,7 @@ use sequoia_map_engine::claim_labels::{
 use sequoia_map_engine::colors::brighten;
 use sequoia_map_engine::connections::{self, ConnectionMesh, ConnectionProjection};
 use sequoia_map_engine::defense::defense_tier_overlay_data;
+use sequoia_map_engine::hq_layout::{Caption, HqCrown, HqLayout, TerritoryBox};
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
 use sequoia_map_engine::label_layout::{
     IconKind, abbreviate_name, compute_label_layout_metrics, cooldown_color,
@@ -37,19 +38,22 @@ use sequoia_map_engine::scene::{
     LABEL_VISIBILITY_MIN_SCALE, NextRefresh, Rebuild, TIMER_VISIBILITY_MIN_SCALE,
 };
 use sequoia_map_engine::settings::{NameColor, RenderSettings};
-use sequoia_map_engine::territory::{ClientTerritoryMap, is_sequoia_guild};
+use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap, is_sequoia_guild};
 use sequoia_map_engine::time_format::write_hms;
 use sequoia_map_engine::viewport::Viewport;
 use sequoia_shared::TreasuryLevel;
 use sequoia_shared::colors::hsl_to_rgb;
 use sequoia_shared::territory::Resources;
+use sequoia_shared::war_board::StageKind;
 
 use crate::frame::{Frame, FrameMetrics, FrameOutcome, RenderCapabilities};
 use crate::icons::ResourceAtlas;
 use crate::tiles::{LoadedTile, TileQuality};
 
+mod glyphs;
 mod markers;
 mod overlay;
+use glyphs::{GlyphMeta, GlyphRef, GlyphSet, TextFit, hq_caption, line_units_with_tracking};
 use markers::GpuMarkerRenderer;
 use overlay::GpuOverlayRenderer;
 
@@ -240,101 +244,6 @@ impl ConnectionBuffer {
     }
 }
 
-#[derive(Clone, Copy)]
-struct GlyphMeta {
-    uv_rect: [f32; 4],
-    advance: f32,
-    draw_offset_x: f32,
-    draw_width: f32,
-    draw_offset_y: f32,
-    draw_height: f32,
-}
-
-/// The glyph atlas's characters, metrics and pair kerning, indexed for per-glyph lookups
-/// in label layout. A character the atlas lacks draws as `?` and is not kerned.
-struct GlyphSet {
-    /// Atlas position of each ASCII character; `GlyphSet::ABSENT` where there is none.
-    ascii: [u8; 128],
-    /// Atlas characters outside ASCII and their positions.
-    other: Vec<(char, u8)>,
-    /// Metrics by atlas position.
-    metas: Vec<GlyphMeta>,
-    /// Kerning between the glyphs at positions `a` and `b`, at `a * metas.len() + b`.
-    kerning: Vec<f32>,
-    fallback: Option<u8>,
-}
-
-/// A character's glyph and, unless it was substituted, its kerning position.
-#[derive(Clone, Copy)]
-struct GlyphRef<'a> {
-    meta: &'a GlyphMeta,
-    kern_index: Option<u8>,
-}
-
-impl GlyphSet {
-    const ABSENT: u8 = u8::MAX;
-
-    /// `chars` are the atlas characters in atlas order (a repeated character keeps its last
-    /// position); `kerning` is row-major over those positions.
-    fn new(chars: &[char], metas: Vec<GlyphMeta>, kerning: Vec<f32>) -> Self {
-        debug_assert!(chars.len() == metas.len() && chars.len() < usize::from(Self::ABSENT));
-        debug_assert_eq!(kerning.len(), metas.len() * metas.len());
-        let mut ascii = [Self::ABSENT; 128];
-        let mut other: Vec<(char, u8)> = Vec::new();
-        for (position, &ch) in chars.iter().enumerate() {
-            let position = position as u8;
-            if ch.is_ascii() {
-                ascii[ch as usize] = position;
-            } else if let Some(entry) = other.iter_mut().find(|(known, _)| *known == ch) {
-                entry.1 = position;
-            } else {
-                other.push((ch, position));
-            }
-        }
-        let mut glyphs = Self {
-            ascii,
-            other,
-            metas,
-            kerning,
-            fallback: None,
-        };
-        glyphs.fallback = glyphs.position('?');
-        glyphs
-    }
-
-    fn position(&self, ch: char) -> Option<u8> {
-        if ch.is_ascii() {
-            Some(self.ascii[ch as usize]).filter(|&position| position != Self::ABSENT)
-        } else {
-            self.other
-                .iter()
-                .find(|(known, _)| *known == ch)
-                .map(|&(_, position)| position)
-        }
-    }
-
-    fn get(&self, ch: char) -> Option<GlyphRef<'_>> {
-        match self.position(ch) {
-            Some(position) => Some(GlyphRef {
-                meta: &self.metas[usize::from(position)],
-                kern_index: Some(position),
-            }),
-            None => self.fallback.map(|position| GlyphRef {
-                meta: &self.metas[usize::from(position)],
-                kern_index: None,
-            }),
-        }
-    }
-
-    /// Kerning between consecutive glyphs; nothing when either was substituted.
-    fn kern(&self, prev: Option<GlyphRef<'_>>, next: GlyphRef<'_>) -> f32 {
-        match (prev.and_then(|prev| prev.kern_index), next.kern_index) {
-            (Some(a), Some(b)) => self.kerning[usize::from(a) * self.metas.len() + usize::from(b)],
-            _ => 0.0,
-        }
-    }
-}
-
 struct GlyphAtlas {
     bind_group_layout: wgpu::BindGroupLayout,
     fill_bind_group: wgpu::BindGroup,
@@ -398,27 +307,17 @@ const DYNAMIC_TIME_LETTER_SPACING_EM: f32 = 0.035;
 const DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN: f32 = 0.0035;
 const DYNAMIC_TIME_MIN_RENDERED_PX: f32 = 11.5;
 const DYNAMIC_COOLDOWN_MIN_RENDERED_PX: f32 = 12.0;
+/// Territory instance flags for the war stages; `territory.wgsl` reads the same bits.
+const WAR_FLAG_FIGHTING: u32 = 8;
+const WAR_FLAG_ENTERED: u32 = 16;
+const WAR_FLAG_QUEUED: u32 = 32;
+/// Smallest far-zoom guild name an HQ shows before falling back to its tag, screen pixels.
+const FAR_ZOOM_CAPTION_MIN_PX: f32 = 8.0;
 /// A captured territory is fresh (on cooldown) for this long.
 const FRESH_TERRITORY_SECS: i64 = 600;
-const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.75;
-const HQ_CROWN_FAR_BOX_FRACTION: f32 = 0.90;
-const HQ_CROWN_FAR_MAX_RENDERED_PX: f32 = 96.0;
-const HQ_CROWN_EXPANDED_MAX_SCALE: f32 = 1.15;
-const HQ_CROWN_NORMAL_TOP_PADDING_PX: f32 = 4.0;
-const HQ_CROWN_NORMAL_SIDE_PADDING_PX: f32 = 4.0;
-const HQ_CROWN_NORMAL_LABEL_GAP_PX: f32 = 3.0;
-const HQ_CROWN_NORMAL_MAX_HEIGHT_FRACTION: f32 = 0.24;
-const HQ_CROWN_NORMAL_MIN_RENDERED_PX: f32 = 12.0;
 const ORNAMENT_MIN_RENDERED_PX: f32 = 1.0;
 const ORNAMENT_UV_PADDING_PX: u32 = 2;
 const SEQUOIA_ORNAMENT_FALLBACK_GOLD: [u8; 3] = [245, 197, 66];
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct HqCrownLayout {
-    size_world: f32,
-    center_y: f32,
-    label_clear_y: f32,
-}
 
 #[inline]
 fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
@@ -441,125 +340,128 @@ fn resource_icons_visible_for_territory(
 }
 
 #[inline]
-fn hq_crown_expanded_at_zoom(px_per_world: f32) -> bool {
-    px_per_world <= HQ_CROWN_EXPANDED_MAX_SCALE
-}
-
-#[inline]
 fn hq_label_max_width_world(territory_width: f32, padding_world: f32) -> f32 {
     (territory_width - padding_world).max(1.0)
 }
 
-fn hq_normal_crown_layout(
-    territory_top: f32,
-    territory_width: f32,
-    territory_height: f32,
+/// Whether territory tags use the far-zoom sizing at this zoom.
+fn far_zoom_tags_active(settings: &RenderSettings, px_per_world: f32) -> bool {
+    !settings.show_claim_labels
+        && settings.show_far_zoom_territory_tags
+        && claim_label_zoom_active(f64::from(px_per_world))
+}
+
+/// An HQ territory's caption, the line naming its owner, as the static label pass lays it out
+/// at this zoom: the far-zoom tag when zoomed out with tags on, the static tag otherwise,
+/// nothing under claim labels. The crown is sized from it and makes room for it if drawn.
+fn hq_caption_metrics(
+    ct: &ClientTerritory,
+    settings: &RenderSettings,
     px_per_world: f32,
-    preferred_size_world: f32,
-) -> Option<HqCrownLayout> {
-    let px_per_world = px_per_world.max(0.0001);
-    let top_padding_world = HQ_CROWN_NORMAL_TOP_PADDING_PX / px_per_world;
-    let side_padding_world = HQ_CROWN_NORMAL_SIDE_PADDING_PX / px_per_world;
-    let label_gap_world = HQ_CROWN_NORMAL_LABEL_GAP_PX / px_per_world;
-    let max_width = (territory_width - side_padding_world * 2.0).max(0.0);
-    let max_height = (territory_height * HQ_CROWN_NORMAL_MAX_HEIGHT_FRACTION).max(0.0);
-    let max_size = max_width.min(max_height);
-    if max_size <= 0.0 {
-        return None;
+) -> Caption {
+    let loc = &ct.territory.location;
+    let (ww, hh) = (loc.width() as f32, loc.height() as f32);
+    let (sw, sh) = (ww * px_per_world, hh * px_per_world);
+    let cy = loc.midpoint_y() as f32;
+    let icon_alpha =
+        compute_label_layout_metrics(f64::from(sw), f64::from(sh), false).detail_layout_alpha;
+    let icons_visible = resource_icons_visible_for_territory(
+        settings.show_resource_icons,
+        sw,
+        sh,
+        icon_alpha,
+        &ct.territory.resources,
+    );
+    let static_sizing = compute_static_label_sizing(ww, hh);
+    let static_tag_size = static_sizing.as_ref().map_or(0.0, |sizing| {
+        sizing.tag_size * settings.label_scales.static_tag()
+    });
+    let claims_zoom = claim_label_zoom_active(f64::from(px_per_world));
+    if settings.show_claim_labels && claims_zoom {
+        return Caption {
+            size: static_tag_size,
+            center_y: cy,
+            drawn: false,
+        };
     }
-
-    let min_visible_world = HQ_CROWN_NORMAL_MIN_RENDERED_PX / px_per_world;
-    let min_size = min_visible_world.min(max_size);
-    let size_world = preferred_size_world.clamp(min_size, max_size);
-    let top_y = territory_top + top_padding_world;
-    let bottom_y = top_y + size_world;
-
-    Some(HqCrownLayout {
-        size_world,
-        center_y: top_y + size_world * 0.5,
-        label_clear_y: bottom_y + label_gap_world,
-    })
+    if far_zoom_tags_active(settings, px_per_world) {
+        let sizing =
+            compute_far_zoom_tag_sizing(sw, sh, px_per_world, settings.label_scales.static_tag());
+        let lift = compute_resource_icon_label_lift_world(hh, icon_alpha, icons_visible);
+        let has_tag =
+            !ct.territory.guild.is_unclaimed() && !ct.territory.guild.prefix.trim().is_empty();
+        return Caption {
+            size: sizing
+                .as_ref()
+                .map_or(static_tag_size, |sizing| sizing.font_height_world),
+            center_y: cy - lift,
+            drawn: sizing.is_some() && has_tag,
+        };
+    }
+    let Some(sizing) = static_sizing else {
+        return Caption {
+            size: 0.0,
+            center_y: cy,
+            drawn: false,
+        };
+    };
+    let detail_size = sizing.detail_size * settings.label_scales.static_name();
+    let lift =
+        compute_resource_icon_label_lift_world(hh, sizing.detail_layout_alpha, icons_visible);
+    Caption {
+        size: static_tag_size,
+        center_y: lerp_f32(
+            cy,
+            cy - (detail_size + 1.0) * 0.45,
+            sizing.detail_layout_alpha,
+        ) - lift,
+        drawn: static_tag_size * px_per_world >= STATIC_TAG_MIN_RENDERED_PX,
+    }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Explicit geometry and font metrics keep the crown/tag layout calculation stateless."
-)]
-fn hq_normal_static_tag_y(
-    territory_top: f32,
-    territory_width: f32,
-    territory_height: f32,
-    center_y: f32,
+/// The HQ crown and the caption under it, laid out for this zoom, with the caption.
+fn hq_layout(
+    ct: &ClientTerritory,
+    settings: &RenderSettings,
+    hq: HqCrown,
     px_per_world: f32,
-    tag_size: f32,
-    detail_size: f32,
-    detail_layout_alpha: f32,
-    label_lift: f32,
-) -> f32 {
-    let base_y = lerp_f32(
-        center_y,
-        center_y - (detail_size + 1.0) * 0.45,
-        detail_layout_alpha,
-    ) - label_lift;
-    let preferred_crown_size = tag_size * HQ_CROWN_SIZE_MULTIPLIER;
-    hq_normal_crown_layout(
-        territory_top,
-        territory_width,
-        territory_height,
-        px_per_world,
-        preferred_crown_size,
-    )
-    .map(|layout| base_y.max(layout.label_clear_y + tag_size * 0.5))
-    .unwrap_or(base_y)
+) -> (HqLayout, Caption) {
+    let caption = hq_caption_metrics(ct, settings, px_per_world);
+    let loc = &ct.territory.location;
+    let territory = TerritoryBox {
+        top: loc.top() as f32,
+        width: loc.width() as f32,
+        height: loc.height() as f32,
+    };
+    (hq.layout(territory, px_per_world, caption), caption)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Explicit geometry and display settings keep this label bounds calculation stateless."
-)]
-fn hq_normal_static_label_bottom_bound(
-    territory_top: f32,
-    territory_width: f32,
-    territory_height: f32,
-    center_y: f32,
+/// Bottom of an HQ territory's static labels (caption, then territory name), so the timers
+/// and resource icons below start clear of them.
+fn hq_static_label_bottom(
+    ct: &ClientTerritory,
+    settings: &RenderSettings,
+    hq: HqCrown,
     px_per_world: f32,
-    static_show_names: bool,
-    static_tag_scale: f32,
-    static_name_scale: f32,
-    resource_icons_visible: bool,
 ) -> Option<f32> {
-    let sizing = compute_static_label_sizing(territory_width, territory_height)?;
-    let detail_layout_alpha = sizing.detail_layout_alpha;
-    let tag_size = sizing.tag_size * static_tag_scale;
-    let detail_size = sizing.detail_size * static_name_scale;
-    let label_lift = compute_resource_icon_label_lift_world(
-        territory_height,
-        detail_layout_alpha,
-        resource_icons_visible,
-    );
-    let tag_visible = tag_size * px_per_world >= STATIC_TAG_MIN_RENDERED_PX;
-    let name_visible = static_show_names
-        && detail_layout_alpha > 0.02
+    let loc = &ct.territory.location;
+    let sizing = compute_static_label_sizing(loc.width() as f32, loc.height() as f32)?;
+    let (layout, caption) = hq_layout(ct, settings, hq, px_per_world);
+    let caption_size = caption.size;
+    let detail_size = sizing.detail_size * settings.label_scales.static_name();
+    let caption_visible = caption.drawn;
+    let name_visible = settings.show_names
+        && sizing.detail_layout_alpha > 0.02
         && detail_size * px_per_world >= STATIC_NAME_MIN_RENDERED_PX;
-    let tag_y = hq_normal_static_tag_y(
-        territory_top,
-        territory_width,
-        territory_height,
-        center_y,
-        px_per_world,
-        tag_size,
-        detail_size,
-        detail_layout_alpha,
-        label_lift,
-    );
-    let mut bottom_y = tag_visible.then_some(tag_y + tag_size * 0.5);
+    let mut bottom = caption_visible.then_some(layout.caption_y + caption_size * 0.5);
     if name_visible {
-        let name_y = tag_y + tag_size * 0.5 + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
-        bottom_y = Some(bottom_y.map_or(name_y + detail_size * 0.5, |bottom| {
-            bottom.max(name_y + detail_size * 0.5)
-        }));
+        let name_y = layout.caption_y
+            + caption_size * 0.5
+            + detail_size * STATIC_NAME_BASELINE_GAP_MULTIPLIER;
+        let name_bottom = name_y + detail_size * 0.5;
+        bottom = Some(bottom.map_or(name_bottom, |bottom| bottom.max(name_bottom)));
     }
-    bottom_y
+    bottom
 }
 
 #[inline]
@@ -864,23 +766,6 @@ fn get_2d_context(
         .flatten()?
         .dyn_into::<CanvasRenderingContext2d>()
         .ok()
-}
-
-fn line_units_with_tracking(text: &str, glyphs: &GlyphSet, tracking_units: f32) -> f32 {
-    let tracking_units = tracking_units.max(0.0);
-    let mut units = 0.0f32;
-    let mut prev: Option<GlyphRef<'_>> = None;
-    for ch in text.chars() {
-        let Some(glyph) = glyphs.get(ch) else {
-            continue;
-        };
-        if prev.is_some() {
-            units += tracking_units + glyphs.kern(prev, glyph);
-        }
-        units += glyph.meta.advance;
-        prev = Some(glyph);
-    }
-    units
 }
 
 /// `text`, or as much of it as fits before an ellipsis; borrowed when it fits whole.
@@ -3096,11 +2981,16 @@ impl GpuRenderer {
                     .as_ref()
                     .and_then(|runtime| runtime.headquarters)
                     .unwrap_or(false);
-                let is_at_war = frame.wars.is_some_and(|wars| wars.contains(name));
+                let war_flag = match frame.war_stages.and_then(|stages| stages.get(name)) {
+                    Some(StageKind::Fighting) => WAR_FLAG_FIGHTING,
+                    Some(StageKind::Entered) => WAR_FLAG_ENTERED,
+                    Some(StageKind::Queued) => WAR_FLAG_QUEUED,
+                    None => 0,
+                };
                 let flags = (is_hovered as u32)
                     + (is_selected as u32) * 2
                     + (is_headquarters as u32) * 4
-                    + (is_at_war as u32) * 8;
+                    + war_flag;
 
                 let acquired_rel_secs = if settings.suppress_cooldown_visuals {
                     -1_000_000.0_f32
@@ -3270,6 +3160,7 @@ impl GpuRenderer {
         };
         let static_tag_scale = settings.label_scales.static_tag();
         let static_name_scale = settings.label_scales.static_name();
+        let hq = HqCrown::from_settings(settings);
         let Some(text_renderer) = self.text_renderer.as_mut() else {
             return;
         };
@@ -3352,15 +3243,14 @@ impl GpuRenderer {
                         .as_ref()
                         .and_then(|runtime| runtime.headquarters)
                         .unwrap_or(false);
-                    if is_hq && hq_crown_expanded_at_zoom(scale) {
+                    if is_hq && hq.fills(scale) {
                         continue;
                     }
                     if show_far_zoom_tags {
                         if ct.territory.guild.is_unclaimed() {
                             continue;
                         }
-                        let tag = ct.territory.guild.prefix.trim();
-                        if tag.is_empty() {
+                        if ct.territory.guild.prefix.trim().is_empty() {
                             continue;
                         }
                         let Some(sizing) =
@@ -3368,7 +3258,23 @@ impl GpuRenderer {
                         else {
                             continue;
                         };
-                        let units_per_world = line_height / sizing.font_height_world.max(0.001);
+                        let hq_placement = is_hq.then(|| hq_layout(ct, settings, hq, scale));
+                        let (tag, font_height_world) = match hq_placement {
+                            Some(_) => hq_caption(
+                                hq,
+                                &ct.territory.guild,
+                                &TextFit {
+                                    glyphs,
+                                    line_height,
+                                    tracking_units: tag_tracking_units,
+                                },
+                                sizing.font_height_world,
+                                sizing.max_width_world,
+                                FAR_ZOOM_CAPTION_MIN_PX / scale,
+                            ),
+                            None => (ct.territory.guild.prefix.trim(), sizing.font_height_world),
+                        };
+                        let units_per_world = line_height / font_height_world.max(0.001);
                         let fitted = fit_text_to_units_with_tracking(
                             tag,
                             sizing.max_width_world * units_per_world,
@@ -3394,7 +3300,10 @@ impl GpuRenderer {
                             resource_icon_detail_layout_alpha,
                             resource_icons_visible,
                         );
-                        let tag_y = loc.midpoint_y() as f32 - label_lift;
+                        let tag_y = hq_placement
+                            .map_or(loc.midpoint_y() as f32 - label_lift, |(layout, _)| {
+                                layout.caption_y
+                            });
                         let mut tag_color = name_color_rgba(settings.tag_color, ct.guild_color);
                         tag_color[3] = 0.92 * sizing.alpha;
                         let tag_halo_alpha = 0.68 * sizing.alpha;
@@ -3406,7 +3315,7 @@ impl GpuRenderer {
                             &fitted,
                             loc.midpoint_x() as f32,
                             tag_y,
-                            sizing.font_height_world,
+                            font_height_world,
                             sizing.max_width_world,
                             tag_tracking_units,
                             tag_color,
@@ -3454,22 +3363,23 @@ impl GpuRenderer {
                     let base_tag_y =
                         lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha)
                             - label_lift;
-                    let tag_y = if is_hq {
-                        hq_normal_static_tag_y(
-                            loc.top() as f32,
-                            ww,
-                            hh,
-                            cy,
-                            px_per_world,
+                    let hq_placement = is_hq.then(|| hq_layout(ct, settings, hq, px_per_world));
+                    let tag_y = hq_placement.map_or(base_tag_y, |(layout, _)| layout.caption_y);
+                    let (tag, caption_size) = match hq_placement {
+                        Some(_) => hq_caption(
+                            hq,
+                            &ct.territory.guild,
+                            &TextFit {
+                                glyphs,
+                                line_height,
+                                tracking_units: tag_tracking_units,
+                            },
                             tag_size,
-                            detail_size,
-                            detail_layout_alpha,
-                            label_lift,
-                        )
-                    } else {
-                        base_tag_y
+                            tag_max_w,
+                            STATIC_TAG_MIN_RENDERED_PX / px_per_world,
+                        ),
+                        None => (ct.territory.guild.prefix.as_str(), tag_size),
                     };
-                    let tag = ct.territory.guild.prefix.as_str();
                     let tag_px = tag_size * px_per_world;
                     if tag_px >= STATIC_TAG_MIN_RENDERED_PX {
                         let tag_color = {
@@ -3488,7 +3398,7 @@ impl GpuRenderer {
                             tag,
                             cx,
                             tag_y,
-                            tag_size,
+                            caption_size,
                             tag_max_w,
                             tag_tracking_units,
                             tag_color,
@@ -3594,6 +3504,7 @@ impl GpuRenderer {
         let static_tag_scale = settings.label_scales.static_tag();
         let static_name_scale = settings.label_scales.static_name();
         let dynamic_label_scale = settings.label_scales.dynamic();
+        let hq = HqCrown::from_settings(settings);
         let Some(text_renderer) = self.text_renderer.as_mut() else {
             return i64::MAX;
         };
@@ -3630,7 +3541,7 @@ impl GpuRenderer {
                     .as_ref()
                     .and_then(|runtime| runtime.headquarters)
                     .unwrap_or(false);
-                if is_hq && hq_crown_expanded_at_zoom(scale) {
+                if is_hq && hq.fills(scale) {
                     continue;
                 }
                 let state =
@@ -3722,17 +3633,8 @@ impl GpuRenderer {
                     resource_icons_visible,
                 );
                 if is_hq
-                    && let Some(hq_label_bottom) = hq_normal_static_label_bottom_bound(
-                        loc.top() as f32,
-                        ww,
-                        hh,
-                        cy,
-                        px_per_world,
-                        settings.show_names,
-                        static_tag_scale,
-                        static_name_scale,
-                        resource_icons_visible,
-                    )
+                    && let Some(hq_label_bottom) =
+                        hq_static_label_bottom(ct, settings, hq, px_per_world)
                 {
                     static_name_bottom = Some(
                         static_name_bottom
@@ -3895,6 +3797,7 @@ impl GpuRenderer {
         let static_name_scale = settings.label_scales.static_name();
         let dynamic_label_scale = settings.label_scales.dynamic();
         let icon_scale = settings.label_scales.icons();
+        let hq = HqCrown::from_settings(settings);
         let Some(renderer) = self.icon_renderer.as_mut() else {
             return i64::MAX;
         };
@@ -3926,7 +3829,7 @@ impl GpuRenderer {
             let cx = loc.midpoint_x() as f32;
             let cy = loc.midpoint_y() as f32;
             let short_side_world = ww.min(hh).max(1.0);
-            let expanded_hq_crown = is_hq && hq_crown_expanded_at_zoom(scale);
+            let expanded_hq_crown = is_hq && hq.fills(scale);
             let resource_icon_detail_layout_alpha =
                 compute_label_layout_metrics(sw as f64, sh as f64, false).detail_layout_alpha;
             let resource_icons_visible = resource_icons_visible_for_territory(
@@ -4003,32 +3906,19 @@ impl GpuRenderer {
                     }
                 }
             }
-            if is_hq
+            let crown_slot = if expanded_hq_crown {
+                Some((hq.fill_size(short_side_world, scale), cy))
+            } else if is_hq {
+                hq_layout(ct, settings, hq, scale)
+                    .0
+                    .crown
+                    .map(|slot| (slot.size, slot.center_y))
+            } else {
+                None
+            };
+            if let Some((crown_size_world, crown_center_y)) = crown_slot
                 && let Some(crown_uv) = renderer.uv_by_kind.get(&IconKind::HqCrown).copied()
-                && let Some(static_sizing) = compute_static_label_sizing(ww, hh)
             {
-                let crown_tag_size = static_sizing.tag_size * static_tag_scale;
-                let min_crown_world = 1.0;
-                let normal_preferred_crown_size =
-                    (crown_tag_size * HQ_CROWN_SIZE_MULTIPLIER).max(min_crown_world);
-                let far_crown_size_world = (short_side_world * HQ_CROWN_FAR_BOX_FRACTION)
-                    .min(HQ_CROWN_FAR_MAX_RENDERED_PX / scale.max(0.0001))
-                    .max(min_crown_world);
-                let crown_layout = if expanded_hq_crown {
-                    Some((far_crown_size_world, cy))
-                } else {
-                    hq_normal_crown_layout(
-                        loc.top() as f32,
-                        ww,
-                        hh,
-                        scale,
-                        normal_preferred_crown_size,
-                    )
-                    .map(|layout| (layout.size_world, layout.center_y))
-                };
-                let Some((crown_size_world, crown_center_y)) = crown_layout else {
-                    continue;
-                };
                 renderer.instances_buf.push(IconInstance {
                     rect: [
                         cx - crown_size_world * 0.5,
@@ -4103,17 +3993,8 @@ impl GpuRenderer {
                 resource_icons_visible,
             );
             if is_hq
-                && let Some(hq_label_bottom) = hq_normal_static_label_bottom_bound(
-                    loc.top() as f32,
-                    ww,
-                    hh,
-                    cy,
-                    px_per_world,
-                    settings.show_names,
-                    static_tag_scale,
-                    static_name_scale,
-                    resource_icons_visible,
-                )
+                && let Some(hq_label_bottom) =
+                    hq_static_label_bottom(ct, settings, hq, px_per_world)
             {
                 static_name_bottom = Some(
                     static_name_bottom
@@ -4568,6 +4449,7 @@ impl GpuRenderer {
     /// them draws.
     fn prepare_overlay(&mut self, frame: &Frame, stats: &mut DrawStats) -> bool {
         if frame.site_labels.is_none()
+            && frame.war_plates.is_none()
             && frame.teammates.is_none()
             && self.overlay_renderer.is_none()
         {
@@ -4585,6 +4467,7 @@ impl GpuRenderer {
             &self.device,
             &self.queue,
             frame.site_labels,
+            frame.war_plates,
             frame.teammates,
             self.dpr,
         );
@@ -5097,8 +4980,8 @@ impl DrawStats {
 #[cfg(test)]
 mod tests {
     use super::{
-        SEQUOIA_ORNAMENT_FALLBACK_GOLD, derive_sequoia_ornament_gold, hq_normal_crown_layout,
-        hq_normal_static_tag_y, is_sequoia_ornament_neutral_highlight, ornament_mask_alpha,
+        SEQUOIA_ORNAMENT_FALLBACK_GOLD, derive_sequoia_ornament_gold,
+        is_sequoia_ornament_neutral_highlight, ornament_mask_alpha,
     };
 
     #[test]
@@ -5138,25 +5021,5 @@ mod tests {
         assert!(!is_sequoia_ornament_neutral_highlight(
             236, 189, 74, gold_alpha
         ));
-    }
-
-    #[test]
-    fn hq_normal_crown_layout_fits_top_slot() {
-        let layout =
-            hq_normal_crown_layout(10.0, 64.0, 160.0, 2.0, 100.0).expect("crown should fit");
-
-        assert!((layout.size_world - 38.4).abs() < 0.001);
-        assert!((layout.center_y - 31.2).abs() < 0.001);
-        assert!((layout.label_clear_y - 51.9).abs() < 0.001);
-    }
-
-    #[test]
-    fn hq_normal_static_tag_clears_crown_slot() {
-        let tag_size = 24.0;
-        let layout = hq_normal_crown_layout(10.0, 64.0, 160.0, 2.0, tag_size * 1.75)
-            .expect("crown should fit");
-        let tag_y = hq_normal_static_tag_y(10.0, 64.0, 160.0, 45.0, 2.0, tag_size, 21.5, 1.0, 0.0);
-
-        assert!(tag_y - tag_size * 0.5 >= layout.label_clear_y - 0.001);
     }
 }

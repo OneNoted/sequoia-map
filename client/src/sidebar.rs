@@ -2153,6 +2153,9 @@ fn StatsBar() -> impl IntoView {
                 style:color=move || if show_settings.get() { "var(--color-gold)" } else { "var(--color-text-dim)" }
                 style:background=move || if show_settings.get() { "rgba(245,197,66,0.06)" } else { "var(--color-surface)" }
                 style:border-color=move || if show_settings.get() { "rgba(245,197,66,0.25)" } else { "var(--color-border-subtle)" }
+                aria-label="Settings"
+                title="Settings"
+                aria-expanded=move || show_settings.get().to_string()
                 on:click=move |_| show_settings.update(|v| *v = !*v)
                 on:mouseenter=move |e| {
                     if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())

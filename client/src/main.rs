@@ -14,8 +14,7 @@ mod site_nav;
 mod timeline;
 mod tower;
 mod ui_icons;
-mod war_stats;
-mod warcontroller;
+mod war_room;
 
 // Shared map math and state helpers, also used by the other browser client.
 pub(crate) use sequoia_map_engine::{colors, defense, territory, time_format, viewport};

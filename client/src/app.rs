@@ -5,7 +5,7 @@ use leptos_router::hooks::{use_location, use_navigate};
 use wasm_bindgen::JsCast;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ pub(crate) fn clamp_sidebar_width(value: f64) -> f64 {
     value.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)
 }
 
-pub(crate) const DEFAULT_WAR_PANEL_WIDTH: f64 = 278.0;
+pub(crate) const DEFAULT_WAR_PANEL_WIDTH: f64 = 300.0;
 pub(crate) const WAR_PANEL_WIDTH_MIN: f64 = 220.0;
 pub(crate) const WAR_PANEL_WIDTH_MAX: f64 = 460.0;
 
@@ -100,6 +100,7 @@ thread_local! {
 use sequoia_shared::history::{
     HistoryGuildSrEntry, HistoryHeat, HistoryHeatMeta, HistoryHeatSource,
 };
+use sequoia_shared::war_board::StageKind;
 use sequoia_shared::{Region, Resources, SeasonScalarSample, TreasuryLevel, WarControllerState};
 
 /// Newtype wrappers to give `hovered` and `selected` distinct types for Leptos context.
@@ -150,6 +151,10 @@ pub(crate) struct ShowResourceIcons(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct HqCrownStyleSetting(pub RwSignal<HqCrownStyle>);
+#[derive(Clone, Copy)]
+pub(crate) struct HqCrownScale(pub RwSignal<f64>);
+#[derive(Clone, Copy)]
 pub(crate) struct ManualSrScalar(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct AutoSrScalarEnabled(pub RwSignal<bool>);
@@ -166,9 +171,9 @@ pub(crate) struct ReadableFont(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowMinimap(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
-pub(crate) struct ShowWarQueue(pub RwSignal<bool>);
+pub(crate) struct ShowWarPanel(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
-pub(crate) struct ShowWarStats(pub RwSignal<bool>);
+pub(crate) struct ShowWarMarkers(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowPlayerHeads(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -205,12 +210,6 @@ pub(crate) struct ShowSettings(pub RwSignal<bool>);
 pub(crate) struct ShowDebugInfo(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct IsMobile(pub RwSignal<bool>);
-/// Viewport width in CSS pixels, refreshed by the window resize listener.
-///
-/// [`IsMobile`] only carries the breakpoint; an overlay that has to fit a computed number of
-/// fixed-width children needs the width itself, as a signal rather than a one-shot read.
-#[derive(Clone, Copy)]
-pub(crate) struct WindowWidth(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct PeekTerritory(pub RwSignal<Option<String>>);
 #[derive(Clone, Copy)]
@@ -350,24 +349,17 @@ pub(crate) struct HistorySeasonScalarSample(pub RwSignal<Option<SeasonScalarSamp
 pub(crate) struct HistorySeasonLeaderboard(pub RwSignal<Option<Vec<HistoryGuildSrEntry>>>);
 #[derive(Clone, Copy)]
 pub(crate) struct WarControllerData(pub RwSignal<Option<WarControllerState>>);
-/// Names of the territories with a war in progress, derived from [`WarControllerData`].
-///
-/// A `Memo` rather than a derived closure on purpose: the war feed re-broadcasts every few
-/// seconds as tower health moves, but the set of names rarely changes, and the memo's equality
-/// check keeps those no-op updates from rebuilding the GPU instance buffer.
-#[derive(Clone, Copy)]
-pub(crate) struct TerritoriesInWar(pub Memo<HashSet<String>>);
 /// Whether the viewer may see the war feed at all: signed in *and* in Sequoia.
 ///
 /// The server is the real gate - it refuses `/api/warcontroller` and withholds the SSE
-/// `warcontroller` frames from everyone else. This is the display side of the same rule,
-/// covering the war queue panel and, through [`TerritoriesInWar`], the at-war highlight.
+/// `warcontroller` frames from everyone else. This is the display side of the same rule, which
+/// [`crate::war_room::WarRoom`] applies to everything war-related on the map and in the HUD.
 #[derive(Clone, Copy)]
 pub(crate) struct WarFeedVisible(pub Memo<bool>);
-/// Whether the top-left war queue overview is expanded.
+/// Whether the war panel is expanded.
 #[derive(Clone, Copy)]
 pub(crate) struct WarPanelOpen(pub RwSignal<bool>);
-/// Width of the war queue overview, drag-resizable like the sidebar's.
+/// Width of the war panel, drag-resizable like the sidebar's.
 #[derive(Clone, Copy)]
 pub(crate) struct WarPanelWidth(pub RwSignal<f64>);
 
@@ -387,7 +379,7 @@ pub(crate) struct GuildColorStore(pub StoredValue<GuildColorMap>);
 // Defined in the engine crate so the renderer can name it without depending on
 // the UI. Re-exported here to keep `crate::app::NameColor` paths working; its
 // serde form is PascalCase and is persisted in localStorage.
-pub(crate) use sequoia_map_engine::settings::NameColor;
+pub(crate) use sequoia_map_engine::settings::{HqCrownStyle, NameColor};
 
 use gloo_storage::Storage;
 
@@ -424,10 +416,11 @@ struct SettingsV2 {
     war_panel_open: bool,
     #[serde(default = "default_war_panel_width")]
     war_panel_width: f64,
+    /// The war panel; the key predates the panel's other contents.
     #[serde(default = "default_true")]
     show_war_queue: bool,
     #[serde(default = "default_true")]
-    show_war_stats: bool,
+    show_war_markers: bool,
     #[serde(default = "default_true")]
     show_player_heads: bool,
     #[serde(default = "default_true")]
@@ -447,6 +440,10 @@ struct SettingsV2 {
     show_resource_icons: bool,
     #[serde(default = "default_true")]
     show_territory_ornaments: bool,
+    #[serde(default, deserialize_with = "lenient_hq_crown_style")]
+    hq_crown_style: HqCrownStyle,
+    #[serde(default = "default_hq_crown_scale")]
+    hq_crown_scale: f64,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
     #[serde(default = "default_true")]
@@ -564,6 +561,33 @@ const fn default_player_head_size() -> f64 {
     DEFAULT_PLAYER_HEAD_SIZE
 }
 
+/// A style this build does not know, saved by a newer one, falls back to the default
+/// rather than failing the whole settings blob.
+fn lenient_hq_crown_style<'de, D>(deserializer: D) -> Result<HqCrownStyle, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+const fn default_hq_crown_scale() -> f64 {
+    DEFAULT_HQ_CROWN_SCALE
+}
+
+pub(crate) const DEFAULT_HQ_CROWN_SCALE: f64 = 1.0;
+// Exact decimal twins of the renderer's `f32` bounds, so the slider snaps to its steps.
+pub(crate) const HQ_CROWN_SCALE_MIN: f64 = 0.6;
+pub(crate) const HQ_CROWN_SCALE_MAX: f64 = 1.6;
+
+pub(crate) fn clamp_hq_crown_scale(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(HQ_CROWN_SCALE_MIN, HQ_CROWN_SCALE_MAX)
+    } else {
+        DEFAULT_HQ_CROWN_SCALE
+    }
+}
+
 pub(crate) const DEFAULT_LABEL_SCALE_MASTER: f64 = 1.0;
 pub(crate) const DEFAULT_LABEL_SCALE_GROUP: f64 = 1.0;
 pub(crate) const DEFAULT_LABEL_SCALE_STATIC_TAG: f64 = 1.0;
@@ -670,7 +694,7 @@ impl Default for SettingsV2 {
             war_panel_open: true,
             war_panel_width: default_war_panel_width(),
             show_war_queue: true,
-            show_war_stats: true,
+            show_war_markers: true,
             show_player_heads: true,
             player_head_render_head: true,
             player_head_render_label: false,
@@ -681,6 +705,8 @@ impl Default for SettingsV2 {
             map_intel_enabled: false,
             show_resource_icons: true,
             show_territory_ornaments: false,
+            hq_crown_style: HqCrownStyle::default(),
+            hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
             manual_sr_scalar: default_manual_sr_scalar(),
             auto_sr_scalar_enabled: true,
             show_leaderboard_sr_gain: false,
@@ -806,7 +832,7 @@ impl From<LegacySettings> for SettingsV2 {
             war_panel_open: true,
             war_panel_width: default_war_panel_width(),
             show_war_queue: true,
-            show_war_stats: true,
+            show_war_markers: true,
             show_player_heads: true,
             player_head_render_head: true,
             player_head_render_label: false,
@@ -817,6 +843,8 @@ impl From<LegacySettings> for SettingsV2 {
             map_intel_enabled: value.map_intel_enabled,
             show_resource_icons: value.show_resource_icons,
             show_territory_ornaments: false,
+            hq_crown_style: HqCrownStyle::default(),
+            hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
             manual_sr_scalar: value.manual_sr_scalar,
             auto_sr_scalar_enabled: value.auto_sr_scalar_enabled,
             show_leaderboard_sr_gain: value.show_leaderboard_sr_gain,
@@ -866,7 +894,7 @@ use crate::territory::{ClientTerritoryMap, from_snapshot};
 use crate::time_format::format_hms;
 use crate::timeline::Timeline;
 use crate::viewport::Viewport;
-use crate::warcontroller;
+use crate::war_room::{self, WarRoom, WarRoomInputs};
 use sequoia_browser_map::live_feed::{self, LiveFeed};
 use sequoia_browser_map::{BrowserMap, HeatLayer, MapCanvas, MapEvent, MapInputs};
 use sequoia_map_engine::heat::HeatScale;
@@ -988,6 +1016,8 @@ pub fn MapPage() -> impl IntoView {
     let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
     let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
+    let hq_crown_style: RwSignal<HqCrownStyle> = RwSignal::new(saved.hq_crown_style);
+    let hq_crown_scale: RwSignal<f64> = RwSignal::new(clamp_hq_crown_scale(saved.hq_crown_scale));
     let manual_sr_scalar: RwSignal<f64> =
         RwSignal::new(season_scalar::clamp_manual_scalar(saved.manual_sr_scalar));
     let auto_sr_scalar_enabled: RwSignal<bool> = RwSignal::new(saved.auto_sr_scalar_enabled);
@@ -1017,8 +1047,8 @@ pub fn MapPage() -> impl IntoView {
     let war_panel_open: RwSignal<bool> = RwSignal::new(saved.war_panel_open);
     let war_panel_width: RwSignal<f64> =
         RwSignal::new(clamp_war_panel_width(saved.war_panel_width));
-    let show_war_queue: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
-    let show_war_stats: RwSignal<bool> = RwSignal::new(saved.show_war_stats);
+    let show_war_panel: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
+    let show_war_markers: RwSignal<bool> = RwSignal::new(saved.show_war_markers);
     let show_player_heads: RwSignal<bool> = RwSignal::new(saved.show_player_heads);
     let player_head_render_head: RwSignal<bool> = RwSignal::new(saved.player_head_render_head);
     let player_head_render_label: RwSignal<bool> = RwSignal::new(saved.player_head_render_label);
@@ -1043,7 +1073,6 @@ pub fn MapPage() -> impl IntoView {
 
     // Mobile detection
     let is_mobile: RwSignal<bool> = RwSignal::new(canvas_dimensions().0 < MOBILE_BREAKPOINT);
-    let window_width: RwSignal<f64> = RwSignal::new(canvas_dimensions().0);
     let peek_territory: RwSignal<Option<String>> = RwSignal::new(None);
     let selected_guild: RwSignal<Option<String>> = RwSignal::new(None);
     let detail_return_guild: RwSignal<Option<String>> = RwSignal::new(None);
@@ -1092,17 +1121,6 @@ pub fn MapPage() -> impl IntoView {
                 .is_some_and(crate::auth::Viewer::is_guild_member)
         })
     });
-    let territories_in_war: Memo<HashSet<String>> = Memo::new(move |_| {
-        if !war_feed_visible.get() {
-            return HashSet::new();
-        }
-        warcontroller_state.with(|state| {
-            state
-                .as_ref()
-                .map(WarControllerState::territories_at_war)
-                .unwrap_or_default()
-        })
-    });
     let territory_geometry: StoredValue<TerritoryGeometryMap> = StoredValue::new(HashMap::new());
     let guild_colors: StoredValue<GuildColorMap> = StoredValue::new(HashMap::new());
 
@@ -1121,6 +1139,13 @@ pub fn MapPage() -> impl IntoView {
         needs_resync: needs_live_resync,
         ..
     } = feed;
+    let war_room = WarRoom::new(WarRoomInputs {
+        feed: warcontroller_state,
+        visible: Signal::derive(move || war_feed_visible.get() && map_mode.get() == MapMode::Live),
+        territories,
+        connection,
+        tick,
+    });
 
     let render_settings = Memo::new(move |_| RenderSettings {
         thick_cooldown_borders: thick_cooldown_borders.get(),
@@ -1148,6 +1173,8 @@ pub fn MapPage() -> impl IntoView {
         compound_map_time: show_compound_map_time.get(),
         show_resource_icons: show_resource_icons.get(),
         show_territory_ornaments: show_territory_ornaments.get(),
+        hq_crown_style: hq_crown_style.get(),
+        hq_crown_scale: hq_crown_scale.get() as f32,
         label_scales: LabelScales {
             master: label_scale_master.get() as f32,
             static_tag: label_scale_static.get() as f32,
@@ -1160,12 +1187,6 @@ pub fn MapPage() -> impl IntoView {
     let map_clock = Memo::new(move |_| match map_mode.get() {
         MapMode::History => history_timestamp.get().unwrap_or_else(|| tick.get()),
         MapMode::Live => tick.get(),
-    });
-    // The war feed is live-only, so replaying history must not paint today's wars onto a
-    // past snapshot.
-    let war_outlines = Memo::new(move |_| match map_mode.get() {
-        MapMode::History => HashSet::new(),
-        MapMode::Live => territories_in_war.get(),
     });
     let minimap_inset = Memo::new(move |_| {
         (!is_mobile.get() && show_minimap.get()).then_some(match map_mode.get() {
@@ -1188,7 +1209,7 @@ pub fn MapPage() -> impl IntoView {
             // Paused history holds `map_clock` still; cooldown pulses keep animating.
             animation_tick: Some(tick.into()),
             heat: Some(heat_layer),
-            wars: Some(war_outlines.into()),
+            war_stages: Some(war_room.stages().into()),
             minimap_inset: minimap_inset.into(),
             edit: Signal::stored(Default::default()),
         },
@@ -1226,6 +1247,8 @@ pub fn MapPage() -> impl IntoView {
     provide_context(MapIntelModeEnabled(map_intel_enabled));
     provide_context(ShowResourceIcons(show_resource_icons));
     provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
+    provide_context(HqCrownStyleSetting(hq_crown_style));
+    provide_context(HqCrownScale(hq_crown_scale));
     provide_context(ManualSrScalar(manual_sr_scalar));
     provide_context(AutoSrScalarEnabled(auto_sr_scalar_enabled));
     provide_context(ShowLeaderboardSrGain(show_leaderboard_sr_gain));
@@ -1242,8 +1265,8 @@ pub fn MapPage() -> impl IntoView {
     provide_context(SidebarOpen(sidebar_open));
     provide_context(WarPanelOpen(war_panel_open));
     provide_context(WarPanelWidth(war_panel_width));
-    provide_context(ShowWarQueue(show_war_queue));
-    provide_context(ShowWarStats(show_war_stats));
+    provide_context(ShowWarPanel(show_war_panel));
+    provide_context(ShowWarMarkers(show_war_markers));
     provide_context(ShowPlayerHeads(show_player_heads));
     provide_context(PlayerHeadRenderHead(player_head_render_head));
     provide_context(PlayerHeadRenderLabel(player_head_render_label));
@@ -1270,7 +1293,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(LiveHandoffResyncCount(live_handoff_resync_count));
     provide_context(LiveSeasonScalarSample(live_season_scalar_sample));
     provide_context(WarControllerData(warcontroller_state));
-    provide_context(TerritoriesInWar(territories_in_war));
+    provide_context(war_room);
     provide_context(WarFeedVisible(war_feed_visible));
     provide_context(HistorySeasonScalarSample(history_season_scalar_sample));
     provide_context(HistorySeasonLeaderboard(history_season_leaderboard));
@@ -1278,7 +1301,6 @@ pub fn MapPage() -> impl IntoView {
     provide_context(GuildColorStore(guild_colors));
     provide_context(crate::tower::TowerState::new());
     provide_context(IsMobile(is_mobile));
-    provide_context(WindowWidth(window_width));
 
     // Website session, resolved on mount (the signal itself is declared alongside the war
     // feed above). The navbar shows who is signed in, and the war feed is gated on
@@ -1412,6 +1434,8 @@ pub fn MapPage() -> impl IntoView {
         map_intel_enabled.set(defaults.map_intel_enabled);
         show_resource_icons.set(defaults.show_resource_icons);
         show_territory_ornaments.set(defaults.show_territory_ornaments);
+        hq_crown_style.set(defaults.hq_crown_style);
+        hq_crown_scale.set(clamp_hq_crown_scale(defaults.hq_crown_scale));
         manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
             defaults.manual_sr_scalar,
         ));
@@ -1427,8 +1451,8 @@ pub fn MapPage() -> impl IntoView {
         heat_selected_season_id.set(defaults.heat_selected_season_id);
         readable_font.set(defaults.readable_font);
         show_minimap.set(defaults.show_minimap);
-        show_war_queue.set(defaults.show_war_queue);
-        show_war_stats.set(defaults.show_war_stats);
+        show_war_panel.set(defaults.show_war_queue);
+        show_war_markers.set(defaults.show_war_markers);
         show_player_heads.set(defaults.show_player_heads);
         player_head_render_head.set(defaults.player_head_render_head);
         player_head_render_label.set(defaults.player_head_render_label);
@@ -1801,12 +1825,13 @@ pub fn MapPage() -> impl IntoView {
             }
             return;
         }
+        // What the feed held when the request went out: anything the stream delivers while
+        // it is in flight is at least as current as the answer, which then only fills in.
+        let held = warcontroller_state.get_untracked();
         wasm_bindgen_futures::spawn_local(async move {
-            match warcontroller::fetch_warcontroller().await {
-                // The SSE stream may already have delivered something newer while this was in
-                // flight - including the empty payload this endpoint falls back to.
+            match war_room::fetch_warcontroller().await {
                 Ok(state) => warcontroller_state.maybe_update(|current| {
-                    if !state.supersedes(current.as_ref()) {
+                    if *current != held || !state.supersedes(current.as_ref()) {
                         return false;
                     }
                     *current = Some(state);
@@ -1955,8 +1980,8 @@ pub fn MapPage() -> impl IntoView {
             sidebar_open: sidebar_open.get(),
             war_panel_open: war_panel_open.get(),
             war_panel_width: clamp_war_panel_width(war_panel_width.get()),
-            show_war_queue: show_war_queue.get(),
-            show_war_stats: show_war_stats.get(),
+            show_war_queue: show_war_panel.get(),
+            show_war_markers: show_war_markers.get(),
             show_player_heads: show_player_heads.get(),
             player_head_render_head: player_head_render_head.get(),
             player_head_render_label: player_head_render_label.get(),
@@ -1969,6 +1994,8 @@ pub fn MapPage() -> impl IntoView {
             map_intel_enabled: map_intel_enabled.get(),
             show_resource_icons: show_resource_icons.get(),
             show_territory_ornaments: show_territory_ornaments.get(),
+            hq_crown_style: hq_crown_style.get(),
+            hq_crown_scale: clamp_hq_crown_scale(hq_crown_scale.get()),
             manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
             auto_sr_scalar_enabled: auto_sr_scalar_enabled.get(),
             show_leaderboard_sr_gain: show_leaderboard_sr_gain.get(),
@@ -2021,11 +2048,6 @@ pub fn MapPage() -> impl IntoView {
 
             let cb = Closure::<dyn Fn()>::new(move || {
                 let (w, _) = canvas_dimensions();
-                // Whole pixels only: sub-pixel and DPR resize noise must not wake the
-                // overlays that derive their layout from this.
-                if (w - window_width.get_untracked()).abs() >= 1.0 {
-                    window_width.set(w);
-                }
                 let mobile = w < MOBILE_BREAKPOINT;
                 if mobile != is_mobile.get_untracked() {
                     is_mobile.set(mobile);
@@ -2221,8 +2243,12 @@ pub fn MapPage() -> impl IntoView {
 
         let handler =
             Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
-                // The help dialog handles its own keys (Tab, Esc).
-                if keybind_help_open.get_untracked() {
+                // The help dialog, the war sheet and the player detail handle their own keys,
+                // and a key a control already acted on is not a map shortcut.
+                if keybind_help_open.get_untracked()
+                    || e.default_prevented()
+                    || war_room.handle_stray_key(&e)
+                {
                     return;
                 }
                 let key = e.key();
@@ -2609,8 +2635,7 @@ pub fn MapPage() -> impl IntoView {
                 <DefenseLegend />
                 <MapIntelOverlay />
                 <crate::players::PlayerHeadsOverlay />
-                <crate::warcontroller::WarQueuePanel />
-                <crate::war_stats::WarStatsStrip />
+                <crate::war_room::WarRoomHud />
                 // Mobile HUD buttons — bottom-right stack
                 <MobileHistoryToggle />
                 // Mobile FAB — opens sidebar
@@ -2620,6 +2645,7 @@ pub fn MapPage() -> impl IntoView {
                         if is_mobile.get() && !sidebar_open.get() { "flex" } else { "none" }
                     }
                     style="position: absolute; bottom: 16px; right: 16px; z-index: 20; width: 48px; height: 48px; border-radius: 12px; background: var(--color-deep); border: 1px solid var(--color-border-accent); align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.15); color: var(--color-gold); font-size: 1.4rem; font-family: var(--font-mono); touch-action: manipulation;"
+                    aria-label="Open sidebar"
                     on:click=move |_| {
                         sidebar_open.set(true);
                         sidebar_transient.set(false);
@@ -3077,6 +3103,8 @@ fn MobileHistoryToggle() -> impl IntoView {
 
     view! {
         <button
+            class="mobile-history-toggle"
+            aria-label="History"
             style:display=move || {
                 if is_mobile.get() && !sidebar_open.get() && history_available.get() && !is_history() {
                     "flex"
@@ -3155,7 +3183,7 @@ struct TooltipInfo {
     resources_from_live: bool,
     defense_tier: Option<String>,
     is_headquarters: bool,
-    is_at_war: bool,
+    war: Option<(StageKind, String)>,
     live_production_rates: Option<Resources>,
     live_storage_capacity: Option<Resources>,
     takes_in_window: Option<u64>,
@@ -3210,7 +3238,7 @@ fn Tooltip() -> impl IntoView {
     let HistoryTimestamp(history_timestamp) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
-    let TerritoriesInWar(territories_in_war) = expect_context();
+    let war_room = expect_context::<WarRoom>();
 
     let tooltip_info = Memo::new(move |_| {
         let reference_secs = if mode.get() == MapMode::History {
@@ -3240,10 +3268,10 @@ fn Tooltip() -> impl IntoView {
         let is_headquarters = runtime
             .and_then(|runtime| runtime.headquarters)
             .unwrap_or(false);
-        // Matches the red map border: the war feed is live-only, so it must not be
-        // reported against a past snapshot.
-        let is_at_war = mode.get() != MapMode::History
-            && territories_in_war.with(|in_war| in_war.contains(&name));
+        // The same stage and clock the territory's border and plate show.
+        let war = war_room
+            .front(&name)
+            .map(|front| crate::war_room::stage_with_clock(&front, war_room.now.get()));
         let takes_in_window = if heat_mode_enabled.get() {
             Some(
                 heat_entries_by_territory
@@ -3281,7 +3309,7 @@ fn Tooltip() -> impl IntoView {
             resources_from_live,
             defense_tier,
             is_headquarters,
-            is_at_war,
+            war,
             live_production_rates,
             live_storage_capacity,
             takes_in_window,
@@ -3412,9 +3440,9 @@ fn Tooltip() -> impl IntoView {
                             <div style="font-size: 0.92rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
                                 {info.name.clone()}
                             </div>
-                            {info.is_at_war.then(|| view! {
-                                <span style="font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; color: #ff4545; flex-shrink: 0;">
-                                    "In War"
+                            {info.war.clone().map(|(stage, text)| view! {
+                                <span class="tooltip-war" data-stage=crate::war_room::stage_slug(stage)>
+                                    {text}
                                 </span>
                             })}
                             {info.is_headquarters.then(|| view! {
@@ -3570,11 +3598,12 @@ fn TerritoryPeekCard() -> impl IntoView {
             let name = info.0.clone();
             let is_history = mode.get_untracked() == MapMode::History;
             let bottom_px = if is_history { 96 } else { 16 };
+            let bottom = format!("calc({bottom_px}px + env(safe-area-inset-bottom, 0px))");
             view! {
                 <div
                     class="peek-card-animate"
-                    style:bottom=format!("{}px", bottom_px)
-                    style="position: fixed; left: 16px; right: 76px; z-index: 90; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
+                    style:bottom=bottom
+                    style="position: fixed; left: calc(16px + env(safe-area-inset-left, 0px)); right: calc(76px + env(safe-area-inset-right, 0px)); z-index: 90; max-height: calc(100dvh - var(--nav-height) - 32px); overflow-x: hidden; overflow-y: auto; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
                 >
                     <div style={format!("width: 4px; flex-shrink: 0; background: {};", rgba_css(r, g, b, 0.85))} />
                     <div style="padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 4px;">
@@ -3626,6 +3655,7 @@ mod tests {
         DEFAULT_CONNECTION_THICKNESS_SCALE, clamp_connection_opacity_scale,
         clamp_connection_solid_opacity, clamp_connection_thickness_scale,
     };
+    use super::{DEFAULT_HQ_CROWN_SCALE, HQ_CROWN_SCALE_MAX, HqCrownStyle, clamp_hq_crown_scale};
     use super::{
         DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_SIDEBAR_WIDTH,
         DEFAULT_WAR_PANEL_WIDTH, LegacySettings, MapMode, NameColor, PLAYER_HEAD_SIZE_MAX,
@@ -3665,16 +3695,43 @@ mod tests {
     }
 
     #[test]
-    fn settings_without_war_visibility_show_both_war_overlays() {
+    fn hq_crown_settings_default_to_name_below_and_round_trip() {
+        let old: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(old.hq_crown_style, HqCrownStyle::NameBelow);
+        assert_eq!(old.hq_crown_scale, DEFAULT_HQ_CROWN_SCALE);
+
+        let saved = SettingsV2 {
+            hq_crown_style: HqCrownStyle::Fill,
+            hq_crown_scale: 1.4,
+            ..SettingsV2::default()
+        };
+        let round_trip: SettingsV2 =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!(round_trip.hq_crown_style, HqCrownStyle::Fill);
+        assert_eq!(round_trip.hq_crown_scale, 1.4);
+        assert_eq!(clamp_hq_crown_scale(f64::NAN), DEFAULT_HQ_CROWN_SCALE);
+        assert_eq!(clamp_hq_crown_scale(9.0), HQ_CROWN_SCALE_MAX);
+
+        let future: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "hq_crown_style": "Banner",
+            "show_names": true,
+        }))
+        .unwrap();
+        assert_eq!(future.hq_crown_style, HqCrownStyle::NameBelow);
+        assert!(future.show_names);
+    }
+
+    #[test]
+    fn settings_without_war_visibility_show_the_panel_and_markers() {
         // Same reasoning as the war panel above: these post-date every saved blob, so on
         // is a serde default rather than a defaults-version migration.
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(parsed.show_war_queue);
-        assert!(parsed.show_war_stats);
+        assert!(parsed.show_war_markers);
 
         let defaults = SettingsV2::default();
         assert!(defaults.show_war_queue);
-        assert!(defaults.show_war_stats);
+        assert!(defaults.show_war_markers);
     }
 
     #[test]

@@ -5,6 +5,11 @@ use sequoia_map_engine::scene::Rebuild;
 
 use crate::frame::{Frame, FrameMetrics, FrameOutcome, RenderCapabilities};
 
+// The renderer's label fitting needs no GPU, so its tests run here; nothing else uses it.
+#[cfg(test)]
+#[allow(dead_code)]
+mod glyphs;
+
 pub enum GpuRenderer {}
 
 impl GpuRenderer {
@@ -46,12 +51,13 @@ impl GpuRenderer {
             frame.selected,
             frame.settings,
             frame.heat.map(|heat| (heat.take_counts, heat.scale)),
-            frame.wars,
+            frame.war_stages,
             frame.territory_bounds,
             frame.tiles,
             frame.icons,
             frame.markers,
             frame.site_labels,
+            frame.war_plates,
             frame.teammates,
             frame.minimap,
             frame.clock_secs,
