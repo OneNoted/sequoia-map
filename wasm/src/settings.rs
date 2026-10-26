@@ -30,6 +30,25 @@ pub enum ConnectionStyle {
     Guild,
 }
 
+/// How headquarters are marked.
+///
+/// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HqCrownStyle {
+    /// A crown with the guild's name under it, at every zoom.
+    #[default]
+    NameBelow,
+    /// A small crown above the territory's usual labels, at every zoom.
+    Compact,
+    /// The crown fills the territory when zoomed out, in place of its labels, and turns
+    /// compact up close. The original look.
+    Fill,
+}
+
+/// Smallest and largest crown size multiplier the setting allows.
+pub const HQ_CROWN_SCALE_MIN: f32 = 0.6;
+pub const HQ_CROWN_SCALE_MAX: f32 = 1.6;
+
 /// How the map is drawn: every display option a host can set. Hosts rebuild this whenever
 /// one of their settings changes; [`RenderSettings::invalidates`] decides what that costs.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +93,11 @@ pub struct RenderSettings {
     pub compound_map_time: bool,
     pub show_resource_icons: bool,
     pub show_territory_ornaments: bool,
+
+    // Headquarters.
+    pub hq_crown_style: HqCrownStyle,
+    /// Multiplies the crown's preferred size; it still never outgrows its territory.
+    pub hq_crown_scale: f32,
 
     pub label_scales: LabelScales,
 }
@@ -171,6 +195,9 @@ impl RenderSettings {
         // Resource icons lift every label above them.
         let resource_icons = self.show_resource_icons != previous.show_resource_icons;
         let ornaments = self.show_territory_ornaments != previous.show_territory_ornaments;
+        // The crown moves every label of its territory.
+        let hq = self.hq_crown_style != previous.hq_crown_style
+            || self.hq_crown_scale != previous.hq_crown_scale;
         let (scales, previous_scales) = (&self.label_scales, &previous.label_scales);
         let static_scale = scales.master != previous_scales.master
             || scales.static_tag != previous_scales.static_tag
@@ -181,20 +208,22 @@ impl RenderSettings {
         Rebuild {
             territories: territory_style,
             connections: connection_style,
-            static_labels: tag_style || names || font || resource_icons || static_scale,
+            static_labels: tag_style || names || font || resource_icons || static_scale || hq,
             dynamic_labels: names
                 || font
                 || timers
                 || resource_icons
                 || static_scale
-                || dynamic_scale,
+                || dynamic_scale
+                || hq,
             icons: names
                 || timers
                 || resource_icons
                 || ornaments
                 || static_scale
                 || dynamic_scale
-                || icon_scale,
+                || icon_scale
+                || hq,
         }
     }
 }
@@ -234,6 +263,8 @@ pub(crate) mod tests {
             compound_map_time: true,
             show_resource_icons: true,
             show_territory_ornaments: false,
+            hq_crown_style: super::HqCrownStyle::NameBelow,
+            hq_crown_scale: 1.0,
             label_scales: LabelScales {
                 master: 1.0,
                 static_tag: 1.0,
@@ -316,11 +347,13 @@ pub(crate) mod tests {
                 ..Rebuild::NONE
             }
         );
-        // Names, resource icons and static scales shift every label layer.
+        // Names, resource icons, static scales and the HQ crown shift every label layer.
         for change in [
             (|s: &mut RenderSettings| s.show_names = true) as fn(&mut RenderSettings),
             |s| s.show_resource_icons = false,
             |s| s.label_scales.master = 1.5,
+            |s| s.hq_crown_style = super::HqCrownStyle::Fill,
+            |s| s.hq_crown_scale = 1.3,
         ] {
             assert_eq!(
                 after(change),
@@ -383,6 +416,21 @@ pub(crate) mod tests {
         assert_eq!(scales.static_name(), 2.0);
         assert_eq!(scales.dynamic(), 0.5);
         assert_eq!(scales.icons(), 2.0);
+    }
+
+    #[test]
+    fn hq_crown_style_is_persisted_as_pascal_case_and_defaults_to_name_below() {
+        use super::HqCrownStyle;
+        assert_eq!(HqCrownStyle::default(), HqCrownStyle::NameBelow);
+        for (value, expected) in [
+            (HqCrownStyle::NameBelow, "\"NameBelow\""),
+            (HqCrownStyle::Compact, "\"Compact\""),
+            (HqCrownStyle::Fill, "\"Fill\""),
+        ] {
+            assert_eq!(serde_json::to_string(&value).expect("serialize"), expected);
+            let decoded: HqCrownStyle = serde_json::from_str(expected).expect("deserialize");
+            assert_eq!(decoded, value);
+        }
     }
 
     /// The persisted form is PascalCase; users have settings saved against it.

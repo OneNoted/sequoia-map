@@ -18,8 +18,9 @@ use crate::app::{
     CurrentMode, DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_SOLID_OPACITY,
     DEFAULT_CONNECTION_THICKNESS_SCALE, DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER,
     DEFAULT_LABEL_SCALE_STATIC_NAME, DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight,
-    HeatFallbackApplied, HeatHistoryBasis, HeatHistoryBasisSetting, HeatLiveSource,
-    HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId, HeatWindowLabel,
+    HQ_CROWN_SCALE_MAX, HQ_CROWN_SCALE_MIN, HeatFallbackApplied, HeatHistoryBasis,
+    HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled,
+    HeatSelectedSeasonId, HeatWindowLabel, HqCrownScale, HqCrownStyle, HqCrownStyleSetting,
     IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX,
     LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
     LabelScaleStaticName, ManualSrScalar, MapIntelModeEnabled, MapMode, NameColor,
@@ -31,8 +32,9 @@ use crate::app::{
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
     ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel, TagColorSetting,
     ThickCooldownBorders, WarFeedVisible, clamp_connection_opacity_scale,
-    clamp_connection_solid_opacity, clamp_connection_thickness_scale, clamp_label_scale_group,
-    clamp_label_scale_master, clamp_player_head_size, clamp_resource_highlight_opacity,
+    clamp_connection_solid_opacity, clamp_connection_thickness_scale, clamp_hq_crown_scale,
+    clamp_label_scale_group, clamp_label_scale_master, clamp_player_head_size,
+    clamp_resource_highlight_opacity,
 };
 use crate::season_scalar::clamp_manual_scalar;
 use crate::territory::ClientTerritoryMap;
@@ -183,6 +185,8 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let MapIntelModeEnabled(map_intel_enabled) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
     let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
+    let HqCrownStyleSetting(hq_crown_style) = expect_context();
+    let HqCrownScale(hq_crown_scale) = expect_context();
     let ManualSrScalar(manual_sr_scalar) = expect_context();
     let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
     let ShowLeaderboardSrGain(show_leaderboard_sr_gain) = expect_context();
@@ -320,6 +324,27 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSwitch label="Readable Font" shortcut="F" hint="Plain text instead of the pixel font" active=readable_font />
                 <SettingsColorRow label="Territory name color" color=name_color />
                 <SettingsColorRow label="Guild tag color" color=tag_color />
+                <SettingsChoice
+                    label="HQ crown"
+                    hint="Fill hides the owner when zoomed out"
+                    name="settings-hq-crown"
+                    options=vec![
+                        (HqCrownStyle::NameBelow, Signal::stored("Name below")),
+                        (HqCrownStyle::Compact, Signal::stored("Compact")),
+                        (HqCrownStyle::Fill, Signal::stored("Fill")),
+                    ]
+                    selected=hq_crown_style
+                    on_select=Callback::new(move |style| hq_crown_style.set(style))
+                />
+                <SettingsSlider
+                    label="Crown size"
+                    value=hq_crown_scale
+                    min=HQ_CROWN_SCALE_MIN
+                    max=HQ_CROWN_SCALE_MAX
+                    step=0.1
+                    clamp=clamp_hq_crown_scale
+                    format=percent
+                />
             </SettingsSection>
 
             <SettingsSection title="Timers">

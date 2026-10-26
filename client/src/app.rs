@@ -151,6 +151,10 @@ pub(crate) struct ShowResourceIcons(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct HqCrownStyleSetting(pub RwSignal<HqCrownStyle>);
+#[derive(Clone, Copy)]
+pub(crate) struct HqCrownScale(pub RwSignal<f64>);
+#[derive(Clone, Copy)]
 pub(crate) struct ManualSrScalar(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct AutoSrScalarEnabled(pub RwSignal<bool>);
@@ -375,7 +379,7 @@ pub(crate) struct GuildColorStore(pub StoredValue<GuildColorMap>);
 // Defined in the engine crate so the renderer can name it without depending on
 // the UI. Re-exported here to keep `crate::app::NameColor` paths working; its
 // serde form is PascalCase and is persisted in localStorage.
-pub(crate) use sequoia_map_engine::settings::NameColor;
+pub(crate) use sequoia_map_engine::settings::{HqCrownStyle, NameColor};
 
 use gloo_storage::Storage;
 
@@ -436,6 +440,10 @@ struct SettingsV2 {
     show_resource_icons: bool,
     #[serde(default = "default_true")]
     show_territory_ornaments: bool,
+    #[serde(default)]
+    hq_crown_style: HqCrownStyle,
+    #[serde(default = "default_hq_crown_scale")]
+    hq_crown_scale: f64,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
     #[serde(default = "default_true")]
@@ -551,6 +559,23 @@ const fn default_sidebar_width() -> f64 {
 
 const fn default_player_head_size() -> f64 {
     DEFAULT_PLAYER_HEAD_SIZE
+}
+
+const fn default_hq_crown_scale() -> f64 {
+    DEFAULT_HQ_CROWN_SCALE
+}
+
+pub(crate) const DEFAULT_HQ_CROWN_SCALE: f64 = 1.0;
+// Exact decimal twins of the renderer's `f32` bounds, so the slider snaps to its steps.
+pub(crate) const HQ_CROWN_SCALE_MIN: f64 = 0.6;
+pub(crate) const HQ_CROWN_SCALE_MAX: f64 = 1.6;
+
+pub(crate) fn clamp_hq_crown_scale(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(HQ_CROWN_SCALE_MIN, HQ_CROWN_SCALE_MAX)
+    } else {
+        DEFAULT_HQ_CROWN_SCALE
+    }
 }
 
 pub(crate) const DEFAULT_LABEL_SCALE_MASTER: f64 = 1.0;
@@ -670,6 +695,8 @@ impl Default for SettingsV2 {
             map_intel_enabled: false,
             show_resource_icons: true,
             show_territory_ornaments: false,
+            hq_crown_style: HqCrownStyle::default(),
+            hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
             manual_sr_scalar: default_manual_sr_scalar(),
             auto_sr_scalar_enabled: true,
             show_leaderboard_sr_gain: false,
@@ -806,6 +833,8 @@ impl From<LegacySettings> for SettingsV2 {
             map_intel_enabled: value.map_intel_enabled,
             show_resource_icons: value.show_resource_icons,
             show_territory_ornaments: false,
+            hq_crown_style: HqCrownStyle::default(),
+            hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
             manual_sr_scalar: value.manual_sr_scalar,
             auto_sr_scalar_enabled: value.auto_sr_scalar_enabled,
             show_leaderboard_sr_gain: value.show_leaderboard_sr_gain,
@@ -977,6 +1006,8 @@ pub fn MapPage() -> impl IntoView {
     let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
     let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
+    let hq_crown_style: RwSignal<HqCrownStyle> = RwSignal::new(saved.hq_crown_style);
+    let hq_crown_scale: RwSignal<f64> = RwSignal::new(clamp_hq_crown_scale(saved.hq_crown_scale));
     let manual_sr_scalar: RwSignal<f64> =
         RwSignal::new(season_scalar::clamp_manual_scalar(saved.manual_sr_scalar));
     let auto_sr_scalar_enabled: RwSignal<bool> = RwSignal::new(saved.auto_sr_scalar_enabled);
@@ -1132,6 +1163,8 @@ pub fn MapPage() -> impl IntoView {
         compound_map_time: show_compound_map_time.get(),
         show_resource_icons: show_resource_icons.get(),
         show_territory_ornaments: show_territory_ornaments.get(),
+        hq_crown_style: hq_crown_style.get(),
+        hq_crown_scale: hq_crown_scale.get() as f32,
         label_scales: LabelScales {
             master: label_scale_master.get() as f32,
             static_tag: label_scale_static.get() as f32,
@@ -1204,6 +1237,8 @@ pub fn MapPage() -> impl IntoView {
     provide_context(MapIntelModeEnabled(map_intel_enabled));
     provide_context(ShowResourceIcons(show_resource_icons));
     provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
+    provide_context(HqCrownStyleSetting(hq_crown_style));
+    provide_context(HqCrownScale(hq_crown_scale));
     provide_context(ManualSrScalar(manual_sr_scalar));
     provide_context(AutoSrScalarEnabled(auto_sr_scalar_enabled));
     provide_context(ShowLeaderboardSrGain(show_leaderboard_sr_gain));
@@ -1389,6 +1424,8 @@ pub fn MapPage() -> impl IntoView {
         map_intel_enabled.set(defaults.map_intel_enabled);
         show_resource_icons.set(defaults.show_resource_icons);
         show_territory_ornaments.set(defaults.show_territory_ornaments);
+        hq_crown_style.set(defaults.hq_crown_style);
+        hq_crown_scale.set(clamp_hq_crown_scale(defaults.hq_crown_scale));
         manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
             defaults.manual_sr_scalar,
         ));
@@ -1946,6 +1983,8 @@ pub fn MapPage() -> impl IntoView {
             map_intel_enabled: map_intel_enabled.get(),
             show_resource_icons: show_resource_icons.get(),
             show_territory_ornaments: show_territory_ornaments.get(),
+            hq_crown_style: hq_crown_style.get(),
+            hq_crown_scale: clamp_hq_crown_scale(hq_crown_scale.get()),
             manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
             auto_sr_scalar_enabled: auto_sr_scalar_enabled.get(),
             show_leaderboard_sr_gain: show_leaderboard_sr_gain.get(),
@@ -3598,6 +3637,7 @@ mod tests {
         DEFAULT_CONNECTION_THICKNESS_SCALE, clamp_connection_opacity_scale,
         clamp_connection_solid_opacity, clamp_connection_thickness_scale,
     };
+    use super::{DEFAULT_HQ_CROWN_SCALE, HQ_CROWN_SCALE_MAX, HqCrownStyle, clamp_hq_crown_scale};
     use super::{
         DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_SIDEBAR_WIDTH,
         DEFAULT_WAR_PANEL_WIDTH, LegacySettings, MapMode, NameColor, PLAYER_HEAD_SIZE_MAX,
@@ -3634,6 +3674,25 @@ mod tests {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(parsed.war_panel_open);
         assert_eq!(parsed.war_panel_width, DEFAULT_WAR_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn hq_crown_settings_default_to_name_below_and_round_trip() {
+        let old: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(old.hq_crown_style, HqCrownStyle::NameBelow);
+        assert_eq!(old.hq_crown_scale, DEFAULT_HQ_CROWN_SCALE);
+
+        let saved = SettingsV2 {
+            hq_crown_style: HqCrownStyle::Fill,
+            hq_crown_scale: 1.4,
+            ..SettingsV2::default()
+        };
+        let round_trip: SettingsV2 =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!(round_trip.hq_crown_style, HqCrownStyle::Fill);
+        assert_eq!(round_trip.hq_crown_scale, 1.4);
+        assert_eq!(clamp_hq_crown_scale(f64::NAN), DEFAULT_HQ_CROWN_SCALE);
+        assert_eq!(clamp_hq_crown_scale(9.0), HQ_CROWN_SCALE_MAX);
     }
 
     #[test]

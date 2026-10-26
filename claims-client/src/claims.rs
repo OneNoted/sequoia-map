@@ -18,7 +18,9 @@ use sequoia_shared::{
 
 use sequoia_browser_map::live_feed::{self, LiveFeed};
 use sequoia_browser_map::{BrowserMap, EditMode, MapCamera, MapCanvas, MapEvent, MapInputs};
-use sequoia_map_engine::settings::{ConnectionStyle, LabelScales, NameColor, RenderSettings};
+use sequoia_map_engine::settings::{
+    ConnectionStyle, HqCrownStyle, LabelScales, NameColor, RenderSettings,
+};
 use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap};
 use sequoia_map_engine::viewport::Viewport;
 
@@ -1492,6 +1494,8 @@ fn claims_render_settings(resource_highlight: bool) -> RenderSettings {
         compound_map_time: false,
         show_resource_icons: false,
         show_territory_ornaments: false,
+        hq_crown_style: HqCrownStyle::default(),
+        hq_crown_scale: 1.0,
         label_scales: LabelScales {
             master: 1.0,
             static_tag: 1.0,
@@ -1586,7 +1590,7 @@ fn ClaimsEditor(boot: ClaimsBootPayload) -> impl IntoView {
             clock_secs: Signal::stored(Utc::now().timestamp()),
             animation_tick: None,
             heat: None,
-            wars: None,
+            war_stages: None,
             minimap_inset: Signal::stored((!is_mobile).then_some(MINIMAP_INSET)),
             edit: Signal::derive(move || tool.get().edit_mode()),
         },
