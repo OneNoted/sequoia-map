@@ -14,9 +14,26 @@ pub struct WarControllerState {
     pub wars: Vec<ActiveWar>,
     #[serde(default)]
     pub players: Vec<WarPlayer>,
+    /// Set by the map server, never the backend, on the empty state it sends while it has no
+    /// current feed: the backend is unreachable, or has not answered since the server started.
+    /// Tells a client "unknown" apart from "no war activity".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unavailable: bool,
 }
 
 impl WarControllerState {
+    /// The map server's stand-in for a feed it does not have, stamped `timestamp` on its own
+    /// clock.
+    pub fn unavailable(timestamp: i64) -> Self {
+        Self {
+            timestamp,
+            queues: Vec::new(),
+            wars: Vec::new(),
+            players: Vec::new(),
+            unavailable: true,
+        }
+    }
+
     /// Whether this payload may replace `current`, comparing [`Self::timestamp`].
     ///
     /// The feed reaches a client three ways - the REST seed, the SSE seed, and every live SSE
@@ -56,7 +73,10 @@ impl WarControllerState {
     /// poller rebroadcast the whole feed to every subscriber on every tick, and would quietly
     /// falsify the "a repeat means a re-seed" rule that [`Self::supersedes`] rests on.
     pub fn same_content(&self, other: &Self) -> bool {
-        self.queues == other.queues && self.wars == other.wars && self.players == other.players
+        self.queues == other.queues
+            && self.wars == other.wars
+            && self.players == other.players
+            && self.unavailable == other.unavailable
     }
 }
 
@@ -323,7 +343,26 @@ mod tests {
             queues: Vec::new(),
             wars: Vec::new(),
             players: Vec::new(),
+            unavailable: false,
         }
+    }
+
+    #[test]
+    fn an_unavailable_feed_is_marked_on_the_wire_and_a_backend_payload_is_not() {
+        let cleared = serde_json::to_value(WarControllerState::unavailable(5)).expect("serializes");
+        assert_eq!(cleared["unavailable"], true);
+        assert!(WarControllerState::unavailable(5).is_empty());
+
+        let backend: WarControllerState =
+            serde_json::from_str(r#"{"timestamp": 1}"#).expect("parses");
+        assert!(!backend.unavailable);
+        let echoed = serde_json::to_value(&backend).expect("serializes");
+        assert!(echoed.get("unavailable").is_none());
+    }
+
+    #[test]
+    fn real_data_supersedes_an_unavailable_feed() {
+        assert!(war_state_at(900).supersedes(Some(&WarControllerState::unavailable(1_000))));
     }
 
     #[test]

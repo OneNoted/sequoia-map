@@ -1187,6 +1187,16 @@
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .war-panel.war-panel-ready,
+  .war-sheet,
+  .war-sheet.war-sheet-open,
+  .war-sheet-scrim,
+  .war-tower-bar > span {
+    transition: none;
+  }
+}
+
 .tooltip-war {
   flex-shrink: 0;
   font-family: var(--font-mono);

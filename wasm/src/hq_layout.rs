@@ -12,14 +12,16 @@ use crate::settings::{HQ_CROWN_SCALE_MAX, HQ_CROWN_SCALE_MIN, HqCrownStyle, Rend
 const FILL_MAX_PX_PER_WORLD: f32 = 1.15;
 const FILL_BOX_FRACTION: f32 = 0.90;
 const FILL_MAX_RENDERED_PX: f32 = 96.0;
-/// Space around the crown band, in screen pixels.
+/// Space around the crown band, in screen pixels, and at most this share of the territory,
+/// so the padding of a territory a few pixels tall does not crowd out its crown.
 const TOP_PADDING_PX: f32 = 4.0;
 const SIDE_PADDING_PX: f32 = 4.0;
 const CAPTION_GAP_PX: f32 = 3.0;
+const MAX_PADDING_FRACTION: f32 = 0.06;
 /// A crown is drawn at least this large when there is room for it.
 const MIN_COMFORTABLE_PX: f32 = 12.0;
 /// Below this there is no crown at all; the gold border still marks the HQ.
-const MIN_RENDERED_PX: f32 = 8.0;
+const MIN_RENDERED_PX: f32 = 6.0;
 
 /// The user's crown choice, ready to lay out territories with.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,6 +36,17 @@ pub struct TerritoryBox {
     pub top: f32,
     pub width: f32,
     pub height: f32,
+}
+
+/// The line naming an HQ's owner, as the label pass lays it out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Caption {
+    /// Height in world units; the crown is sized from it whether or not it is drawn.
+    pub size: f32,
+    /// Where its centre rests when there is no crown.
+    pub center_y: f32,
+    /// Whether it is drawn at this zoom; an undrawn caption keeps no room below the crown.
+    pub drawn: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -81,34 +94,33 @@ impl HqCrown {
         self.style == HqCrownStyle::NameBelow
     }
 
-    /// The crown's band and the caption's new centre, for a caption `caption_size` world
-    /// units tall that would otherwise be centred at `caption_y`.
-    pub fn layout(
-        self,
-        territory: TerritoryBox,
-        px_per_world: f32,
-        caption_size: f32,
-        caption_y: f32,
-    ) -> HqLayout {
+    /// The crown's band, and the caption's centre moved clear of it.
+    pub fn layout(self, territory: TerritoryBox, px_per_world: f32, caption: Caption) -> HqLayout {
         let unchanged = HqLayout {
             crown: None,
-            caption_y,
+            caption_y: caption.center_y,
         };
         let px_per_world = px_per_world.max(0.0001);
         let (size_multiplier, band_fraction) = match self.style {
             HqCrownStyle::NameBelow => (2.4, 0.45),
             HqCrownStyle::Compact | HqCrownStyle::Fill => (1.75, 0.24),
         };
-        let top_padding = TOP_PADDING_PX / px_per_world;
-        let gap = CAPTION_GAP_PX / px_per_world;
-        let max_size = (territory.width - 2.0 * SIDE_PADDING_PX / px_per_world)
+        let padding = |px: f32, side: f32| (px / px_per_world).min(side * MAX_PADDING_FRACTION);
+        let top_padding = padding(TOP_PADDING_PX, territory.height);
+        let gap = padding(CAPTION_GAP_PX, territory.height);
+        let reserved = if caption.drawn {
+            gap + caption.size
+        } else {
+            0.0
+        };
+        let max_size = (territory.width - 2.0 * padding(SIDE_PADDING_PX, territory.width))
             .min(territory.height * (band_fraction * self.scale).min(0.6))
-            // The caption keeps its line below the crown, inside the territory.
-            .min(territory.height - 2.0 * top_padding - gap - caption_size);
+            // A drawn caption keeps its line below the crown, inside the territory.
+            .min(territory.height - 2.0 * top_padding - reserved);
         if !max_size.is_finite() || max_size * px_per_world < MIN_RENDERED_PX {
             return unchanged;
         }
-        let preferred = caption_size * size_multiplier * self.scale;
+        let preferred = caption.size * size_multiplier * self.scale;
         let size = preferred.clamp((MIN_COMFORTABLE_PX / px_per_world).min(max_size), max_size);
         let crown_top = territory.top + top_padding;
         HqLayout {
@@ -116,7 +128,9 @@ impl HqCrown {
                 center_y: crown_top + size * 0.5,
                 size,
             }),
-            caption_y: caption_y.max(crown_top + size + gap + caption_size * 0.5),
+            caption_y: caption
+                .center_y
+                .max(crown_top + size + gap + caption.size * 0.5),
         }
     }
 }
@@ -135,6 +149,14 @@ mod tests {
         HqCrown::new(style, 1.0)
     }
 
+    fn drawn(size: f32, center_y: f32) -> Caption {
+        Caption {
+            size,
+            center_y,
+            drawn: true,
+        }
+    }
+
     #[test]
     fn the_caption_always_clears_the_crown() {
         for style in [
@@ -142,7 +164,7 @@ mod tests {
             HqCrownStyle::Compact,
             HqCrownStyle::Fill,
         ] {
-            let layout = crown(style).layout(TALL, 2.0, 24.0, 45.0);
+            let layout = crown(style).layout(TALL, 2.0, drawn(24.0, 45.0));
             let slot = layout.crown.expect("a tall territory has room for a crown");
             assert!(
                 layout.caption_y - 12.0 >= slot.center_y + slot.size * 0.5,
@@ -158,7 +180,7 @@ mod tests {
             width: 120.0,
             height: 40.0,
         };
-        let layout = crown(HqCrownStyle::NameBelow).layout(squat, 1.0, 12.0, 20.0);
+        let layout = crown(HqCrownStyle::NameBelow).layout(squat, 1.0, drawn(12.0, 20.0));
         assert!(layout.caption_y + 6.0 <= squat.top + squat.height + 0.001);
     }
 
@@ -169,22 +191,47 @@ mod tests {
             width: 30.0,
             height: 30.0,
         };
-        let layout = crown(HqCrownStyle::NameBelow).layout(tiny, 0.5, 20.0, 15.0);
+        let layout = crown(HqCrownStyle::NameBelow).layout(tiny, 0.5, drawn(20.0, 15.0));
         assert_eq!(layout.crown, None);
         assert_eq!(layout.caption_y, 15.0);
     }
 
     #[test]
+    fn a_mid_sized_hq_keeps_a_crown_beside_its_tag_when_zoomed_out() {
+        let territory = TerritoryBox {
+            top: 0.0,
+            width: 150.0,
+            height: 150.0,
+        };
+        // The far-zoom tag: 12 screen pixels at 0.15 px per world unit.
+        let layout = crown(HqCrownStyle::NameBelow).layout(territory, 0.15, drawn(80.0, 75.0));
+        let slot = layout.crown.expect("room for a small crown");
+        assert!(slot.size * 0.15 >= MIN_RENDERED_PX);
+        assert!(layout.caption_y + 40.0 <= territory.height + 0.001);
+    }
+
+    #[test]
+    fn with_no_caption_drawn_the_crown_takes_the_whole_band() {
+        let with_caption = crown(HqCrownStyle::Compact).layout(TALL, 0.5, drawn(40.0, 80.0));
+        let undrawn = Caption {
+            drawn: false,
+            ..drawn(40.0, 80.0)
+        };
+        let without = crown(HqCrownStyle::Compact).layout(TALL, 0.5, undrawn);
+        assert!(without.crown.expect("crown").size >= with_caption.crown.expect("crown").size);
+    }
+
+    #[test]
     fn name_below_draws_a_larger_crown_than_compact() {
-        let name_below = crown(HqCrownStyle::NameBelow).layout(TALL, 2.0, 24.0, 45.0);
-        let compact = crown(HqCrownStyle::Compact).layout(TALL, 2.0, 24.0, 45.0);
+        let name_below = crown(HqCrownStyle::NameBelow).layout(TALL, 2.0, drawn(24.0, 45.0));
+        let compact = crown(HqCrownStyle::Compact).layout(TALL, 2.0, drawn(24.0, 45.0));
         assert!(name_below.crown.expect("crown").size > compact.crown.expect("crown").size);
     }
 
     #[test]
     fn the_size_setting_rescales_the_crown_within_its_territory() {
-        let small = HqCrown::new(HqCrownStyle::Compact, 0.6).layout(TALL, 0.5, 24.0, 45.0);
-        let large = HqCrown::new(HqCrownStyle::Compact, 1.6).layout(TALL, 0.5, 24.0, 45.0);
+        let small = HqCrown::new(HqCrownStyle::Compact, 0.6).layout(TALL, 0.5, drawn(24.0, 45.0));
+        let large = HqCrown::new(HqCrownStyle::Compact, 1.6).layout(TALL, 0.5, drawn(24.0, 45.0));
         let (small, large) = (small.crown.expect("crown"), large.crown.expect("crown"));
         assert!(large.size > small.size);
         assert!(large.size <= TALL.width);

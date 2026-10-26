@@ -4,6 +4,7 @@
 //! Intel site names first, then teammates. Hosts publish a new value when the content changes;
 //! panning and zooming only move the camera.
 
+use sequoia_shared::war_board::{Ending, FrontClock, StageKind, format_clock};
 use web_sys::HtmlImageElement;
 
 /// One Map Intel site name, drawn right of and above its site.
@@ -54,27 +55,15 @@ pub struct WarPlate {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlateLabel {
-    /// Queued or entered, counting down to the war's start.
-    StartsIn {
-        entered: bool,
-        seconds: i64,
-    },
-    /// The start has passed but the war is not confirmed.
-    Due {
-        entered: bool,
-    },
-    /// Queued or entered with no usable timing.
-    Waiting {
-        entered: bool,
-    },
-    /// A confirmed war: its elapsed time and the tower's remaining health, when known.
-    Fighting {
-        seconds: Option<i64>,
+    /// A territory on its way to a war or in one, with what its clock reads.
+    Front {
+        stage: StageKind,
+        clock: FrontClock,
+        /// The tower's remaining health, for a war whose tower was measured.
         health: Option<f32>,
     },
-    Captured,
-    Cancelled,
-    Ended,
+    /// A territory that just left the board.
+    Ending(Ending),
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -91,22 +80,32 @@ impl PlateLabel {
     ];
 
     pub(crate) fn text(self) -> std::borrow::Cow<'static, str> {
-        use sequoia_shared::war_board::format_clock;
         let word = match self {
-            Self::StartsIn { seconds, .. }
-            | Self::Fighting {
-                seconds: Some(seconds),
+            Self::Front {
+                clock: FrontClock::StartsIn(seconds) | FrontClock::FightingFor(seconds),
                 ..
-            } => {
-                return format_clock(seconds).into();
-            }
-            Self::Due { .. } => "Due",
-            Self::Waiting { entered: false } => "Queued",
-            Self::Waiting { entered: true } => "Entered",
-            Self::Fighting { seconds: None, .. } => "War",
-            Self::Captured => "Captured",
-            Self::Cancelled => "Cancelled",
-            Self::Ended => "Ended",
+            } => return format_clock(seconds).into(),
+            Self::Front {
+                clock: FrontClock::Due,
+                ..
+            } => "Due",
+            Self::Front {
+                clock: FrontClock::Unscheduled,
+                stage: StageKind::Queued,
+                ..
+            } => "Queued",
+            Self::Front {
+                clock: FrontClock::Unscheduled,
+                stage: StageKind::Entered,
+                ..
+            } => "Entered",
+            Self::Front {
+                clock: FrontClock::Fighting | FrontClock::Unscheduled,
+                ..
+            } => "War",
+            Self::Ending(Ending::Captured) => "Captured",
+            Self::Ending(Ending::Cancelled) => "Cancelled",
+            Self::Ending(Ending::Ended) => "Ended",
         };
         word.into()
     }
@@ -181,35 +180,35 @@ pub(crate) fn atlas_extent(width: f64, height: f64, max_side: u32) -> Option<(u3
 mod tests {
     use std::sync::Arc;
 
-    use super::{PlateLabel, Prepared, atlas_extent};
+    use super::{Ending, FrontClock, PlateLabel, Prepared, StageKind, atlas_extent};
+
+    fn front(stage: StageKind, clock: FrontClock) -> PlateLabel {
+        PlateLabel::Front {
+            stage,
+            clock,
+            health: None,
+        }
+    }
 
     #[test]
     fn plate_text_uses_only_prepared_glyphs() {
         let prepared: String = PlateLabel::WORDS.concat() + "0123456789:";
-        let labels = [
-            PlateLabel::StartsIn {
-                entered: false,
-                seconds: 3_725,
-            },
-            PlateLabel::StartsIn {
-                entered: true,
-                seconds: 9,
-            },
-            PlateLabel::Due { entered: true },
-            PlateLabel::Waiting { entered: false },
-            PlateLabel::Waiting { entered: true },
-            PlateLabel::Fighting {
-                seconds: Some(47),
-                health: Some(0.5),
-            },
-            PlateLabel::Fighting {
-                seconds: None,
-                health: None,
-            },
-            PlateLabel::Captured,
-            PlateLabel::Cancelled,
-            PlateLabel::Ended,
+        let mut labels = vec![
+            PlateLabel::Ending(Ending::Captured),
+            PlateLabel::Ending(Ending::Cancelled),
+            PlateLabel::Ending(Ending::Ended),
         ];
+        for stage in [StageKind::Queued, StageKind::Entered, StageKind::Fighting] {
+            for clock in [
+                FrontClock::StartsIn(3_725),
+                FrontClock::Due,
+                FrontClock::Unscheduled,
+                FrontClock::FightingFor(47),
+                FrontClock::Fighting,
+            ] {
+                labels.push(front(stage, clock));
+            }
+        }
         for label in labels {
             let text = label.text();
             assert!(text.chars().all(|ch| prepared.contains(ch)), "{text}");
@@ -217,32 +216,24 @@ mod tests {
     }
 
     #[test]
-    fn a_countdown_plate_reads_as_a_clock_and_a_war_without_a_start_as_a_word() {
+    fn a_plate_reads_its_clock_and_never_calls_a_due_start_a_war() {
         assert_eq!(
-            PlateLabel::StartsIn {
-                entered: false,
-                seconds: 128
-            }
-            .text(),
+            front(StageKind::Queued, FrontClock::StartsIn(128)).text(),
             "2:08"
         );
         assert_eq!(
-            PlateLabel::Fighting {
-                seconds: Some(47),
-                health: None
-            }
-            .text(),
+            front(StageKind::Fighting, FrontClock::FightingFor(47)).text(),
             "0:47"
         );
         assert_eq!(
-            PlateLabel::Fighting {
-                seconds: None,
-                health: None
-            }
-            .text(),
+            front(StageKind::Fighting, FrontClock::Fighting).text(),
             "War"
         );
-        assert_eq!(PlateLabel::Due { entered: false }.text(), "Due");
+        assert_eq!(front(StageKind::Entered, FrontClock::Due).text(), "Due");
+        assert_eq!(
+            front(StageKind::Queued, FrontClock::Unscheduled).text(),
+            "Queued"
+        );
     }
 
     #[test]

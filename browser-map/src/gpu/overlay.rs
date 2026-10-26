@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use sequoia_shared::war_board::{Ending, StageKind};
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, HtmlImageElement};
 
@@ -758,15 +759,22 @@ enum Which {
 /// capture green. Endings that do not say who won are grey.
 fn plate_tones(label: PlateLabel) -> ([u8; 3], [u8; 3]) {
     match label {
-        PlateLabel::StartsIn { entered: false, .. }
-        | PlateLabel::Due { entered: false }
-        | PlateLabel::Waiting { entered: false } => ([0xc7, 0xa3, 0xf0], [0xe6, 0xd8, 0xf8]),
-        PlateLabel::StartsIn { entered: true, .. }
-        | PlateLabel::Due { entered: true }
-        | PlateLabel::Waiting { entered: true } => ([0xff, 0xa1, 0x3d], [0xff, 0xd6, 0xa3]),
-        PlateLabel::Fighting { .. } => ([0xff, 0x45, 0x45], [0xff, 0xb4, 0xb4]),
-        PlateLabel::Captured => ([0x50, 0xc8, 0x78], [0xb8, 0xf0, 0xca]),
-        PlateLabel::Cancelled | PlateLabel::Ended => ([0x6f, 0x74, 0x8f], [0xc4, 0xc2, 0xbc]),
+        PlateLabel::Front {
+            stage: StageKind::Queued,
+            ..
+        } => ([0xc7, 0xa3, 0xf0], [0xe6, 0xd8, 0xf8]),
+        PlateLabel::Front {
+            stage: StageKind::Entered,
+            ..
+        } => ([0xff, 0xa1, 0x3d], [0xff, 0xd6, 0xa3]),
+        PlateLabel::Front {
+            stage: StageKind::Fighting,
+            ..
+        } => ([0xff, 0x45, 0x45], [0xff, 0xb4, 0xb4]),
+        PlateLabel::Ending(Ending::Captured) => ([0x50, 0xc8, 0x78], [0xb8, 0xf0, 0xca]),
+        PlateLabel::Ending(Ending::Cancelled | Ending::Ended) => {
+            ([0x6f, 0x74, 0x8f], [0xc4, 0xc2, 0xbc])
+        }
     }
 }
 
@@ -788,11 +796,13 @@ fn plate_instances(plates: &WarPlates, glyphs: &PlateGlyphs, dpr: f64) -> Vec<Ov
     let mut instances = Vec::with_capacity(plates.plates.len() * 14);
     for plate in &plates.plates {
         let (icon, health) = match plate.label {
-            PlateLabel::StartsIn { .. } | PlateLabel::Due { .. } | PlateLabel::Waiting { .. } => {
-                (Some(glyphs.hourglass), None)
-            }
-            PlateLabel::Fighting { health, .. } => (Some(glyphs.swords), health),
-            PlateLabel::Captured | PlateLabel::Cancelled | PlateLabel::Ended => (None, None),
+            PlateLabel::Front {
+                stage: StageKind::Fighting,
+                health,
+                ..
+            } => (Some(glyphs.swords), health),
+            PlateLabel::Front { .. } => (Some(glyphs.hourglass), None),
+            PlateLabel::Ending(_) => (None, None),
         };
         let (accent, ink) = plate_tones(plate.label);
         let text = plate.label.text();

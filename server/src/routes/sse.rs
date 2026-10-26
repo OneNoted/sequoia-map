@@ -402,12 +402,7 @@ fn accept_war_frame(last_war_ts: &mut Option<i64>, timestamp: i64) -> bool {
 /// Stamped rather than zeroed so it survives the client's own monotonic check; `None` only if
 /// serialization fails, which cannot happen for this shape.
 fn empty_war_state() -> Option<String> {
-    let cleared = sequoia_shared::WarControllerState {
-        timestamp: chrono::Utc::now().timestamp(),
-        queues: Vec::new(),
-        wars: Vec::new(),
-        players: Vec::new(),
-    };
+    let cleared = sequoia_shared::WarControllerState::unavailable(chrono::Utc::now().timestamp());
     serde_json::to_string(&cleared)
         .inspect_err(|e| warn!("failed to serialize the cleared war controller state: {e}"))
         .ok()
@@ -504,6 +499,7 @@ mod tests {
                 dps: None,
             }],
             players: Vec::new(),
+            unavailable: false,
         };
 
         // Server side: no watermark, so the lagging frame goes out.

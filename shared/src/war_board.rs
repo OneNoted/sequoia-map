@@ -31,6 +31,10 @@ pub struct WarBoard {
     pub fronts: Vec<WarFront>,
     /// Warring members first (by territory), then online members; by name within each.
     pub roster: Vec<RosterMember>,
+    /// The map server has no current feed, so the empty board says nothing about the wars.
+    pub unavailable: bool,
+    /// The feed's own clock when this board was current, Unix seconds.
+    pub as_of: i64,
 }
 
 /// One territory somewhere between queued and fought over.
@@ -196,6 +200,8 @@ impl WarBoard {
         Self {
             fronts: build_fronts(state),
             roster: build_roster(state, locate),
+            unavailable: state.unavailable,
+            as_of: state.timestamp,
         }
     }
 
@@ -369,7 +375,7 @@ fn build_roster(
     roster
 }
 
-/// How a front left the board.
+/// How a front left the board, as far as the feed says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutcomeKind {
     /// A queued territory vanished well before its queue would have expired.
@@ -385,13 +391,34 @@ pub struct Outcome {
     pub at: i64,
 }
 
-/// Fronts that left between `previous` and `next`, as seen at `now`.
+/// How an outcome is shown, once territory ownership is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    Captured,
+    Cancelled,
+    Ended,
+}
+
+impl Outcome {
+    /// `owned` is whether the territory now belongs to the viewer's guild. Ownership comes
+    /// from a different feed than the war, so an ended war can become a capture moments later.
+    pub fn ending(&self, owned: bool) -> Ending {
+        match self.kind {
+            OutcomeKind::Cancelled => Ending::Cancelled,
+            OutcomeKind::WarEnded if owned => Ending::Captured,
+            OutcomeKind::WarEnded => Ending::Ended,
+        }
+    }
+}
+
+/// Fronts that left between `previous` and `next`, judged on the feed's own clock at `next`.
 ///
-/// An empty `next` infers nothing: it is also what the map server broadcasts when it loses
-/// the backend, and an outage must not read as every war ending at once. Fronts that simply
+/// Nothing is inferred across an unavailable feed: the map server sends one when it loses the
+/// backend, and an outage must not read as every war ending at once. Fronts that simply
 /// advanced, and queues that reached their entry time, are not outcomes.
-pub fn outcomes(previous: &WarBoard, next: &WarBoard, now: i64) -> Vec<Outcome> {
-    if next.is_empty() {
+pub fn outcomes(previous: &WarBoard, next: &WarBoard) -> Vec<Outcome> {
+    let now = next.as_of;
+    if previous.unavailable || next.unavailable {
         return Vec::new();
     }
     previous
@@ -479,6 +506,7 @@ mod tests {
             queues,
             wars,
             players,
+            unavailable: false,
         }
     }
 
@@ -701,7 +729,7 @@ mod tests {
         ));
         let next = state(vec![], vec![], vec![player("x", "MAGE", None, None)]);
         assert_eq!(
-            outcomes(&previous, &board(&next), NOW),
+            outcomes(&previous, &board(&next)),
             vec![Outcome {
                 territory: "A".to_string(),
                 kind: OutcomeKind::Cancelled,
@@ -718,7 +746,7 @@ mod tests {
             vec![],
         ));
         let next = state(vec![queue("B", "QUEUED", Some(NOW + 60))], vec![], vec![]);
-        assert!(outcomes(&previous, &board(&next), NOW).is_empty());
+        assert!(outcomes(&previous, &board(&next)).is_empty());
     }
 
     #[test]
@@ -730,7 +758,7 @@ mod tests {
         ));
         let next = state(vec![queue("B", "QUEUED", Some(NOW + 60))], vec![], vec![]);
         assert_eq!(
-            outcomes(&previous, &board(&next), NOW)[0].kind,
+            outcomes(&previous, &board(&next))[0].kind,
             OutcomeKind::WarEnded
         );
     }
@@ -747,11 +775,11 @@ mod tests {
             vec![war("A", NOW + 30, 1.0)],
             vec![],
         );
-        assert!(outcomes(&previous, &board(&next), NOW).is_empty());
+        assert!(outcomes(&previous, &board(&next)).is_empty());
     }
 
     #[test]
-    fn an_emptied_feed_infers_no_outcomes() {
+    fn an_unavailable_feed_infers_no_outcomes() {
         // What the map server broadcasts when it loses the backend.
         let previous = board(&state(
             vec![
@@ -761,7 +789,36 @@ mod tests {
             vec![war("A", NOW - 30, 0.4)],
             vec![],
         ));
-        assert!(outcomes(&previous, &board(&state(vec![], vec![], vec![])), NOW).is_empty());
+        let lost = board(&WarControllerState::unavailable(NOW));
+        assert!(lost.unavailable);
+        assert!(outcomes(&previous, &lost).is_empty());
+    }
+
+    #[test]
+    fn the_last_war_ending_on_an_empty_feed_is_still_an_outcome() {
+        let previous = board(&state(
+            vec![queue("A", "STARTED", None)],
+            vec![war("A", NOW - 30, 0.1)],
+            vec![],
+        ));
+        let quiet = board(&state(vec![], vec![], vec![]));
+        assert_eq!(outcomes(&previous, &quiet)[0].kind, OutcomeKind::WarEnded);
+    }
+
+    #[test]
+    fn an_ended_war_reads_as_captured_only_once_the_territory_is_ours() {
+        let ended = Outcome {
+            territory: "A".to_string(),
+            kind: OutcomeKind::WarEnded,
+            at: NOW,
+        };
+        assert_eq!(ended.ending(true), Ending::Captured);
+        assert_eq!(ended.ending(false), Ending::Ended);
+        let cancelled = Outcome {
+            kind: OutcomeKind::Cancelled,
+            ..ended
+        };
+        assert_eq!(cancelled.ending(true), Ending::Cancelled);
     }
 
     #[test]

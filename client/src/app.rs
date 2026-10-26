@@ -440,7 +440,7 @@ struct SettingsV2 {
     show_resource_icons: bool,
     #[serde(default = "default_true")]
     show_territory_ornaments: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_hq_crown_style")]
     hq_crown_style: HqCrownStyle,
     #[serde(default = "default_hq_crown_scale")]
     hq_crown_scale: f64,
@@ -559,6 +559,16 @@ const fn default_sidebar_width() -> f64 {
 
 const fn default_player_head_size() -> f64 {
     DEFAULT_PLAYER_HEAD_SIZE
+}
+
+/// A style this build does not know, saved by a newer one, falls back to the default
+/// rather than failing the whole settings blob.
+fn lenient_hq_crown_style<'de, D>(deserializer: D) -> Result<HqCrownStyle, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 const fn default_hq_crown_scale() -> f64 {
@@ -2232,8 +2242,12 @@ pub fn MapPage() -> impl IntoView {
 
         let handler =
             Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
-                // The help dialog handles its own keys (Tab, Esc).
-                if keybind_help_open.get_untracked() {
+                // The help dialog, the war sheet and the player detail handle their own keys,
+                // and a key a control already acted on is not a map shortcut.
+                if keybind_help_open.get_untracked()
+                    || war_room.modal_open()
+                    || e.default_prevented()
+                {
                     return;
                 }
                 let key = e.key();
@@ -3255,8 +3269,8 @@ fn Tooltip() -> impl IntoView {
             .unwrap_or(false);
         // The same stage and clock the territory's border and plate show.
         let war = war_room.front(&name).map(|front| {
-            let (_, spoken) = crate::war_room::clock_text(front.clock(war_room.now.get()));
-            (front.stage_kind(), spoken)
+            let (visible, _) = crate::war_room::clock_text(front.clock(war_room.now.get()));
+            (front.stage_kind(), visible)
         });
         let takes_in_window = if heat_mode_enabled.get() {
             Some(
@@ -3426,9 +3440,9 @@ fn Tooltip() -> impl IntoView {
                             <div style="font-size: 0.92rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
                                 {info.name.clone()}
                             </div>
-                            {info.war.clone().map(|(stage, _)| view! {
+                            {info.war.clone().map(|(stage, clock)| view! {
                                 <span class="tooltip-war" data-stage=crate::war_room::stage_slug(stage)>
-                                    {stage.label()}
+                                    {format!("{} {clock}", stage.label())}
                                 </span>
                             })}
                             {info.is_headquarters.then(|| view! {
@@ -3589,7 +3603,7 @@ fn TerritoryPeekCard() -> impl IntoView {
                 <div
                     class="peek-card-animate"
                     style:bottom=bottom
-                    style="position: fixed; left: calc(16px + env(safe-area-inset-left, 0px)); right: calc(76px + env(safe-area-inset-right, 0px)); z-index: 90; max-height: calc(100dvh - var(--nav-height) - 32px); overflow-y: auto; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
+                    style="position: fixed; left: calc(16px + env(safe-area-inset-left, 0px)); right: calc(76px + env(safe-area-inset-right, 0px)); z-index: 90; max-height: calc(100dvh - var(--nav-height) - 32px); overflow-x: hidden; overflow-y: auto; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
                 >
                     <div style={format!("width: 4px; flex-shrink: 0; background: {};", rgba_css(r, g, b, 0.85))} />
                     <div style="padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 4px;">
@@ -3697,6 +3711,14 @@ mod tests {
         assert_eq!(round_trip.hq_crown_scale, 1.4);
         assert_eq!(clamp_hq_crown_scale(f64::NAN), DEFAULT_HQ_CROWN_SCALE);
         assert_eq!(clamp_hq_crown_scale(9.0), HQ_CROWN_SCALE_MAX);
+
+        let future: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "hq_crown_style": "Banner",
+            "show_names": true,
+        }))
+        .unwrap();
+        assert_eq!(future.hq_crown_style, HqCrownStyle::NameBelow);
+        assert!(future.show_names);
     }
 
     #[test]

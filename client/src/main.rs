@@ -6,7 +6,6 @@ mod keybinds;
 mod map_intel;
 mod navbar;
 mod playback;
-mod player_detail;
 mod players;
 mod season_scalar;
 mod settings_menu;

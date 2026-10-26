@@ -138,12 +138,7 @@ async fn expire_stale_cache(
         return false;
     }
 
-    let empty = WarControllerState {
-        timestamp: Utc::now().timestamp(),
-        queues: Vec::new(),
-        wars: Vec::new(),
-        players: Vec::new(),
-    };
+    let empty = WarControllerState::unavailable(Utc::now().timestamp());
     let json = match serde_json::to_vec(&empty) {
         Ok(bytes) => Arc::new(Bytes::from(bytes)),
         Err(e) => {

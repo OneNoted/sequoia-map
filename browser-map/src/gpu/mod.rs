@@ -19,7 +19,7 @@ use sequoia_map_engine::claim_labels::{
 use sequoia_map_engine::colors::brighten;
 use sequoia_map_engine::connections::{self, ConnectionMesh, ConnectionProjection};
 use sequoia_map_engine::defense::defense_tier_overlay_data;
-use sequoia_map_engine::hq_layout::{HqCrown, HqLayout, TerritoryBox};
+use sequoia_map_engine::hq_layout::{Caption, HqCrown, HqLayout, TerritoryBox};
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
 use sequoia_map_engine::label_layout::{
     IconKind, abbreviate_name, compute_label_layout_metrics, cooldown_color,
@@ -444,14 +444,14 @@ fn far_zoom_tags_active(settings: &RenderSettings, px_per_world: f32) -> bool {
         && claim_label_zoom_active(f64::from(px_per_world))
 }
 
-/// Size and resting centre of an HQ territory's caption, the line naming its owner, as the
-/// static label pass lays it out at this zoom: the far-zoom tag when zoomed out with tags on,
-/// the static tag otherwise. The crown and the labels under it make room from this.
+/// An HQ territory's caption, the line naming its owner, as the static label pass lays it out
+/// at this zoom: the far-zoom tag when zoomed out with tags on, the static tag otherwise,
+/// nothing under claim labels. The crown is sized from it and makes room for it if drawn.
 fn hq_caption_metrics(
     ct: &ClientTerritory,
     settings: &RenderSettings,
     px_per_world: f32,
-) -> Option<(f32, f32)> {
+) -> Caption {
     let loc = &ct.territory.location;
     let (ww, hh) = (loc.width() as f32, loc.height() as f32);
     let (sw, sh) = (ww * px_per_world, hh * px_per_world);
@@ -465,43 +465,68 @@ fn hq_caption_metrics(
         icon_alpha,
         &ct.territory.resources,
     );
+    let static_sizing = compute_static_label_sizing(ww, hh);
+    let static_tag_size = static_sizing.as_ref().map_or(0.0, |sizing| {
+        sizing.tag_size * settings.label_scales.static_tag()
+    });
+    let claims_zoom = claim_label_zoom_active(f64::from(px_per_world));
+    if settings.show_claim_labels && claims_zoom {
+        return Caption {
+            size: static_tag_size,
+            center_y: cy,
+            drawn: false,
+        };
+    }
     if far_zoom_tags_active(settings, px_per_world) {
         let sizing =
-            compute_far_zoom_tag_sizing(sw, sh, px_per_world, settings.label_scales.static_tag())?;
+            compute_far_zoom_tag_sizing(sw, sh, px_per_world, settings.label_scales.static_tag());
         let lift = compute_resource_icon_label_lift_world(hh, icon_alpha, icons_visible);
-        return Some((sizing.font_height_world, cy - lift));
+        let has_tag =
+            !ct.territory.guild.is_unclaimed() && !ct.territory.guild.prefix.trim().is_empty();
+        return Caption {
+            size: sizing
+                .as_ref()
+                .map_or(static_tag_size, |sizing| sizing.font_height_world),
+            center_y: cy - lift,
+            drawn: sizing.is_some() && has_tag,
+        };
     }
-    let sizing = compute_static_label_sizing(ww, hh)?;
-    let tag_size = sizing.tag_size * settings.label_scales.static_tag();
+    let Some(sizing) = static_sizing else {
+        return Caption {
+            size: 0.0,
+            center_y: cy,
+            drawn: false,
+        };
+    };
     let detail_size = sizing.detail_size * settings.label_scales.static_name();
     let lift =
         compute_resource_icon_label_lift_world(hh, sizing.detail_layout_alpha, icons_visible);
-    let base_y = lerp_f32(
-        cy,
-        cy - (detail_size + 1.0) * 0.45,
-        sizing.detail_layout_alpha,
-    ) - lift;
-    Some((tag_size, base_y))
+    Caption {
+        size: static_tag_size,
+        center_y: lerp_f32(
+            cy,
+            cy - (detail_size + 1.0) * 0.45,
+            sizing.detail_layout_alpha,
+        ) - lift,
+        drawn: static_tag_size * px_per_world >= STATIC_TAG_MIN_RENDERED_PX,
+    }
 }
 
-/// The HQ crown and the caption under it, laid out for this zoom.
+/// The HQ crown and the caption under it, laid out for this zoom, with the caption's size.
 fn hq_layout(
     ct: &ClientTerritory,
     settings: &RenderSettings,
     hq: HqCrown,
     px_per_world: f32,
-) -> Option<(HqLayout, f32)> {
-    let (caption_size, caption_y) = hq_caption_metrics(ct, settings, px_per_world)?;
+) -> (HqLayout, f32) {
+    let caption = hq_caption_metrics(ct, settings, px_per_world);
     let loc = &ct.territory.location;
     let territory = TerritoryBox {
         top: loc.top() as f32,
         width: loc.width() as f32,
         height: loc.height() as f32,
     };
-    Some((
-        hq.layout(territory, px_per_world, caption_size, caption_y),
-        caption_size,
-    ))
+    (hq.layout(territory, px_per_world, caption), caption.size)
 }
 
 /// Bottom of an HQ territory's static labels (caption, then territory name), so the timers
@@ -514,7 +539,7 @@ fn hq_static_label_bottom(
 ) -> Option<f32> {
     let loc = &ct.territory.location;
     let sizing = compute_static_label_sizing(loc.width() as f32, loc.height() as f32)?;
-    let (layout, caption_size) = hq_layout(ct, settings, hq, px_per_world)?;
+    let (layout, caption_size) = hq_layout(ct, settings, hq, px_per_world);
     let detail_size = sizing.detail_size * settings.label_scales.static_name();
     let caption_visible = caption_size * px_per_world >= STATIC_TAG_MIN_RENDERED_PX;
     let name_visible = settings.show_names
@@ -3375,8 +3400,7 @@ impl GpuRenderer {
                         else {
                             continue;
                         };
-                        let hq_placement =
-                            is_hq.then(|| hq_layout(ct, settings, hq, scale)).flatten();
+                        let hq_placement = is_hq.then(|| hq_layout(ct, settings, hq, scale));
                         let (tag, font_height_world) = match hq_placement {
                             Some(_) => hq_caption(
                                 hq,
@@ -3481,9 +3505,7 @@ impl GpuRenderer {
                     let base_tag_y =
                         lerp_f32(cy, cy - (detail_size + 1.0) * 0.45, detail_layout_alpha)
                             - label_lift;
-                    let hq_placement = is_hq
-                        .then(|| hq_layout(ct, settings, hq, px_per_world))
-                        .flatten();
+                    let hq_placement = is_hq.then(|| hq_layout(ct, settings, hq, px_per_world));
                     let tag_y = hq_placement.map_or(base_tag_y, |(layout, _)| layout.caption_y);
                     let (tag, caption_size) = match hq_placement {
                         Some(_) => hq_caption(
@@ -4030,7 +4052,8 @@ impl GpuRenderer {
                 Some((hq.fill_size(short_side_world, scale), cy))
             } else if is_hq {
                 hq_layout(ct, settings, hq, scale)
-                    .and_then(|(layout, _)| layout.crown)
+                    .0
+                    .crown
                     .map(|slot| (slot.size, slot.center_y))
             } else {
                 None

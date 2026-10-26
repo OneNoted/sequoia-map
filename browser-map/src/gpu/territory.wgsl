@@ -316,9 +316,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         border_mult = in.state.w;
     }
     var border_width = max(3.2 * border_mult * vp.scale, 0.8);
-    // A queued or entered territory has to read at far zoom too, where a world-scaled
-    // border thins to a hairline.
-    if is_pending_war || is_at_war {
+    // War stages and headquarters have to read at far zoom too, where a world-scaled border
+    // thins to a hairline.
+    if is_pending_war || is_at_war || is_headquarters {
         border_width = max(border_width, 2.0);
     }
     let feather = max(0.4 * vp.scale, 0.15);
