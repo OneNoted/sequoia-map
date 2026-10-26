@@ -38,9 +38,8 @@ const WARCONTROLLER_ENDPOINT: &str = "/api/warcontroller";
 const OUTCOME_SECS: i64 = 90;
 /// World units kept around a member's position when showing them on the map.
 const POSITION_CONTEXT_WORLD: f64 = 180.0;
-/// Recent live frames the clock offset is estimated from, and how long one counts.
+/// Recent frames the clock offset is estimated from.
 const CLOCK_SAMPLES: usize = 8;
-const CLOCK_SAMPLE_SECS: i64 = 120;
 
 pub async fn fetch_warcontroller() -> Result<WarControllerState, String> {
     let response = gloo_net::http::Request::get(WARCONTROLLER_ENDPOINT)
@@ -107,9 +106,10 @@ impl WarRoom {
         // stamp minus the arrival time can only understate how far the browser trails the
         // feed. Seeds repeat old stamps and read far below the truth, which is why the
         // largest recent sample is the estimate, and why a browser running ahead is left
-        // alone rather than wound back on that evidence. Samples age out, so a browser clock
-        // that is corrected stops being moved forward.
-        let samples = StoredValue::new(VecDeque::<(i64, i64)>::with_capacity(CLOCK_SAMPLES));
+        // alone rather than wound back on that evidence. For the same reason samples do not
+        // age out: after a quiet spell the next frame is often a seed, and the good samples
+        // before it are what keep the estimate.
+        let samples = StoredValue::new(VecDeque::<i64>::with_capacity(CLOCK_SAMPLES));
         let behind = RwSignal::new(0i64);
         Effect::new(move || {
             let Some(stamp) = feed.with(|state| {
@@ -122,14 +122,12 @@ impl WarRoom {
             };
             let arrived = chrono::Utc::now().timestamp();
             samples.update_value(|samples| {
-                samples.retain(|(at, _)| arrived - at < CLOCK_SAMPLE_SECS);
                 if samples.len() == CLOCK_SAMPLES {
                     samples.pop_front();
                 }
-                samples.push_back((arrived, stamp - arrived));
+                samples.push_back(stamp - arrived);
             });
-            let estimate =
-                samples.with_value(|samples| samples.iter().map(|(_, offset)| *offset).max());
+            let estimate = samples.with_value(|samples| samples.iter().copied().max());
             behind.set(estimate.unwrap_or(0).max(0));
         });
         let now = Memo::new(move |_| tick.get() + behind.get());
@@ -213,12 +211,15 @@ impl WarRoom {
         self.player.with_untracked(Option::is_some) || self.sheet_open.get_untracked()
     }
 
-    /// A key that reached the page while a war modal is open, which happens when the row
-    /// holding focus was removed by a feed update: Escape still closes the modal on top, and
-    /// Tab puts focus back inside it. Returns whether the key was taken.
+    /// A key pressed outside the open war modal, which happens when a feed update removed
+    /// the row that held focus: Escape still closes the modal on top, and Tab puts focus back
+    /// inside it. Keys pressed inside a modal are its own. Returns whether the key was taken.
     pub fn handle_stray_key(&self, event: &web_sys::KeyboardEvent) -> bool {
         if !self.modal_open() {
             return false;
+        }
+        if modal::inside_open_modal(event.target()) {
+            return true;
         }
         match event.key().as_str() {
             "Escape" => {

@@ -42,6 +42,16 @@ pub(super) fn restore_focus(opener: Option<HtmlElement>) {
     let _ = opener.focus();
 }
 
+const OPEN_MODALS: &str = ".player-dialog.player-dialog-open, .war-sheet.war-sheet-open";
+
+/// Whether an event target sits inside an open war modal.
+pub(super) fn inside_open_modal(target: Option<web_sys::EventTarget>) -> bool {
+    target
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+        .and_then(|element| element.closest(OPEN_MODALS).ok().flatten())
+        .is_some()
+}
+
 /// Focuses whichever war modal is open, the player detail first since it sits on top.
 pub(super) fn focus_open_modal() {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {

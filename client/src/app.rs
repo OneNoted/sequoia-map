@@ -1825,12 +1825,13 @@ pub fn MapPage() -> impl IntoView {
             }
             return;
         }
+        // What the feed held when the request went out: anything the stream delivers while
+        // it is in flight is at least as current as the answer, which then only fills in.
+        let held = warcontroller_state.get_untracked();
         wasm_bindgen_futures::spawn_local(async move {
             match war_room::fetch_warcontroller().await {
-                // The SSE stream may already have delivered something newer while this was in
-                // flight - including the empty payload this endpoint falls back to.
                 Ok(state) => warcontroller_state.maybe_update(|current| {
-                    if !state.supersedes(current.as_ref()) {
+                    if *current != held || !state.supersedes(current.as_ref()) {
                         return false;
                     }
                     *current = Some(state);
