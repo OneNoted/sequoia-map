@@ -304,7 +304,9 @@ fn FrontItem(territory: String) -> impl IntoView {
                 </Show>
             </div>
             {move || tower.get().map(|(tower, win_at)| view! { <TowerLine tower win_at /> })}
-            <Show when=move || expanded.get()>
+            // A fighting front's row expands only for its members: its queue and start no longer
+            // apply.
+            <Show when=move || expanded.get() && front.with(|front| front.as_ref().is_some_and(|front| !front.is_fighting()))>
                 {move || front.get().map(|front| view! { <FrontDetail front /> })}
             </Show>
             <Show when=move || !members.with(Vec::is_empty)>

@@ -3,10 +3,10 @@
 //! and when, the queue's details, and one resource table.
 
 use leptos::prelude::*;
-use sequoia_shared::Resources;
 use sequoia_shared::war_board::{
     Ending, FrontStage, QUEUE_ENTRY_TO_START_SECS, QueuedBy, WarFront, format_clock,
 };
+use sequoia_shared::{Resources, TerritoryRuntimeData};
 
 use crate::territory::ClientTerritoryMap;
 use crate::war_room::{WarRoom, clock_text, ending, stage_slug};
@@ -234,6 +234,25 @@ impl ResourceRow {
     }
 }
 
+/// A territory's resource rows from its base generation and its live runtime figures. Reported
+/// production is used even when every figure is zero: that is an observed zero, not an absent
+/// report. Held and capacity figures that are all zero count as not reported.
+pub(crate) fn territory_resource_rows(
+    base: &Resources,
+    runtime: Option<&TerritoryRuntimeData>,
+) -> Vec<ResourceRow> {
+    resource_rows(
+        base,
+        runtime
+            .and_then(|runtime| runtime.held_resources.as_ref())
+            .filter(|value| !value.is_empty()),
+        runtime.and_then(|runtime| runtime.production_rates.as_ref()),
+        runtime
+            .and_then(|runtime| runtime.storage_capacity.as_ref())
+            .filter(|value| !value.is_empty()),
+    )
+}
+
 /// Rows for every resource the territory makes, holds or stores, from its base generation and
 /// whatever live figures exist. Live production replaces base generation when present.
 pub(crate) fn resource_rows(
@@ -392,6 +411,26 @@ mod tests {
             (Some(0), 0, Some(300))
         );
         assert!(!rows[1].nearly_full());
+    }
+
+    #[test]
+    fn reported_zero_production_stays_zero_rather_than_falling_back_to_base() {
+        let base = resources(9_000, 3_600, 0);
+        let runtime = TerritoryRuntimeData {
+            held_resources: Some(resources(140, 60, 0)),
+            production_rates: Some(Resources::default()),
+            ..Default::default()
+        };
+        let rows = territory_resource_rows(&base, Some(&runtime));
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.label, row.per_hour))
+                .collect::<Vec<_>>(),
+            [("Emeralds", 0), ("Ore", 0)]
+        );
+        // Without a report, base generation stands in.
+        let absent = territory_resource_rows(&base, None);
+        assert_eq!(absent[0].per_hour, 9_000);
     }
 
     #[test]

@@ -100,9 +100,7 @@ thread_local! {
 use sequoia_shared::history::{
     HistoryGuildSrEntry, HistoryHeat, HistoryHeatMeta, HistoryHeatSource,
 };
-use sequoia_shared::{
-    Region, Resources, SeasonScalarSample, TerritoryRuntimeData, TreasuryLevel, WarControllerState,
-};
+use sequoia_shared::{Region, Resources, SeasonScalarSample, TreasuryLevel, WarControllerState};
 
 /// Newtype wrappers to give `hovered` and `selected` distinct types for Leptos context.
 /// (Both are `RwSignal<Option<String>>` — without wrappers, `provide_context` overwrites one.)
@@ -976,7 +974,7 @@ use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::territory::{ClientTerritoryMap, from_snapshot};
-use crate::territory_card::{ResourceRow, ResourceTable, TerritoryWar, resource_rows};
+use crate::territory_card::{ResourceRow, ResourceTable, TerritoryWar, territory_resource_rows};
 use crate::time_format::format_hms;
 use crate::timeline::Timeline;
 use crate::viewport::Viewport;
@@ -3303,15 +3301,7 @@ fn Tooltip() -> impl IntoView {
         let map = territories.get();
         let ct = map.get(&name)?;
         let runtime = ct.territory.runtime.as_ref();
-        let live = |pick: fn(&TerritoryRuntimeData) -> Option<&Resources>| {
-            runtime.and_then(pick).filter(|value| !value.is_empty())
-        };
-        let resources = resource_rows(
-            &ct.territory.resources,
-            live(|runtime| runtime.held_resources.as_ref()),
-            live(|runtime| runtime.production_rates.as_ref()),
-            live(|runtime| runtime.storage_capacity.as_ref()),
-        );
+        let resources = territory_resource_rows(&ct.territory.resources, runtime);
         let defense_tier = runtime.and_then(|runtime| runtime.defense_tier.clone());
         let is_headquarters = runtime
             .and_then(|runtime| runtime.headquarters)

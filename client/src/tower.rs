@@ -233,14 +233,16 @@ pub fn TowerCalculator() -> impl IntoView {
             </div>
 
             <div class="tower-links">
-                <label class="tower-link">
-                    <span>"Connections"</span>
-                    <CounterInput label="Connections" value=connections max=20 synced_value=externals synced_max=50 />
-                </label>
-                <label class="tower-link">
-                    <span>"Externals"</span>
-                    <CounterInput label="Externals" value=externals max=50 />
-                </label>
+                // Each caption names its own input; wrapping the steppers in a label would hand a
+                // click on the caption to the first stepper button.
+                <div class="tower-link">
+                    <label for="tower-connections">"Connections"</label>
+                    <CounterInput id="tower-connections" label="Connections" value=connections max=20 synced_value=externals synced_max=50 />
+                </div>
+                <div class="tower-link">
+                    <label for="tower-externals">"Externals"</label>
+                    <CounterInput id="tower-externals" label="Externals" value=externals max=50 />
+                </div>
             </div>
 
             <div class="tower-actions">
@@ -354,6 +356,7 @@ fn StatRow(
 /// Small counter input with +/- buttons, editable value, and scroll support.
 #[component]
 fn CounterInput(
+    id: &'static str,
     label: &'static str,
     value: RwSignal<u32>,
     max: u32,
@@ -412,6 +415,7 @@ fn CounterInput(
             <input
                 type="text"
                 inputmode="numeric"
+                id=id
                 aria-label=label
                 prop:value=move || value.get().to_string()
                 on:input=on_input

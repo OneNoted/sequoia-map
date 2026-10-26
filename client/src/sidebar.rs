@@ -22,7 +22,7 @@ use crate::keybinds::KeybindHelp;
 use crate::season_scalar::{ScalarSource, effective_scalar};
 use crate::settings_menu::SettingsPanel;
 use crate::territory::ClientTerritoryMap;
-use crate::territory_card::{Disclosure, ResourceTable, TerritoryWar, resource_rows};
+use crate::territory_card::{Disclosure, ResourceTable, TerritoryWar, territory_resource_rows};
 use crate::tower::TowerCalculator;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
@@ -1613,18 +1613,6 @@ fn DetailPanel() -> impl IntoView {
                         let runtime_defense = runtime
                             .as_ref()
                             .and_then(|runtime| runtime.defense_tier.clone());
-                        let runtime_held_resources = runtime
-                            .as_ref()
-                            .and_then(|runtime| runtime.held_resources.clone())
-                            .filter(|value| !value.is_empty());
-                        let runtime_prod_resources = runtime
-                            .as_ref()
-                            .and_then(|runtime| runtime.production_rates.clone())
-                            .filter(|value| !value.is_empty());
-                        let runtime_capacity_resources = runtime
-                            .as_ref()
-                            .and_then(|runtime| runtime.storage_capacity.clone())
-                            .filter(|value| !value.is_empty());
                         let runtime_provenance = if show_debug_details {
                             runtime
                                 .as_ref()
@@ -1667,12 +1655,7 @@ fn DetailPanel() -> impl IntoView {
                             }
                         });
                         let guild_stats_url = crate::guild_stats_url(&guild_name);
-                        let resource_rows = resource_rows(
-                            &resources,
-                            runtime_held_resources.as_ref(),
-                            runtime_prod_resources.as_ref(),
-                            runtime_capacity_resources.as_ref(),
-                        );
+                        let resource_rows = territory_resource_rows(&resources, runtime.as_ref());
                         let region = format!(
                             "({}, {}) \u{2192} ({}, {})",
                             location.start[0],
