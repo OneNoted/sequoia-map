@@ -8,8 +8,10 @@
 //! The dialog is built once per member and its fields update in place, so a feed frame never
 //! takes focus away from the button a keyboard user is on.
 //!
-//! On a desktop it is a popover beside the name that opened it, so the pointer has no trip to
-//! make and the map stays usable around it; on a phone it is a sheet from the bottom.
+//! On a desktop it is a non-modal popover beside the name that opened it, so the pointer has no
+//! trip to make and the map stays usable around it: Tab moves on past it, and a press anywhere
+//! outside it closes it without taking that press from the map. On a phone it is a modal sheet
+//! from the bottom that keeps focus inside.
 
 use leptos::prelude::*;
 use sequoia_shared::PlayerClass;
@@ -66,6 +68,7 @@ pub(super) fn PlayerDetail() -> impl IntoView {
     let opener = StoredValue::new_local(None::<web_sys::HtmlElement>);
     let popover = Memo::new(move |_| !is_mobile.get());
     let origin = RwSignal::new(None::<(f64, f64)>);
+    let dismissed_outside = StoredValue::new(false);
 
     let shown = Memo::new(move |previous: Option<&Option<Shown>>| {
         let username = room.player.get()?;
@@ -101,6 +104,7 @@ pub(super) fn PlayerDetail() -> impl IntoView {
         let was_open = previous.as_ref().is_some_and(Option::is_some);
         match (&current, was_open) {
             (Some(_), false) => {
+                dismissed_outside.set_value(false);
                 opener.set_value(focused_element());
                 if let Some(dialog) = dialog_ref.get() {
                     focus_next_frame(dialog.into());
@@ -111,7 +115,8 @@ pub(super) fn PlayerDetail() -> impl IntoView {
                     focus_next_frame(dialog.into());
                 }
             }
-            (None, true) => restore_focus(opener.get_value()),
+            // Pressing somewhere else hands focus to wherever that press went.
+            (None, true) if !dismissed_outside.get_value() => restore_focus(opener.get_value()),
             _ => {}
         }
         current
@@ -158,13 +163,39 @@ pub(super) fn PlayerDetail() -> impl IntoView {
         });
     });
 
-    let close = Callback::new(move |()| room.player.set(None));
+    let close = Callback::new(move |()| {
+        dismissed_outside.set_value(false);
+        room.player.set(None);
+    });
+    // A press outside the popover closes it. The listener only watches: the press still reaches
+    // the map or control under it. Another member's name switches the popover instead.
+    let outside = window_event_listener(leptos::ev::pointerdown, move |event| {
+        if !popover.get_untracked() || room.player.with_untracked(Option::is_none) {
+            return;
+        }
+        let target = event
+            .target()
+            .and_then(|target| wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(target).ok());
+        let inside = target.as_ref().is_some_and(|target| {
+            target
+                .closest(".player-dialog, .war-member, .war-roster-name")
+                .ok()
+                .flatten()
+                .is_some()
+        });
+        if !inside {
+            dismissed_outside.set_value(true);
+            room.player.set(None);
+        }
+    });
+    on_cleanup(move || outside.remove());
     let on_keydown = move |event: web_sys::KeyboardEvent| match event.key().as_str() {
         "Escape" => {
             event.prevent_default();
             close.run(());
         }
-        "Tab" => {
+        // Only the phone sheet is modal; the desktop popover lets Tab move on.
+        "Tab" if !popover.get_untracked() => {
             if let Some(dialog) = dialog_ref.get() {
                 trap_tab(&event, &dialog);
             }
