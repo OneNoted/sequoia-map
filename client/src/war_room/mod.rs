@@ -38,8 +38,9 @@ const WARCONTROLLER_ENDPOINT: &str = "/api/warcontroller";
 const OUTCOME_SECS: i64 = 90;
 /// World units kept around a member's position when showing them on the map.
 const POSITION_CONTEXT_WORLD: f64 = 180.0;
-/// Recent live frames the clock offset is estimated from.
+/// Recent live frames the clock offset is estimated from, and how long one counts.
 const CLOCK_SAMPLES: usize = 8;
+const CLOCK_SAMPLE_SECS: i64 = 120;
 
 pub async fn fetch_warcontroller() -> Result<WarControllerState, String> {
     let response = gloo_net::http::Request::get(WARCONTROLLER_ENDPOINT)
@@ -106,8 +107,9 @@ impl WarRoom {
         // stamp minus the arrival time can only understate how far the browser trails the
         // feed. Seeds repeat old stamps and read far below the truth, which is why the
         // largest recent sample is the estimate, and why a browser running ahead is left
-        // alone rather than wound back on that evidence.
-        let samples = StoredValue::new(VecDeque::<i64>::with_capacity(CLOCK_SAMPLES));
+        // alone rather than wound back on that evidence. Samples age out, so a browser clock
+        // that is corrected stops being moved forward.
+        let samples = StoredValue::new(VecDeque::<(i64, i64)>::with_capacity(CLOCK_SAMPLES));
         let behind = RwSignal::new(0i64);
         Effect::new(move || {
             let Some(stamp) = feed.with(|state| {
@@ -120,12 +122,14 @@ impl WarRoom {
             };
             let arrived = chrono::Utc::now().timestamp();
             samples.update_value(|samples| {
+                samples.retain(|(at, _)| arrived - at < CLOCK_SAMPLE_SECS);
                 if samples.len() == CLOCK_SAMPLES {
                     samples.pop_front();
                 }
-                samples.push_back(stamp - arrived);
+                samples.push_back((arrived, stamp - arrived));
             });
-            let estimate = samples.with_value(|samples| samples.iter().copied().max());
+            let estimate =
+                samples.with_value(|samples| samples.iter().map(|(_, offset)| *offset).max());
             behind.set(estimate.unwrap_or(0).max(0));
         });
         let now = Memo::new(move |_| tick.get() + behind.get());
@@ -135,14 +139,21 @@ impl WarRoom {
             let next = board.get();
             match (previous.flatten(), next.as_ref()) {
                 (Some(previous), Some(next)) => {
-                    let left = outcomes(&previous, next);
+                    // Judged on the feed's clock, shown for a while on the page's.
+                    let shown_at = now.get_untracked();
+                    let left = outcomes(&previous, next)
+                        .into_iter()
+                        .map(|outcome| Outcome {
+                            at: shown_at,
+                            ..outcome
+                        });
                     outcome_list.maybe_update(|list| {
                         let before = list.len();
                         // A territory back on the board is no longer an outcome.
                         list.retain(|outcome| next.front(&outcome.territory).is_none());
-                        let changed = list.len() != before || !left.is_empty();
+                        let count = list.len();
                         list.extend(left);
-                        changed
+                        list.len() != before || list.len() != count
                     });
                 }
                 (_, None) => outcome_list.maybe_update(|list| {
@@ -200,6 +211,31 @@ impl WarRoom {
     /// Whether a war sheet or player detail is open and owns the keyboard.
     pub fn modal_open(&self) -> bool {
         self.player.with_untracked(Option::is_some) || self.sheet_open.get_untracked()
+    }
+
+    /// A key that reached the page while a war modal is open, which happens when the row
+    /// holding focus was removed by a feed update: Escape still closes the modal on top, and
+    /// Tab puts focus back inside it. Returns whether the key was taken.
+    pub fn handle_stray_key(&self, event: &web_sys::KeyboardEvent) -> bool {
+        if !self.modal_open() {
+            return false;
+        }
+        match event.key().as_str() {
+            "Escape" => {
+                event.prevent_default();
+                if self.player.with_untracked(Option::is_some) {
+                    self.player.set(None);
+                } else {
+                    self.sheet_open.set(false);
+                }
+            }
+            "Tab" => {
+                event.prevent_default();
+                modal::focus_open_modal();
+            }
+            _ => {}
+        }
+        true
     }
 
     pub fn front(&self, territory: &str) -> Option<WarFront> {
@@ -356,6 +392,20 @@ pub(crate) fn clock_text(clock: FrontClock) -> (String, String) {
         }
         FrontClock::Fighting => ("War".into(), "fighting".into()),
     }
+}
+
+/// A front's stage with its clock, for a one-line summary: "Queued 2:08", "Fighting 0:47",
+/// "Entered, due", or the stage alone when there is no time to show.
+pub(crate) fn stage_with_clock(front: &WarFront, now: i64) -> (StageKind, String) {
+    let stage = front.stage_kind();
+    let text = match front.clock(now) {
+        FrontClock::StartsIn(seconds) | FrontClock::FightingFor(seconds) => {
+            format!("{} {}", stage.label(), format_clock(seconds))
+        }
+        FrontClock::Due => format!("{}, due", stage.label()),
+        FrontClock::Unscheduled | FrontClock::Fighting => stage.label().to_string(),
+    };
+    (stage, text)
 }
 
 /// Where a member is, in words.

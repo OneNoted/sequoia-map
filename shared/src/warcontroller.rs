@@ -45,25 +45,21 @@ impl WarControllerState {
     /// Equal timestamps supersede: the poller only broadcasts on a real change, so a repeat is
     /// a re-seed of the same state rather than a step backwards.
     ///
-    /// A held *empty* state is the one case the timestamp does not decide. The map server
-    /// clears the feed on its own clock when the backend goes away - the SSE seed for an empty
-    /// cache, and the poller's staleness expiry - while every real frame is stamped by the
-    /// backend. If the backend's clock trails ours by more than the length of the outage, the
-    /// first frame after recovery would lose the comparison and strand the client on "no wars"
-    /// until some later content change produced a newer stamp. Real data therefore always
-    /// beats a clear.
+    /// The map server's clears ([`Self::unavailable`]) are the cases the timestamp does not
+    /// decide. A clear is stamped on the map server's clock while every real frame is stamped
+    /// by the backend, so the two cannot be ordered by stamp: whichever clock ran ahead would
+    /// strand the client, on "unavailable" after the backend recovers or on wars that are no
+    /// longer known after it goes away. Real data, quiet or not, therefore replaces a held
+    /// clear, and a live clear replaces whatever is held. The REST endpoint's clear is stamped
+    /// zero and, coming from a request that may have been overtaken by the stream, only fills
+    /// an empty slot.
     pub fn supersedes(&self, current: Option<&Self>) -> bool {
         match current {
             None => true,
-            Some(current) if current.is_empty() && !self.is_empty() => true,
+            Some(current) if current.unavailable && !self.unavailable => true,
+            Some(_) if self.unavailable && self.timestamp > 0 => true,
             Some(current) => self.timestamp >= current.timestamp,
         }
-    }
-
-    /// Whether this payload describes no war activity at all - the shape both sides emit to
-    /// clear the feed when the backend is unreachable.
-    pub fn is_empty(&self) -> bool {
-        self.queues.is_empty() && self.wars.is_empty() && self.players.is_empty()
     }
 
     /// Whether two payloads describe the same war situation, ignoring [`Self::timestamp`].
@@ -351,7 +347,6 @@ mod tests {
     fn an_unavailable_feed_is_marked_on_the_wire_and_a_backend_payload_is_not() {
         let cleared = serde_json::to_value(WarControllerState::unavailable(5)).expect("serializes");
         assert_eq!(cleared["unavailable"], true);
-        assert!(WarControllerState::unavailable(5).is_empty());
 
         let backend: WarControllerState =
             serde_json::from_str(r#"{"timestamp": 1}"#).expect("parses");
@@ -418,34 +413,36 @@ mod tests {
     #[test]
     fn real_data_supersedes_a_held_clear_whatever_the_clocks_say() {
         // The clear is stamped on the map server's clock, the recovered frame on the
-        // backend's. A backend running behind us must not leave the client on "no wars".
-        let cleared = state_at(1_000);
+        // backend's. A backend running behind us must not leave the client on "unavailable",
+        // whether it recovers with wars or with nothing going on.
+        let cleared = WarControllerState::unavailable(1_000);
         assert!(war_state_at(900).supersedes(Some(&cleared)));
+        assert!(state_at(900).supersedes(Some(&cleared)));
     }
 
     #[test]
-    fn a_stale_clear_still_does_not_replace_live_wars() {
-        // The escape hatch runs one way only: an older empty frame is still just an older
-        // frame, and must not end a war the client is watching.
+    fn a_live_clear_replaces_held_wars_whatever_the_clocks_say() {
+        // A backend running ahead of us must not keep its last wars on screen once the map
+        // server has dropped them.
+        let held = war_state_at(1_000);
+        assert!(WarControllerState::unavailable(999).supersedes(Some(&held)));
+    }
+
+    #[test]
+    fn the_rest_fallback_clear_never_replaces_what_is_held() {
+        // Stamped zero: the request may have been overtaken by the stream.
+        let held = war_state_at(1_000);
+        assert!(!WarControllerState::unavailable(0).supersedes(Some(&held)));
+        assert!(WarControllerState::unavailable(0).supersedes(None));
+    }
+
+    #[test]
+    fn an_older_quiet_backend_frame_does_not_replace_live_wars() {
+        // Only the map server's clears skip the stamp comparison: a quiet backend frame is
+        // still just a frame, and an older one must not end a war the client is watching.
         let held = war_state_at(1_000);
         assert!(!state_at(999).supersedes(Some(&held)));
-        // A newer clear is a real clear, and still applies.
         assert!(state_at(1_001).supersedes(Some(&held)));
-    }
-
-    #[test]
-    fn is_empty_tracks_every_collection() {
-        assert!(state_at(1).is_empty());
-        assert!(!war_state_at(1).is_empty());
-
-        let mut with_players = state_at(1);
-        with_players.players.push(WarPlayer {
-            username: "EpicPuppy613".to_string(),
-            class: "WARRIOR".to_string(),
-            territory: None,
-            pos: None,
-        });
-        assert!(!with_players.is_empty());
     }
 
     #[test]

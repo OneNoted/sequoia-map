@@ -446,7 +446,7 @@ mod tests {
 
         let cleared: sequoia_shared::WarControllerState =
             serde_json::from_str(&payload).expect("cleared payload parses");
-        assert!(cleared.is_empty());
+        assert!(cleared.unavailable && cleared.queues.is_empty() && cleared.wars.is_empty());
         // Stamped now, so neither this stream's own guard nor the client's rejects it.
         assert!(cleared.timestamp > 1_787_517_420);
         let mut last = Some(1_787_517_420);

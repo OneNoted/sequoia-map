@@ -512,13 +512,13 @@ fn hq_caption_metrics(
     }
 }
 
-/// The HQ crown and the caption under it, laid out for this zoom, with the caption's size.
+/// The HQ crown and the caption under it, laid out for this zoom, with the caption.
 fn hq_layout(
     ct: &ClientTerritory,
     settings: &RenderSettings,
     hq: HqCrown,
     px_per_world: f32,
-) -> (HqLayout, f32) {
+) -> (HqLayout, Caption) {
     let caption = hq_caption_metrics(ct, settings, px_per_world);
     let loc = &ct.territory.location;
     let territory = TerritoryBox {
@@ -526,7 +526,7 @@ fn hq_layout(
         width: loc.width() as f32,
         height: loc.height() as f32,
     };
-    (hq.layout(territory, px_per_world, caption), caption.size)
+    (hq.layout(territory, px_per_world, caption), caption)
 }
 
 /// Bottom of an HQ territory's static labels (caption, then territory name), so the timers
@@ -539,9 +539,10 @@ fn hq_static_label_bottom(
 ) -> Option<f32> {
     let loc = &ct.territory.location;
     let sizing = compute_static_label_sizing(loc.width() as f32, loc.height() as f32)?;
-    let (layout, caption_size) = hq_layout(ct, settings, hq, px_per_world);
+    let (layout, caption) = hq_layout(ct, settings, hq, px_per_world);
+    let caption_size = caption.size;
     let detail_size = sizing.detail_size * settings.label_scales.static_name();
-    let caption_visible = caption_size * px_per_world >= STATIC_TAG_MIN_RENDERED_PX;
+    let caption_visible = caption.drawn;
     let name_visible = settings.show_names
         && sizing.detail_layout_alpha > 0.02
         && detail_size * px_per_world >= STATIC_NAME_MIN_RENDERED_PX;

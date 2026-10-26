@@ -2245,8 +2245,8 @@ pub fn MapPage() -> impl IntoView {
                 // The help dialog, the war sheet and the player detail handle their own keys,
                 // and a key a control already acted on is not a map shortcut.
                 if keybind_help_open.get_untracked()
-                    || war_room.modal_open()
                     || e.default_prevented()
+                    || war_room.handle_stray_key(&e)
                 {
                     return;
                 }
@@ -3268,10 +3268,9 @@ fn Tooltip() -> impl IntoView {
             .and_then(|runtime| runtime.headquarters)
             .unwrap_or(false);
         // The same stage and clock the territory's border and plate show.
-        let war = war_room.front(&name).map(|front| {
-            let (visible, _) = crate::war_room::clock_text(front.clock(war_room.now.get()));
-            (front.stage_kind(), visible)
-        });
+        let war = war_room
+            .front(&name)
+            .map(|front| crate::war_room::stage_with_clock(&front, war_room.now.get()));
         let takes_in_window = if heat_mode_enabled.get() {
             Some(
                 heat_entries_by_territory
@@ -3440,9 +3439,9 @@ fn Tooltip() -> impl IntoView {
                             <div style="font-size: 0.92rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
                                 {info.name.clone()}
                             </div>
-                            {info.war.clone().map(|(stage, clock)| view! {
+                            {info.war.clone().map(|(stage, text)| view! {
                                 <span class="tooltip-war" data-stage=crate::war_room::stage_slug(stage)>
-                                    {format!("{} {clock}", stage.label())}
+                                    {text}
                                 </span>
                             })}
                             {info.is_headquarters.then(|| view! {

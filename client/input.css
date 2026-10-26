@@ -711,7 +711,6 @@
   display: block;
   height: 100%;
   background: var(--war-fighting);
-  transition: width 0.4s ease;
 }
 
 .war-tower-figures {
@@ -1191,8 +1190,7 @@
   .war-panel.war-panel-ready,
   .war-sheet,
   .war-sheet.war-sheet-open,
-  .war-sheet-scrim,
-  .war-tower-bar > span {
+  .war-sheet-scrim {
     transition: none;
   }
 }

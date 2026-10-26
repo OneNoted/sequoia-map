@@ -241,10 +241,6 @@ impl WarBoard {
             .filter(|front| front.stage_kind() == kind)
             .count()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.fronts.is_empty() && self.roster.is_empty()
-    }
 }
 
 fn build_fronts(state: &WarControllerState) -> Vec<WarFront> {

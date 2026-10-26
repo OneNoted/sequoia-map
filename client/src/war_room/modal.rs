@@ -25,11 +25,36 @@ pub(super) fn focus_next_frame(element: HtmlElement) {
     });
 }
 
-/// Hands focus back to `opener` if it is still in the document; a row rebuilt or removed
-/// meanwhile has nothing to return to.
+/// Hands focus back to `opener` if it can still take it: a row rebuilt or removed meanwhile,
+/// or one inside a sheet that is closing at the same time, has nothing to return to.
 pub(super) fn restore_focus(opener: Option<HtmlElement>) {
-    if let Some(opener) = opener.filter(|opener| opener.is_connected()) {
-        let _ = opener.focus();
+    let Some(opener) = opener.filter(|opener| opener.is_connected()) else {
+        return;
+    };
+    if opener
+        .closest("[inert], .war-sheet:not(.war-sheet-open)")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let _ = opener.focus();
+}
+
+/// Focuses whichever war modal is open, the player detail first since it sits on top.
+pub(super) fn focus_open_modal() {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let open = [
+        ".player-dialog.player-dialog-open",
+        ".war-sheet.war-sheet-open",
+    ]
+    .into_iter()
+    .find_map(|selector| document.query_selector(selector).ok().flatten());
+    if let Some(modal) = open.and_then(|modal| modal.dyn_into::<HtmlElement>().ok()) {
+        let _ = modal.focus();
     }
 }
 

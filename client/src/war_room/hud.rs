@@ -551,6 +551,11 @@ fn WarSheet() -> impl IntoView {
         open
     });
     let close = Callback::new(move |()| room.sheet_open.set(false));
+    // The sheet goes when the screen grows out of the compact layout or the panel is turned
+    // off; an open flag left behind would keep the map's shortcuts switched off.
+    on_cleanup(move || {
+        room.sheet_open.try_set(false);
+    });
 
     view! {
         <div class="war-sheet-scrim" class:war-sheet-scrim-visible=move || room.sheet_open.get() on:click=move |_| close.run(()) />
