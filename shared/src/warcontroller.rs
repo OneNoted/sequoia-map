@@ -93,6 +93,23 @@ pub struct WarQueueEntry {
     /// sample is stale.
     #[serde(default, deserialize_with = "deserialize_optional_lenient_timestamp")]
     pub timestamp: Option<i64>,
+    /// `QUEUED` only, from the backend's queue record: Unix seconds at which the queue was
+    /// made. `None` from a backend that predates the field.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_lenient_timestamp"
+    )]
+    pub queued_at: Option<i64>,
+    /// `QUEUED` only: the queue's original timer in seconds, ending at `timestamp`; it
+    /// excludes the 30 s between entry and the war's start. `None` when the backend's timer
+    /// is a fallback guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_seconds: Option<i64>,
+    /// `QUEUED` only: the Minecraft username of the member who queued it, as the backend
+    /// recorded it. `None` while unknown; never inferred from who stands there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queuer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -284,9 +301,9 @@ mod tests {
     const SAMPLE: &str = r#"{
         "timestamp": 1787517420,
         "queues": [
-            {"territory": "Entrance to Olux", "difficulty": "VERY_HIGH", "status": "STARTED", "timestamp": 1787517443},
+            {"territory": "Entrance to Olux", "difficulty": "VERY_HIGH", "status": "STARTED", "timestamp": 1787517443, "queued_at": null, "queue_seconds": null, "queuer": null},
             {"territory": "Overtaken Outpost", "difficulty": "VERY_LOW", "status": "ENTERED", "timestamp": 1787517461},
-            {"territory": "Mangled Lake", "difficulty": "VERY_LOW", "status": "QUEUED", "timestamp": 1787517489}
+            {"territory": "Mangled Lake", "difficulty": "VERY_LOW", "status": "QUEUED", "timestamp": 1787517489, "queued_at": 1787517069, "queue_seconds": 420, "queuer": "EpicPuppy613"}
         ],
         "wars": [
             {"territory": "Entrance to Olux", "difficulty": "VERY_HIGH", "health": 0.8731, "start": 1787517417, "ehp": 24135275, "dps": 32143},
@@ -324,6 +341,11 @@ mod tests {
             Some(TreasuryLevel::VeryLow)
         );
         assert_eq!(queued.timestamp, Some(1787517489));
+        assert_eq!(queued.queued_at, Some(1787517069));
+        assert_eq!(queued.queue_seconds, Some(420));
+        assert_eq!(queued.queuer.as_deref(), Some("EpicPuppy613"));
+        assert_eq!(state.queues[0].queued_at, None);
+        assert_eq!(state.queues[1].queued_at, None);
 
         let war = &state.wars[0];
         assert_eq!(war.territory, "Entrance to Olux");
@@ -356,6 +378,18 @@ mod tests {
     }
 
     #[test]
+    fn the_queue_start_passes_through_the_map_server_and_is_omitted_when_unknown() {
+        let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
+        let echoed = serde_json::to_value(&state).expect("serializes");
+        assert_eq!(echoed["queues"][2]["queued_at"], 1787517069);
+        assert_eq!(echoed["queues"][2]["queue_seconds"], 420);
+        assert_eq!(echoed["queues"][2]["queuer"], "EpicPuppy613");
+        for field in ["queued_at", "queue_seconds", "queuer"] {
+            assert!(echoed["queues"][0].get(field).is_none(), "{field}");
+        }
+    }
+
+    #[test]
     fn real_data_supersedes_an_unavailable_feed() {
         assert!(war_state_at(900).supersedes(Some(&WarControllerState::unavailable(1_000))));
     }
@@ -376,6 +410,9 @@ mod tests {
             difficulty: Some("VERY_HIGH".to_string()),
             status: "STARTED".to_string(),
             timestamp: Some(1_787_517_443),
+            queued_at: None,
+            queue_seconds: None,
+            queuer: None,
         });
         assert!(!changed.same_content(&state_at(1_000)));
     }

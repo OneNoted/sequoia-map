@@ -7,7 +7,8 @@
 //!
 //! Backend semantics this relies on (`sequoia-backend` `WarStatusService`):
 //! - A `QUEUED` row's stamp is the queue expiry, when the party is pulled in. The war starts
-//!   [`QUEUE_ENTRY_TO_START_SECS`] later.
+//!   [`QUEUE_ENTRY_TO_START_SECS`] later. Its `queued_at`, `queue_seconds` and `queuer` come
+//!   from the backend's record of the queue itself.
 //! - An `ENTERED` row's stamp is the scheduled start. Its war row already exists, with health
 //!   forced to full, so a war row alone does not mean fighting.
 //! - Only a `STARTED` row confirms a war. Its stamp is the estimated win, or null.
@@ -44,12 +45,25 @@ pub struct WarFront {
     /// Raw Wynncraft difficulty tier, e.g. `VERY_HIGH`, when the backend classified it.
     pub difficulty: Option<String>,
     pub stage: FrontStage,
+    /// While queued: when the queue was made and by whom, each when the backend knows.
+    pub queued: Option<QueuedBy>,
+}
+
+/// Who made a queue and when, as the backend recorded it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct QueuedBy {
+    pub at: Option<i64>,
+    pub queuer: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FrontStage {
-    /// The queue timer is running. `starts_at` is when the war is expected to begin.
-    Queued { starts_at: Option<i64> },
+    /// The queue timer is running. `starts_at` is when the war is expected to begin;
+    /// `timer` is the queue's own timer, when the backend knows when it started.
+    Queued {
+        starts_at: Option<i64>,
+        timer: Option<QueueTimer>,
+    },
     /// The party is inside, waiting for the scheduled start.
     Entered { starts_at: Option<i64> },
     /// Confirmed by a `STARTED` row.
@@ -58,6 +72,59 @@ pub enum FrontStage {
         tower: Option<Tower>,
         expected_win_at: Option<i64>,
     },
+}
+
+/// A queue's timer as the backend recorded it: from the queue being made to the party being
+/// pulled in. The war's start, [`QUEUE_ENTRY_TO_START_SECS`] later, is not part of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueTimer {
+    pub queued_at: i64,
+    pub expires_at: i64,
+}
+
+impl QueueTimer {
+    /// A timer of `seconds` ending at `expires_at`; anything else is an unknown timer.
+    fn new(seconds: Option<i64>, expires_at: Option<i64>) -> Option<Self> {
+        let (seconds, expires_at) = (seconds?, expires_at?);
+        (seconds > 0).then_some(Self {
+            queued_at: expires_at - seconds,
+            expires_at,
+        })
+    }
+
+    /// How long the queue was set for, in seconds.
+    pub fn duration(self) -> i64 {
+        self.expires_at - self.queued_at
+    }
+
+    /// Share of the timer still to run at `now`: 1 when it has just started, 0 once it has
+    /// run out.
+    pub fn remaining_fraction(self, now: i64) -> f32 {
+        ((self.expires_at - now) as f64 / self.duration() as f64).clamp(0.0, 1.0) as f32
+    }
+}
+
+/// What the map draws on a territory: its stage and the timing its outline may show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WarMark {
+    pub stage: StageKind,
+    /// When a queued or entered war is expected to begin; `None` once fighting.
+    pub starts_at: Option<i64>,
+    pub timer: Option<QueueTimer>,
+}
+
+impl WarMark {
+    /// The same mark on a clock `secs` behind the feed's.
+    pub fn earlier_by(self, secs: i64) -> Self {
+        Self {
+            starts_at: self.starts_at.map(|at| at - secs),
+            timer: self.timer.map(|timer| QueueTimer {
+                queued_at: timer.queued_at - secs,
+                expires_at: timer.expires_at - secs,
+            }),
+            ..self
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,12 +167,13 @@ pub enum FrontClock {
 impl WarFront {
     pub fn clock(&self, now: i64) -> FrontClock {
         match self.stage {
-            FrontStage::Queued { starts_at } | FrontStage::Entered { starts_at } => match starts_at
-            {
-                Some(starts_at) if starts_at > now => FrontClock::StartsIn(starts_at - now),
-                Some(_) => FrontClock::Due,
-                None => FrontClock::Unscheduled,
-            },
+            FrontStage::Queued { starts_at, .. } | FrontStage::Entered { starts_at } => {
+                match starts_at {
+                    Some(starts_at) if starts_at > now => FrontClock::StartsIn(starts_at - now),
+                    Some(_) => FrontClock::Due,
+                    None => FrontClock::Unscheduled,
+                }
+            }
             FrontStage::Fighting { started_at, .. } => started_at
                 .map_or(FrontClock::Fighting, |at| {
                     FrontClock::FightingFor((now - at).max(0))
@@ -125,10 +193,30 @@ impl WarFront {
         }
     }
 
+    /// The queue's own timer, while queued and known.
+    pub fn timer(&self) -> Option<QueueTimer> {
+        match self.stage {
+            FrontStage::Queued { timer, .. } => timer,
+            _ => None,
+        }
+    }
+
+    pub fn mark(&self) -> WarMark {
+        let starts_at = match self.stage {
+            FrontStage::Queued { starts_at, .. } | FrontStage::Entered { starts_at } => starts_at,
+            FrontStage::Fighting { .. } => None,
+        };
+        WarMark {
+            stage: self.stage_kind(),
+            starts_at,
+            timer: self.timer(),
+        }
+    }
+
     /// When the war began or is expected to begin, for ordering.
     fn start_key(&self) -> Option<i64> {
         match self.stage {
-            FrontStage::Queued { starts_at } | FrontStage::Entered { starts_at } => starts_at,
+            FrontStage::Queued { starts_at, .. } | FrontStage::Entered { starts_at } => starts_at,
             FrontStage::Fighting { started_at, .. } => started_at,
         }
     }
@@ -277,6 +365,7 @@ fn build_fronts(state: &WarControllerState) -> Vec<WarFront> {
             stage: FrontStage::Entered {
                 starts_at: Some(war.start),
             },
+            queued: None,
         });
     }
 
@@ -297,6 +386,7 @@ fn queue_front(entry: &WarQueueEntry, status: QueueStatus, war: Option<&ActiveWa
             starts_at: entry
                 .timestamp
                 .map(|expiry| expiry + QUEUE_ENTRY_TO_START_SECS),
+            timer: QueueTimer::new(entry.queue_seconds, entry.timestamp),
         },
         QueueStatus::Entered => FrontStage::Entered {
             starts_at: entry.timestamp.or(war.map(|war| war.start)),
@@ -318,6 +408,15 @@ fn queue_front(entry: &WarQueueEntry, status: QueueStatus, war: Option<&ActiveWa
             .clone()
             .or_else(|| war.and_then(|war| war.difficulty.clone())),
         stage,
+        queued: (status == QueueStatus::Queued).then(|| QueuedBy {
+            at: entry.queued_at,
+            queuer: entry
+                .queuer
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string),
+        }),
     }
 }
 
@@ -426,6 +525,7 @@ pub fn outcomes(previous: &WarBoard, next: &WarBoard) -> Vec<Outcome> {
                 FrontStage::Fighting { .. } => OutcomeKind::WarEnded,
                 FrontStage::Queued {
                     starts_at: Some(starts_at),
+                    ..
                 } if starts_at - QUEUE_ENTRY_TO_START_SECS - CANCEL_LEAD_SECS > now => {
                     OutcomeKind::Cancelled
                 }
@@ -464,6 +564,17 @@ mod tests {
             difficulty: Some("MEDIUM".to_string()),
             status: status.to_string(),
             timestamp,
+            queued_at: None,
+            queue_seconds: None,
+            queuer: None,
+        }
+    }
+
+    fn timed_queue(territory: &str, queued_at: i64, expires_at: i64) -> WarQueueEntry {
+        WarQueueEntry {
+            queued_at: Some(queued_at),
+            queue_seconds: Some(expires_at - queued_at),
+            ..queue(territory, "QUEUED", Some(expires_at))
         }
     }
 
@@ -522,6 +633,131 @@ mod tests {
             vec![],
         ));
         assert_eq!(board.fronts[0].clock(NOW), FrontClock::StartsIn(120));
+    }
+
+    #[test]
+    fn a_queue_keeps_its_original_timer_apart_from_the_countdown_to_the_war() {
+        let board = board(&state(
+            vec![timed_queue("Detlas", NOW - 120, NOW + 300)],
+            vec![],
+            vec![],
+        ));
+        let front = board.front("Detlas").expect("front");
+
+        let timer = front.timer().expect("known timer");
+        assert_eq!(timer.duration(), 420);
+        assert_eq!(timer.remaining_fraction(NOW), 300.0 / 420.0);
+        assert_eq!(timer.remaining_fraction(NOW + 400), 0.0);
+        // The countdown still runs to the war's start, 30 s after the queue runs out.
+        assert_eq!(front.clock(NOW), FrontClock::StartsIn(330));
+        assert_eq!(
+            front.mark(),
+            WarMark {
+                stage: StageKind::Queued,
+                starts_at: Some(NOW + 330),
+                timer: Some(timer),
+            }
+        );
+    }
+
+    #[test]
+    fn an_unknown_or_impossible_queue_start_is_no_timer() {
+        let unknown = board(&state(
+            vec![queue("Detlas", "QUEUED", Some(NOW + 60))],
+            vec![],
+            vec![],
+        ));
+        assert_eq!(unknown.front("Detlas").and_then(WarFront::timer), None);
+
+        let backwards = board(&state(
+            vec![timed_queue("Detlas", NOW + 90, NOW + 60)],
+            vec![],
+            vec![],
+        ));
+        assert_eq!(backwards.front("Detlas").and_then(WarFront::timer), None);
+
+        let mut no_expiry = timed_queue("Detlas", NOW - 60, NOW);
+        no_expiry.timestamp = None;
+        let no_expiry = board(&state(vec![no_expiry], vec![], vec![]));
+        assert_eq!(no_expiry.front("Detlas").and_then(WarFront::timer), None);
+    }
+
+    #[test]
+    fn a_queued_front_says_who_queued_it_and_when_even_without_a_real_timer() {
+        let mut fallback = queue("Detlas", "QUEUED", Some(NOW + 900));
+        fallback.queued_at = Some(NOW);
+        fallback.queuer = Some("EpicPuppy613".to_string());
+        let mut provisional = timed_queue("Ragni", NOW - 30, NOW + 150);
+        provisional.queuer = Some("  ".to_string());
+        let board = board(&state(vec![fallback, provisional], vec![], vec![]));
+
+        let detlas = board.front("Detlas").expect("front");
+        assert_eq!(detlas.timer(), None);
+        assert_eq!(
+            detlas.queued,
+            Some(QueuedBy {
+                at: Some(NOW),
+                queuer: Some("EpicPuppy613".to_string()),
+            })
+        );
+        let ragni = board.front("Ragni").expect("front");
+        assert_eq!(
+            ragni.queued,
+            Some(QueuedBy {
+                at: Some(NOW - 30),
+                queuer: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_requeued_territory_carries_the_new_queue_timer() {
+        let first = board(&state(
+            vec![timed_queue("Detlas", NOW - 300, NOW + 120)],
+            vec![],
+            vec![],
+        ));
+        let requeued = board(&state(
+            vec![timed_queue("Detlas", NOW, NOW + 600)],
+            vec![],
+            vec![],
+        ));
+
+        assert_eq!(
+            first
+                .front("Detlas")
+                .and_then(WarFront::timer)
+                .map(QueueTimer::duration),
+            Some(420)
+        );
+        let timer = requeued
+            .front("Detlas")
+            .and_then(WarFront::timer)
+            .expect("timer");
+        assert_eq!((timer.queued_at, timer.duration()), (NOW, 600));
+    }
+
+    #[test]
+    fn entered_and_fighting_marks_carry_no_queue_timer() {
+        let board = board(&state(
+            vec![
+                queue("Ragni", "ENTERED", Some(NOW + 20)),
+                queue("Detlas", "STARTED", None),
+            ],
+            vec![war("Ragni", NOW + 20, 1.0), war("Detlas", NOW - 60, 0.5)],
+            vec![],
+        ));
+        assert_eq!(board.front("Ragni").expect("entered").queued, None);
+        let entered = board.front("Ragni").expect("entered").mark();
+        assert_eq!(
+            (entered.stage, entered.starts_at, entered.timer),
+            (StageKind::Entered, Some(NOW + 20), None)
+        );
+        let fighting = board.front("Detlas").expect("fighting").mark();
+        assert_eq!(
+            (fighting.stage, fighting.starts_at, fighting.timer),
+            (StageKind::Fighting, None, None)
+        );
     }
 
     #[test]

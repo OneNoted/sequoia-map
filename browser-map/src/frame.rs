@@ -10,7 +10,7 @@ use sequoia_map_engine::scene::NextRefresh;
 use sequoia_map_engine::settings::RenderSettings;
 use sequoia_map_engine::territory::ClientTerritoryMap;
 use sequoia_map_engine::viewport::Viewport;
-use sequoia_shared::war_board::StageKind;
+use sequoia_shared::war_board::WarMark;
 
 use crate::icons::ResourceAtlas;
 use crate::overlay::{SiteLabels, Teammates, WarPlates};
@@ -27,8 +27,8 @@ pub struct Frame<'a> {
     pub settings: &'a RenderSettings,
     /// Recolour territories by capture count instead of guild colour.
     pub heat: Option<HeatColors<'a>>,
-    /// War stage per territory, for the border treatment.
-    pub war_stages: Option<&'a HashMap<String, StageKind>>,
+    /// War mark per territory, for the outline; see [`crate::MapInputs::war_marks`].
+    pub war_marks: Option<&'a HashMap<String, WarMark>>,
     /// Bounding box of all territories; tiles far outside it are not drawn.
     pub territory_bounds: Option<(f64, f64, f64, f64)>,
     pub tiles: &'a [LoadedTile],

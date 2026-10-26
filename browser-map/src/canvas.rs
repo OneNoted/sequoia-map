@@ -239,8 +239,8 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 heat.take_counts.track();
                 heat.scale.track();
             }
-            if let Some(war_stages) = inputs.war_stages {
-                war_stages.track();
+            if let Some(war_marks) = inputs.war_marks {
+                war_marks.track();
             }
             state.borrow_mut().planner.invalidate(SceneChange::Overlay);
             scheduler.mark_dirty();
@@ -519,7 +519,7 @@ fn render_frame(
         map.tiles.with_untracked(|tiles| {
             map.markers.with_untracked(|markers| {
                 with_optional(heat.map(|heat| heat.take_counts), |take_counts| {
-                    with_optional(inputs.war_stages, |war_stages| {
+                    with_optional(inputs.war_marks, |war_marks| {
                         renderer.render(
                             &Frame {
                                 camera: &camera,
@@ -531,7 +531,7 @@ fn render_frame(
                                 heat: take_counts
                                     .zip(heat_scale.as_deref())
                                     .map(|(take_counts, scale)| HeatColors { take_counts, scale }),
-                                war_stages,
+                                war_marks,
                                 territory_bounds: *territory_bounds,
                                 tiles,
                                 icons: icons.as_ref(),

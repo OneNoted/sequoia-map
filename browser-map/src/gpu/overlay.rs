@@ -52,9 +52,13 @@ const PLATE_FONT_CSS: &str = "16px Minecraft";
 const PLATE_FONT_PX: f64 = 16.0;
 const PLATE_FONT_FAMILY: &str = "Minecraft, monospace";
 /// Plate box, CSS pixels: padding around the content and the icon-to-text gap.
-const PLATE_PAD_X: f64 = 4.0;
-const PLATE_PAD_Y: f64 = 3.0;
-const PLATE_GAP: f64 = 3.0;
+const PLATE_PAD_X: f64 = 3.0;
+const PLATE_PAD_Y: f64 = 1.0;
+const PLATE_GAP: f64 = 2.0;
+/// Backing around an ending's glyph, CSS pixels, and the glyph's magnification: its 7x7
+/// pixel art drawn two pixels to a cell.
+const PIN_PAD: f64 = 2.0;
+const PIN_ZOOM: f32 = 2.0;
 const PLATE_BAR_HEIGHT: f64 = 2.0;
 /// Plates show their text from this camera scale; further out they are icon-only pins.
 const PLATE_TEXT_MIN_SCALE: f32 = 0.32;
@@ -68,6 +72,16 @@ const HOURGLASS: [&str; 7] = [
 ];
 const SWORDS: [&str; 7] = [
     "#.....#", ".#...#.", "..#.#..", "...#...", "..#.#..", "##...##", "#.....#",
+];
+/// An ending's pin: captured, cancelled, or ended some other way.
+const CHECK: [&str; 7] = [
+    "......#", ".....##", "#...##.", "##.##..", ".###...", "..#....", ".......",
+];
+const CROSS: [&str; 7] = [
+    ".......", ".##.##.", "..###..", "...#...", "..###..", ".##.##.", ".......",
+];
+const STOP: [&str; 7] = [
+    ".......", ".#####.", ".#####.", ".#####.", ".#####.", ".#####.", ".......",
 ];
 
 /// `kind` in overlay.wgsl.
@@ -209,6 +223,10 @@ struct PlateGlyphs {
     glyphs: Vec<(char, Sprite)>,
     hourglass: Sprite,
     swords: Sprite,
+    /// Captured, cancelled and ended pins.
+    check: Sprite,
+    cross: Sprite,
+    stop: Sprite,
     /// Baseline to the top of the tallest glyph, and to the bottom of the lowest.
     ascent: f32,
     descent: f32,
@@ -412,11 +430,12 @@ impl GpuOverlayRenderer {
         chars.dedup();
         let mut sources: Vec<SpriteSource> =
             chars.iter().map(|&ch| SpriteSource::Glyph(ch)).collect();
-        sources.push(SpriteSource::Pixels(&HOURGLASS));
-        sources.push(SpriteSource::Pixels(&SWORDS));
+        for art in [&HOURGLASS, &SWORDS, &CHECK, &CROSS, &STOP] {
+            sources.push(SpriteSource::Pixels(art));
+        }
         let bytes = self.bake(device, queue, &sources, Which::Plates);
         let sprites = &self.plates.sprites;
-        let [glyph_sprites @ .., hourglass, swords] = sprites.as_slice() else {
+        let [glyph_sprites @ .., hourglass, swords, check, cross, stop] = sprites.as_slice() else {
             return bytes;
         };
         if glyph_sprites.len() != chars.len() {
@@ -438,6 +457,9 @@ impl GpuOverlayRenderer {
                 .collect(),
             hourglass: *hourglass,
             swords: *swords,
+            check: *check,
+            cross: *cross,
+            stop: *stop,
             ascent,
             descent,
         });
@@ -781,7 +803,8 @@ fn plate_tones(label: PlateLabel) -> ([u8; 3], [u8; 3]) {
 /// Lays each plate out around its anchor in whole device pixels, so glyphs land texel for
 /// pixel: a bordered box holding the stage icon and the text, and for a war the tower's
 /// remaining health along the bottom. Below [`PLATE_TEXT_MIN_SCALE`] the same plate shrinks
-/// to a pin with only its icon, so neighbouring war territories do not bury each other.
+/// to a pin with only its icon, so neighbouring war territories do not bury each other. An
+/// ending is only ever a small glyph on a dark backing.
 fn plate_instances(plates: &WarPlates, glyphs: &PlateGlyphs, dpr: f64) -> Vec<OverlayInstance> {
     let px = |css: f64| (css * dpr).round().max(1.0);
     let metrics = PlateMetrics {
@@ -795,6 +818,22 @@ fn plate_instances(plates: &WarPlates, glyphs: &PlateGlyphs, dpr: f64) -> Vec<Ov
     };
     let mut instances = Vec::with_capacity(plates.plates.len() * 14);
     for plate in &plates.plates {
+        if let PlateLabel::Ending(ending) = plate.label {
+            let glyph = match ending {
+                Ending::Captured => glyphs.check,
+                Ending::Cancelled => glyphs.cross,
+                Ending::Ended => glyphs.stop,
+            };
+            // A capture keeps its green; the others need the light ink to read on the backing.
+            let (accent, ink) = plate_tones(plate.label);
+            let tone = if ending == Ending::Captured {
+                accent
+            } else {
+                ink
+            };
+            metrics.push_pin(&mut instances, plate.world, glyph, tone, px(PIN_PAD));
+            continue;
+        }
         let (icon, health) = match plate.label {
             PlateLabel::Front {
                 stage: StageKind::Fighting,
@@ -805,7 +844,7 @@ fn plate_instances(plates: &WarPlates, glyphs: &PlateGlyphs, dpr: f64) -> Vec<Ov
             PlateLabel::Ending(_) => (None, None),
         };
         let (accent, ink) = plate_tones(plate.label);
-        let text = plate.label.text();
+        let text = plate.label.text().unwrap_or_default();
         let full: Vec<&Sprite> = text.chars().filter_map(|ch| glyphs.glyph(ch)).collect();
         let mut push = |glyph_run: &[&Sprite], health, scales| {
             metrics.push(
@@ -853,6 +892,48 @@ struct PlateContent<'a> {
 impl PlateMetrics {
     fn color(&self, [r, g, b]: [u8; 3], alpha: u8) -> [u8; 4] {
         [r, g, b, (f32::from(alpha) * self.fade).round() as u8]
+    }
+
+    /// An ending's glyph on a backing just larger than it, centred on the anchor, at every
+    /// zoom.
+    fn push_pin(
+        &self,
+        instances: &mut Vec<OverlayInstance>,
+        world: [f32; 2],
+        glyph: Sprite,
+        accent: [u8; 3],
+        pad: f64,
+    ) {
+        let size = [glyph.size[0] * PIN_ZOOM, glyph.size[1] * PIN_ZOOM];
+        let [w, h] = [f64::from(size[0]), f64::from(size[1])];
+        let (left, top) = (-((w / 2.0).round() + pad), -((h / 2.0).round() + pad));
+        let [fr, fg, fb, fa] = PLATE_FILL;
+        let place =
+            |x: f64, y: f64, size: [f32; 2], uv_rect, rgba, kind: OverlayKind| OverlayInstance {
+                world,
+                offset: [x as f32, y as f32],
+                size,
+                uv_rect,
+                rgba,
+                scales: [0.0, f32::MAX],
+                kind: kind as u32,
+            };
+        instances.push(place(
+            left,
+            top,
+            [(w + pad * 2.0) as f32, (h + pad * 2.0) as f32],
+            [0.0; 4],
+            self.color([fr, fg, fb], fa),
+            OverlayKind::Rect,
+        ));
+        instances.push(place(
+            left + pad,
+            top + pad,
+            size,
+            glyph.uv_rect,
+            self.color(accent, 255),
+            OverlayKind::Tinted,
+        ));
     }
 
     /// One plate box, centred on its anchor and straddling the territory's top edge, shown

@@ -11,6 +11,7 @@ mod season_scalar;
 mod settings_menu;
 mod sidebar;
 mod site_nav;
+mod territory_card;
 mod timeline;
 mod tower;
 mod ui_icons;

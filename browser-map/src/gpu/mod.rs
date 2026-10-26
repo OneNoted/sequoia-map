@@ -22,7 +22,7 @@ use sequoia_map_engine::defense::defense_tier_overlay_data;
 use sequoia_map_engine::hq_layout::{Caption, HqCrown, HqLayout, TerritoryBox};
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
 use sequoia_map_engine::label_layout::{
-    IconKind, abbreviate_name, compute_label_layout_metrics, cooldown_color,
+    COOLDOWN_RGB, IconKind, abbreviate_name, compute_label_layout_metrics,
     dynamic_label_next_update_age, dynamic_text_state, resource_icon_sequence,
     resource_icons_drawable, write_age, write_age_compound,
 };
@@ -37,7 +37,7 @@ use sequoia_map_engine::overlay_sizing::{
 use sequoia_map_engine::scene::{
     LABEL_VISIBILITY_MIN_SCALE, NextRefresh, Rebuild, TIMER_VISIBILITY_MIN_SCALE,
 };
-use sequoia_map_engine::settings::{NameColor, RenderSettings};
+use sequoia_map_engine::settings::{NameColor, RenderSettings, WarOutlineColor, WarOutlineStyle};
 use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap, is_sequoia_guild};
 use sequoia_map_engine::time_format::write_hms;
 use sequoia_map_engine::viewport::Viewport;
@@ -106,9 +106,9 @@ pub struct TerritoryInstance {
     pub rect: [f32; 4],          // x, y, width, height (world coords)
     pub color: [f32; 4],         // r, g, b, 1.0 — target/static guild color
     pub state: [f32; 4],         // fill_alpha, border_alpha, flags, 0.0
-    pub cooldown: [f32; 4],      // acquired_time_rel_secs, unused, unused, unused
+    pub cooldown: [f32; 4],      // acquired_time_rel_secs, war start, queue start, queue end
     pub anim_color: [f32; 4],    // from_r, from_g, from_b, 0.0
-    pub anim_time: [f32; 4],     // start_time_relative_secs, duration_secs, 0, 0
+    pub anim_time: [f32; 4], // start_time_relative_secs, duration_secs, war outline width, opacity
     pub resource_data: [f32; 4], // mode, idx_a, idx_b, flags
 }
 
@@ -311,6 +311,12 @@ const DYNAMIC_COOLDOWN_MIN_RENDERED_PX: f32 = 12.0;
 const WAR_FLAG_FIGHTING: u32 = 8;
 const WAR_FLAG_ENTERED: u32 = 16;
 const WAR_FLAG_QUEUED: u32 = 32;
+/// The war outline settings, per instance; see `territory.wgsl`.
+const WAR_FLAG_SOLID: u32 = 64;
+/// Set only when the expected start is known.
+const WAR_FLAG_URGENCY: u32 = 128;
+/// Set only on a queued territory whose queue timer is known.
+const WAR_FLAG_PROGRESS: u32 = 256;
 /// Smallest far-zoom guild name an HQ shows before falling back to its tag, screen pixels.
 const FAR_ZOOM_CAPTION_MIN_PX: f32 = 8.0;
 /// A captured territory is fresh (on cooldown) for this long.
@@ -2981,12 +2987,31 @@ impl GpuRenderer {
                     .as_ref()
                     .and_then(|runtime| runtime.headquarters)
                     .unwrap_or(false);
-                let war_flag = match frame.war_stages.and_then(|stages| stages.get(name)) {
-                    Some(StageKind::Fighting) => WAR_FLAG_FIGHTING,
-                    Some(StageKind::Entered) => WAR_FLAG_ENTERED,
-                    Some(StageKind::Queued) => WAR_FLAG_QUEUED,
-                    None => 0,
-                };
+                let mark = frame.war_marks.and_then(|marks| marks.get(name));
+                let outline = settings.war_outline.clamped();
+                let war_flag = mark.map_or(0, |mark| {
+                    let stage = match mark.stage {
+                        StageKind::Fighting => WAR_FLAG_FIGHTING,
+                        StageKind::Entered => WAR_FLAG_ENTERED,
+                        StageKind::Queued => WAR_FLAG_QUEUED,
+                    };
+                    let solid = outline.style == WarOutlineStyle::Solid;
+                    let urgency =
+                        outline.color == WarOutlineColor::Urgency && mark.starts_at.is_some();
+                    let progress = outline.progress && mark.timer.is_some();
+                    let flag = |on: bool, bit: u32| if on { bit } else { 0 };
+                    stage
+                        | flag(solid, WAR_FLAG_SOLID)
+                        | flag(urgency, WAR_FLAG_URGENCY)
+                        | flag(progress, WAR_FLAG_PROGRESS)
+                });
+                let relative = |at: i64| (at as f64 - start_secs) as f32;
+                let war_times = mark.map_or([0.0; 3], |mark| {
+                    let timer = mark.timer.map_or([0.0; 2], |timer| {
+                        [relative(timer.queued_at), relative(timer.expires_at)]
+                    });
+                    [mark.starts_at.map_or(0.0, relative), timer[0], timer[1]]
+                });
                 let flags = (is_hovered as u32)
                     + (is_selected as u32) * 2
                     + (is_headquarters as u32) * 4
@@ -3032,14 +3057,14 @@ impl GpuRenderer {
                         if settings.suppress_cooldown_visuals {
                             1.0
                         } else if settings.thick_cooldown_borders {
-                            2.0
+                            1.5
                         } else {
                             1.0
                         },
                     ],
-                    cooldown: [acquired_rel_secs, 0.0, 0.0, 0.0],
+                    cooldown: [acquired_rel_secs, war_times[0], war_times[1], war_times[2]],
                     anim_color,
-                    anim_time,
+                    anim_time: [anim_time[0], anim_time[1], outline.width, outline.opacity],
                     resource_data,
                 }
             }));
@@ -3674,8 +3699,7 @@ impl GpuRenderer {
                         write_age(&mut text_buf, state.age_secs);
                     }
                     let fill_color = if state.is_fresh {
-                        let urgency = 1.0 - state.cooldown_frac as f64;
-                        let (cr, cg, cb) = cooldown_color(urgency);
+                        let (cr, cg, cb) = COOLDOWN_RGB;
                         [
                             cr as f32 / 255.0,
                             cg as f32 / 255.0,
@@ -3720,10 +3744,8 @@ impl GpuRenderer {
                     let _ = write!(&mut text_buf, "{}:{:02}", remaining / 60, remaining % 60);
                     let cooldown_gap = 3.5 + line_gap * 0.35;
                     let cd_y = content_bottom_y + cooldown_size / 2.0 + cooldown_gap;
-                    let urgency = 1.0 - state.cooldown_frac as f64;
-                    let (cr, cg, cb) = cooldown_color(urgency);
-                    let cd_alpha =
-                        (0.95 + urgency as f32 * 0.05 + small_timer_factor * 0.02).clamp(0.0, 1.0);
+                    let (cr, cg, cb) = COOLDOWN_RGB;
+                    let cd_alpha = (0.92 + small_timer_factor * 0.02).clamp(0.0, 1.0);
                     push_text_line_dual_with_tracking(
                         &mut fill_instances,
                         &mut halo_instances,

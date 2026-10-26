@@ -20,7 +20,7 @@ use leptos::prelude::*;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
 use sequoia_shared::war_board::{
-    Ending, FrontClock, Outcome, Presence, RosterMember, StageKind, WarBoard, WarFront,
+    Ending, FrontClock, Outcome, Presence, RosterMember, StageKind, WarBoard, WarFront, WarMark,
     format_clock, outcomes,
 };
 use sequoia_shared::{TreasuryLevel, WarControllerState};
@@ -66,10 +66,34 @@ pub(crate) struct WarRoom {
     pub stale: Memo<bool>,
     /// The feed's clock: the browser's, moved forward by however far it trails the feed.
     pub now: Memo<i64>,
+    /// How far the browser's clock trails the feed's, in seconds.
+    behind: RwSignal<i64>,
     /// The member whose detail is open.
     pub player: RwSignal<Option<String>>,
+    /// Where the name that opened it sits on screen, so a desktop popover can open beside it.
+    pub player_anchor: RwSignal<Option<Anchor>>,
     /// The phone sheet is open.
     pub sheet_open: RwSignal<bool>,
+}
+
+/// A rectangle on screen, CSS pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Anchor {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+
+impl Anchor {
+    fn of(rect: &web_sys::DomRect) -> Self {
+        Self {
+            left: rect.left(),
+            top: rect.top(),
+            right: rect.right(),
+            bottom: rect.bottom(),
+        }
+    }
 }
 
 pub(crate) struct WarRoomInputs {
@@ -173,6 +197,7 @@ impl WarRoom {
         });
 
         let player = RwSignal::new(None::<String>);
+        let player_anchor = RwSignal::new(None::<Anchor>);
         let sheet_open = RwSignal::new(false);
         Effect::new(move || {
             if board.with(Option::is_none) {
@@ -185,25 +210,51 @@ impl WarRoom {
             outcomes: outcome_list,
             stale: Memo::new(move |_| connection.get() == ConnectionStatus::Reconnecting),
             now,
+            behind,
             player,
+            player_anchor,
             sheet_open,
         }
     }
 
-    /// Each front's stage, for the map's borders. Changes only when a stage does.
-    pub fn stages(&self) -> Memo<HashMap<String, StageKind>> {
-        let board = self.board;
+    /// Each front's mark, for the map's outlines. Its times are moved onto the browser's
+    /// clock, which the map reads them against. Changes only when a mark does.
+    pub fn marks(&self) -> Memo<HashMap<String, WarMark>> {
+        let (board, behind) = (self.board, self.behind);
         Memo::new(move |_| {
+            let behind = behind.get();
             board.with(|board| {
                 board.as_ref().map_or_else(HashMap::new, |board| {
                     board
                         .fronts
                         .iter()
-                        .map(|front| (front.territory.clone(), front.stage_kind()))
+                        .map(|front| (front.territory.clone(), front.mark().earlier_by(behind)))
                         .collect()
                 })
             })
         })
+    }
+
+    /// Opens `username`'s detail beside whatever was clicked.
+    pub fn open_player(&self, username: &str, event: &web_sys::MouseEvent) {
+        let anchor = event
+            .current_target()
+            .and_then(|target| wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(target).ok())
+            // A name inside the open detail switches member without moving it.
+            .filter(|element| element.closest(".player-dialog").ok().flatten().is_none())
+            .map(|element| {
+                // From the side panel it opens beside the panel, not over the rows next to
+                // the name.
+                let mut anchor = Anchor::of(&element.get_bounding_client_rect());
+                if let Ok(Some(panel)) = element.closest(".war-panel-card") {
+                    anchor.right = panel.get_bounding_client_rect().right();
+                }
+                anchor
+            });
+        if anchor.is_some() || self.player.with_untracked(Option::is_none) {
+            self.player_anchor.set(anchor);
+        }
+        self.player.set(Some(username.to_string()));
     }
 
     /// Whether a war sheet or player detail is open and owns the keyboard.
@@ -219,6 +270,15 @@ impl WarRoom {
             return false;
         }
         if modal::inside_open_modal(event.target()) {
+            return true;
+        }
+        // A popover beside a name leaves the page usable; only Escape is its own.
+        if !self.sheet_open.get_untracked() && modal::popover_open() {
+            if event.key() != "Escape" {
+                return false;
+            }
+            event.prevent_default();
+            self.player.set(None);
             return true;
         }
         match event.key().as_str() {
@@ -393,20 +453,6 @@ pub(crate) fn clock_text(clock: FrontClock) -> (String, String) {
         }
         FrontClock::Fighting => ("War".into(), "fighting".into()),
     }
-}
-
-/// A front's stage with its clock, for a one-line summary: "Queued 2:08", "Fighting 0:47",
-/// "Entered, due", or the stage alone when there is no time to show.
-pub(crate) fn stage_with_clock(front: &WarFront, now: i64) -> (StageKind, String) {
-    let stage = front.stage_kind();
-    let text = match front.clock(now) {
-        FrontClock::StartsIn(seconds) | FrontClock::FightingFor(seconds) => {
-            format!("{} {}", stage.label(), format_clock(seconds))
-        }
-        FrontClock::Due => format!("{}, due", stage.label()),
-        FrontClock::Unscheduled | FrontClock::Fighting => stage.label().to_string(),
-    };
-    (stage, text)
 }
 
 /// Where a member is, in words.

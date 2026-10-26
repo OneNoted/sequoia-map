@@ -7,6 +7,11 @@
 //!
 //! The dialog is built once per member and its fields update in place, so a feed frame never
 //! takes focus away from the button a keyboard user is on.
+//!
+//! On a desktop it is a non-modal popover beside the name that opened it, so the pointer has no
+//! trip to make and the map stays usable around it: Tab moves on past it, and a press anywhere
+//! outside it closes it without taking that press from the map. On a phone it is a modal sheet
+//! from the bottom that keeps focus inside.
 
 use leptos::prelude::*;
 use sequoia_shared::PlayerClass;
@@ -14,10 +19,36 @@ use sequoia_shared::war_board::{FrontStage, Presence, RosterMember};
 
 use super::hud::{ClassIcon, MemberChip, member_key};
 use super::modal::{focus_next_frame, focused_element, restore_focus, trap_tab};
-use super::{MapFocus, WarRoom, clock_text, whereabouts};
+use super::{Anchor, MapFocus, WarRoom, clock_text, whereabouts};
+use crate::app::IsMobile;
 use crate::territory::ClientTerritoryMap;
 
 const FACE_PX: u32 = 64;
+/// Space between the popover and the name it belongs to, and kept clear of the window edge.
+const POPOVER_GAP: f64 = 8.0;
+const POPOVER_MARGIN: f64 = 8.0;
+
+/// Where a popover of `size` opens: right of `anchor`, or left of it when the right has no
+/// room, top-aligned with it, and moved back inside the viewport if it would spill.
+pub(super) fn popover_origin(anchor: Anchor, size: (f64, f64), viewport: (f64, f64)) -> (f64, f64) {
+    let (width, height) = size;
+    let (view_width, view_height) = viewport;
+    let right = anchor.right + POPOVER_GAP;
+    let x = if right + width + POPOVER_MARGIN <= view_width {
+        right
+    } else {
+        anchor.left - POPOVER_GAP - width
+    };
+    let clamp = |value: f64, extent: f64, view: f64| {
+        value
+            .min(view - extent - POPOVER_MARGIN)
+            .max(POPOVER_MARGIN)
+    };
+    (
+        clamp(x, width, view_width),
+        clamp(anchor.top - 4.0, height, view_height),
+    )
+}
 /// Members listed under "Also here" before the rest are counted instead.
 const COMPANIONS_SHOWN: usize = 8;
 
@@ -32,8 +63,12 @@ struct Shown {
 #[component]
 pub(super) fn PlayerDetail() -> impl IntoView {
     let room = expect_context::<WarRoom>();
+    let IsMobile(is_mobile) = expect_context();
     let dialog_ref = NodeRef::<leptos::html::Div>::new();
     let opener = StoredValue::new_local(None::<web_sys::HtmlElement>);
+    let popover = Memo::new(move |_| !is_mobile.get());
+    let origin = RwSignal::new(None::<(f64, f64)>);
+    let dismissed_outside = StoredValue::new(false);
 
     let shown = Memo::new(move |previous: Option<&Option<Shown>>| {
         let username = room.player.get()?;
@@ -69,6 +104,7 @@ pub(super) fn PlayerDetail() -> impl IntoView {
         let was_open = previous.as_ref().is_some_and(Option::is_some);
         match (&current, was_open) {
             (Some(_), false) => {
+                dismissed_outside.set_value(false);
                 opener.set_value(focused_element());
                 if let Some(dialog) = dialog_ref.get() {
                     focus_next_frame(dialog.into());
@@ -79,19 +115,87 @@ pub(super) fn PlayerDetail() -> impl IntoView {
                     focus_next_frame(dialog.into());
                 }
             }
-            (None, true) => restore_focus(opener.get_value()),
+            // Pressing somewhere else hands focus to wherever that press went.
+            (None, true) if !dismissed_outside.get_value() => restore_focus(opener.get_value()),
             _ => {}
         }
         current
     });
 
-    let close = Callback::new(move |()| room.player.set(None));
+    // Placed beside its name once it has a size, and again whenever its content changes.
+    Effect::new(move || {
+        shown.track();
+        let anchor = room.player_anchor.get();
+        if !popover.get() || username.with(Option::is_none) {
+            origin.set(None);
+            return;
+        }
+        let Some(anchor) = anchor else {
+            origin.set(None);
+            return;
+        };
+        if origin.get_untracked().is_none() {
+            // A first guess for the frame before it can be measured.
+            origin.set(Some((anchor.right + POPOVER_GAP, anchor.top)));
+        }
+        request_animation_frame(move || {
+            let (Some(dialog), Some(window)) = (dialog_ref.get_untracked(), web_sys::window())
+            else {
+                return;
+            };
+            let viewport = (
+                window
+                    .inner_width()
+                    .ok()
+                    .and_then(|w| w.as_f64())
+                    .unwrap_or(0.0),
+                window
+                    .inner_height()
+                    .ok()
+                    .and_then(|h| h.as_f64())
+                    .unwrap_or(0.0),
+            );
+            let size = (
+                f64::from(dialog.offset_width()),
+                f64::from(dialog.offset_height()),
+            );
+            origin.set(Some(popover_origin(anchor, size, viewport)));
+        });
+    });
+
+    let close = Callback::new(move |()| {
+        dismissed_outside.set_value(false);
+        room.player.set(None);
+    });
+    // A press outside the popover closes it. The listener only watches: the press still reaches
+    // the map or control under it. Another member's name switches the popover instead.
+    let outside = window_event_listener(leptos::ev::pointerdown, move |event| {
+        if !popover.get_untracked() || room.player.with_untracked(Option::is_none) {
+            return;
+        }
+        let target = event
+            .target()
+            .and_then(|target| wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(target).ok());
+        let inside = target.as_ref().is_some_and(|target| {
+            target
+                .closest(".player-dialog, .war-member, .war-roster-name")
+                .ok()
+                .flatten()
+                .is_some()
+        });
+        if !inside {
+            dismissed_outside.set_value(true);
+            room.player.set(None);
+        }
+    });
+    on_cleanup(move || outside.remove());
     let on_keydown = move |event: web_sys::KeyboardEvent| match event.key().as_str() {
         "Escape" => {
             event.prevent_default();
             close.run(());
         }
-        "Tab" => {
+        // Only the phone sheet is modal; the desktop popover lets Tab move on.
+        "Tab" if !popover.get_untracked() => {
             if let Some(dialog) = dialog_ref.get() {
                 trap_tab(&event, &dialog);
             }
@@ -100,14 +204,18 @@ pub(super) fn PlayerDetail() -> impl IntoView {
     };
 
     view! {
-        <Show when=move || username.with(Option::is_some)>
+        <Show when=move || username.with(Option::is_some) && !popover.get()>
             <div class="player-dialog-scrim" on:click=move |_| close.run(()) />
         </Show>
         <div
             class="player-dialog"
             class:player-dialog-open=move || username.with(Option::is_some)
+            class:player-dialog-popover=move || popover.get()
+            class:player-dialog-placed=move || origin.with(Option::is_some)
+            style:left=move || origin.get().map(|(x, _)| format!("{x:.0}px"))
+            style:top=move || origin.get().map(|(_, y)| format!("{y:.0}px"))
             role="dialog"
-            aria-modal="true"
+            aria-modal=move || (!popover.get()).to_string()
             aria-labelledby="player-dialog-name"
             tabindex="-1"
             node_ref=dialog_ref
@@ -261,7 +369,7 @@ fn PlayerDialogContent(
                         <li><MemberChip member /></li>
                     </For>
                     <Show when=move || has_more.get()>
-                        <li class="war-front-empty">{move || format!("and {} more", more_companions.get())}</li>
+                        <li class="player-dialog-more">{move || format!("and {} more", more_companions.get())}</li>
                     </Show>
                 </ul>
             </section>
@@ -272,5 +380,52 @@ fn PlayerDialogContent(
             </button>
             <a class="war-action war-action-quiet" href=card target="_blank" rel="noopener noreferrer">"Player card"</a>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VIEW: (f64, f64) = (1440.0, 900.0);
+    const SIZE: (f64, f64) = (300.0, 260.0);
+
+    fn anchor(left: f64, top: f64, width: f64) -> Anchor {
+        Anchor {
+            left,
+            top,
+            right: left + width,
+            bottom: top + 26.0,
+        }
+    }
+
+    #[test]
+    fn a_popover_opens_right_of_a_roster_name() {
+        assert_eq!(
+            popover_origin(anchor(30.0, 300.0, 120.0), SIZE, VIEW),
+            (158.0, 296.0)
+        );
+    }
+
+    #[test]
+    fn a_name_near_the_right_edge_gets_its_popover_on_the_left() {
+        assert_eq!(
+            popover_origin(anchor(1250.0, 300.0, 120.0), SIZE, VIEW),
+            (942.0, 296.0)
+        );
+    }
+
+    #[test]
+    fn a_name_near_the_bottom_lifts_its_popover_inside_the_window() {
+        let (_, y) = popover_origin(anchor(30.0, 860.0, 120.0), SIZE, VIEW);
+        assert_eq!(y, VIEW.1 - SIZE.1 - POPOVER_MARGIN);
+    }
+
+    #[test]
+    fn a_window_narrower_than_the_popover_keeps_its_left_edge_visible() {
+        assert_eq!(
+            popover_origin(anchor(10.0, 10.0, 40.0), SIZE, (200.0, 900.0)).0,
+            POPOVER_MARGIN
+        );
     }
 }

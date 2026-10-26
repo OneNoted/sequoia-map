@@ -31,10 +31,12 @@ use crate::app::{
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
     ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel, TagColorSetting,
-    ThickCooldownBorders, WarFeedVisible, clamp_connection_opacity_scale,
-    clamp_connection_solid_opacity, clamp_connection_thickness_scale, clamp_hq_crown_scale,
-    clamp_label_scale_group, clamp_label_scale_master, clamp_player_head_size,
-    clamp_resource_highlight_opacity,
+    ThickCooldownBorders, WAR_OUTLINE_OPACITY_MAX, WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_WIDTH_MAX,
+    WAR_OUTLINE_WIDTH_MIN, WarFeedVisible, WarOutlineColor, WarOutlineControls, WarOutlineStyle,
+    clamp_connection_opacity_scale, clamp_connection_solid_opacity,
+    clamp_connection_thickness_scale, clamp_hq_crown_scale, clamp_label_scale_group,
+    clamp_label_scale_master, clamp_player_head_size, clamp_resource_highlight_opacity,
+    clamp_war_outline_opacity, clamp_war_outline_width,
 };
 use crate::season_scalar::clamp_manual_scalar;
 use crate::territory::ClientTerritoryMap;
@@ -187,6 +189,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
     let HqCrownStyleSetting(hq_crown_style) = expect_context();
     let HqCrownScale(hq_crown_scale) = expect_context();
+    let war_outline = expect_context::<WarOutlineControls>();
     let ManualSrScalar(manual_sr_scalar) = expect_context();
     let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
     let ShowLeaderboardSrGain(show_leaderboard_sr_gain) = expect_context();
@@ -369,6 +372,46 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSection title="War">
                     <SettingsSwitch label="War Panel" hint="Queued territories, wars and members" active=show_war_panel />
                     <SettingsSwitch label="War Markers" hint="Countdowns and war clocks on territories" active=show_war_markers />
+                    <SettingsChoice
+                        label="War outline"
+                        name="settings-war-outline-style"
+                        options=vec![
+                            (WarOutlineStyle::Dashed, Signal::stored("Dashed")),
+                            (WarOutlineStyle::Solid, Signal::stored("Solid")),
+                        ]
+                        selected=war_outline.style
+                        on_select=Callback::new(move |style| war_outline.style.set(style))
+                    />
+                    <SettingsChoice
+                        label="Outline color"
+                        hint="Urgency warms over the last three minutes"
+                        name="settings-war-outline-color"
+                        options=vec![
+                            (WarOutlineColor::Stage, Signal::stored("Stage")),
+                            (WarOutlineColor::Urgency, Signal::stored("Urgency")),
+                        ]
+                        selected=war_outline.color
+                        on_select=Callback::new(move |color| war_outline.color.set(color))
+                    />
+                    <SettingsSwitch label="Queue Progress" hint="The outline shows the queue time left" active=war_outline.progress />
+                    <SettingsSlider
+                        label="Outline width"
+                        value=war_outline.width
+                        min=WAR_OUTLINE_WIDTH_MIN
+                        max=WAR_OUTLINE_WIDTH_MAX
+                        step=0.25
+                        clamp=clamp_war_outline_width
+                        format=times
+                    />
+                    <SettingsSlider
+                        label="Outline opacity"
+                        value=war_outline.opacity
+                        min=WAR_OUTLINE_OPACITY_MIN
+                        max=WAR_OUTLINE_OPACITY_MAX
+                        step=0.05
+                        clamp=clamp_war_outline_opacity
+                        format=percent
+                    />
                     <SettingsSwitch label="Teammate Heads" active=show_player_heads />
                     <Show when=move || show_player_heads.get()>
                         <SettingsSwitch label="Show Faces" hint="A dot when off" nested=true active=player_head_render_head />
