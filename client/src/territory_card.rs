@@ -254,7 +254,8 @@ pub(crate) fn territory_resource_rows(
 }
 
 /// Rows for every resource the territory makes, holds or stores, from its base generation and
-/// whatever live figures exist. Live production replaces base generation when present.
+/// whatever live figures exist. Live production replaces base generation when present; a
+/// resource the territory generates keeps its row under a reported zero, so the zero shows.
 pub(crate) fn resource_rows(
     base: &Resources,
     held: Option<&Resources>,
@@ -262,13 +263,21 @@ pub(crate) fn resource_rows(
     capacity: Option<&Resources>,
 ) -> Vec<ResourceRow> {
     let per_hour = production.unwrap_or(base);
-    let row = |icon, label, double, pick: fn(&Resources) -> i32| ResourceRow {
-        icon,
-        label,
-        double,
-        held: held.map(pick),
-        per_hour: pick(per_hour),
-        cap: capacity.map(pick),
+    let row = |icon, label, double, pick: fn(&Resources) -> i32| {
+        let row = ResourceRow {
+            icon,
+            label,
+            double,
+            held: held.map(pick),
+            per_hour: pick(per_hour),
+            cap: capacity.map(pick),
+        };
+        let generated = pick(base) > 0;
+        (row.per_hour > 0
+            || generated
+            || row.held.is_some_and(|v| v > 0)
+            || row.cap.is_some_and(|v| v > 0))
+        .then_some(row)
     };
     [
         row("emerald", "Emeralds", base.has_double_emeralds(), |r| {
@@ -280,9 +289,7 @@ pub(crate) fn resource_rows(
         row("wood", "Wood", base.has_double_wood(), |r| r.wood),
     ]
     .into_iter()
-    .filter(|row| {
-        row.per_hour > 0 || row.held.is_some_and(|v| v > 0) || row.cap.is_some_and(|v| v > 0)
-    })
+    .flatten()
     .collect()
 }
 
@@ -431,6 +438,35 @@ mod tests {
         // Without a report, base generation stands in.
         let absent = territory_resource_rows(&base, None);
         assert_eq!(absent[0].per_hour, 9_000);
+    }
+
+    #[test]
+    fn reported_zero_production_keeps_its_rows_without_holdings() {
+        let base = resources(9_000, 3_600, 0);
+        let zero = Some(Resources::default());
+        let shown = |runtime: &TerritoryRuntimeData| {
+            territory_resource_rows(&base, Some(runtime))
+                .iter()
+                .map(|row| (row.label, row.held, row.per_hour, row.cap))
+                .collect::<Vec<_>>()
+        };
+        let expected = [("Emeralds", None, 0, None), ("Ore", None, 0, None)];
+        // Held and capacity absent.
+        let absent = TerritoryRuntimeData {
+            production_rates: zero.clone(),
+            ..Default::default()
+        };
+        assert_eq!(shown(&absent), expected);
+        // Held and capacity reported, but all zero.
+        let empty = TerritoryRuntimeData {
+            held_resources: zero.clone(),
+            production_rates: zero.clone(),
+            storage_capacity: zero,
+            ..Default::default()
+        };
+        assert_eq!(shown(&empty), expected);
+        // A resource the territory neither generates, holds nor stores still has no row.
+        assert!(shown(&empty).iter().all(|(label, ..)| *label != "Crops"));
     }
 
     #[test]
