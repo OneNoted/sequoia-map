@@ -5,6 +5,11 @@ use sequoia_map_engine::scene::Rebuild;
 
 use crate::frame::{Frame, FrameMetrics, FrameOutcome, RenderCapabilities};
 
+// The renderer's label fitting needs no GPU, so its tests run here; nothing else uses it.
+#[cfg(test)]
+#[allow(dead_code)]
+mod glyphs;
+
 pub enum GpuRenderer {}
 
 impl GpuRenderer {
