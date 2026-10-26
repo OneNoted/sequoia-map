@@ -45,7 +45,8 @@ pub struct Teammates {
     pub show_names: bool,
 }
 
-/// A plate on a war territory's top edge: its countdown, its war clock or how it ended.
+/// A plate on a war territory's top edge: its countdown or war clock, or a small mark of how
+/// it ended.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarPlate {
     /// Top centre of the territory, world units. The plate straddles that edge.
@@ -62,29 +63,23 @@ pub enum PlateLabel {
         /// The tower's remaining health, for a war whose tower was measured.
         health: Option<f32>,
     },
-    /// A territory that just left the board.
+    /// A territory that just left the board: a glyph-only pin, so it never covers the
+    /// guild's tag or a neighbour. The HUD and the tooltip say it in words.
     Ending(Ending),
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 impl PlateLabel {
     /// The words a plate can show besides a clock; the renderer prepares exactly these glyphs.
-    pub(crate) const WORDS: [&'static str; 7] = [
-        "Due",
-        "Queued",
-        "Entered",
-        "War",
-        "Captured",
-        "Cancelled",
-        "Ended",
-    ];
+    pub(crate) const WORDS: [&'static str; 4] = ["Due", "Queued", "Entered", "War"];
 
-    pub(crate) fn text(self) -> std::borrow::Cow<'static, str> {
+    /// What the plate says; an ending says nothing.
+    pub(crate) fn text(self) -> Option<std::borrow::Cow<'static, str>> {
         let word = match self {
             Self::Front {
                 clock: FrontClock::StartsIn(seconds) | FrontClock::FightingFor(seconds),
                 ..
-            } => return format_clock(seconds).into(),
+            } => return Some(format_clock(seconds).into()),
             Self::Front {
                 clock: FrontClock::Due,
                 ..
@@ -103,11 +98,9 @@ impl PlateLabel {
                 clock: FrontClock::Fighting | FrontClock::Unscheduled,
                 ..
             } => "War",
-            Self::Ending(Ending::Captured) => "Captured",
-            Self::Ending(Ending::Cancelled) => "Cancelled",
-            Self::Ending(Ending::Ended) => "Ended",
+            Self::Ending(_) => return None,
         };
-        word.into()
+        Some(word.into())
     }
 }
 
@@ -193,11 +186,7 @@ mod tests {
     #[test]
     fn plate_text_uses_only_prepared_glyphs() {
         let prepared: String = PlateLabel::WORDS.concat() + "0123456789:";
-        let mut labels = vec![
-            PlateLabel::Ending(Ending::Captured),
-            PlateLabel::Ending(Ending::Cancelled),
-            PlateLabel::Ending(Ending::Ended),
-        ];
+        let mut labels = Vec::new();
         for stage in [StageKind::Queued, StageKind::Entered, StageKind::Fighting] {
             for clock in [
                 FrontClock::StartsIn(3_725),
@@ -210,29 +199,43 @@ mod tests {
             }
         }
         for label in labels {
-            let text = label.text();
+            let text = label.text().expect("a front always says something");
             assert!(text.chars().all(|ch| prepared.contains(ch)), "{text}");
+        }
+        for ending in [Ending::Captured, Ending::Cancelled, Ending::Ended] {
+            assert_eq!(PlateLabel::Ending(ending).text(), None);
         }
     }
 
     #[test]
     fn a_plate_reads_its_clock_and_never_calls_a_due_start_a_war() {
         assert_eq!(
-            front(StageKind::Queued, FrontClock::StartsIn(128)).text(),
-            "2:08"
+            front(StageKind::Queued, FrontClock::StartsIn(128))
+                .text()
+                .as_deref(),
+            Some("2:08")
         );
         assert_eq!(
-            front(StageKind::Fighting, FrontClock::FightingFor(47)).text(),
-            "0:47"
+            front(StageKind::Fighting, FrontClock::FightingFor(47))
+                .text()
+                .as_deref(),
+            Some("0:47")
         );
         assert_eq!(
-            front(StageKind::Fighting, FrontClock::Fighting).text(),
-            "War"
+            front(StageKind::Fighting, FrontClock::Fighting)
+                .text()
+                .as_deref(),
+            Some("War")
         );
-        assert_eq!(front(StageKind::Entered, FrontClock::Due).text(), "Due");
         assert_eq!(
-            front(StageKind::Queued, FrontClock::Unscheduled).text(),
-            "Queued"
+            front(StageKind::Entered, FrontClock::Due).text().as_deref(),
+            Some("Due")
+        );
+        assert_eq!(
+            front(StageKind::Queued, FrontClock::Unscheduled)
+                .text()
+                .as_deref(),
+            Some("Queued")
         );
     }
 

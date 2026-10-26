@@ -100,8 +100,9 @@ thread_local! {
 use sequoia_shared::history::{
     HistoryGuildSrEntry, HistoryHeat, HistoryHeatMeta, HistoryHeatSource,
 };
-use sequoia_shared::war_board::StageKind;
-use sequoia_shared::{Region, Resources, SeasonScalarSample, TreasuryLevel, WarControllerState};
+use sequoia_shared::{
+    Region, Resources, SeasonScalarSample, TerritoryRuntimeData, TreasuryLevel, WarControllerState,
+};
 
 /// Newtype wrappers to give `hovered` and `selected` distinct types for Leptos context.
 /// (Both are `RwSignal<Option<String>>` — without wrappers, `provide_context` overwrites one.)
@@ -154,6 +155,72 @@ pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
 pub(crate) struct HqCrownStyleSetting(pub RwSignal<HqCrownStyle>);
 #[derive(Clone, Copy)]
 pub(crate) struct HqCrownScale(pub RwSignal<f64>);
+/// The war outline settings, one signal per control; saved together as one [`WarOutline`].
+#[derive(Clone, Copy)]
+pub(crate) struct WarOutlineControls {
+    pub style: RwSignal<WarOutlineStyle>,
+    pub color: RwSignal<WarOutlineColor>,
+    pub progress: RwSignal<bool>,
+    pub width: RwSignal<f64>,
+    pub opacity: RwSignal<f64>,
+}
+
+impl WarOutlineControls {
+    fn new(outline: WarOutline) -> Self {
+        let outline = outline.clamped();
+        Self {
+            style: RwSignal::new(outline.style),
+            color: RwSignal::new(outline.color),
+            progress: RwSignal::new(outline.progress),
+            width: RwSignal::new(f64::from(outline.width)),
+            opacity: RwSignal::new(f64::from(outline.opacity)),
+        }
+    }
+
+    fn get(self) -> WarOutline {
+        WarOutline {
+            style: self.style.get(),
+            color: self.color.get(),
+            progress: self.progress.get(),
+            width: self.width.get() as f32,
+            opacity: self.opacity.get() as f32,
+        }
+        .clamped()
+    }
+
+    fn set(self, outline: WarOutline) {
+        let outline = outline.clamped();
+        self.style.set(outline.style);
+        self.color.set(outline.color);
+        self.progress.set(outline.progress);
+        self.width.set(f64::from(outline.width));
+        self.opacity.set(f64::from(outline.opacity));
+    }
+}
+
+// Exact decimal twins of the renderer's `f32` outline bounds, so the sliders snap to their
+// steps.
+pub(crate) const WAR_OUTLINE_WIDTH_MIN: f64 = 0.5;
+pub(crate) const WAR_OUTLINE_WIDTH_MAX: f64 = 2.0;
+pub(crate) const WAR_OUTLINE_OPACITY_MIN: f64 = 0.3;
+pub(crate) const WAR_OUTLINE_OPACITY_MAX: f64 = 1.0;
+
+pub(crate) fn clamp_war_outline_width(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(WAR_OUTLINE_WIDTH_MIN, WAR_OUTLINE_WIDTH_MAX)
+    } else {
+        f64::from(WarOutline::default().width)
+    }
+}
+
+pub(crate) fn clamp_war_outline_opacity(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_OPACITY_MAX)
+    } else {
+        f64::from(WarOutline::default().opacity)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ManualSrScalar(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
@@ -379,7 +446,9 @@ pub(crate) struct GuildColorStore(pub StoredValue<GuildColorMap>);
 // Defined in the engine crate so the renderer can name it without depending on
 // the UI. Re-exported here to keep `crate::app::NameColor` paths working; its
 // serde form is PascalCase and is persisted in localStorage.
-pub(crate) use sequoia_map_engine::settings::{HqCrownStyle, NameColor};
+pub(crate) use sequoia_map_engine::settings::{
+    HqCrownStyle, NameColor, WarOutline, WarOutlineColor, WarOutlineStyle,
+};
 
 use gloo_storage::Storage;
 
@@ -444,6 +513,8 @@ struct SettingsV2 {
     hq_crown_style: HqCrownStyle,
     #[serde(default = "default_hq_crown_scale")]
     hq_crown_scale: f64,
+    #[serde(default, deserialize_with = "lenient_war_outline")]
+    war_outline: WarOutline,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
     #[serde(default = "default_true")]
@@ -569,6 +640,18 @@ where
 {
     let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
     Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// Like [`lenient_hq_crown_style`]: an outline saved by a newer build falls back to the
+/// default rather than failing the whole settings blob.
+fn lenient_war_outline<'de, D>(deserializer: D) -> Result<WarOutline, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_value::<WarOutline>(value)
+        .unwrap_or_default()
+        .clamped())
 }
 
 const fn default_hq_crown_scale() -> f64 {
@@ -707,6 +790,7 @@ impl Default for SettingsV2 {
             show_territory_ornaments: false,
             hq_crown_style: HqCrownStyle::default(),
             hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
+            war_outline: WarOutline::default(),
             manual_sr_scalar: default_manual_sr_scalar(),
             auto_sr_scalar_enabled: true,
             show_leaderboard_sr_gain: false,
@@ -845,6 +929,7 @@ impl From<LegacySettings> for SettingsV2 {
             show_territory_ornaments: false,
             hq_crown_style: HqCrownStyle::default(),
             hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
+            war_outline: WarOutline::default(),
             manual_sr_scalar: value.manual_sr_scalar,
             auto_sr_scalar_enabled: value.auto_sr_scalar_enabled,
             show_leaderboard_sr_gain: value.show_leaderboard_sr_gain,
@@ -891,6 +976,7 @@ use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::territory::{ClientTerritoryMap, from_snapshot};
+use crate::territory_card::{ResourceRow, ResourceTable, TerritoryWar, resource_rows};
 use crate::time_format::format_hms;
 use crate::timeline::Timeline;
 use crate::viewport::Viewport;
@@ -900,38 +986,6 @@ use sequoia_browser_map::{BrowserMap, HeatLayer, MapCanvas, MapEvent, MapInputs}
 use sequoia_map_engine::heat::HeatScale;
 pub(crate) use sequoia_map_engine::settings::ConnectionStyle;
 use sequoia_map_engine::settings::{LabelScales, RenderSettings};
-
-/// Format a resource value for compact display (e.g. 9000 -> "9.0k").
-fn format_resource_compact(val: i32) -> String {
-    if val >= 1000 {
-        format!("{:.1}k", val as f64 / 1000.0)
-    } else {
-        format!("{val}")
-    }
-}
-
-fn tooltip_resource_items(
-    values: &Resources,
-    double_source: &Resources,
-) -> Vec<(i32, bool, &'static str, &'static str)> {
-    vec![
-        (
-            values.emeralds,
-            double_source.has_double_emeralds(),
-            "emerald",
-            "Emeralds",
-        ),
-        (values.ore, double_source.has_double_ore(), "ore", "Ore"),
-        (
-            values.crops,
-            double_source.has_double_crops(),
-            "crops",
-            "Crops",
-        ),
-        (values.fish, double_source.has_double_fish(), "fish", "Fish"),
-        (values.wood, double_source.has_double_wood(), "wood", "Wood"),
-    ]
-}
 
 fn format_heat_window_time(raw: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(raw)
@@ -1018,6 +1072,7 @@ pub fn MapPage() -> impl IntoView {
     let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
     let hq_crown_style: RwSignal<HqCrownStyle> = RwSignal::new(saved.hq_crown_style);
     let hq_crown_scale: RwSignal<f64> = RwSignal::new(clamp_hq_crown_scale(saved.hq_crown_scale));
+    let war_outline = WarOutlineControls::new(saved.war_outline);
     let manual_sr_scalar: RwSignal<f64> =
         RwSignal::new(season_scalar::clamp_manual_scalar(saved.manual_sr_scalar));
     let auto_sr_scalar_enabled: RwSignal<bool> = RwSignal::new(saved.auto_sr_scalar_enabled);
@@ -1175,6 +1230,7 @@ pub fn MapPage() -> impl IntoView {
         show_territory_ornaments: show_territory_ornaments.get(),
         hq_crown_style: hq_crown_style.get(),
         hq_crown_scale: hq_crown_scale.get() as f32,
+        war_outline: war_outline.get(),
         label_scales: LabelScales {
             master: label_scale_master.get() as f32,
             static_tag: label_scale_static.get() as f32,
@@ -1209,7 +1265,7 @@ pub fn MapPage() -> impl IntoView {
             // Paused history holds `map_clock` still; cooldown pulses keep animating.
             animation_tick: Some(tick.into()),
             heat: Some(heat_layer),
-            war_stages: Some(war_room.stages().into()),
+            war_marks: Some(war_room.marks().into()),
             minimap_inset: minimap_inset.into(),
             edit: Signal::stored(Default::default()),
         },
@@ -1249,6 +1305,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
     provide_context(HqCrownStyleSetting(hq_crown_style));
     provide_context(HqCrownScale(hq_crown_scale));
+    provide_context(war_outline);
     provide_context(ManualSrScalar(manual_sr_scalar));
     provide_context(AutoSrScalarEnabled(auto_sr_scalar_enabled));
     provide_context(ShowLeaderboardSrGain(show_leaderboard_sr_gain));
@@ -1436,6 +1493,7 @@ pub fn MapPage() -> impl IntoView {
         show_territory_ornaments.set(defaults.show_territory_ornaments);
         hq_crown_style.set(defaults.hq_crown_style);
         hq_crown_scale.set(clamp_hq_crown_scale(defaults.hq_crown_scale));
+        war_outline.set(defaults.war_outline);
         manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
             defaults.manual_sr_scalar,
         ));
@@ -1996,6 +2054,7 @@ pub fn MapPage() -> impl IntoView {
             show_territory_ornaments: show_territory_ornaments.get(),
             hq_crown_style: hq_crown_style.get(),
             hq_crown_scale: clamp_hq_crown_scale(hq_crown_scale.get()),
+            war_outline: war_outline.get(),
             manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
             auto_sr_scalar_enabled: auto_sr_scalar_enabled.get(),
             show_leaderboard_sr_gain: show_leaderboard_sr_gain.get(),
@@ -3178,14 +3237,9 @@ struct TooltipInfo {
     guild_color: (u8, u8, u8),
     cooldown: Option<(String, f64)>,
     treasury: TreasuryLevel,
-    base_resources: Resources,
-    resources: Resources,
-    resources_from_live: bool,
+    resources: Vec<ResourceRow>,
     defense_tier: Option<String>,
     is_headquarters: bool,
-    war: Option<(StageKind, String)>,
-    live_production_rates: Option<Resources>,
-    live_storage_capacity: Option<Resources>,
     takes_in_window: Option<u64>,
 }
 
@@ -3238,7 +3292,6 @@ fn Tooltip() -> impl IntoView {
     let HistoryTimestamp(history_timestamp) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
-    let war_room = expect_context::<WarRoom>();
 
     let tooltip_info = Memo::new(move |_| {
         let reference_secs = if mode.get() == MapMode::History {
@@ -3250,28 +3303,19 @@ fn Tooltip() -> impl IntoView {
         let map = territories.get();
         let ct = map.get(&name)?;
         let runtime = ct.territory.runtime.as_ref();
-        let base_resources = ct.territory.resources.clone();
-        let live_held_resources = runtime
-            .and_then(|runtime| runtime.held_resources.clone())
-            .filter(|value| !value.is_empty());
-        let live_production_rates = runtime
-            .and_then(|runtime| runtime.production_rates.clone())
-            .filter(|value| !value.is_empty());
-        let live_storage_capacity = runtime
-            .and_then(|runtime| runtime.storage_capacity.clone())
-            .filter(|value| !value.is_empty());
-        let resources = live_held_resources
-            .clone()
-            .unwrap_or_else(|| base_resources.clone());
-        let resources_from_live = live_held_resources.is_some();
+        let live = |pick: fn(&TerritoryRuntimeData) -> Option<&Resources>| {
+            runtime.and_then(pick).filter(|value| !value.is_empty())
+        };
+        let resources = resource_rows(
+            &ct.territory.resources,
+            live(|runtime| runtime.held_resources.as_ref()),
+            live(|runtime| runtime.production_rates.as_ref()),
+            live(|runtime| runtime.storage_capacity.as_ref()),
+        );
         let defense_tier = runtime.and_then(|runtime| runtime.defense_tier.clone());
         let is_headquarters = runtime
             .and_then(|runtime| runtime.headquarters)
             .unwrap_or(false);
-        // The same stage and clock the territory's border and plate show.
-        let war = war_room
-            .front(&name)
-            .map(|front| crate::war_room::stage_with_clock(&front, war_room.now.get()));
         let takes_in_window = if heat_mode_enabled.get() {
             Some(
                 heat_entries_by_territory
@@ -3304,221 +3348,84 @@ fn Tooltip() -> impl IntoView {
             guild_color: ct.guild_color,
             cooldown,
             treasury,
-            base_resources,
             resources,
-            resources_from_live,
             defense_tier,
             is_headquarters,
-            war,
-            live_production_rates,
-            live_storage_capacity,
             takes_in_window,
         })
     });
 
+    // Keyed by territory so the war line keeps its own state while the pointer stays on one.
+    let hovered_name =
+        Memo::new(move |_| tooltip_info.with(|info| info.as_ref().map(|info| info.name.clone())));
+
     view! {
         {move || {
             let Some(info) = tooltip_info.get() else {
-                return view! { <div style="display:none;" /> }.into_any();
+                return ().into_any();
             };
             let (x, y) = pointer.get();
             let (r, g, b) = info.guild_color;
             let (tr, tg, tb) = info.treasury.color_rgb();
             let buff = info.treasury.buff_percent();
-            let treasury_label = info.treasury.label();
-            let defense_row = info.defense_tier.as_ref().map(|tier| {
-                let (label, color) = defense_tier_display(tier);
-                view! {
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                        <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Defense"</span>
-                        <span style={format!("color: {color}; font-size: 0.78rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;")}>{label}</span>
-                    </div>
-                }
-            });
-
-            let render_resource_section = |title: &str,
-                                           title_color: &str,
-                                           resources: &Resources,
-                                           double_source: &Resources| {
-                let chips = tooltip_resource_items(resources, double_source)
-                    .into_iter()
-                    .filter(|(val, _, _, _)| *val > 0)
-                    .collect::<Vec<_>>();
-                if chips.is_empty() {
-                    return view! { <div style="display:none;" /> }.into_any();
-                }
-                view! {
-                    <div style="padding: 7px 0 3px; border-top: 1px solid rgba(40,44,62,0.6);">
-                        <div style={format!(
-                            "font-family: var(--font-display); font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.10em; color: {title_color}; margin-bottom: 5px;"
-                        )}>
-                            {title.to_string()}
-                        </div>
-                        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-                            {chips.into_iter().map(|(val, is_double, icon, label)| {
-                                let icon_style = crate::ui_icons::sprite_style(icon, 12).unwrap_or_default();
-                                let double_style = icon_style.clone();
-                                let amount = format_resource_compact(val);
-                                view! {
-                                    <div style="display: flex; align-items: center; gap: 4px; background: #111722; padding: 3px 7px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
-                                        <span style={icon_style} />
-                                        {(is_double).then(|| view! { <span style={double_style} /> })}
-                                        <span style="font-family: var(--font-mono); font-size: 0.70rem; color: var(--color-text-primary); font-variant-numeric: tabular-nums;">
-                                            {amount}
-                                        </span>
-                                        <span style="font-family: var(--font-body); font-size: 0.60rem; color: #aeb7c7;">
-                                            {label}
-                                        </span>
-                                    </div>
-                                }
-                            }).collect::<Vec<_>>()}
-                        </div>
-                    </div>
-                }.into_any()
-            };
-
-            let held_section = if info.resources_from_live {
-                render_resource_section(
-                    "Held Resources",
-                    "#b8c2d6",
-                    &info.resources,
-                    &info.base_resources,
-                )
-            } else {
-                render_resource_section(
-                    "Resources",
-                    "#aeb7c7",
-                    &info.resources,
-                    &info.base_resources,
-                )
-            };
-            let production_section = info
-                .live_production_rates
-                .as_ref()
-                .map(|resources| {
-                    render_resource_section(
-                        "Production/Hr",
-                        "#b8c2d6",
-                        resources,
-                        &info.base_resources,
-                    )
-                })
-                .unwrap_or_else(|| view! { <div style="display:none;" /> }.into_any());
-            let storage_section = info
-                .live_storage_capacity
-                .as_ref()
-                .map(|resources| {
-                    render_resource_section(
-                        "Storage Capacity",
-                        "#b8c2d6",
-                        resources,
-                        &info.base_resources,
-                    )
-                })
-                .unwrap_or_else(|| view! { <div style="display:none;" /> }.into_any());
-
+            let defense = info.defense_tier.as_deref().map(defense_tier_display);
+            let territory = Signal::derive(move || hovered_name.get().unwrap_or_default());
             view! {
                 <div
-                    class="tooltip-animate"
+                    class="tooltip-animate tcard tcard-hover"
                     style:left=format!("{}px", x + 16.0)
                     style:top=format!("{}px", y - 8.0)
-                    style="position: fixed; pointer-events: none; z-index: 100; min-width: 280px; max-width: 340px; background: var(--color-deep); border: 1px solid var(--color-border-subtle); border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.02) inset; backdrop-filter: blur(2px); display: flex; flex-direction: row;"
+                    style:--tcard-guild=rgba_css(r, g, b, 0.9)
                 >
-                    <div style={format!(
-                        "width: 4px; flex-shrink: 0; background: linear-gradient(180deg, {} 0%, {} 100%);",
-                        rgba_css(r, g, b, 0.85),
-                        rgba_css(r, g, b, 0.30),
-                    )} />
-                    <div style="padding: 12px 14px 10px; flex: 1; min-width: 0;">
-                        // Header: swatch + territory name
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 3px;">
-                            <div style={format!(
-                                "width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.10); background: {}; flex-shrink: 0; box-shadow: 0 0 4px {};",
-                                rgba_css(r, g, b, 0.75),
-                                rgba_css(r, g, b, 0.25),
-                            )} />
-                            <div style="font-size: 0.92rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
-                                {info.name.clone()}
-                            </div>
-                            {info.war.clone().map(|(stage, text)| view! {
-                                <span class="tooltip-war" data-stage=crate::war_room::stage_slug(stage)>
-                                    {text}
-                                </span>
-                            })}
-                            {info.is_headquarters.then(|| view! {
-                                <span style="font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); flex-shrink: 0;">
-                                    "[HQ]"
-                                </span>
-                            })}
-                        </div>
-                        // Guild name + prefix
-                        <div style="display: flex; align-items: baseline; gap: 4px; margin-left: 22px; margin-bottom: 8px;">
-                            <a
-                                href=crate::guild_stats_url(&info.guild_name)
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title="Open Wynncraft guild stats"
-                                style="font-size: 0.78rem; color: var(--color-gold); font-family: var(--font-body); text-decoration: none; pointer-events: auto;"
-                            >
-                                {info.guild_name.clone()}
-                            </a>
-                            <span style="font-size: 0.70rem; color: var(--color-text-secondary); font-family: var(--font-mono);">"[" {info.guild_prefix.clone()} "]"</span>
-                        </div>
-
-                        // Key-value rows
-                        <div style="display: flex; flex-direction: column;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Held"</span>
-                                <span style="color: var(--color-text-primary); font-size: 0.82rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{info.held.clone()}</span>
-                            </div>
+                    <header class="tcard-head">
+                        <span class="tcard-swatch" aria-hidden="true" />
+                        <span class="tcard-name">{info.name.clone()}</span>
+                        {info.is_headquarters.then(|| view! { <span class="tcard-hq" title="Headquarters">"HQ"</span> })}
+                    </header>
+                    <div class="tcard-owner">
+                        <a
+                            class="tcard-guild"
+                            href=crate::guild_stats_url(&info.guild_name)
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open Wynncraft guild stats"
+                        >
+                            {info.guild_name.clone()}
+                        </a>
+                        <span class="tcard-tag">"[" {info.guild_prefix.clone()} "]"</span>
+                        <span class="tcard-held" title="Held for">{info.held.clone()}</span>
+                    </div>
+                    <TerritoryWar territory />
+                    <dl class="tcard-stats">
+                        <div>
+                            <dt>"Cooldown"</dt>
                             {match info.cooldown.clone() {
                                 Some((remaining, frac)) => view! {
-                                    <div style="padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                                            <span style="color: var(--color-gold); font-size: 0.72rem; font-family: var(--font-display);">"Cooldown"</span>
-                                            <span style="color: var(--color-gold); font-size: 0.82rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{remaining}</span>
-                                        </div>
-                                        <div style="height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;">
-                                            <div style={format!(
-                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, var(--color-gold), #d4a030); border-radius: 2px; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
-                                                frac * 100.0
-                                            )} />
-                                        </div>
-                                    </div>
+                                    <dd class="tcard-cooldown">
+                                        {remaining}
+                                        <span class="tcard-meter" aria-hidden="true">
+                                            <span style:width=format!("{:.1}%", frac * 100.0) />
+                                        </span>
+                                    </dd>
                                 }.into_any(),
-                                None => view! {
-                                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Cooldown"</span>
-                                        <span style="color: var(--color-emerald); font-size: 0.82rem; font-family: var(--font-mono);">"Ready"</span>
-                                    </div>
-                                }.into_any(),
+                                None => view! { <dd class="tcard-ready">"Ready"</dd> }.into_any(),
                             }}
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Treasury"</span>
-                                <span style="display: inline-flex; align-items: center; gap: 5px;">
-                                    <span style={format!("color: {}; font-family: var(--font-mono); font-size: 0.78rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
-                                    {(buff > 0).then(|| view! {
-                                        <span style={format!(
-                                            "font-size: 0.65rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;",
-                                            rgba_css(tr, tg, tb, 0.9),
-                                            rgba_css(tr, tg, tb, 0.08),
-                                        )}>{format!("+{buff}%")}</span>
-                                    })}
-                                </span>
-                            </div>
-                            {defense_row}
-                            {info.takes_in_window.map(|count| view! {
-                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Takes in window"</span>
-                                    <span style="color: var(--color-text-primary); font-size: 0.78rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{count}</span>
-                                </div>
-                            })}
                         </div>
-
-                        {held_section}
-                        {production_section}
-                        {storage_section}
-                    </div>
+                        <div>
+                            <dt>"Treasury"</dt>
+                            <dd style:color=rgba_css(tr, tg, tb, 1.0)>
+                                {info.treasury.label()}
+                                {(buff > 0).then(|| view! { <span class="tcard-buff">{format!("+{buff}%")}</span> })}
+                            </dd>
+                        </div>
+                        {defense.map(|(label, color)| view! {
+                            <div><dt>"Defense"</dt><dd style:color=color>{label}</dd></div>
+                        })}
+                        {info.takes_in_window.map(|count| view! {
+                            <div><dt>"Takes"</dt><dd>{count}</dd></div>
+                        })}
+                    </dl>
+                    <ResourceTable rows=info.resources.clone() />
                 </div>
             }.into_any()
         }}
@@ -3599,38 +3506,37 @@ fn TerritoryPeekCard() -> impl IntoView {
             let is_history = mode.get_untracked() == MapMode::History;
             let bottom_px = if is_history { 96 } else { 16 };
             let bottom = format!("calc({bottom_px}px + env(safe-area-inset-bottom, 0px))");
+            let territory = Signal::stored(name.clone());
             view! {
                 <div
-                    class="peek-card-animate"
+                    class="peek-card-animate tcard tcard-peek"
                     style:bottom=bottom
-                    style="position: fixed; left: calc(16px + env(safe-area-inset-left, 0px)); right: calc(76px + env(safe-area-inset-right, 0px)); z-index: 90; max-height: calc(100dvh - var(--nav-height) - 32px); overflow-x: hidden; overflow-y: auto; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
+                    style:--tcard-guild=rgba_css(r, g, b, 0.9)
                 >
-                    <div style={format!("width: 4px; flex-shrink: 0; background: {};", rgba_css(r, g, b, 0.85))} />
-                    <div style="padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 4px;">
-                        <div style="font-size: 0.85rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.3;">
-                            <span style="color: var(--color-text-secondary); font-weight: 400;">"[" {info.2.clone()} "] "</span>
-                            {info.1}
+                    <div class="tcard-peek-body">
+                        <header class="tcard-head">
+                            <span class="tcard-swatch" aria-hidden="true" />
+                            <span class="tcard-name">{info.0.clone()}</span>
+                        </header>
+                        <div class="tcard-owner">
+                            <span class="tcard-guild">{info.1}</span>
+                            <span class="tcard-tag">"[" {info.2.clone()} "]"</span>
+                            <span class="tcard-held" title="Held for">{info.3}</span>
                         </div>
-                        <div style="font-size: 0.72rem; color: var(--color-text-secondary); font-family: var(--font-mono);">
-                            {info.0.clone()}
-                        </div>
-                        <div style="font-size: 0.68rem; display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 2px;">
-                            <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Held"</span>
-                            <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{info.3}</span>
-                        </div>
-                        {takes_in_window.map(|count| view! {
-                            <div style="font-size: 0.68rem; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                                <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Takes in window"</span>
-                                <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{count}</span>
+                        <TerritoryWar territory />
+                        <dl class="tcard-stats">
+                            <div>
+                                <dt>"Treasury"</dt>
+                                <dd style:color=rgba_css(tr, tg, tb, 1.0)>{treasury.label()}</dd>
                             </div>
-                        })}
-                        <div style="font-size: 0.68rem; font-family: var(--font-mono); display: flex; align-items: center; gap: 4px;">
-                            <span style={format!("color: {}; font-size: 0.52rem;", rgba_css(tr, tg, tb, 1.0))}>{"\u{25C6}"}</span>
-                            <span style={format!("color: {};", rgba_css(tr, tg, tb, 0.9))}>{treasury.label()}</span>
-                        </div>
+                            {takes_in_window.map(|count| view! {
+                                <div><dt>"Takes"</dt><dd>{count}</dd></div>
+                            })}
+                        </dl>
                     </div>
                     <button
-                        style="align-self: center; margin-right: 14px; min-height: 44px; min-width: 44px; padding: 8px 16px; background: var(--color-surface); border: 1px solid var(--color-border-accent); border-radius: 6px; color: var(--color-gold); font-family: var(--font-mono); font-size: 0.72rem; cursor: pointer; touch-action: manipulation; white-space: nowrap;"
+                        type="button"
+                        class="tcard-peek-details"
                         on:click=move |_| {
                             show_settings.set(false);
                             detail_return_guild.set(None);
@@ -3639,7 +3545,7 @@ fn TerritoryPeekCard() -> impl IntoView {
                             peek_territory.set(None);
                         }
                     >
-                        "Details \u{203A}"
+                        "Details"
                     </button>
                 </div>
             }.into_any()

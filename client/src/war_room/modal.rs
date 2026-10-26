@@ -52,6 +52,19 @@ pub(super) fn inside_open_modal(target: Option<web_sys::EventTarget>) -> bool {
         .is_some()
 }
 
+/// Whether the player detail is open as a desktop popover rather than a sheet.
+pub(super) fn popover_open() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| {
+            document
+                .query_selector(".player-dialog.player-dialog-open.player-dialog-popover")
+                .ok()
+                .flatten()
+        })
+        .is_some()
+}
+
 /// Focuses whichever war modal is open, the player detail first since it sits on top.
 pub(super) fn focus_open_modal() {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {

@@ -2,9 +2,7 @@ use leptos::prelude::*;
 use std::collections::HashMap;
 use wasm_bindgen::JsCast;
 
-use sequoia_shared::{
-    DataProvenance, Resources, TreasuryLevel, passive_sr_per_5s, passive_sr_per_hour,
-};
+use sequoia_shared::{DataProvenance, TreasuryLevel, passive_sr_per_5s, passive_sr_per_hour};
 
 use crate::app::{
     AutoSrScalarEnabled, CurrentMode, DetailReturnGuild, GuildColorStore, GuildOnlineData,
@@ -24,38 +22,10 @@ use crate::keybinds::KeybindHelp;
 use crate::season_scalar::{ScalarSource, effective_scalar};
 use crate::settings_menu::SettingsPanel;
 use crate::territory::ClientTerritoryMap;
+use crate::territory_card::{Disclosure, ResourceTable, TerritoryWar, resource_rows};
 use crate::tower::TowerCalculator;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
-
-/// Build list of (label, formatted_value, icon_name) for non-zero resources.
-fn build_resource_items(res: &Resources) -> Vec<(&'static str, String, &'static str)> {
-    let mut items = Vec::new();
-    if res.emeralds > 0 {
-        items.push(("Emeralds", format_resource(res.emeralds), "emerald"));
-    }
-    if res.ore > 0 {
-        items.push(("Ore", format_resource(res.ore), "ore"));
-    }
-    if res.crops > 0 {
-        items.push(("Crops", format_resource(res.crops), "crops"));
-    }
-    if res.fish > 0 {
-        items.push(("Fish", format_resource(res.fish), "fish"));
-    }
-    if res.wood > 0 {
-        items.push(("Wood", format_resource(res.wood), "wood"));
-    }
-    items
-}
-
-fn format_resource(val: i32) -> String {
-    if val >= 1000 {
-        format!("{:.1}k", val as f64 / 1000.0)
-    } else {
-        format!("{val}")
-    }
-}
 
 fn format_sr_rate(val: f64) -> String {
     if val >= 1000.0 {
@@ -1428,6 +1398,15 @@ fn DetailPanel() -> impl IntoView {
     let ShowDebugInfo(show_debug_info) = expect_context();
 
     let tower_state: crate::tower::TowerState = expect_context();
+    // The detail below is rebuilt every second; its disclosures keep their state here and
+    // close again for the next territory.
+    let queue_details_open = RwSignal::new(false);
+    let location_open = RwSignal::new(false);
+    Effect::new(move || {
+        selected.track();
+        queue_details_open.set(false);
+        location_open.set(false);
+    });
 
     let scalar_state = Memo::new(move |_| {
         effective_scalar(
@@ -1567,52 +1546,18 @@ fn DetailPanel() -> impl IntoView {
     };
 
     view! {
-        <div class="panel-reveal" style="border-bottom: 1px solid var(--color-border-subtle); position: relative;">
-            <button
-                title="Back to guild"
-                aria-label="Back to guild"
-                style="position: absolute; top: 12px; left: 12px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); cursor: pointer; padding: 3px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s, border-color 0.15s; z-index: 1; display: flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 0.777rem; text-transform: uppercase; letter-spacing: 0.08em;"
-                on:click=on_back
-                on:mouseenter=|e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "var(--color-gold)").ok();
-                        el.style().set_property("background", "var(--color-surface-hover)").ok();
-                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
-                    }
-                }
-                on:mouseleave=|e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "var(--color-text-secondary)").ok();
-                        el.style().set_property("background", "var(--color-surface)").ok();
-                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                    }
-                }
-            >
-                <span style="font-size: 0.928rem; line-height: 1;">{"\u{2039}"}</span>
-                <span>"Back"</span>
-            </button>
-            <button
-                style="position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--color-text-dim); cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s; z-index: 1; display: flex; align-items: center; justify-content: center;"
-                title="Close details"
-                aria-label="Close details"
-                on:click=on_close
-                on:mouseenter=|e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "var(--color-nether)").ok();
-                        el.style().set_property("background", "var(--color-surface-hover)").ok();
-                    }
-                }
-                on:mouseleave=|e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "var(--color-text-dim)").ok();
-                        el.style().set_property("background", "transparent").ok();
-                    }
-                }
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-                    <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
-                </svg>
-            </button>
+        <div class="panel-reveal tcard-detail">
+            <div class="tcard-detail-nav">
+                <button type="button" class="tcard-nav-button" title="Back to guild" aria-label="Back to guild" on:click=on_back>
+                    <span aria-hidden="true">{"\u{2039}"}</span>
+                    <span>"Back"</span>
+                </button>
+                <button type="button" class="tcard-nav-button tcard-nav-close" title="Close details" aria-label="Close details" on:click=on_close>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true">
+                        <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                    </svg>
+                </button>
+            </div>
             {move || {
                 detail()
                     .map(|(name, guild_name, guild_prefix, _uuid, acquired, location, (r, g, b), treasury, resources, runtime, conn_count, guild_territory_count, reference_secs, takes_in_window)| {
@@ -1722,225 +1667,92 @@ fn DetailPanel() -> impl IntoView {
                             }
                         });
                         let guild_stats_url = crate::guild_stats_url(&guild_name);
+                        let resource_rows = resource_rows(
+                            &resources,
+                            runtime_held_resources.as_ref(),
+                            runtime_prod_resources.as_ref(),
+                            runtime_capacity_resources.as_ref(),
+                        );
+                        let region = format!(
+                            "({}, {}) \u{2192} ({}, {})",
+                            location.start[0],
+                            location.start[1],
+                            location.end[0],
+                            location.end[1],
+                        );
+                        let size = format!("{}\u{00d7}{}", location.width(), location.height());
+                        let defense = runtime_defense.as_deref().map(defense_tier_display);
+                        let war_territory = Signal::stored(name.clone());
                         view! {
-                            // Guild color accent bar at top
-                            <div style={format!(
-                                "height: 4px; background: linear-gradient(to right, {}, {} 60%, transparent);",
-                                rgba_css(r, g, b, 0.7),
-                                rgba_css(r, g, b, 0.3),
-                            )} />
-                            <div style="padding: 40px 24px 20px;">
-                                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
-                                    // Guild color swatch
-                                    <div style={format!(
-                                        "width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.12); background: {}; flex-shrink: 0; box-shadow: 0 0 6px {}, inset 1px 1px 0 rgba(255,255,255,0.06), inset -1px -1px 0 rgba(0,0,0,0.3);",
-                                        rgba_css(r, g, b, 0.8),
-                                        rgba_css(r, g, b, 0.3),
-                                    )} />
-                                    <div style="font-size: 1.242rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display);">{name}</div>
-                                </div>
-                                <a
-                                    href=guild_stats_url
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    title="Open Wynncraft guild stats"
-                                    style="display: inline-block; font-size: 1.102rem; color: var(--color-gold); font-family: var(--font-body); margin-bottom: 2px; margin-left: 28px; text-decoration: none;"
-                                >
-                                    {guild_name}
-                                </a>
-                                <div style="font-size: 0.928rem; color: var(--color-text-secondary); font-family: var(--font-mono); margin-bottom: 16px; margin-left: 28px;">
-                                    "[" {guild_prefix} "]"
+                            <div class="tcard tcard-sidebar" style:--tcard-guild=rgba_css(r, g, b, 0.9)>
+                                <header class="tcard-head">
+                                    <span class="tcard-swatch" aria-hidden="true" />
+                                    <h2 class="tcard-name">{name}</h2>
+                                    {(runtime_hq == Some(true)).then(|| view! { <span class="tcard-hq" title="Headquarters">"HQ"</span> })}
+                                </header>
+                                <div class="tcard-owner">
+                                    <a class="tcard-guild" href=guild_stats_url target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">
+                                        {guild_name}
+                                    </a>
+                                    <span class="tcard-tag">"[" {guild_prefix} "]"</span>
                                 </div>
 
-                                // Detail rows with dotted leaders
-                                <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Acquired"</span>
-                                    <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;" title=acquired>{relative_time}</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Treasury"</span>
-                                    <span style="display: flex; align-items: center; gap: 6px;">
-                                        <span style={format!("color: {}; font-family: var(--font-mono); font-size: 0.905rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
-                                        {(buff > 0).then(|| view! {
-                                            <span style={format!("font-size: 0.754rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;", rgba_css(tr, tg, tb, 0.9), rgba_css(tr, tg, tb, 0.08))}>{format!("+{buff}%")}</span>
-                                        })}
-                                    </span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Passive SR"</span>
-                                    <span style="color: var(--accent-live); font-family: var(--font-mono); font-size: 0.882rem;">
-                                        {passive_sr_label}
-                                    </span>
-                                </div>
-                                {takes_in_window.map(|count| view! {
-                                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Takes in window"</span>
-                                        <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem; font-variant-numeric: tabular-nums;">{count}</span>
-                                    </div>
-                                })}
-                                {scalar_note.map(|scalar_note| view! {
-                                    <div style="padding: 6px 0 8px; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="font-size: 0.789rem; color: #7c829e; font-family: var(--font-mono);">
-                                            {scalar_note}
-                                        </span>
-                                    </div>
-                                })}
-                                {runtime_hq.map(|is_hq| view! {
-                                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Headquarters"</span>
-                                        <span style="font-family: var(--font-mono); font-size: 0.835rem; color: var(--color-text-primary);">
-                                            {if is_hq { "Yes" } else { "No" }}
-                                        </span>
-                                    </div>
-                                })}
-                                {runtime_defense.map(|defense_tier| {
-                                    let (defense_label, defense_color) = defense_tier_display(&defense_tier);
-                                    view! {
-                                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Defense"</span>
-                                        <span style={format!("font-family: var(--font-mono); font-size: 0.835rem; color: {defense_color};")}>{defense_label}</span>
-                                    </div>
-                                }})}
-                                {runtime_provenance.map(|(primary, secondary)| view! {
-                                    <div style="padding: 8px 0; border-bottom: 1px solid rgba(40,44,62,0.6); display: flex; flex-direction: column; gap: 2px;">
-                                        <span style="font-size: 0.777rem; color: var(--accent-live); font-family: var(--font-mono);">
-                                            {primary}
-                                        </span>
-                                        <span style="font-size: 0.742rem; color: #7c829e; font-family: var(--font-mono);">
-                                            {secondary}
-                                        </span>
-                                    </div>
-                                })}
+                                <TerritoryWar territory=war_territory details_open=queue_details_open />
+
                                 {cooldown.map(|(remaining_text, frac)| view! {
-                                    <div style="padding: 8px 0; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                        <div style="display: flex; justify-content: space-between; font-size: 0.986rem; margin-bottom: 6px;">
-                                            <span style="color: var(--color-gold); font-family: var(--font-display);">"Cooldown"</span>
-                                            <span style="color: var(--color-gold); font-family: var(--font-mono); font-size: 0.905rem;">{remaining_text}</span>
-                                        </div>
-                                        <div style="height: 5px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;">
-                                            <div style={format!(
-                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, var(--color-gold), #d4a030); border-radius: 2px; transition: width 1s linear; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
-                                                frac * 100.0
-                                            )} />
-                                        </div>
+                                    <div class="tcard-cooldown-row">
+                                        <span>"Cooldown"</span>
+                                        <span class="tcard-cooldown">{remaining_text}</span>
+                                        <span class="tcard-meter" aria-hidden="true">
+                                            <span style:width=format!("{:.1}%", frac * 100.0) />
+                                        </span>
                                     </div>
                                 })}
-                                <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Region"</span>
-                                    <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;">
-                                        {format!(
-                                            "({}, {}) \u{2192} ({}, {})",
-                                            location.start[0],
-                                            location.start[1],
-                                            location.end[0],
-                                            location.end[1],
-                                        )}
-                                    </span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Size"</span>
-                                    <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;">
-                                        {format!(
-                                            "{}\u{00d7}{}",
-                                            location.width(),
-                                            location.height(),
-                                        )}
-                                    </span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.986rem; border-bottom: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Connections"</span>
-                                    <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.905rem;">
-                                        {move || guild_counts.get().map(|(gc, tc, _)| format!("{gc}/{tc}")).unwrap_or_else(|| format!("{conn_count}"))}
-                                    </span>
-                                </div>
-                                {(!resources.is_empty()).then(|| {
-                                    let res_items = build_resource_items(&resources);
-                                    view! {
-                                        <div style="padding: 10px 0 4px;">
-                                            <div style="font-family: var(--font-display); font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--color-text-dim); margin-bottom: 8px;">
-                                                <span style="color: var(--color-gold); margin-right: 5px; font-size: 0.812rem;">{"\u{25C6}"}</span>"Resources"
-                                            </div>
-                                            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                                                {res_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
-                                                    view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
-                                                            <span style={icon_style} />
-                                                            <span style="font-family: var(--font-mono); font-size: 0.812rem; color: var(--color-text-primary);">{value}</span>
-                                                            <span style="font-family: var(--font-body); font-size: 0.719rem; color: #aeb7c7;">{label}</span>
-                                                        </div>
-                                                    }
-                                                }).collect::<Vec<_>>()}
-                                            </div>
-                                        </div>
-                                    }
+
+                                <dl class="tcard-stats tcard-stats-wide">
+                                    <div>
+                                        <dt>"Acquired"</dt>
+                                        <dd title=acquired>{relative_time}</dd>
+                                    </div>
+                                    <div>
+                                        <dt>"Treasury"</dt>
+                                        <dd style:color=rgba_css(tr, tg, tb, 1.0)>
+                                            {treasury_label}
+                                            {(buff > 0).then(|| view! { <span class="tcard-buff">{format!("+{buff}%")}</span> })}
+                                        </dd>
+                                    </div>
+                                    {defense.map(|(label, color)| view! {
+                                        <div><dt>"Defense"</dt><dd style:color=color>{label}</dd></div>
+                                    })}
+                                    <div>
+                                        <dt>"Connections"</dt>
+                                        <dd>{move || guild_counts.get().map(|(gc, tc, _)| format!("{gc}/{tc}")).unwrap_or_else(|| format!("{conn_count}"))}</dd>
+                                    </div>
+                                    <div class="tcard-stat-span">
+                                        <dt>"Passive SR"</dt>
+                                        <dd class="tcard-sr">{passive_sr_label}</dd>
+                                    </div>
+                                    {takes_in_window.map(|count| view! {
+                                        <div><dt>"Takes in window"</dt><dd>{count}</dd></div>
+                                    })}
+                                </dl>
+                                {scalar_note.map(|scalar_note| view! { <p class="tcard-debug">{scalar_note}</p> })}
+                                {runtime_provenance.map(|(primary, secondary)| view! {
+                                    <p class="tcard-debug">{primary}<br />{secondary}</p>
                                 })}
-                                {runtime_held_resources.clone().map(|held| {
-                                    let held_items = build_resource_items(&held);
-                                    view! {
-                                        <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: var(--font-display); font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
-                                                "Held Resources"
-                                            </div>
-                                            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                                                {held_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
-                                                    view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
-                                                            <span style={icon_style} />
-                                                            <span style="font-family: var(--font-mono); font-size: 0.812rem; color: var(--color-text-primary);">{value}</span>
-                                                            <span style="font-family: var(--font-body); font-size: 0.719rem; color: #aeb7c7;">{label}</span>
-                                                        </div>
-                                                    }
-                                                }).collect::<Vec<_>>()}
-                                            </div>
-                                        </div>
-                                    }
-                                })}
-                                {runtime_prod_resources.clone().map(|prod| {
-                                    let prod_items = build_resource_items(&prod);
-                                    view! {
-                                        <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: var(--font-display); font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
-                                                "Production/Hr"
-                                            </div>
-                                            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                                                {prod_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
-                                                    view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
-                                                            <span style={icon_style} />
-                                                            <span style="font-family: var(--font-mono); font-size: 0.812rem; color: var(--color-text-primary);">{value}</span>
-                                                            <span style="font-family: var(--font-body); font-size: 0.719rem; color: #aeb7c7;">{label}</span>
-                                                        </div>
-                                                    }
-                                                }).collect::<Vec<_>>()}
-                                            </div>
-                                        </div>
-                                    }
-                                })}
-                                {runtime_capacity_resources.clone().map(|cap| {
-                                    let cap_items = build_resource_items(&cap);
-                                    view! {
-                                        <div style="padding: 8px 0 4px;">
-                                            <div style="font-family: var(--font-display); font-size: 0.835rem; text-transform: uppercase; letter-spacing: 0.1em; color: #b8c2d6; margin-bottom: 6px;">
-                                                "Storage Cap"
-                                            </div>
-                                            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                                                {cap_items.into_iter().map(|(label, value, icon_name)| {
-                                                    let icon_style = crate::ui_icons::sprite_style(icon_name, 14).unwrap_or_default();
-                                                    view! {
-                                                        <div style="display: flex; align-items: center; gap: 5px; background: #111722; padding: 4px 8px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
-                                                            <span style={icon_style} />
-                                                            <span style="font-family: var(--font-mono); font-size: 0.812rem; color: var(--color-text-primary);">{value}</span>
-                                                            <span style="font-family: var(--font-body); font-size: 0.719rem; color: #aeb7c7;">{label}</span>
-                                                        </div>
-                                                    }
-                                                }).collect::<Vec<_>>()}
-                                            </div>
-                                        </div>
-                                    }
-                                })}
+
+                                <section class="tcard-section" aria-label="Resources">
+                                    <h3 class="tcard-section-title">"Resources"</h3>
+                                    <ResourceTable rows=resource_rows icon_px=14 />
+                                </section>
+
+                                <Disclosure open=location_open summary="Location" class="tcard-where">
+                                    <dl class="tcard-facts">
+                                        <div><dt>"Region"</dt><dd>{region}</dd></div>
+                                        <div><dt>"Size"</dt><dd>{size}</dd></div>
+                                    </dl>
+                                </Disclosure>
+
                                 <TowerCalculator />
                             </div>
                         }

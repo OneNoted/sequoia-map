@@ -102,6 +102,7 @@ mod tests {
             territory: territory.to_string(),
             difficulty: None,
             stage,
+            queued: None,
         }
     }
 
@@ -133,6 +134,7 @@ mod tests {
                 "Detlas",
                 FrontStage::Queued {
                     starts_at: Some(1_128),
+                    timer: None,
                 },
             ),
         ]);

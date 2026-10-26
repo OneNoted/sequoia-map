@@ -90,17 +90,10 @@ pub fn write_age_compound(buf: &mut String, age_secs: i64) {
     }
 }
 
-pub fn cooldown_color(urgency: f64) -> (u8, u8, u8) {
-    if urgency < 0.25 {
-        (102, 204, 102)
-    } else if urgency < 0.50 {
-        (245, 197, 66)
-    } else if urgency < 0.75 {
-        (245, 158, 66)
-    } else {
-        (235, 87, 87)
-    }
-}
+/// The one tone for a cooling territory's timer text and bar (the bar's twin is in
+/// `territory.wgsl`). Steady rather than a ramp through green, yellow and red, so a cluster of
+/// recent captures does not read as a cluster of alarms; the time itself says how long is left.
+pub const COOLDOWN_RGB: (u8, u8, u8) = (143, 206, 232);
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn dynamic_text_state(reference_time_secs: i64, acquired_secs: i64) -> DynamicTextState {
@@ -290,18 +283,6 @@ mod tests {
             dynamic_label_next_update_age(86_400, false, false, true),
             90_000
         );
-    }
-
-    #[test]
-    fn cooldown_color_at_each_threshold_boundary() {
-        assert_eq!(cooldown_color(0.0), (102, 204, 102));
-        assert_eq!(cooldown_color(0.24), (102, 204, 102));
-        assert_eq!(cooldown_color(0.25), (245, 197, 66));
-        assert_eq!(cooldown_color(0.49), (245, 197, 66));
-        assert_eq!(cooldown_color(0.50), (245, 158, 66));
-        assert_eq!(cooldown_color(0.74), (245, 158, 66));
-        assert_eq!(cooldown_color(0.75), (235, 87, 87));
-        assert_eq!(cooldown_color(1.0), (235, 87, 87));
     }
 
     #[test]

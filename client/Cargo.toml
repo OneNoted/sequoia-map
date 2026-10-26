@@ -17,6 +17,7 @@ web-sys = { version = "0.3", features = [
     "Document",
     "CanvasRenderingContext2d",
     "DomRect",
+    "HtmlDetailsElement",
     "Element",
     "File",
     "FileList",

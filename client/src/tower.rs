@@ -207,181 +207,95 @@ pub fn TowerCalculator() -> impl IntoView {
     };
 
     view! {
-        <div style="padding: 10px 0 4px;">
-            <div style="font-family: var(--font-display); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.12em; color: #5f5d65; margin-bottom: 10px;">
-                <span style="color: var(--color-gold); margin-right: 5px; font-size: 0.7rem;">{"\u{25C6}"}</span>"Tower Calculator"
+        <section class="tcard-section tower" aria-labelledby="tower-heading">
+            <h3 class="tcard-section-title" id="tower-heading">"Tower calculator"</h3>
+
+            <div class="tower-stats">
+                <StatRow label="Damage" level=damage_lvl max=11 detail=Memo::new(move |_| {
+                    let (lo, hi) = damage_range.get();
+                    format!("{}-{}", tower::format_stat(lo), tower::format_stat(hi))
+                }) />
+                <StatRow label="Attack" level=attack_lvl max=11 detail=Memo::new(move |_| {
+                    format!("{:.2}x", attack_speed.get())
+                }) />
+                <StatRow label="Health" level=health_lvl max=11 detail=Memo::new(move |_| {
+                    tower::format_stat(health_val.get())
+                }) />
+                <StatRow label="Defense" level=defense_lvl max=11 detail=Memo::new(move |_| {
+                    format!("{:.0}%", defense_pct.get())
+                }) />
+                <StatRow label="Aura" level=aura_lvl max=3 detail=Memo::new(move |_| {
+                    AURA_LABELS[aura_lvl.get().min(3) as usize].to_string()
+                }) />
+                <StatRow label="Volley" level=volley_lvl max=3 detail=Memo::new(move |_| {
+                    VOLLEY_LABELS[volley_lvl.get().min(3) as usize].to_string()
+                }) />
             </div>
 
-            // Stat rows
-            <StatRow label="Damage" level=damage_lvl max=11 detail=Memo::new(move |_| {
-                let (lo, hi) = damage_range.get();
-                format!("{}-{}", tower::format_stat(lo), tower::format_stat(hi))
-            }) />
-            <StatRow label="Attack" level=attack_lvl max=11 detail=Memo::new(move |_| {
-                format!("{:.2}x", attack_speed.get())
-            }) />
-            <StatRow label="Health" level=health_lvl max=11 detail=Memo::new(move |_| {
-                tower::format_stat(health_val.get())
-            }) />
-            <StatRow label="Defense" level=defense_lvl max=11 detail=Memo::new(move |_| {
-                format!("{:.0}%", defense_pct.get())
-            }) />
-            <StatRow label="Aura" level=aura_lvl max=3 detail=Memo::new(move |_| {
-                AURA_LABELS[aura_lvl.get().min(3) as usize].to_string()
-            }) />
-            <StatRow label="Volley" level=volley_lvl max=3 detail=Memo::new(move |_| {
-                VOLLEY_LABELS[volley_lvl.get().min(3) as usize].to_string()
-            }) />
+            <div class="tower-links">
+                <label class="tower-link">
+                    <span>"Connections"</span>
+                    <CounterInput label="Connections" value=connections max=20 synced_value=externals synced_max=50 />
+                </label>
+                <label class="tower-link">
+                    <span>"Externals"</span>
+                    <CounterInput label="Externals" value=externals max=50 />
+                </label>
+            </div>
 
-            // HQ toggle + max preset + connections
-            <div style="display: flex; gap: 6px; margin-top: 8px; margin-bottom: 8px;">
+            <div class="tower-actions">
                 <button
-                    style=move || format!(
-                        "flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid {}; background: {}; color: {}; font-family: var(--font-display); font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;",
-                        if is_hq.get() { "rgba(245,197,66,0.35)" } else { "var(--color-border-subtle)" },
-                        if is_hq.get() { "rgba(245,197,66,0.08)" } else { "var(--color-surface)" },
-                        if is_hq.get() { "var(--color-gold)" } else { "#9f9a95" },
-                    )
+                    type="button"
+                    class="tower-action"
+                    aria-pressed=move || is_hq.get().to_string()
                     on:click=move |_| is_hq.update(|v| *v = !*v)
-                    on:mouseenter=move |e| {
-                        if is_hq.get_untracked() {
-                            return;
-                        }
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
-                            el.style().set_property("color", "var(--color-gold)").ok();
-                            el.style().set_property("background", "rgba(245,197,66,0.08)").ok();
-                        }
-                    }
-                    on:mouseleave=move |e| {
-                        if is_hq.get_untracked() {
-                            return;
-                        }
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                            el.style().set_property("color", "#9f9a95").ok();
-                            el.style().set_property("background", "var(--color-surface)").ok();
-                        }
-                    }
                 >"HQ"</button>
                 <button
-                    style=move || format!(
-                        "flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid {}; background: {}; color: {}; font-family: var(--font-display); font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;",
-                        if is_max_preset_active.get() { "rgba(245,197,66,0.35)" } else { "var(--color-border-subtle)" },
-                        if is_max_preset_active.get() { "rgba(245,197,66,0.08)" } else { "var(--color-surface)" },
-                        if is_max_preset_active.get() { "var(--color-gold)" } else { "#9f9a95" },
-                    )
+                    type="button"
+                    class="tower-action"
+                    title="Damage, attack, health and defense at 11"
+                    aria-pressed=move || is_max_preset_active.get().to_string()
                     on:click=on_max_toggle
-                    on:mouseenter=move |e| {
-                        if is_max_preset_active.get_untracked() {
-                            return;
-                        }
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
-                            el.style().set_property("color", "var(--color-gold)").ok();
-                            el.style().set_property("background", "rgba(245,197,66,0.08)").ok();
-                        }
-                    }
-                    on:mouseleave=move |e| {
-                        if is_max_preset_active.get_untracked() {
-                            return;
-                        }
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                            el.style().set_property("color", "#9f9a95").ok();
-                            el.style().set_property("background", "var(--color-surface)").ok();
-                        }
-                    }
                 >"11x4"</button>
-                <div style="flex: 1; display: flex; align-items: center; gap: 4px;">
-                    <span style="font-family: var(--font-body); font-size: 0.62rem; color: #5f5d65; white-space: nowrap;">"Conn"</span>
-                    <CounterInput
-                        value=connections
-                        max=20
-                        synced_value=externals
-                        synced_max=50
-                    />
-                </div>
-                <div style="flex: 1; display: flex; align-items: center; gap: 4px;">
-                    <span style="font-family: var(--font-body); font-size: 0.62rem; color: #5f5d65; white-space: nowrap;">"Ext"</span>
-                    <CounterInput value=externals max=50 />
-                </div>
-            </div>
-
-            <div style="display: flex; gap: 6px; margin-top: -2px; margin-bottom: 8px;">
                 <button
-                    title="Reset Conn/Ext to guild-owned values"
-                    style="flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; font-family: var(--font-display); font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;"
+                    type="button"
+                    class="tower-action"
+                    title="Reset connections and externals to the guild's own"
                     on:click=on_reset_owned
-                    on:mouseenter=|e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "rgba(245,197,66,0.35)").ok();
-                            el.style().set_property("color", "var(--color-gold)").ok();
-                            el.style().set_property("background", "rgba(245,197,66,0.08)").ok();
-                        }
-                    }
-                    on:mouseleave=|e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                            el.style().set_property("color", "#9f9a95").ok();
-                            el.style().set_property("background", "var(--color-surface)").ok();
-                        }
-                    }
                 >"Reset"</button>
                 <button
-                    title="Set Ext to all territories reachable in 3 hops (ignores ownership)"
-                    style="flex: 1; padding: 4px 0; border-radius: 4px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; font-family: var(--font-display); font-size: 0.56rem; cursor: pointer; text-transform: uppercase; letter-spacing: 0.1em; transition: border-color 0.15s, color 0.15s, background 0.15s;"
+                    type="button"
+                    class="tower-action"
+                    title="Externals: every territory within 3 hops, whoever owns it"
                     on:click=on_apply_all_externals
-                    on:mouseenter=|e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "rgba(80,200,220,0.45)").ok();
-                            el.style().set_property("color", "#50c8dc").ok();
-                            el.style().set_property("background", "rgba(80,200,220,0.08)").ok();
-                        }
-                    }
-                    on:mouseleave=|e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                            el.style().set_property("color", "#9f9a95").ok();
-                            el.style().set_property("background", "var(--color-surface)").ok();
-                        }
-                    }
                 >"All Ext"</button>
             </div>
 
-            // Computed results
-            <div class="divider-gold" style="margin: 8px 0;" />
-            <div style="display: flex; flex-direction: column; gap: 6px;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-family: var(--font-display); font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"DPS"</span>
-                    <span style="font-family: var(--font-mono); font-size: 0.82rem; color: var(--color-gold); font-weight: 700;">
+            <dl class="tower-results">
+                <div>
+                    <dt>"DPS"</dt>
+                    <dd class="tower-dps">
                         {move || {
                             let (lo, hi) = dps_range.get();
                             format!("{}-{}", tower::format_stat(lo), tower::format_stat(hi))
                         }}
-                    </span>
+                    </dd>
                 </div>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-family: var(--font-display); font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"EHP"</span>
-                    <span style="font-family: var(--font-mono); font-size: 0.82rem; color: var(--color-emerald); font-weight: 700;">
-                        {move || tower::format_stat(ehp.get())}
-                    </span>
+                <div>
+                    <dt>"EHP"</dt>
+                    <dd class="tower-ehp">{move || tower::format_stat(ehp.get())}</dd>
                 </div>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-family: var(--font-display); font-size: 0.6rem; color: #9f9a95; text-transform: uppercase; letter-spacing: 0.1em;">"Rating"</span>
-                    <span style=move || {
-                        let rating = defense_rating.get();
-                        let (rr, rg, rb) = rating.color_rgb();
-                        format!(
-                            "font-family: var(--font-mono); font-size: 0.78rem; font-weight: 700; color: {};",
-                            rgba_css(rr, rg, rb, 1.0)
-                        )
+                <div>
+                    <dt>"Rating"</dt>
+                    <dd style:color=move || {
+                        let (rr, rg, rb) = defense_rating.get().color_rgb();
+                        rgba_css(rr, rg, rb, 1.0)
                     }>
                         {move || format!("{} ({})", defense_rating.get().label(), defense_index.get())}
-                    </span>
+                    </dd>
                 </div>
-            </div>
-        </div>
+            </dl>
+        </section>
     }
 }
 
@@ -418,30 +332,21 @@ fn StatRow(
     };
 
     view! {
-        <div
-            style="display: flex; align-items: center; gap: 4px; margin-bottom: 3px;"
-            on:wheel=on_wheel
-        >
-            <span style="font-family: var(--font-display); font-size: 0.58rem; color: #5f5d65; width: 48px; text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0;">{label}</span>
-            <button
-                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-family: var(--font-mono); padding: 0; flex-shrink: 0; transition: border-color 0.15s;"
-                on:click=on_dec
-            >"-"</button>
-            <input
-                type="text"
-                inputmode="numeric"
-                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.72rem; text-align: center; padding: 0; flex-shrink: 0; outline: none; -moz-appearance: textfield; appearance: textfield;"
-                prop:value=move || level.get().to_string()
-                on:input=on_input
-                on:focus=on_focus
-            />
-            <button
-                style="width: 20px; height: 20px; border-radius: 3px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-family: var(--font-mono); padding: 0; flex-shrink: 0; transition: border-color 0.15s;"
-                on:click=on_inc
-            >"+"</button>
-            <span style="font-family: var(--font-mono); font-size: 0.65rem; color: #9f9a95; margin-left: auto; flex-shrink: 0;">
-                {move || detail.get()}
-            </span>
+        <div class="tower-stat" on:wheel=on_wheel>
+            <span class="tower-stat-label">{label}</span>
+            <div class="tower-stepper">
+                <button type="button" aria-label=format!("Lower {label}") on:click=on_dec>"\u{2212}"</button>
+                <input
+                    type="text"
+                    inputmode="numeric"
+                    aria-label=format!("{label} level")
+                    prop:value=move || level.get().to_string()
+                    on:input=on_input
+                    on:focus=on_focus
+                />
+                <button type="button" aria-label=format!("Raise {label}") on:click=on_inc>"+"</button>
+            </div>
+            <span class="tower-stat-detail">{move || detail.get()}</span>
         </div>
     }
 }
@@ -449,6 +354,7 @@ fn StatRow(
 /// Small counter input with +/- buttons, editable value, and scroll support.
 #[component]
 fn CounterInput(
+    label: &'static str,
     value: RwSignal<u32>,
     max: u32,
     #[prop(optional)] synced_value: Option<RwSignal<u32>>,
@@ -501,26 +407,17 @@ fn CounterInput(
     };
 
     view! {
-        <div
-            style="display: flex; align-items: center; gap: 2px;"
-            on:wheel=on_wheel
-        >
-            <button
-                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.6rem; font-family: var(--font-mono); padding: 0;"
-                on:click=on_dec
-            >"-"</button>
+        <div class="tower-stepper" on:wheel=on_wheel>
+            <button type="button" aria-label=format!("Fewer {label}") on:click=on_dec>"\u{2212}"</button>
             <input
                 type="text"
                 inputmode="numeric"
-                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.65rem; text-align: center; padding: 0; outline: none; -moz-appearance: textfield; appearance: textfield;"
+                aria-label=label
                 prop:value=move || value.get().to_string()
                 on:input=on_input
                 on:focus=on_focus
             />
-            <button
-                style="width: 16px; height: 16px; border-radius: 2px; border: 1px solid var(--color-border-subtle); background: var(--color-surface); color: #9f9a95; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 0.6rem; font-family: var(--font-mono); padding: 0;"
-                on:click=on_inc
-            >"+"</button>
+            <button type="button" aria-label=format!("More {label}") on:click=on_inc>"+"</button>
         </div>
     }
 }

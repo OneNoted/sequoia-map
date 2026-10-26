@@ -6,7 +6,10 @@ use leptos::prelude::*;
 use sequoia_browser_map::BrowserMap;
 use sequoia_shared::PlayerClass;
 use sequoia_shared::tower::format_stat;
-use sequoia_shared::war_board::{Ending, FrontStage, RosterMember, StageKind, Tower, format_clock};
+use sequoia_shared::war_board::{
+    Ending, FrontStage, QUEUE_ENTRY_TO_START_SECS, RosterMember, StageKind, Tower, WarFront,
+    format_clock,
+};
 use wasm_bindgen::JsCast;
 
 use super::modal::{focus_next_frame, focused_element, restore_focus, trap_tab};
@@ -21,12 +24,15 @@ use crate::app::{
     clamp_war_panel_width,
 };
 use crate::territory::ClientTerritoryMap;
+use crate::territory_card::{QueueOrigin, local_time, local_time_seconds, original_timer};
 use crate::ui_icons::class_icon_url;
 
 /// At or below this viewport height (CSS pixels) the side panel would crowd the map, so the
 /// HUD uses the phone's summary button and drawer, as `input.css` does for the drawer.
 const COMPACT_HUD_MAX_HEIGHT: f64 = 520.0;
 const STAGES: [StageKind; 3] = [StageKind::Fighting, StageKind::Entered, StageKind::Queued];
+/// Member chips a collapsed territory row shows before summing up the rest.
+const MEMBER_PREVIEW: usize = 6;
 
 /// The war HUD: a side panel on roomy screens; a summary button and a sheet (a drawer on
 /// short landscape screens) on phones.
@@ -121,29 +127,26 @@ fn WarRoomBody() -> impl IntoView {
             .with(|list| list.iter().rev().cloned().collect::<Vec<_>>())
     });
 
+    // An empty section is left out rather than explained; only a missing feed says so.
     view! {
         <Show
             when=move || !unavailable.get()
             fallback=|| view! { <p class="war-empty" role="status">"War feed unavailable"</p> }
         >
-            <section class="war-section" aria-labelledby="war-fronts-heading">
-                <h3 class="war-section-title" id="war-fronts-heading">"Territories"</h3>
-                <Show when=move || !recent.with(Vec::is_empty)>
-                    <ul class="war-outcomes">
-                        <For each=move || recent.get() key=|outcome| (outcome.territory.clone(), outcome.at) let:outcome>
-                            <OutcomeItem territory=outcome.territory outcome_at=outcome.at />
-                        </For>
-                    </ul>
-                </Show>
-                <Show
-                    when=move || !stages.with(Vec::is_empty)
-                    fallback=|| view! { <p class="war-empty">"No territories queued"</p> }
-                >
+            <Show when=move || !recent.with(Vec::is_empty) || !stages.with(Vec::is_empty)>
+                <section class="war-section war-section-fronts scrollbar-thin" aria-label="Territories">
+                    <Show when=move || !recent.with(Vec::is_empty)>
+                        <ul class="war-outcomes">
+                            <For each=move || recent.get() key=|outcome| (outcome.territory.clone(), outcome.at) let:outcome>
+                                <OutcomeItem territory=outcome.territory outcome_at=outcome.at />
+                            </For>
+                        </ul>
+                    </Show>
                     <For each=move || stages.get() key=|kind| *kind let:kind>
                         <StageGroup kind />
                     </For>
-                </Show>
-            </section>
+                </section>
+            </Show>
             <RosterSection />
         </Show>
     }
@@ -253,7 +256,20 @@ fn FrontItem(territory: String) -> impl IntoView {
             _ => None,
         })
     });
+    let expanded = RwSignal::new(false);
+    let shown_members = Memo::new(move |_| {
+        members.with(|members| {
+            let limit = if expanded.get() {
+                members.len()
+            } else {
+                MEMBER_PREVIEW
+            };
+            members.iter().take(limit).cloned().collect::<Vec<_>>()
+        })
+    });
+    let hidden_members = move || members.with(Vec::len) - shown_members.with(Vec::len);
     let focus = territory.clone();
+    let detail_label = format!("Queue details for {territory}");
     let name_title = {
         let territory = territory.clone();
         move || match difficulty_label(difficulty.get().as_deref()) {
@@ -276,19 +292,78 @@ fn FrontItem(territory: String) -> impl IntoView {
                 >
                     {move || clock.get().map(|(visible, _)| visible).unwrap_or_default()}
                 </span>
+                <Show when=move || front.with(|front| front.as_ref().is_some_and(|front| !front.is_fighting()))>
+                    <button
+                        type="button"
+                        class="war-front-expand"
+                        aria-label=detail_label.clone()
+                        title="Queue details"
+                        aria-expanded=move || expanded.get().to_string()
+                        on:click=move |_| expanded.update(|open| *open = !*open)
+                    />
+                </Show>
             </div>
             {move || tower.get().map(|(tower, win_at)| view! { <TowerLine tower win_at /> })}
-            <Show
-                when=move || !members.with(Vec::is_empty)
-                fallback=|| view! { <p class="war-front-empty">"Nobody inside"</p> }
-            >
+            <Show when=move || expanded.get()>
+                {move || front.get().map(|front| view! { <FrontDetail front /> })}
+            </Show>
+            <Show when=move || !members.with(Vec::is_empty)>
                 <ul class="war-front-members" aria-label="Members inside">
-                    <For each=move || members.get() key=member_key let:member>
+                    <For each=move || shown_members.get() key=member_key let:member>
                         <li><MemberChip member /></li>
                     </For>
+                    <Show when=move || { hidden_members() > 0 }>
+                        <li>
+                            <button
+                                type="button"
+                                class="war-member war-member-more"
+                                aria-label=move || format!("Show {} more members", hidden_members())
+                                on:click=move |_| expanded.set(true)
+                            >
+                                {move || format!("+{}", hidden_members())}
+                            </button>
+                        </li>
+                    </Show>
                 </ul>
             </Show>
         </li>
+    }
+}
+
+/// The expanded part of a territory row: who queued it and when, and the queue's timing.
+#[component]
+fn FrontDetail(front: WarFront) -> impl IntoView {
+    let room = expect_context::<WarRoom>();
+    let origin = front
+        .queued
+        .as_ref()
+        .and_then(|queued| QueueOrigin::new(queued, room.now.get_untracked(), local_time));
+    let queued = matches!(front.stage, FrontStage::Queued { .. });
+    let starts_at = match front.stage {
+        FrontStage::Queued { starts_at, .. } | FrontStage::Entered { starts_at } => starts_at,
+        FrontStage::Fighting { .. } => None,
+    };
+    let time = |at: Option<i64>| at.map_or_else(|| "Unknown".to_string(), local_time_seconds);
+    view! {
+        <dl class="war-front-detail">
+            {origin.map(|origin| view! {
+                <div>
+                    <dt>"Queued"</dt>
+                    <dd>
+                        {origin.when.map_or_else(|| "Time unknown".to_string(), |(time, _)| time)}
+                        {match origin.queuer {
+                            Some(name) => format!(" by {name}"),
+                            None => ", queuer unknown".to_string(),
+                        }}
+                    </dd>
+                </div>
+            })}
+            {queued.then(|| view! {
+                <div><dt>"Queue timer"</dt><dd>{original_timer(&front)}</dd></div>
+                <div><dt>"Queue ends"</dt><dd>{time(starts_at.map(|at| at - QUEUE_ENTRY_TO_START_SECS))}</dd></div>
+            })}
+            <div><dt>"War starts"</dt><dd>{time(starts_at)}</dd></div>
+        </dl>
     }
 }
 
@@ -326,11 +401,9 @@ fn TowerLine(tower: Option<Tower>, win_at: Option<i64>) -> impl IntoView {
             }
             .into_any()
         }
+        // Unmeasured figures are left out, not reported as missing.
         None => view! {
-            <div class="war-tower war-tower-unmeasured">
-                <span>"Tower not measured yet"</span>
-                {move || win().map(|win| view! { <span>{win}</span> })}
-            </div>
+            {move || win().map(|win| view! { <div class="war-tower war-tower-unmeasured"><span>{win}</span></div> })}
         }
         .into_any(),
     }
@@ -350,7 +423,7 @@ pub(super) fn MemberChip(member: RosterMember) -> impl IntoView {
             class="war-member"
             class:war-member-warring=warring
             aria-label=label
-            on:click=move |_| room.player.set(Some(name.clone()))
+            on:click=move |event| room.open_player(&name, &event)
         >
             <ClassIcon class />
             <span class="war-member-name">{member.username}</span>
@@ -402,16 +475,12 @@ fn RosterSection() -> impl IntoView {
     let online = Memo::new(move |_| split(false));
 
     view! {
-        <section class="war-section" aria-labelledby="war-members-heading">
-            <h3 class="war-section-title" id="war-members-heading">"Members"</h3>
-            <Show
-                when=move || !roster.with(Vec::is_empty)
-                fallback=|| view! { <p class="war-empty">"No members reporting"</p> }
-            >
+        <Show when=move || !roster.with(Vec::is_empty)>
+            <section class="war-section war-section-roster scrollbar-thin" aria-label="Members">
                 <RosterGroup title="Warring" stage="warring" members=warring />
                 <RosterGroup title="Online" stage="online" members=online />
-            </Show>
-        </section>
+            </section>
+        </Show>
     }
 }
 
@@ -450,14 +519,48 @@ fn RosterRow(member: RosterMember) -> impl IntoView {
             .map(whereabouts)
             .unwrap_or_default()
     });
+    // Only a territory on the map is a place to go; "Outside territories" is not.
+    let territories: RwSignal<ClientTerritoryMap> = expect_context();
+    let focus_map = MapFocus::from_context();
+    let destination = {
+        let username = member.username.clone();
+        Memo::new(move |_| {
+            let territory = room.member(&username)?.territory()?.to_string();
+            territories
+                .with(|map| map.contains_key(&territory))
+                .then_some(territory)
+        })
+    };
     let label = member_label(&member);
+    let warring = member.is_warring();
     view! {
         <li class="war-roster-row">
-            <button type="button" class="war-roster-name" aria-label=label on:click=move |_| room.player.set(Some(name.clone()))>
+            <button type="button" class="war-roster-name" aria-label=label on:click=move |event| room.open_player(&name, &event)>
                 <ClassIcon class=member.class />
                 <span class="war-member-name">{member.username.clone()}</span>
             </button>
-            <span class="war-roster-place" class:war-roster-warring=member.is_warring()>{move || place.get()}</span>
+            {move || match destination.get() {
+                Some(territory) => {
+                    let focus = territory.clone();
+                    let title = format!("Show {territory} on the map");
+                    view! {
+                        <button
+                            type="button"
+                            class="war-roster-place war-link"
+                            class:war-roster-warring=warring
+                            title=title
+                            on:click=move |_| focus_map.territory(&focus)
+                        >
+                            {territory}
+                        </button>
+                    }
+                    .into_any()
+                }
+                None => view! {
+                    <span class="war-roster-place" class:war-roster-warring=warring>{move || place.get()}</span>
+                }
+                .into_any(),
+            }}
         </li>
     }
 }

@@ -451,6 +451,8 @@
   --war-fighting: #ff4545;
   --war-online: #50c878;
   --war-muted: #6f748f;
+  /* A cooling territory, as its map bar and timer show it (COOLDOWN_RGB in the engine). */
+  --war-cooldown: #8fcee8;
 }
 
 .war-panel {
@@ -484,11 +486,29 @@
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
 }
 
-.war-panel-body {
+/* The territories and the roster scroll on their own, so a long queue never pushes the
+   roster out of reach: the roster keeps up to a fixed share of the height. */
+.war-panel-body,
+.war-sheet-body {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+  overflow: hidden;
+  padding: 0 10px 8px;
+}
+
+.war-section-fronts {
+  flex: 0 1 auto;
+  min-height: 3rem;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 12px 10px;
+}
+
+.war-section-roster {
+  flex: 0 0 auto;
+  max-height: min(45dvh, 20rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .war-panel-toggle {
@@ -524,7 +544,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px 8px;
+  padding: 7px 10px 4px;
 }
 
 .war-room-title {
@@ -566,28 +586,20 @@
 }
 
 .war-section + .war-section {
-  margin-top: 6px;
-  padding-top: 8px;
+  margin-top: 4px;
+  padding-top: 2px;
   border-top: 1px solid rgba(40, 44, 62, 0.8);
 }
 
-.war-section-title {
-  margin-bottom: 4px;
-  font-family: var(--font-display);
-  font-size: 0.74rem;
-  font-weight: 400;
-  color: var(--color-text-secondary);
-}
-
 .war-group {
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .war-group-title {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  margin-bottom: 3px;
+  margin-bottom: 1px;
   font-family: var(--font-body);
   font-size: 0.7rem;
   font-weight: 600;
@@ -615,17 +627,29 @@
 }
 
 .war-front {
-  padding: 5px 0 6px 8px;
-  border-left: 2px solid var(--war-muted);
+  padding: 2px 0 3px;
 }
 
 .war-front + .war-front {
-  margin-top: 4px;
+  margin-top: 1px;
 }
 
-.war-group[data-stage="fighting"] .war-front { border-left-color: var(--war-fighting); }
-.war-group[data-stage="entered"] .war-front { border-left-color: var(--war-entered); border-left-style: dashed; }
-.war-group[data-stage="queued"] .war-front { border-left-color: var(--war-queued); border-left-style: dashed; }
+/* One rail per stage group rather than a border per row, so the dashes keep one even rhythm
+   through every row with no seam where two rows meet. */
+.war-fronts {
+  --war-rail: var(--war-muted);
+  padding-left: 8px;
+  background: linear-gradient(var(--war-rail), var(--war-rail)) left top / 2px 100% no-repeat;
+}
+
+.war-group[data-stage="fighting"] .war-fronts { --war-rail: var(--war-fighting); }
+.war-group[data-stage="entered"] .war-fronts,
+.war-group[data-stage="queued"] .war-fronts {
+  background: repeating-linear-gradient(to bottom, var(--war-rail) 0 4px, transparent 4px 7px)
+    left top / 2px 100% no-repeat;
+}
+.war-group[data-stage="entered"] .war-fronts { --war-rail: var(--war-entered); }
+.war-group[data-stage="queued"] .war-fronts { --war-rail: var(--war-queued); }
 
 .war-front-head {
   display: flex;
@@ -639,7 +663,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 2px 0;
+  padding: 1px 0;
   border: 0;
   background: none;
   color: var(--color-text-primary);
@@ -727,43 +751,96 @@
 .war-front-members {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 4px;
-}
-
-.war-front-empty,
-.war-empty {
+  gap: 3px;
   margin-top: 2px;
-  font-family: var(--font-body);
-  font-size: 0.72rem;
-  color: var(--war-muted);
 }
 
 .war-empty {
   padding: 2px 0 4px;
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
 }
 
-.war-front-members > .war-front-empty {
-  align-self: center;
-  margin: 0 4px;
+.war-front-expand {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.war-front-expand::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.war-front-expand[aria-expanded="true"]::before {
+  transform: translateY(1px) rotate(225deg);
+}
+
+.war-front-expand:hover,
+.war-front-expand:focus-visible {
+  border-color: rgba(245, 197, 66, 0.45);
+  color: var(--color-gold);
+}
+
+.war-front-detail {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 10px;
+  margin: 2px 0 3px;
+  font-size: 0.72rem;
+}
+
+.war-front-detail > div { display: contents; }
+.war-front-detail dt { font-family: var(--font-body); color: var(--color-text-secondary); }
+.war-front-detail dd {
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .war-member,
 .war-roster-name {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  min-height: 26px;
+  gap: 4px;
+  min-height: 22px;
   max-width: 100%;
-  padding: 2px 7px 2px 4px;
+  padding: 1px 6px 1px 3px;
   border: 1px solid rgba(58, 63, 92, 0.7);
   border-radius: 4px;
   background: rgba(26, 29, 42, 0.9);
   color: var(--color-text-primary);
   font-family: var(--font-mono);
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   cursor: pointer;
   touch-action: manipulation;
+}
+
+.war-member-more {
+  padding: 1px 6px;
+  color: var(--color-text-secondary);
+}
+
+@media (pointer: coarse) {
+  .war-member,
+  .war-roster-name,
+  .war-roster-place.war-link { min-height: 30px; }
+  .war-front-expand { width: 30px; height: 30px; }
 }
 
 .war-member-warring {
@@ -796,7 +873,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 2px 0;
 }
 
 .war-roster-name {
@@ -817,7 +893,24 @@
   color: var(--color-text-secondary);
 }
 
-.war-roster-warring {
+/* A roster member's territory, when it is one on the map, goes straight there. */
+.war-roster-place.war-link {
+  padding: 2px 0;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+  text-align: right;
+}
+
+.war-roster-place.war-link:hover,
+.war-roster-place.war-link:focus-visible {
+  color: var(--color-gold);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.war-roster-warring,
+.war-roster-place.war-link.war-roster-warring {
   color: #ff8a8a;
 }
 
@@ -826,7 +919,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  padding: 3px 0 3px 8px;
+  padding: 1px 0 1px 8px;
   border-left: 2px solid var(--war-muted);
   font-size: 0.74rem;
 }
@@ -962,11 +1055,7 @@
 }
 
 .war-sheet-body {
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  padding: 0 16px 16px;
+  padding: 0 14px 12px;
 }
 
 /* Short landscape phones: the sheet becomes a left drawer under the navbar. */
@@ -1194,17 +1283,6 @@
     transition: none;
   }
 }
-
-.tooltip-war {
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.04em;
-}
-
-.tooltip-war[data-stage="fighting"] { color: var(--war-fighting); }
-.tooltip-war[data-stage="entered"] { color: var(--war-entered); }
-.tooltip-war[data-stage="queued"] { color: var(--war-queued); }
 
 /* Mirror of .sidebar-resize-handle, on the opposite edge. */
 .war-panel-resize-handle {
@@ -2442,4 +2520,598 @@ button.settings-row:hover {
   .seq-mobile-sublink:hover {
     color: var(--color-text-primary);
   }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Territory cards (client/src/territory_card.rs): the hover glance, the phone card and the
+   sidebar detail share one structure. The guild colour is the identity: a left edge and a
+   swatch beside the name. Labels are sentence case in the body face at readable contrast;
+   numbers are tabular mono; only the territory name uses the pixel face. */
+.tcard {
+  --tcard-guild: var(--color-border-accent);
+  --tcard-rule: rgba(58, 63, 92, 0.55);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+}
+
+.tcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tcard-swatch {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--tcard-guild);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.tcard-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+}
+
+.tcard-hq {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid rgba(245, 197, 66, 0.5);
+  border-radius: 3px;
+  color: var(--color-gold);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.tcard-owner {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 1px 0 0 20px;
+  font-size: 0.84rem;
+}
+
+.tcard-guild {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-gold);
+  text-decoration: none;
+}
+
+a.tcard-guild:hover,
+a.tcard-guild:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.tcard-tag {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--color-text-secondary);
+}
+
+.tcard-held {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The war line: stage and clock, then who queued it and when. */
+.tcard-war {
+  --tcard-stage: var(--war-muted);
+  margin-top: 8px;
+  padding: 5px 8px 6px;
+  border-left: 2px solid var(--tcard-stage);
+  border-radius: 0 4px 4px 0;
+  background: rgba(26, 29, 42, 0.9);
+}
+
+.tcard-war[data-stage="queued"] { --tcard-stage: var(--war-queued); }
+.tcard-war[data-stage="entered"] { --tcard-stage: var(--war-entered); }
+.tcard-war[data-stage="fighting"] { --tcard-stage: var(--war-fighting); }
+.tcard-war[data-outcome="captured"] { --tcard-stage: var(--war-online); }
+
+.tcard-war-head,
+.tcard-war[data-outcome] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tcard-war-head .war-glyph { color: var(--tcard-stage); }
+
+.tcard-war-stage {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--tcard-stage);
+}
+
+.tcard-war-clock {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--tcard-stage);
+  font-variant-numeric: tabular-nums;
+}
+
+.tcard-war-origin {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: var(--color-text-secondary);
+}
+
+.tcard-war-time {
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.tcard-war-queuer {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.tcard-war-meta {
+  color: var(--color-text-secondary);
+  font-size: 0.76rem;
+}
+
+.tcard-war[data-outcome] .tcard-war-meta { margin-left: auto; }
+
+/* Label above value, in a row of cells. */
+.tcard-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
+  gap: 6px 12px;
+  margin-top: 9px;
+}
+
+.tcard-stats > div { min-width: 0; }
+
+.tcard-stats dt {
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+
+.tcard-stats dd {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.tcard-stats-wide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tcard-stat-span { grid-column: 1 / -1; }
+.tcard-sr { color: var(--accent-live); }
+.tcard-ready { color: var(--color-emerald); }
+.tcard-cooldown { color: var(--war-cooldown); }
+
+.tcard-buff {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 0.72rem;
+}
+
+.tcard-meter {
+  flex: 1;
+  min-width: 2rem;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.tcard-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--war-cooldown);
+}
+
+.tcard-cooldown-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+  font-size: 0.84rem;
+  color: var(--color-text-secondary);
+}
+
+.tcard-cooldown-row .tcard-cooldown { font-family: var(--font-mono); }
+
+/* One row per resource, a column per figure known. */
+.tcard-resources {
+  width: 100%;
+  margin-top: 9px;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.tcard-resources thead th {
+  padding: 0 0 3px 10px;
+  font-weight: 400;
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+  text-align: right;
+}
+
+.tcard-resources tbody th {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-weight: 400;
+  text-align: left;
+  color: var(--color-text-primary);
+}
+
+.tcard-resources tbody tr + tr > * { border-top: 1px solid var(--tcard-rule); }
+
+.tcard-resources td {
+  padding: 3px 0 3px 10px;
+  font-family: var(--font-mono);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.tcard-resource-icon { flex-shrink: 0; }
+
+.tcard-double {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--color-emerald);
+}
+
+.tcard-resources td.tcard-full { color: var(--war-entered); }
+
+.tcard-disclosure {
+  margin-top: 6px;
+}
+
+.tcard-disclosure > summary {
+  width: fit-content;
+  padding: 2px 0;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.tcard-disclosure > summary:hover,
+.tcard-disclosure > summary:focus-visible {
+  color: var(--color-gold);
+}
+
+.tcard-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  padding: 3px 0 2px;
+  font-size: 0.8rem;
+}
+
+.tcard-facts > div { display: contents; }
+.tcard-facts dt { color: var(--color-text-secondary); }
+.tcard-facts dd {
+  font-family: var(--font-mono);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tcard-section { margin-top: 14px; }
+
+.tcard-section-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.tcard-debug {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+
+/* The hover glance. */
+.tcard-hover {
+  position: fixed;
+  z-index: 100;
+  width: min(320px, calc(100vw - 32px));
+  padding: 10px 12px 10px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-left: 3px solid var(--tcard-guild);
+  border-radius: 6px;
+  background: var(--color-deep);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.tcard-hover a { pointer-events: auto; }
+
+/* The phone card, above the bottom edge and clear of the right-hand buttons. */
+.tcard-peek {
+  position: fixed;
+  left: calc(16px + env(safe-area-inset-left, 0px));
+  right: calc(76px + env(safe-area-inset-right, 0px));
+  z-index: 90;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-height: calc(100dvh - var(--nav-height) - 32px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-left: 3px solid var(--tcard-guild);
+  border-radius: 10px;
+  background: #161921;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+}
+
+.tcard-peek-body { flex: 1; min-width: 0; }
+.tcard-peek .tcard-owner { margin-left: 0; }
+
+.tcard-peek-details {
+  flex-shrink: 0;
+  align-self: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-border-accent);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-gold);
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+
+/* The sidebar detail. */
+.tcard-detail {
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.tcard-detail-nav {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px 0;
+}
+
+.tcard-nav-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 3px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tcard-nav-button:hover,
+.tcard-nav-button:focus-visible {
+  border-color: rgba(245, 197, 66, 0.4);
+  color: var(--color-gold);
+}
+
+.tcard-nav-close { padding: 3px 7px; }
+
+.tcard-sidebar {
+  padding: 10px 20px 18px;
+  border-left: 3px solid var(--tcard-guild);
+  margin-left: 12px;
+}
+
+.tcard-sidebar .tcard-name { font-size: 1.2rem; }
+.tcard-sidebar .tcard-swatch { width: 14px; height: 14px; }
+.tcard-sidebar .tcard-owner { margin-left: 22px; font-size: 0.95rem; }
+.tcard-sidebar .tcard-stats dd { font-size: 0.92rem; }
+.tcard-sidebar .tcard-resources { font-size: 0.88rem; }
+
+/* Tower calculator. */
+.tower-stats {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.tower-stat {
+  display: grid;
+  grid-template-columns: 4.5rem auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.tower-stat-label {
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+}
+
+.tower-stat-detail {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  text-align: right;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.tower-stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  background: var(--color-surface);
+}
+
+.tower-stepper > button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.tower-stepper > button:hover,
+.tower-stepper > button:focus-visible {
+  color: var(--color-gold);
+  background: var(--color-surface-hover);
+}
+
+.tower-stepper > input {
+  width: 30px;
+  border: 0;
+  border-inline: 1px solid var(--color-border-subtle);
+  background: var(--color-deep);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  text-align: center;
+  appearance: textfield;
+}
+
+.tower-stepper > input:focus-visible { outline: 1px solid var(--color-gold); }
+
+@media (pointer: coarse) {
+  .tower-stepper > button { width: 34px; height: 34px; }
+  .tower-stepper > input { width: 36px; }
+}
+
+.tower-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 10px;
+}
+
+.tower-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+}
+
+.tower-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tower-action {
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.tower-action:hover,
+.tower-action:focus-visible,
+.tower-action[aria-pressed="true"] {
+  border-color: rgba(245, 197, 66, 0.45);
+  background: rgba(245, 197, 66, 0.08);
+  color: var(--color-gold);
+}
+
+.tower-results {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(245, 197, 66, 0.25);
+}
+
+.tower-results dt {
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+
+.tower-results dd {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.tower-dps { color: var(--color-gold); }
+.tower-ehp { color: var(--color-emerald); }
+
+/* The player detail on a desktop: a popover beside the name that opened it, placed by
+   client/src/war_room/player.rs, with the map left usable around it. */
+.player-dialog.player-dialog-popover {
+  width: min(300px, calc(100vw - 16px));
+  max-height: calc(100dvh - 16px);
+  padding: 10px 12px 12px;
+  border-radius: 6px;
+  border-bottom: 1px solid var(--color-border-accent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
+.player-dialog.player-dialog-popover.player-dialog-placed {
+  transform: none;
+  bottom: auto;
+}
+
+.player-dialog-popover .player-dialog-face { width: 40px; height: 40px; }
+.player-dialog-popover .player-dialog-header { gap: 10px; }
+.player-dialog-popover .player-dialog-facts { margin-top: 8px; }
+.player-dialog-popover .player-dialog-actions { margin-top: 10px; }
+
+.player-dialog-more {
+  align-self: center;
+  margin: 0 4px;
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
 }
