@@ -13,6 +13,8 @@ use crate::territory::ClientTerritoryMap;
 use crate::war_room::{ClassIcon, MapFocus, MemberChip, WarRoom, clock_text, whereabouts};
 
 const FACE_PX: u32 = 64;
+/// Members listed under "Also here" before the rest are counted instead.
+const COMPANIONS_SHOWN: usize = 8;
 const FOCUSABLE: &str = "button:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])";
 
 /// The member's latest entry, or their last one with `reporting: false` once they leave
@@ -64,7 +66,6 @@ pub(crate) fn PlayerDetail() -> impl IntoView {
             let _ = opener.focus();
         }
     };
-    // Remember what opened the dialog, then move focus into it.
     Effect::new(move |was_open: Option<bool>| {
         let open = shown.with(Option::is_some);
         if open && was_open != Some(true) {
@@ -250,13 +251,21 @@ fn PlayerDialogContent(
                 </div>
             })}
         </dl>
-        {(!companions.is_empty()).then(|| view! {
-            <section class="player-dialog-section" aria-labelledby="player-dialog-with">
-                <h3 class="war-group-title" id="player-dialog-with">"Also here"</h3>
-                <ul class="war-front-members">
-                    {companions.into_iter().map(|member| view! { <li><MemberChip member /></li> }).collect_view()}
-                </ul>
-            </section>
+        {(!companions.is_empty()).then(|| {
+            let more = companions.len().saturating_sub(COMPANIONS_SHOWN);
+            view! {
+                <section class="player-dialog-section" aria-labelledby="player-dialog-with">
+                    <h3 class="war-group-title" id="player-dialog-with">"Also here"</h3>
+                    <ul class="war-front-members">
+                        {companions
+                            .into_iter()
+                            .take(COMPANIONS_SHOWN)
+                            .map(|member| view! { <li><MemberChip member /></li> })
+                            .collect_view()}
+                        {(more > 0).then(|| view! { <li class="war-front-empty">{format!("and {more} more")}</li> })}
+                    </ul>
+                </section>
+            }
         })}
         <div class="player-dialog-actions">
             <button type="button" class="war-action" disabled=!can_show on:click=show>"Show on map"</button>

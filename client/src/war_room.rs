@@ -37,6 +37,9 @@ const WARCONTROLLER_ENDPOINT: &str = "/api/warcontroller";
 const OUTCOME_SECS: i64 = 90;
 /// World units kept around a member's position when showing them on the map.
 const POSITION_CONTEXT_WORLD: f64 = 180.0;
+/// At or below this viewport height (CSS pixels) the war panel would crowd the map, so the
+/// HUD uses the phone's summary button and drawer, as `input.css` does for the drawer.
+const COMPACT_HUD_MAX_HEIGHT: f64 = 520.0;
 
 pub async fn fetch_warcontroller() -> Result<WarControllerState, String> {
     let response = gloo_net::http::Request::get(WARCONTROLLER_ENDPOINT)
@@ -328,7 +331,7 @@ pub(crate) fn clock_text(clock: FrontClock) -> (String, String) {
             (time.clone(), format!("starts in {time}"))
         }
         FrontClock::Due => ("Due".into(), "start due, not yet confirmed".into()),
-        FrontClock::Unscheduled => ("No time".into(), "no start time reported".into()),
+        FrontClock::Unscheduled => ("Time unknown".into(), "start time unknown".into()),
         FrontClock::FightingFor(seconds) => {
             let time = format_clock(seconds);
             (time.clone(), format!("fighting for {time}"))
@@ -401,8 +404,8 @@ impl MapFocus {
             self.map.camera().focus(&region);
         }
         self.detail_return_guild.set(None);
+        self.room.sheet_open.set(false);
         if self.is_mobile.get_untracked() {
-            self.room.sheet_open.set(false);
             self.selected.set(None);
             self.peek.set(Some(name.to_string()));
             return;
@@ -427,17 +430,22 @@ impl MapFocus {
     }
 }
 
-/// The war HUD: a left panel on wide screens, a summary button and sheet on phones.
+/// The war HUD: a left panel on roomy screens; a summary button and a sheet (a drawer on
+/// short landscape screens) on phones.
 #[component]
 pub(crate) fn WarRoomHud() -> impl IntoView {
     let room = expect_context::<WarRoom>();
     let ShowWarPanel(show_panel) = expect_context();
     let IsMobile(is_mobile) = expect_context();
+    let camera = expect_context::<BrowserMap>().camera();
     let visible = Memo::new(move |_| show_panel.get() && room.board.with(Option::is_some));
+    let compact = Memo::new(move |_| {
+        is_mobile.get() || camera.canvas_size_tracked().1 <= COMPACT_HUD_MAX_HEIGHT
+    });
 
     view! {
         <Show when=move || visible.get()>
-            <Show when=move || !is_mobile.get() fallback=|| view! { <WarSummaryButton /> <WarSheet /> }>
+            <Show when=move || !compact.get() fallback=|| view! { <WarSummaryButton /> <WarSheet /> }>
                 <WarPanel />
             </Show>
         </Show>
@@ -515,7 +523,10 @@ fn WarRoomBody() -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
-    let recent = Memo::new(move |_| room.outcomes.get());
+    let recent = Memo::new(move |_| {
+        room.outcomes
+            .with(|list| list.iter().rev().cloned().collect::<Vec<_>>())
+    });
 
     view! {
         <section class="war-section" aria-labelledby="war-fronts-heading">
@@ -764,7 +775,7 @@ fn RosterSection() -> impl IntoView {
                 when=move || !roster.with(Vec::is_empty)
                 fallback=|| view! { <p class="war-empty">"No members reporting"</p> }
             >
-                <RosterGroup title="Warring" stage="fighting" members=warring />
+                <RosterGroup title="Warring" stage="warring" members=warring />
                 <RosterGroup title="Online" stage="online" members=online />
             </Show>
         </section>

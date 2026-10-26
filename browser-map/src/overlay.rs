@@ -77,6 +77,7 @@ pub enum PlateLabel {
     Ended,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 impl PlateLabel {
     /// The words a plate can show besides a clock; the renderer prepares exactly these glyphs.
     pub(crate) const WORDS: [&'static str; 7] = [

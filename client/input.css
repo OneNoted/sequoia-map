@@ -442,7 +442,7 @@
   pointer-events: auto;
 }
 
-/* War panel (client/src/war_room.rs) — left edge under the navbar, collapsing out through
+/* War panel (client/src/war_room.rs): left edge under the navbar, collapsing out through
    the left edge the way the sidebar collapses out through the right. Phones get a summary
    button and a bottom sheet with the same content instead. */
 :root {
@@ -594,7 +594,8 @@
   color: var(--war-muted);
 }
 
-.war-group[data-stage="fighting"] > .war-group-title { color: #ff8a8a; }
+.war-group[data-stage="fighting"] > .war-group-title,
+.war-group[data-stage="warring"] > .war-group-title { color: #ff8a8a; }
 .war-group[data-stage="entered"] > .war-group-title { color: var(--war-entered); }
 .war-group[data-stage="queued"] > .war-group-title { color: var(--war-queued); }
 .war-group[data-stage="online"] > .war-group-title { color: var(--war-online); }
@@ -741,6 +742,11 @@
 
 .war-empty {
   padding: 2px 0 4px;
+}
+
+.war-front-members > .war-front-empty {
+  align-self: center;
+  margin: 0 4px;
 }
 
 .war-member,
@@ -1014,10 +1020,11 @@
 }
 
 /* Player detail (client/src/player_detail.rs): a centred card, a bottom sheet on phones. */
+/* Modal, so above the navbar too. */
 .player-dialog-scrim {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: calc(var(--z-lightbox) - 1);
   background: rgba(5, 6, 10, 0.55);
 }
 
@@ -1025,7 +1032,7 @@
   position: fixed;
   top: 50%;
   left: 50%;
-  z-index: 61;
+  z-index: var(--z-lightbox);
   width: min(360px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
@@ -1256,6 +1263,8 @@
     left: 0;
     width: 100%;
     max-height: 70vh;
+    max-height: 70dvh;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     transform: translateY(100%);
     display: flex;
     flex-direction: column;
@@ -1274,6 +1283,9 @@
   .sidebar-toggle { display: none !important; }
   .sidebar-resize-handle { display: none !important; }
   .mobile-sidebar-fab { display: flex; }
+  /* Clear of the home indicator where the browser reports one. */
+  .mobile-sidebar-fab,
+  .mobile-history-toggle { margin-bottom: env(safe-area-inset-bottom, 0px); }
   .bottom-sheet-scrim { display: block; }
 }
 

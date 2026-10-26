@@ -2630,6 +2630,7 @@ pub fn MapPage() -> impl IntoView {
                         if is_mobile.get() && !sidebar_open.get() { "flex" } else { "none" }
                     }
                     style="position: absolute; bottom: 16px; right: 16px; z-index: 20; width: 48px; height: 48px; border-radius: 12px; background: var(--color-deep); border: 1px solid var(--color-border-accent); align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.15); color: var(--color-gold); font-size: 1.4rem; font-family: var(--font-mono); touch-action: manipulation;"
+                    aria-label="Open sidebar"
                     on:click=move |_| {
                         sidebar_open.set(true);
                         sidebar_transient.set(false);
@@ -3087,6 +3088,8 @@ fn MobileHistoryToggle() -> impl IntoView {
 
     view! {
         <button
+            class="mobile-history-toggle"
+            aria-label="History"
             style:display=move || {
                 if is_mobile.get() && !sidebar_open.get() && history_available.get() && !is_history() {
                     "flex"
@@ -3581,11 +3584,12 @@ fn TerritoryPeekCard() -> impl IntoView {
             let name = info.0.clone();
             let is_history = mode.get_untracked() == MapMode::History;
             let bottom_px = if is_history { 96 } else { 16 };
+            let bottom = format!("calc({bottom_px}px + env(safe-area-inset-bottom, 0px))");
             view! {
                 <div
                     class="peek-card-animate"
-                    style:bottom=format!("{}px", bottom_px)
-                    style="position: fixed; left: 16px; right: 76px; z-index: 90; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
+                    style:bottom=bottom
+                    style="position: fixed; left: calc(16px + env(safe-area-inset-left, 0px)); right: calc(76px + env(safe-area-inset-right, 0px)); z-index: 90; max-height: calc(100dvh - var(--nav-height) - 32px); overflow-y: auto; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
                 >
                     <div style={format!("width: 4px; flex-shrink: 0; background: {};", rgba_css(r, g, b, 0.85))} />
                     <div style="padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 4px;">
