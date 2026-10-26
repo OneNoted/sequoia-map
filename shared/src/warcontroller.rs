@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use serde::de::{self, Deserializer, Unexpected};
 use serde::{Deserialize, Serialize};
 
@@ -19,16 +17,6 @@ pub struct WarControllerState {
 }
 
 impl WarControllerState {
-    /// Territory names with a war in progress.
-    ///
-    /// Presence in [`Self::wars`] is the only "at war" signal the feed carries: there is no
-    /// `ended` flag, the backend simply drops the entry once the war finishes, and
-    /// [`ActiveWar::health`] reaching `0.0` does not mean finished. Queued territories are
-    /// deliberately excluded — they live in [`Self::queues`] until their war actually starts.
-    pub fn territories_at_war(&self) -> HashSet<String> {
-        self.wars.iter().map(|war| war.territory.clone()).collect()
-    }
-
     /// Whether this payload may replace `current`, comparing [`Self::timestamp`].
     ///
     /// The feed reaches a client three ways - the REST seed, the SSE seed, and every live SSE
@@ -81,53 +69,14 @@ pub struct WarQueueEntry {
     pub difficulty: Option<String>,
     /// Queue stage, e.g. `QUEUED`. Parse with [`QueueStatus::from_api_status`].
     pub status: String,
-    /// Unix seconds at which this entry is expected to advance: the instant a `STARTED` war
-    /// is expected to be won, and the instant a `QUEUED` or `ENTERED` territory is expected
-    /// to start fighting. It is how the ETA reaches us at every stage - the field is always
-    /// in the future, never the instant the entry entered its current status. Read it
-    /// through [`Self::eta_secs`] rather than subtracting by hand.
+    /// Unix seconds at which this entry next changes: the queue expiry for `QUEUED` (the
+    /// party is pulled in, and the war starts 30 s later), the scheduled start for `ENTERED`,
+    /// and the estimated win for `STARTED`. [`crate::war_board`] turns it into a clock.
     ///
-    /// `None` when the backend sends no stamp, which leaves that entry with no ETA.
+    /// `None` when the backend sends no stamp, as it does for a `STARTED` war whose tower
+    /// sample is stale.
     #[serde(default, deserialize_with = "deserialize_optional_lenient_timestamp")]
     pub timestamp: Option<i64>,
-    /// Seconds until the war is expected to be won, counted from [`WarControllerState::timestamp`].
-    ///
-    /// Speculative: the backend has never sent this field, and ships the ETA in
-    /// [`Self::timestamp`] instead. Parsed anyway so it takes precedence if that changes.
-    #[serde(default, deserialize_with = "deserialize_optional_eta_secs")]
-    pub eta: Option<i64>,
-}
-
-impl WarQueueEntry {
-    /// Seconds until this entry is expected to advance, relative to
-    /// [`WarControllerState::timestamp`], or `None` when it carries no ETA.
-    ///
-    /// [`Self::timestamp`] is a future instant at every stage, so the time remaining is that
-    /// instant minus the snapshot the payload was built at - what a `STARTED` row counts down
-    /// to is the war being won, what a `QUEUED` or `ENTERED` row counts down to is its war
-    /// starting. Every stage therefore has an ETA; gating this on `STARTED` left every other
-    /// row showing an em-dash even though the stamp to count down was right there. The
-    /// explicit [`Self::eta`] field still wins when present, since a backend that starts
-    /// sending it means it deliberately.
-    ///
-    /// A `STARTED` row floors at zero: a war can overrun its predicted win time, and the
-    /// browser clock the caller counts down against can sit either side of the feed's
-    /// timestamps. A row that has *not* started gets no such floor - a stamp that is not in
-    /// the future is one whose meaning we cannot vouch for, and an honest em-dash beats a
-    /// countdown pinned at `0:00`.
-    ///
-    /// An entry the backend sent no [`Self::timestamp`] for has nothing to subtract from, so
-    /// it reports no ETA rather than one measured against the epoch.
-    pub fn eta_secs(&self, feed_timestamp: i64) -> Option<i64> {
-        if let Some(eta) = self.eta.filter(|seconds| *seconds >= 0) {
-            return Some(eta);
-        }
-        let remaining = self.timestamp? - feed_timestamp;
-        match QueueStatus::from_api_status(&self.status)? {
-            QueueStatus::Started => Some(remaining.max(0)),
-            QueueStatus::Queued | QueueStatus::Entered => (remaining > 0).then_some(remaining),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -301,24 +250,6 @@ where
     }
 }
 
-/// The ETA is not in the feed yet, so its eventual encoding is unknown. Accept a number or
-/// a numeric string and read anything else as "no ETA" rather than failing: erroring here
-/// would reject the whole payload and take the live war feed down over a cosmetic column.
-fn deserialize_optional_eta_secs<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(
-        match Option::<serde_json::Value>::deserialize(deserializer)? {
-            Some(serde_json::Value::Number(value)) => value
-                .as_i64()
-                .or_else(|| value.as_f64().map(|seconds| seconds.trunc() as i64)),
-            Some(serde_json::Value::String(raw)) => raw.trim().parse::<i64>().ok(),
-            _ => None,
-        },
-    )
-}
-
 fn parse_timestamp(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     if let Ok(seconds) = trimmed.parse::<i64>() {
@@ -386,18 +317,6 @@ mod tests {
         assert_eq!(war.dps, Some(32143));
     }
 
-    #[test]
-    fn territories_at_war_covers_active_wars_only() {
-        let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
-        let at_war = state.territories_at_war();
-
-        assert!(at_war.contains("Entrance to Olux"));
-        assert!(at_war.contains("Overtaken Outpost"));
-        // Queued but not yet fighting, so it must not be flagged as at war.
-        assert!(!at_war.contains("Mangled Lake"));
-        assert_eq!(at_war.len(), 2);
-    }
-
     fn state_at(timestamp: i64) -> WarControllerState {
         WarControllerState {
             timestamp,
@@ -423,7 +342,6 @@ mod tests {
             difficulty: Some("VERY_HIGH".to_string()),
             status: "STARTED".to_string(),
             timestamp: Some(1_787_517_443),
-            eta: None,
         });
         assert!(!changed.same_content(&state_at(1_000)));
     }
@@ -492,13 +410,6 @@ mod tests {
     }
 
     #[test]
-    fn territories_at_war_is_empty_without_wars() {
-        let state: WarControllerState =
-            serde_json::from_str(r#"{"timestamp": 42}"#).expect("minimal payload parses");
-        assert!(state.territories_at_war().is_empty());
-    }
-
-    #[test]
     fn null_ehp_and_dps_are_none() {
         let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
         let war = &state.wars[1];
@@ -525,47 +436,6 @@ mod tests {
         let in_territory = &state.players[0];
         assert_eq!(in_territory.territory.as_deref(), Some("Entrance to Olux"));
         assert_eq!(in_territory.pos, None);
-    }
-
-    #[test]
-    fn eta_is_absent_when_the_backend_omits_it() {
-        let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
-        assert!(state.queues.iter().all(|entry| entry.eta.is_none()));
-    }
-
-    #[test]
-    fn eta_accepts_numbers_and_numeric_strings() {
-        let raw = r#"{
-            "timestamp": 1,
-            "queues": [
-                {"territory": "A", "difficulty": "LOW", "status": "QUEUED", "timestamp": 1, "eta": 90},
-                {"territory": "B", "difficulty": "LOW", "status": "QUEUED", "timestamp": 1, "eta": "45"},
-                {"territory": "C", "difficulty": "LOW", "status": "QUEUED", "timestamp": 1, "eta": 12.7}
-            ]
-        }"#;
-
-        let state: WarControllerState = serde_json::from_str(raw).expect("eta payload parses");
-        assert_eq!(state.queues[0].eta, Some(90));
-        assert_eq!(state.queues[1].eta, Some(45));
-        assert_eq!(state.queues[2].eta, Some(12));
-    }
-
-    #[test]
-    fn unreadable_eta_reads_as_none_instead_of_failing_the_payload() {
-        // A future backend could encode the ETA some other way; the war feed must keep
-        // flowing regardless, with only the ETA column going blank.
-        let raw = r#"{
-            "timestamp": 1,
-            "queues": [
-                {"territory": "A", "difficulty": "LOW", "status": "QUEUED", "timestamp": 1, "eta": null},
-                {"territory": "B", "difficulty": "LOW", "status": "QUEUED", "timestamp": 1, "eta": "2026-08-24T12:37:00Z"},
-                {"territory": "C", "difficulty": "LOW", "status": "QUEUED", "timestamp": 1, "eta": {"seconds": 30}}
-            ]
-        }"#;
-
-        let state: WarControllerState = serde_json::from_str(raw).expect("odd eta payload parses");
-        assert_eq!(state.queues.len(), 3);
-        assert!(state.queues.iter().all(|entry| entry.eta.is_none()));
     }
 
     #[test]
@@ -643,104 +513,6 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&state).expect("state serializes"))
                 .expect("re-serialized payload parses");
         assert_eq!(state, round_tripped);
-    }
-
-    #[test]
-    fn an_entry_without_a_stamp_has_no_derived_eta() {
-        // Nothing to subtract from - reporting one would count down against the epoch.
-        assert_eq!(queue_entry("STARTED", None, None).eta_secs(1_000), None);
-        assert_eq!(queue_entry("ENTERED", None, None).eta_secs(1_000), None);
-        assert_eq!(queue_entry("QUEUED", None, None).eta_secs(1_000), None);
-    }
-
-    #[test]
-    fn an_explicit_eta_still_wins_over_a_missing_stamp() {
-        assert_eq!(
-            queue_entry("STARTED", None, Some(90)).eta_secs(1_000),
-            Some(90)
-        );
-    }
-
-    /// A queue entry carrying only the fields `eta_secs` reads.
-    fn queue_entry(status: &str, timestamp: Option<i64>, eta: Option<i64>) -> WarQueueEntry {
-        WarQueueEntry {
-            territory: "Entrance to Olux".to_string(),
-            difficulty: Some("VERY_HIGH".to_string()),
-            status: status.to_string(),
-            timestamp,
-            eta,
-        }
-    }
-
-    #[test]
-    fn started_entry_derives_its_eta_from_the_timestamp() {
-        // The sampled payload: the STARTED entry's timestamp sits 23s past the snapshot,
-        // because the backend overwrites it with the expected win instant.
-        let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
-        let started = &state.queues[0];
-        assert_eq!(started.status, "STARTED");
-        assert_eq!(started.eta_secs(state.timestamp), Some(23));
-    }
-
-    #[test]
-    fn queued_and_entered_entries_count_down_too() {
-        // Their stamps sit past the snapshot exactly as a STARTED one does - the backend
-        // sends the instant each is expected to advance, not the instant it entered the
-        // stage. Reading them as entry times left every non-STARTED row showing an em-dash.
-        let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
-        assert_eq!(state.queues[1].status, "ENTERED");
-        assert_eq!(state.queues[1].eta_secs(state.timestamp), Some(41));
-        assert_eq!(state.queues[2].status, "QUEUED");
-        assert_eq!(state.queues[2].eta_secs(state.timestamp), Some(69));
-    }
-
-    #[test]
-    fn a_not_yet_started_entry_whose_stamp_has_passed_reports_no_eta() {
-        // Only a STARTED row floors at zero, where an overrun war genuinely reads "any moment
-        // now". A QUEUED stamp in the past is a stamp we cannot vouch for, so it gets the
-        // em-dash rather than a countdown frozen at 0:00.
-        assert_eq!(queue_entry("QUEUED", Some(900), None).eta_secs(1_000), None);
-        assert_eq!(
-            queue_entry("ENTERED", Some(1_000), None).eta_secs(1_000),
-            None
-        );
-        assert_eq!(
-            queue_entry("QUEUED", Some(1_180), None).eta_secs(1_000),
-            Some(180)
-        );
-    }
-
-    #[test]
-    fn an_explicit_eta_field_wins_over_the_timestamp() {
-        // A backend that starts sending `eta` alongside the timestamp means it.
-        let entry = queue_entry("STARTED", Some(1_000_000), Some(42));
-        assert_eq!(entry.eta_secs(999_000), Some(42));
-        // And it wins over a stamp that would derive nothing on its own.
-        assert_eq!(
-            queue_entry("QUEUED", Some(0), Some(90)).eta_secs(0),
-            Some(90)
-        );
-    }
-
-    #[test]
-    fn a_negative_eta_field_falls_through_to_the_timestamp() {
-        let entry = queue_entry("STARTED", Some(1_180), Some(-5));
-        assert_eq!(entry.eta_secs(1_000), Some(180));
-    }
-
-    #[test]
-    fn a_past_started_timestamp_floors_at_zero() {
-        // A war can overrun its predicted win time; the ETA holds at zero rather than
-        // counting back up.
-        assert_eq!(
-            queue_entry("STARTED", Some(900), None).eta_secs(1_000),
-            Some(0)
-        );
-    }
-
-    #[test]
-    fn an_unknown_status_has_no_eta() {
-        assert_eq!(queue_entry("LEFT", Some(1_180), None).eta_secs(1_000), None);
     }
 
     #[test]

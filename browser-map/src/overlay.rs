@@ -44,6 +44,81 @@ pub struct Teammates {
     pub show_names: bool,
 }
 
+/// A plate on a war territory's top edge: its countdown, its war clock or how it ended.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WarPlate {
+    /// Top centre of the territory, world units. The plate straddles that edge.
+    pub world: [f32; 2],
+    pub label: PlateLabel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlateLabel {
+    /// Queued or entered, counting down to the war's start.
+    StartsIn {
+        entered: bool,
+        seconds: i64,
+    },
+    /// The start has passed but the war is not confirmed.
+    Due {
+        entered: bool,
+    },
+    /// Queued or entered with no usable timing.
+    Waiting {
+        entered: bool,
+    },
+    /// A confirmed war: its elapsed time and the tower's remaining health, when known.
+    Fighting {
+        seconds: Option<i64>,
+        health: Option<f32>,
+    },
+    Captured,
+    Cancelled,
+    Ended,
+}
+
+impl PlateLabel {
+    /// The words a plate can show besides a clock; the renderer prepares exactly these glyphs.
+    pub(crate) const WORDS: [&'static str; 7] = [
+        "Due",
+        "Queued",
+        "Entered",
+        "War",
+        "Captured",
+        "Cancelled",
+        "Ended",
+    ];
+
+    pub(crate) fn text(self) -> std::borrow::Cow<'static, str> {
+        use sequoia_shared::war_board::format_clock;
+        let word = match self {
+            Self::StartsIn { seconds, .. }
+            | Self::Fighting {
+                seconds: Some(seconds),
+                ..
+            } => {
+                return format_clock(seconds).into();
+            }
+            Self::Due { .. } => "Due",
+            Self::Waiting { entered: false } => "Queued",
+            Self::Waiting { entered: true } => "Entered",
+            Self::Fighting { seconds: None, .. } => "War",
+            Self::Captured => "Captured",
+            Self::Cancelled => "Cancelled",
+            Self::Ended => "Ended",
+        };
+        word.into()
+    }
+}
+
+/// Every plate on the map, in drawing order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WarPlates {
+    pub plates: Vec<WarPlate>,
+    /// The live feed is reconnecting, so the plates may be out of date: they are dimmed.
+    pub stale: bool,
+}
+
 /// Which host input a renderer layer was last prepared from, and whether it must be prepared
 /// again regardless (a new pixel ratio or a font that loaded).
 ///
@@ -105,7 +180,69 @@ pub(crate) fn atlas_extent(width: f64, height: f64, max_side: u32) -> Option<(u3
 mod tests {
     use std::sync::Arc;
 
-    use super::{Prepared, atlas_extent};
+    use super::{PlateLabel, Prepared, atlas_extent};
+
+    #[test]
+    fn plate_text_uses_only_prepared_glyphs() {
+        let prepared: String = PlateLabel::WORDS.concat() + "0123456789:";
+        let labels = [
+            PlateLabel::StartsIn {
+                entered: false,
+                seconds: 3_725,
+            },
+            PlateLabel::StartsIn {
+                entered: true,
+                seconds: 9,
+            },
+            PlateLabel::Due { entered: true },
+            PlateLabel::Waiting { entered: false },
+            PlateLabel::Waiting { entered: true },
+            PlateLabel::Fighting {
+                seconds: Some(47),
+                health: Some(0.5),
+            },
+            PlateLabel::Fighting {
+                seconds: None,
+                health: None,
+            },
+            PlateLabel::Captured,
+            PlateLabel::Cancelled,
+            PlateLabel::Ended,
+        ];
+        for label in labels {
+            let text = label.text();
+            assert!(text.chars().all(|ch| prepared.contains(ch)), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_countdown_plate_reads_as_a_clock_and_a_war_without_a_start_as_a_word() {
+        assert_eq!(
+            PlateLabel::StartsIn {
+                entered: false,
+                seconds: 128
+            }
+            .text(),
+            "2:08"
+        );
+        assert_eq!(
+            PlateLabel::Fighting {
+                seconds: Some(47),
+                health: None
+            }
+            .text(),
+            "0:47"
+        );
+        assert_eq!(
+            PlateLabel::Fighting {
+                seconds: None,
+                health: None
+            }
+            .text(),
+            "War"
+        );
+        assert_eq!(PlateLabel::Due { entered: false }.text(), "Due");
+    }
 
     #[test]
     fn an_atlas_within_the_device_limit_keeps_its_size() {

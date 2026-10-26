@@ -43,6 +43,7 @@ use sequoia_map_engine::viewport::Viewport;
 use sequoia_shared::TreasuryLevel;
 use sequoia_shared::colors::hsl_to_rgb;
 use sequoia_shared::territory::Resources;
+use sequoia_shared::war_board::StageKind;
 
 use crate::frame::{Frame, FrameMetrics, FrameOutcome, RenderCapabilities};
 use crate::icons::ResourceAtlas;
@@ -398,6 +399,10 @@ const DYNAMIC_TIME_LETTER_SPACING_EM: f32 = 0.035;
 const DYNAMIC_COOLDOWN_LETTER_SPACING_EM_MIN: f32 = 0.0035;
 const DYNAMIC_TIME_MIN_RENDERED_PX: f32 = 11.5;
 const DYNAMIC_COOLDOWN_MIN_RENDERED_PX: f32 = 12.0;
+/// Territory instance flags for the war stages; `territory.wgsl` reads the same bits.
+const WAR_FLAG_FIGHTING: u32 = 8;
+const WAR_FLAG_ENTERED: u32 = 16;
+const WAR_FLAG_QUEUED: u32 = 32;
 /// A captured territory is fresh (on cooldown) for this long.
 const FRESH_TERRITORY_SECS: i64 = 600;
 const HQ_CROWN_SIZE_MULTIPLIER: f32 = 1.75;
@@ -3096,11 +3101,16 @@ impl GpuRenderer {
                     .as_ref()
                     .and_then(|runtime| runtime.headquarters)
                     .unwrap_or(false);
-                let is_at_war = frame.wars.is_some_and(|wars| wars.contains(name));
+                let war_flag = match frame.war_stages.and_then(|stages| stages.get(name)) {
+                    Some(StageKind::Fighting) => WAR_FLAG_FIGHTING,
+                    Some(StageKind::Entered) => WAR_FLAG_ENTERED,
+                    Some(StageKind::Queued) => WAR_FLAG_QUEUED,
+                    None => 0,
+                };
                 let flags = (is_hovered as u32)
                     + (is_selected as u32) * 2
                     + (is_headquarters as u32) * 4
-                    + (is_at_war as u32) * 8;
+                    + war_flag;
 
                 let acquired_rel_secs = if settings.suppress_cooldown_visuals {
                     -1_000_000.0_f32
@@ -4568,6 +4578,7 @@ impl GpuRenderer {
     /// them draws.
     fn prepare_overlay(&mut self, frame: &Frame, stats: &mut DrawStats) -> bool {
         if frame.site_labels.is_none()
+            && frame.war_plates.is_none()
             && frame.teammates.is_none()
             && self.overlay_renderer.is_none()
         {
@@ -4585,6 +4596,7 @@ impl GpuRenderer {
             &self.device,
             &self.queue,
             frame.site_labels,
+            frame.war_plates,
             frame.teammates,
             self.dpr,
         );

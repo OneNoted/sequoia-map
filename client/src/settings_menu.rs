@@ -29,7 +29,7 @@ use crate::app::{
     ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
-    ShowSettings, ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, TagColorSetting,
+    ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel, TagColorSetting,
     ThickCooldownBorders, WarFeedVisible, clamp_connection_opacity_scale,
     clamp_connection_solid_opacity, clamp_connection_thickness_scale, clamp_label_scale_group,
     clamp_label_scale_master, clamp_player_head_size, clamp_resource_highlight_opacity,
@@ -194,8 +194,8 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let NameColorSetting(name_color) = expect_context();
     let TagColorSetting(tag_color) = expect_context();
     let ShowMinimap(show_minimap) = expect_context();
-    let ShowWarQueue(show_war_queue) = expect_context();
-    let ShowWarStats(show_war_stats) = expect_context();
+    let ShowWarPanel(show_war_panel) = expect_context();
+    let ShowWarMarkers(show_war_markers) = expect_context();
     let ShowPlayerHeads(show_player_heads) = expect_context();
     let PlayerHeadRenderHead(player_head_render_head) = expect_context();
     let PlayerHeadRenderLabel(player_head_render_label) = expect_context();
@@ -342,17 +342,13 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
             // panels themselves follow. For everyone else these would be dead toggles.
             <Show when=move || war_feed_visible.get()>
                 <SettingsSection title="War">
-                    <SettingsSwitch label="War Queue" active=show_war_queue />
-                    // Desktop only: `WarStatsStrip` never renders on a phone.
-                    <Show when=move || !is_mobile.get()>
-                        <SettingsSwitch label="War Stats" active=show_war_stats />
-                    </Show>
+                    <SettingsSwitch label="War Panel" hint="Queued territories, wars and members" active=show_war_panel />
+                    <SettingsSwitch label="War Markers" hint="Countdowns and war clocks on territories" active=show_war_markers />
                     <SettingsSwitch label="Teammate Heads" active=show_player_heads />
                     <Show when=move || show_player_heads.get()>
                         <SettingsSwitch label="Show Faces" hint="A dot when off" nested=true active=player_head_render_head />
                         <SettingsSwitch label="Show Names" hint="Hidden when zoomed far out" nested=true active=player_head_render_label />
                     </Show>
-                    <crate::players::PlayerRosterDetails />
                 </SettingsSection>
             </Show>
 
