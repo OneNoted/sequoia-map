@@ -13,7 +13,9 @@ use sequoia_shared::war_activity::{ActivityEntry, ActivityOutcome, StartSource, 
 use sequoia_shared::war_board::format_clock;
 
 use super::{MapFocus, WarRoom, difficulty_color, difficulty_label};
-use crate::territory_card::{Disclosure, ago, local_time};
+use crate::app::ActivityIncludeUnconfirmed;
+use crate::format::{ago, local_time};
+use crate::ui::Disclosure;
 
 const ENDPOINT: &str = "/api/war-activity";
 /// The first page covers the last day; Load older reaches back through the backend's window.
@@ -21,6 +23,7 @@ const RECENT_SECS: i64 = 24 * 60 * 60;
 const PAGE_SIZE: u32 = 25;
 /// How often an open list checks for newer entries.
 const REFRESH_MS: u64 = 60_000;
+const REFRESH_SECS: i64 = (REFRESH_MS / 1000) as i64;
 
 /// One request for a page.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,15 +232,23 @@ impl Requests {
     }
 }
 
-/// The activity list, loading once it is shown. `territory` narrows it to one territory.
+/// The activity list, loading once it is shown. `territory` narrows it to one territory. It is
+/// kept while its disclosure closes, so reopening shows what it held at once; it only checks
+/// for newer entries while `visible`, and catches up as soon as it is shown again.
 #[component]
 pub(crate) fn ActivityFeed(
-    #[prop(optional, into)] territory: Option<Signal<String>>,
+    territory: Option<Signal<String>>,
+    #[prop(into)] visible: Signal<bool>,
 ) -> impl IntoView {
     let room = expect_context::<WarRoom>();
-    let everything = RwSignal::new(false);
+    let ActivityIncludeUnconfirmed(everything) = expect_context();
     let list = RwSignal::new(None::<ActivityList>);
     let load = RwSignal::new(Load::Idle);
+    // The rows on show belong to a selection that has since changed; they stay, marked as
+    // pending, until the new selection's first page replaces them.
+    let stale = RwSignal::new(false);
+    let checked_at = RwSignal::new(0_i64);
+    let root = NodeRef::<leptos::html::Div>::new();
     // Superseded whenever the selection changes: an answer to an older selection is dropped,
     // and so is any answer once the feed is gone.
     let requests = Requests::new();
@@ -277,54 +288,82 @@ pub(crate) fn ActivityFeed(
                 if !requests.current(asked) {
                     return;
                 }
+                checked_at.set(room.now.get_untracked());
+                stale.set(false);
                 match result {
                     Ok(page) => {
+                        let first = list.with_untracked(Option::is_none);
                         list.set(Some(ActivityList::first(page, since, whole_week)));
                         load.set(Load::Idle);
+                        // What the first answer revealed comes into view, as opening did.
+                        if first && let Some(root) = root.get_untracked() {
+                            crate::ui::reveal_soon(root.into());
+                        }
                     }
-                    Err(_) => load.set(Load::Failed),
+                    Err(_) => {
+                        list.set(None);
+                        load.set(Load::Failed);
+                    }
                 }
             });
         }
     };
     Effect::new({
         let requests = requests.clone();
+        let load_first = load_first.clone();
         move || {
             base.track();
             requests.supersede();
-            list.set(None);
+            stale.set(list.with_untracked(Option::is_some));
             load_first();
         }
     });
-    // While shown, pick up newer entries now and then rather than streaming them.
-    Effect::new({
+    // Newer entries are picked up now and then rather than streamed, and only while shown.
+    let refresh = {
         let requests = requests.clone();
         move || {
+            if load.get_untracked() == Load::Loading {
+                return;
+            }
+            // Without a first page there is nothing to refresh. One that failed is asked for
+            // again, so a passing outage does not leave a kept feed unavailable.
+            if list.with_untracked(Option::is_none) {
+                if load.get_untracked() == Load::Failed {
+                    load_first();
+                }
+                return;
+            }
+            checked_at.set(room.now.get_untracked());
+            let (request, since) = first_request();
             let requests = requests.clone();
+            let asked = requests.asked();
+            spawn_local(async move {
+                if let Ok(page) = fetch(&request).await
+                    && requests.current(asked)
+                {
+                    let started_over = list
+                        .try_update(|list| {
+                            list.as_mut().is_some_and(|list| list.refresh(page, since))
+                        })
+                        .unwrap_or(false);
+                    // An older page still on its way belongs to the list that was replaced.
+                    if started_over {
+                        requests.supersede();
+                        load.set(Load::Idle);
+                    }
+                }
+            });
+        }
+    };
+    Effect::new({
+        let refresh = refresh.clone();
+        move || {
+            let refresh = refresh.clone();
             let handle = set_interval_with_handle(
                 move || {
-                    if list.with_untracked(Option::is_none) {
-                        return;
+                    if visible.get_untracked() {
+                        refresh();
                     }
-                    let (request, since) = first_request();
-                    let requests = requests.clone();
-                    let asked = requests.asked();
-                    spawn_local(async move {
-                        if let Ok(page) = fetch(&request).await
-                            && requests.current(asked)
-                        {
-                            let started_over = list
-                                .try_update(|list| {
-                                    list.as_mut().is_some_and(|list| list.refresh(page, since))
-                                })
-                                .unwrap_or(false);
-                            // An older page still on its way belongs to the list that was replaced.
-                            if started_over {
-                                requests.supersede();
-                                load.set(Load::Idle);
-                            }
-                        }
-                    });
                 },
                 std::time::Duration::from_millis(REFRESH_MS),
             );
@@ -334,6 +373,16 @@ pub(crate) fn ActivityFeed(
                 }
             });
         }
+    });
+    Effect::new(move |was_visible: Option<bool>| {
+        let shown = visible.get();
+        let due = room.now.get_untracked() - checked_at.get_untracked() >= REFRESH_SECS;
+        let unavailable =
+            load.get_untracked() == Load::Failed && list.with_untracked(Option::is_none);
+        if shown && was_visible == Some(false) && (due || unavailable) {
+            refresh();
+        }
+        shown
     });
     let load_older = move |_| {
         if load.get_untracked() == Load::Loading {
@@ -381,22 +430,20 @@ pub(crate) fn ActivityFeed(
         list.with(|list| list.as_ref().is_some_and(|list| !list.entries.is_empty()))
     });
     let can_load_older = Memo::new(move |_| {
-        list.with(|list| {
-            list.as_ref()
-                .is_some_and(|list| list.older(&base.get()).is_some())
-        })
+        !stale.get()
+            && list.with(|list| {
+                list.as_ref()
+                    .is_some_and(|list| list.older(&base.get()).is_some())
+            })
     });
     let ended = Memo::new(move |_| list.with(|list| list.as_ref().is_some_and(|list| list.ended)));
+    let busy = move || (load.get() == Load::Loading).to_string();
 
     view! {
-        <div class="activity">
-            <label class="activity-scope">
-                <input type="checkbox" prop:checked=move || everything.get() on:change=move |event| everything.set(event_target_checked(&event)) />
-                "Include cancelled and unconfirmed"
-            </label>
+        <div class="activity" node_ref=root aria-busy=busy class:activity-stale=move || stale.get()>
             {move || match shown.get() {
                 Shown::Unavailable => view! { <p class="activity-note" role="status">"Recent activity is unavailable"</p> }.into_any(),
-                Shown::Loading => view! { <p class="activity-note" role="status">"Loading"</p> }.into_any(),
+                Shown::Loading => view! { <p class="activity-note activity-pending" role="status">"Loading"</p> }.into_any(),
                 Shown::Nothing => view! { <p class="activity-note">"Nothing in the last 7 days"</p> }.into_any(),
                 Shown::Rows => view! {
                     <ol class="activity-list">
@@ -423,7 +470,7 @@ pub(crate) fn ActivityFeed(
             }}
             <Show when=move || can_load_older.get()>
                 // Not disabled while loading, which would drop keyboard focus from it.
-                <button type="button" class="activity-older" aria-disabled=move || (load.get() == Load::Loading).to_string() on:click=load_older.clone()>
+                <button type="button" class="ui-button activity-older" aria-disabled=busy on:click=load_older.clone()>
                     "Load older"
                 </button>
             </Show>
@@ -483,7 +530,14 @@ fn ActivityRow(entry: Memo<ActivityEntry>) -> impl IntoView {
                         class="war-front-expand"
                         aria-label=detail_label
                         aria-expanded=move || open.get().to_string()
-                        on:click=move |_| open.update(|open| *open = !*open)
+                        on:click=move |event| {
+                            open.update(|open| *open = !*open);
+                            if open.get_untracked()
+                                && let Some(row) = event_target::<web_sys::Element>(&event).closest("li").ok().flatten()
+                            {
+                                crate::ui::reveal_soon(row);
+                            }
+                        }
                     />
                 </Show>
             </div>
@@ -610,15 +664,28 @@ fn outcome_slug(outcome: ActivityOutcome) -> &'static str {
 /// The war panel's Recent activity, closed until a member opens it.
 #[component]
 pub(crate) fn RecentActivity() -> impl IntoView {
-    let open = RwSignal::new(false);
     view! {
         <section class="war-section war-section-activity" aria-label="Recent activity">
-            <Disclosure open summary="Recent activity" class="activity-disclosure">
-                <Show when=move || open.get()>
-                    <ActivityFeed />
-                </Show>
-            </Disclosure>
+            <ActivityDisclosure />
         </section>
+    }
+}
+
+/// Recent activity behind a disclosure. Nothing loads until it is first opened; after that
+/// the feed is kept, so closing and reopening shows what it held without a reload.
+#[component]
+pub(crate) fn ActivityDisclosure(
+    #[prop(optional, into)] territory: Option<Signal<String>>,
+) -> impl IntoView {
+    let open = RwSignal::new(false);
+    let opened =
+        Memo::new(move |opened: Option<&bool>| opened.copied().unwrap_or(false) || open.get());
+    view! {
+        <Disclosure open summary="Recent activity" class="activity-disclosure">
+            <Show when=move || opened.get()>
+                <ActivityFeed territory=territory visible=open />
+            </Show>
+        </Disclosure>
     }
 }
 

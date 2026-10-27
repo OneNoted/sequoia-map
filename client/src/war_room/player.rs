@@ -327,7 +327,7 @@ fn PlayerDialogContent(
                 <h2 class="player-dialog-name" id="player-dialog-name">{username.clone()}</h2>
                 <p class="player-dialog-status" data-state=move || status.get().1>{move || status.get().0}</p>
             </div>
-            <button type="button" class="war-icon-button" aria-label="Close" on:click=move |_| on_close.run(())>
+            <button type="button" class="ui-button ui-icon-button war-icon-button" aria-label="Close" on:click=move |_| on_close.run(())>
                 "\u{00D7}"
             </button>
         </div>

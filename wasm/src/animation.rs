@@ -56,14 +56,7 @@ fn cubic_ease_out(t: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{ColorTransition, cubic_ease_out};
-
-    fn assert_close(actual: f64, expected: f64) {
-        let diff = (actual - expected).abs();
-        assert!(
-            diff < 1e-9,
-            "expected {expected}, got {actual} (diff: {diff})"
-        );
-    }
+    use crate::test_support::assert_close;
 
     #[test]
     fn cubic_ease_out_boundaries() {

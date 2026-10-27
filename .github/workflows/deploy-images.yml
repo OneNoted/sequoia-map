@@ -156,8 +156,8 @@ jobs:
                 ingest=true ;;
               ops/caddy/*)
                 edge=true ;;
-              ''|README.md|AGENTS.md|LICENSE|docs/*|.gitignore|.cargo/audit.toml|mise.toml|mods/wynn-iris/*|\
-              .github/workflows/ci.yml|.github/workflows/iris-release.yml|docker-compose.yml|docker-compose.coolify.dev.yml|\
+              ''|README.md|AGENTS.md|LICENSE|docs/*|.gitignore|.cargo/audit.toml|mise.toml|\
+              .github/workflows/ci.yml|docker-compose.yml|docker-compose.coolify.dev.yml|\
               scripts/postgres.sh|scripts/check-wasm-size.py|scripts/smoke-browser.py|ops/postgres/*|ops/backup/*|ops/prometheus/*)
                 ;; # Known inputs outside these Docker build/deployment closures.
               *)

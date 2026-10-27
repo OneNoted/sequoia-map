@@ -239,6 +239,10 @@ pub(crate) struct ShowMinimap(pub RwSignal<bool>);
 pub(crate) struct ShowWarPanel(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowWarMarkers(pub RwSignal<bool>);
+/// Whether Recent activity also lists cancelled queues and attacks without a confirmed
+/// capture. Off, its lists hold only confirmed captures and losses.
+#[derive(Clone, Copy)]
+pub(crate) struct ActivityIncludeUnconfirmed(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowPlayerHeads(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -488,6 +492,8 @@ struct SettingsV2 {
     show_war_queue: bool,
     #[serde(default = "default_true")]
     show_war_markers: bool,
+    #[serde(default)]
+    activity_include_unconfirmed: bool,
     #[serde(default = "default_true")]
     show_player_heads: bool,
     #[serde(default = "default_true")]
@@ -776,6 +782,7 @@ impl Default for SettingsV2 {
             war_panel_width: default_war_panel_width(),
             show_war_queue: true,
             show_war_markers: true,
+            activity_include_unconfirmed: false,
             show_player_heads: true,
             player_head_render_head: true,
             player_head_render_label: false,
@@ -915,6 +922,7 @@ impl From<LegacySettings> for SettingsV2 {
             war_panel_width: default_war_panel_width(),
             show_war_queue: true,
             show_war_markers: true,
+            activity_include_unconfirmed: false,
             show_player_heads: true,
             player_head_render_head: true,
             player_head_render_label: false,
@@ -965,7 +973,6 @@ fn load_settings_v2() -> SettingsV2 {
 }
 
 use crate::colors::rgba_css;
-use crate::defense::{DEFENSE_TIERS, defense_tier_display};
 use crate::heat::{self, HeatFetchInput};
 use crate::history;
 use crate::keybinds::{KeybindHelpOpen, Shortcut};
@@ -974,7 +981,10 @@ use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::territory::{ClientTerritoryMap, from_snapshot};
-use crate::territory_card::{ResourceRow, ResourceTable, TerritoryWar, territory_resource_rows};
+use crate::territory_card::{
+    DefenseValue, ResourceRow, ResourceTable, TerritoryHead, TerritoryWar, TreasuryValue, cooldown,
+    territory_resource_rows, treasury,
+};
 use crate::time_format::format_hms;
 use crate::timeline::Timeline;
 use crate::viewport::Viewport;
@@ -1102,6 +1112,7 @@ pub fn MapPage() -> impl IntoView {
         RwSignal::new(clamp_war_panel_width(saved.war_panel_width));
     let show_war_panel: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
     let show_war_markers: RwSignal<bool> = RwSignal::new(saved.show_war_markers);
+    let activity_include_unconfirmed = RwSignal::new(saved.activity_include_unconfirmed);
     let show_player_heads: RwSignal<bool> = RwSignal::new(saved.show_player_heads);
     let player_head_render_head: RwSignal<bool> = RwSignal::new(saved.player_head_render_head);
     let player_head_render_label: RwSignal<bool> = RwSignal::new(saved.player_head_render_label);
@@ -1322,6 +1333,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(WarPanelWidth(war_panel_width));
     provide_context(ShowWarPanel(show_war_panel));
     provide_context(ShowWarMarkers(show_war_markers));
+    provide_context(ActivityIncludeUnconfirmed(activity_include_unconfirmed));
     provide_context(ShowPlayerHeads(show_player_heads));
     provide_context(PlayerHeadRenderHead(player_head_render_head));
     provide_context(PlayerHeadRenderLabel(player_head_render_label));
@@ -1509,6 +1521,7 @@ pub fn MapPage() -> impl IntoView {
         show_minimap.set(defaults.show_minimap);
         show_war_panel.set(defaults.show_war_queue);
         show_war_markers.set(defaults.show_war_markers);
+        activity_include_unconfirmed.set(defaults.activity_include_unconfirmed);
         show_player_heads.set(defaults.show_player_heads);
         player_head_render_head.set(defaults.player_head_render_head);
         player_head_render_label.set(defaults.player_head_render_label);
@@ -2038,6 +2051,7 @@ pub fn MapPage() -> impl IntoView {
             war_panel_width: clamp_war_panel_width(war_panel_width.get()),
             show_war_queue: show_war_panel.get(),
             show_war_markers: show_war_markers.get(),
+            activity_include_unconfirmed: activity_include_unconfirmed.get(),
             show_player_heads: show_player_heads.get(),
             player_head_render_head: player_head_render_head.get(),
             player_head_render_label: player_head_render_label.get(),
@@ -2909,26 +2923,13 @@ fn SidebarToggle() -> impl IntoView {
 
     view! {
         <button
+            type="button"
             class="sidebar-toggle"
             title=move || if sidebar_open.get() { "Hide sidebar" } else { "Show sidebar" }
-            style="position: absolute; top: 16px; left: -44px; z-index: 11; width: 32px; height: 32px; background: var(--color-deep); border: 1px solid var(--color-border-subtle); border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; color: var(--color-text-dim); font-family: var(--font-mono); font-size: 1.1rem; line-height: 1;"
+            aria-label=move || if sidebar_open.get() { "Hide sidebar" } else { "Show sidebar" }
             on:click=move |_| {
                 sidebar_open.update(|v| *v = !*v);
                 sidebar_transient.set(false);
-            }
-            on:mouseenter=move |e| {
-                if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("border-color", "rgba(245,197,66,0.4)").ok();
-                    el.style().set_property("color", "var(--color-gold)").ok();
-                    el.style().set_property("background", "var(--color-surface)").ok();
-                }
-            }
-            on:mouseleave=move |e| {
-                if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                    el.style().set_property("color", "var(--color-text-dim)").ok();
-                    el.style().set_property("background", "var(--color-deep)").ok();
-                }
             }
         >
             {move || if sidebar_open.get() { "\u{00BB}" } else { "\u{00AB}" }}
@@ -3268,10 +3269,10 @@ fn DefenseLegend() -> impl IntoView {
                 "Defense"
             </div>
             <div style="display: grid; grid-template-columns: auto auto; gap: 4px 8px; align-items: center;">
-                {DEFENSE_TIERS.iter().map(|(label, color)| view! {
-                    <span style={format!("width: 10px; height: 10px; border-radius: 2px; background: {color}; border: 1px solid rgba(255,255,255,0.18);")} />
+                {sequoia_shared::tower::DefenseRating::ALL.iter().map(|rating| view! {
+                    <span style={format!("width: 10px; height: 10px; border-radius: 2px; background: {}; border: 1px solid rgba(255,255,255,0.18);", rating.color_hex())} />
                     <span style="font-family: var(--font-mono); font-size: 0.64rem; color: #d8d5cb; white-space: nowrap;">
-                        {*label}
+                        {rating.label()}
                     </span>
                 }).collect_view()}
             </div>
@@ -3318,17 +3319,8 @@ fn Tooltip() -> impl IntoView {
             None
         };
         let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
-        let treasury = runtime
-            .and_then(|runtime| runtime.treasury.as_deref())
-            .and_then(TreasuryLevel::from_api_tier)
-            .unwrap_or_else(|| TreasuryLevel::from_held_seconds(secs));
-        let cooldown = if secs < 600 {
-            let remaining = 600 - secs;
-            let frac = remaining as f64 / 600.0;
-            Some((format!("{}:{:02}", remaining / 60, remaining % 60), frac))
-        } else {
-            None
-        };
+        let treasury = treasury(runtime, secs);
+        let cooldown = cooldown(secs);
 
         Some(TooltipInfo {
             name,
@@ -3356,9 +3348,6 @@ fn Tooltip() -> impl IntoView {
             };
             let (x, y) = pointer.get();
             let (r, g, b) = info.guild_color;
-            let (tr, tg, tb) = info.treasury.color_rgb();
-            let buff = info.treasury.buff_percent();
-            let defense = info.defense_tier.as_deref().map(defense_tier_display);
             let territory = Signal::derive(move || hovered_name.get().unwrap_or_default());
             view! {
                 <div
@@ -3367,11 +3356,7 @@ fn Tooltip() -> impl IntoView {
                     style:top=format!("{}px", y - 8.0)
                     style:--tcard-guild=rgba_css(r, g, b, 0.9)
                 >
-                    <header class="tcard-head">
-                        <span class="tcard-swatch" aria-hidden="true" />
-                        <span class="tcard-name">{info.name.clone()}</span>
-                        {info.is_headquarters.then(|| view! { <span class="tcard-hq" title="Headquarters">"HQ"</span> })}
-                    </header>
+                    <TerritoryHead name=info.name.clone() hq=info.is_headquarters />
                     <div class="tcard-owner">
                         <a
                             class="tcard-guild"
@@ -3401,15 +3386,9 @@ fn Tooltip() -> impl IntoView {
                                 None => view! { <dd class="tcard-ready">"Ready"</dd> }.into_any(),
                             }}
                         </div>
-                        <div>
-                            <dt>"Treasury"</dt>
-                            <dd style:color=rgba_css(tr, tg, tb, 1.0)>
-                                {info.treasury.label()}
-                                {(buff > 0).then(|| view! { <span class="tcard-buff">{format!("+{buff}%")}</span> })}
-                            </dd>
-                        </div>
-                        {defense.map(|(label, color)| view! {
-                            <div><dt>"Defense"</dt><dd style:color=color>{label}</dd></div>
+                        <div><dt>"Treasury"</dt><TreasuryValue level=info.treasury buff=true /></div>
+                        {info.defense_tier.clone().map(|tier| view! {
+                            <div><dt>"Defense"</dt><DefenseValue tier /></div>
                         })}
                         {info.takes_in_window.map(|count| view! {
                             <div><dt>"Takes"</dt><dd>{count}</dd></div>
@@ -3458,18 +3437,9 @@ fn TerritoryPeekCard() -> impl IntoView {
         } else {
             None
         };
-        let acquired = ct.territory.acquired.to_rfc3339();
-        let secs = chrono::DateTime::parse_from_rfc3339(&acquired)
-            .map(|dt| (reference_secs - dt.timestamp()).max(0))
-            .unwrap_or(0);
+        let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
         let held = format_hms(secs);
-        let treasury = ct
-            .territory
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.treasury.as_deref())
-            .and_then(TreasuryLevel::from_api_tier)
-            .unwrap_or_else(|| TreasuryLevel::from_held_seconds(secs));
+        let treasury = treasury(ct.territory.runtime.as_ref(), secs);
         Some((
             name,
             ct.territory.guild.name.clone(),
@@ -3491,7 +3461,6 @@ fn TerritoryPeekCard() -> impl IntoView {
             let (r, g, b) = info.4;
             let treasury = info.5;
             let takes_in_window = info.6;
-            let (tr, tg, tb) = treasury.color_rgb();
             let name = info.0.clone();
             let is_history = mode.get_untracked() == MapMode::History;
             let bottom_px = if is_history { 96 } else { 16 };
@@ -3504,10 +3473,7 @@ fn TerritoryPeekCard() -> impl IntoView {
                     style:--tcard-guild=rgba_css(r, g, b, 0.9)
                 >
                     <div class="tcard-peek-body">
-                        <header class="tcard-head">
-                            <span class="tcard-swatch" aria-hidden="true" />
-                            <span class="tcard-name">{info.0.clone()}</span>
-                        </header>
+                        <TerritoryHead name=info.0.clone() hq=false />
                         <div class="tcard-owner">
                             <span class="tcard-guild">{info.1}</span>
                             <span class="tcard-tag">"[" {info.2.clone()} "]"</span>
@@ -3515,10 +3481,7 @@ fn TerritoryPeekCard() -> impl IntoView {
                         </div>
                         <TerritoryWar territory />
                         <dl class="tcard-stats">
-                            <div>
-                                <dt>"Treasury"</dt>
-                                <dd style:color=rgba_css(tr, tg, tb, 1.0)>{treasury.label()}</dd>
-                            </div>
+                            <div><dt>"Treasury"</dt><TreasuryValue level=treasury /></div>
                             {takes_in_window.map(|count| view! {
                                 <div><dt>"Takes"</dt><dd>{count}</dd></div>
                             })}
@@ -3628,6 +3591,21 @@ mod tests {
         let defaults = SettingsV2::default();
         assert!(defaults.show_war_queue);
         assert!(defaults.show_war_markers);
+    }
+
+    #[test]
+    fn recent_activity_shows_only_confirmed_results_until_asked_otherwise() {
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!parsed.activity_include_unconfirmed);
+        assert!(!SettingsV2::default().activity_include_unconfirmed);
+
+        let saved = SettingsV2 {
+            activity_include_unconfirmed: true,
+            ..SettingsV2::default()
+        };
+        let round_trip: SettingsV2 =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert!(round_trip.activity_include_unconfirmed);
     }
 
     #[test]

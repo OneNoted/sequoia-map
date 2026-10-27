@@ -18,6 +18,8 @@ pub mod scene;
 pub mod settings;
 pub mod spatial;
 pub mod territory;
+#[cfg(test)]
+mod test_support;
 pub mod time_format;
 pub mod viewport;
 pub mod wheel;

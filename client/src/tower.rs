@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
 
 use sequoia_shared::tower::{
     self, ATTACK_RATES, AURA_LABELS, DAMAGES, DEFENSES, HEALTHS, VOLLEY_LABELS,
 };
 
 use crate::app::Selected;
-use crate::colors::rgba_css;
 use crate::territory::ClientTerritoryMap;
+
+/// Most guild connections a territory can have.
+const MAX_CONNECTIONS: u32 = 20;
+/// Most externals within three hops the calculator accepts.
+const MAX_EXTERNALS: u32 = 50;
 
 /// Persistent tower calculator state, provided via context so stats survive territory switches.
 #[derive(Clone, Copy)]
@@ -206,6 +209,34 @@ pub fn TowerCalculator() -> impl IntoView {
         externals.set(all_ext);
     };
 
+    // Linked territories lift every stat; externals only count for a headquarters. A raised
+    // connection count also brings its externals along, up to their cap.
+    let connections_bonus = Memo::new(move |_| {
+        format!(
+            "\u{00d7}{:.2}",
+            tower::calc_stat(1.0, false, connections.get(), 0)
+        )
+    });
+    let externals_bonus = Memo::new(move |_| {
+        if is_hq.get() {
+            let with = tower::calc_stat(1.0, true, connections.get(), externals.get());
+            let without = tower::calc_stat(1.0, false, connections.get(), 0);
+            format!("\u{00d7}{:.2}", with / without)
+        } else {
+            String::new()
+        }
+    });
+    let set_connections = Callback::new(move |next: u32| {
+        let previous = connections.get_untracked();
+        connections.set(next);
+        if next > previous {
+            externals
+                .update(|value| *value = value.saturating_add(next - previous).min(MAX_EXTERNALS));
+        } else {
+            externals.update(|value| *value = value.saturating_sub(previous - next));
+        }
+    });
+
     view! {
         <section class="tcard-section tower" aria-labelledby="tower-heading">
             <h3 class="tcard-section-title" id="tower-heading">"Tower calculator"</h3>
@@ -230,44 +261,33 @@ pub fn TowerCalculator() -> impl IntoView {
                 <StatRow label="Volley" level=volley_lvl max=3 detail=Memo::new(move |_| {
                     VOLLEY_LABELS[volley_lvl.get().min(3) as usize].to_string()
                 }) />
-            </div>
-
-            <div class="tower-links">
-                // Each caption names its own input; wrapping the steppers in a label would hand a
-                // click on the caption to the first stepper button.
-                <div class="tower-link">
-                    <label for="tower-connections">"Connections"</label>
-                    <CounterInput id="tower-connections" label="Connections" value=connections max=20 synced_value=externals synced_max=50 />
-                </div>
-                <div class="tower-link">
-                    <label for="tower-externals">"Externals"</label>
-                    <CounterInput id="tower-externals" label="Externals" value=externals max=50 />
-                </div>
+                <StatRow label="Connections" level=connections max=MAX_CONNECTIONS detail=connections_bonus on_set=set_connections />
+                <StatRow label="Externals" level=externals max=MAX_EXTERNALS detail=externals_bonus />
             </div>
 
             <div class="tower-actions">
                 <button
                     type="button"
-                    class="tower-action"
+                    class="ui-button tower-action"
                     aria-pressed=move || is_hq.get().to_string()
                     on:click=move |_| is_hq.update(|v| *v = !*v)
                 >"HQ"</button>
                 <button
                     type="button"
-                    class="tower-action"
+                    class="ui-button tower-action"
                     title="Damage, attack, health and defense at 11"
                     aria-pressed=move || is_max_preset_active.get().to_string()
                     on:click=on_max_toggle
                 >"11x4"</button>
                 <button
                     type="button"
-                    class="tower-action"
+                    class="ui-button tower-action"
                     title="Reset connections and externals to the guild's own"
                     on:click=on_reset_owned
                 >"Reset"</button>
                 <button
                     type="button"
-                    class="tower-action"
+                    class="ui-button tower-action"
                     title="Externals: every territory within 3 hops, whoever owns it"
                     on:click=on_apply_all_externals
                 >"All Ext"</button>
@@ -289,11 +309,9 @@ pub fn TowerCalculator() -> impl IntoView {
                 </div>
                 <div>
                     <dt>"Rating"</dt>
-                    <dd style:color=move || {
-                        let (rr, rg, rb) = defense_rating.get().color_rgb();
-                        rgba_css(rr, rg, rb, 1.0)
-                    }>
-                        {move || format!("{} ({})", defense_rating.get().label(), defense_index.get())}
+                    <dd class="tower-rating" style:color=move || defense_rating.get().color_hex()>
+                        {move || defense_rating.get().label()}
+                        <span class="tower-rating-index">"Index " {move || defense_index.get()}</span>
                     </dd>
                 </div>
             </dl>
@@ -301,127 +319,76 @@ pub fn TowerCalculator() -> impl IntoView {
     }
 }
 
-/// A single stat row with label, +/- buttons, editable level input, scroll support, and detail text.
+/// One calculator input: its label, a stepper, and what the value amounts to. Every row shares
+/// the grid's columns, so labels, steppers and figures line up whatever their length.
 #[component]
 fn StatRow(
     label: &'static str,
     level: RwSignal<u32>,
     max: u32,
     detail: Memo<String>,
+    /// Applies a new value; by default it is simply stored.
+    #[prop(optional)]
+    on_set: Option<Callback<u32>>,
 ) -> impl IntoView {
-    let on_dec = move |_| level.update(|v| *v = v.saturating_sub(1));
-    let on_inc = move |_| level.update(|v| *v = (*v + 1).min(max));
+    let set = move |next: u32| {
+        let next = next.min(max);
+        if next == level.get_untracked() {
+            return;
+        }
+        match on_set {
+            Some(on_set) => on_set.run(next),
+            None => level.set(next),
+        }
+    };
+    let id = format!("tower-{}", label.to_ascii_lowercase());
+    let show_level = move |ev: &web_sys::Event| {
+        let input: web_sys::HtmlInputElement = event_target(ev);
+        let value = level.get_untracked().to_string();
+        if input.value() != value {
+            input.set_value(&value);
+        }
+    };
     let on_wheel = move |ev: web_sys::WheelEvent| {
         ev.prevent_default();
+        let value = level.get_untracked();
         if ev.delta_y() < 0.0 {
-            level.update(|v| *v = (*v + 1).min(max));
+            set(value + 1);
         } else if ev.delta_y() > 0.0 {
-            level.update(|v| *v = v.saturating_sub(1));
-        }
-    };
-    let on_input = move |ev: leptos::ev::Event| {
-        let val = event_target_value(&ev);
-        if let Ok(n) = val.parse::<u32>() {
-            level.set(n.min(max));
-        }
-    };
-    let on_focus = move |ev: web_sys::FocusEvent| {
-        if let Some(target) = ev.target()
-            && let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>()
-        {
-            input.select();
+            set(value.saturating_sub(1));
         }
     };
 
     view! {
         <div class="tower-stat" on:wheel=on_wheel>
-            <span class="tower-stat-label">{label}</span>
+            <label class="tower-stat-label" for=id.clone()>{label}</label>
             <div class="tower-stepper">
-                <button type="button" aria-label=format!("Lower {label}") on:click=on_dec>"\u{2212}"</button>
+                <button type="button" aria-label=format!("Lower {label}") on:click=move |_| set(level.get_untracked().saturating_sub(1))>"\u{2212}"</button>
                 <input
+                    id=id
                     type="text"
                     inputmode="numeric"
-                    aria-label=format!("{label} level")
                     prop:value=move || level.get().to_string()
-                    on:input=on_input
-                    on:focus=on_focus
+                    on:input=move |ev| {
+                        if let Ok(value) = event_target_value(&ev).parse::<u32>() {
+                            set(value);
+                            // Past the maximum the value may not change at all, so the field
+                            // would keep showing what was typed: write back what is used.
+                            if value > max {
+                                show_level(&ev);
+                            }
+                        }
+                    }
+                    // Whatever was left half-typed, the field ends showing the value in use.
+                    on:blur=move |ev| show_level(&ev)
+                    on:focus=move |ev| {
+                        let input: web_sys::HtmlInputElement = event_target(&ev);
+                        input.select();
+                    }
                 />
-                <button type="button" aria-label=format!("Raise {label}") on:click=on_inc>"+"</button>
+                <button type="button" aria-label=format!("Raise {label}") on:click=move |_| set(level.get_untracked() + 1)>"+"</button>
             </div>
             <span class="tower-stat-detail">{move || detail.get()}</span>
-        </div>
-    }
-}
-
-/// Small counter input with +/- buttons, editable value, and scroll support.
-#[component]
-fn CounterInput(
-    id: &'static str,
-    label: &'static str,
-    value: RwSignal<u32>,
-    max: u32,
-    #[prop(optional)] synced_value: Option<RwSignal<u32>>,
-    #[prop(optional)] synced_max: Option<u32>,
-) -> impl IntoView {
-    let apply_value = move |next: u32| {
-        let prev = value.get_untracked();
-        let next = next.min(max);
-        if prev == next {
-            return;
-        }
-        value.set(next);
-
-        let Some(synced_value) = synced_value else {
-            return;
-        };
-        let synced_cap = synced_max.unwrap_or(u32::MAX);
-
-        if next > prev {
-            let delta = next - prev;
-            synced_value.update(|v| *v = v.saturating_add(delta).min(synced_cap));
-        } else {
-            let delta = prev - next;
-            synced_value.update(|v| *v = v.saturating_sub(delta));
-        }
-    };
-
-    let on_dec = move |_| apply_value(value.get_untracked().saturating_sub(1));
-    let on_inc = move |_| apply_value(value.get_untracked() + 1);
-    let on_wheel = move |ev: web_sys::WheelEvent| {
-        ev.prevent_default();
-        if ev.delta_y() < 0.0 {
-            apply_value(value.get_untracked() + 1);
-        } else if ev.delta_y() > 0.0 {
-            apply_value(value.get_untracked().saturating_sub(1));
-        }
-    };
-    let on_input = move |ev: leptos::ev::Event| {
-        let val = event_target_value(&ev);
-        if let Ok(n) = val.parse::<u32>() {
-            apply_value(n);
-        }
-    };
-    let on_focus = move |ev: web_sys::FocusEvent| {
-        if let Some(target) = ev.target()
-            && let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>()
-        {
-            input.select();
-        }
-    };
-
-    view! {
-        <div class="tower-stepper" on:wheel=on_wheel>
-            <button type="button" aria-label=format!("Fewer {label}") on:click=on_dec>"\u{2212}"</button>
-            <input
-                type="text"
-                inputmode="numeric"
-                id=id
-                aria-label=label
-                prop:value=move || value.get().to_string()
-                on:input=on_input
-                on:focus=on_focus
-            />
-            <button type="button" aria-label=format!("More {label}") on:click=on_inc>"+"</button>
         </div>
     }
 }

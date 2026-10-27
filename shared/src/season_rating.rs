@@ -49,14 +49,7 @@ pub fn passive_sr_per_5s(territory_count: usize, scalar: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{passive_sr_per_5s, passive_sr_per_hour, weighted_units};
-
-    fn assert_close(actual: f64, expected: f64) {
-        let diff = (actual - expected).abs();
-        assert!(
-            diff < 1e-9,
-            "expected {expected}, got {actual} (diff: {diff})"
-        );
-    }
+    use crate::test_support::assert_close;
 
     #[test]
     fn weighted_units_for_five_territories_includes_fifth_penalty() {

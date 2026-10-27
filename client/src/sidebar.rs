@@ -1,8 +1,13 @@
+//! The sidebar: search, the guild leaderboard, a guild, a territory, settings and the toolbar.
+//! Every view opens with the same navigation row and uses the same gutters, headings and
+//! controls, so moving between them changes the content and not the layout.
+
 use leptos::prelude::*;
 use std::collections::HashMap;
-use wasm_bindgen::JsCast;
 
-use sequoia_shared::{DataProvenance, TreasuryLevel, passive_sr_per_5s, passive_sr_per_hour};
+use sequoia_shared::{
+    DataProvenance, TerritoryRuntimeData, passive_sr_per_5s, passive_sr_per_hour,
+};
 
 use crate::app::{
     AutoSrScalarEnabled, CurrentMode, DetailReturnGuild, GuildColorStore, GuildOnlineData,
@@ -10,77 +15,30 @@ use crate::app::{
     HistoryBufferModeActive, HistoryBufferedUpdates, HistoryFetchNonce,
     HistoryLegacyGeometryActive, HistorySeasonLeaderboard, HistorySeasonScalarSample,
     HistoryTimestamp, IsMobile, LastLiveSeq, LeaderboardSortBySr, LiveHandoffResyncCount,
-    LiveSeasonScalarSample, ManualSrScalar, MapMode, NeedsLiveResync, PlaybackActive,
-    ResetSettingsTrigger, Selected, SelectedGuild, ShowDebugInfo, ShowLeaderboardOnline,
-    ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowSettings,
-    SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient, TerritoryGeometryStore,
+    LiveSeasonScalarSample, ManualSrScalar, MapMode, NeedsLiveResync, PlaybackActive, Selected,
+    SelectedGuild, ShowDebugInfo, ShowLeaderboardOnline, ShowLeaderboardSrGain,
+    ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowSettings, SidebarIndex,
+    SidebarItems, SidebarOpen, SidebarTransient, TerritoryGeometryStore,
 };
 use crate::colors::rgba_css;
-use crate::defense::defense_tier_display;
+use crate::format::{compact, rate, since};
 use crate::history;
 use crate::keybinds::KeybindHelp;
-use crate::season_scalar::{ScalarSource, effective_scalar};
+use crate::season_scalar::{EffectiveScalar, ScalarSource, effective_scalar};
 use crate::settings_menu::SettingsPanel;
 use crate::territory::ClientTerritoryMap;
-use crate::territory_card::{Disclosure, ResourceTable, TerritoryWar, territory_resource_rows};
+use crate::territory_card::{
+    DefenseValue, ResourceRow, ResourceTable, TerritoryHead, TerritoryWar, TreasuryValue, cooldown,
+    territory_resource_rows, treasury,
+};
 use crate::tower::TowerCalculator;
-use crate::war_room::ActivityFeed;
+use crate::ui::{Disclosure, PanelNav, SCROLLER};
+use crate::war_room::ActivityDisclosure;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
 
-fn format_sr_rate(val: f64) -> String {
-    if val >= 1000.0 {
-        format!("{:.1}k", val / 1000.0)
-    } else if val >= 100.0 {
-        format!("{val:.0}")
-    } else if val >= 10.0 {
-        format!("{val:.1}")
-    } else {
-        format!("{val:.2}")
-    }
-}
-
-fn format_sr_value(val: i64) -> String {
-    if val >= 1_000_000 {
-        format!("{:.1}M", val as f64 / 1_000_000.0)
-    } else if val >= 1_000 {
-        format!("{:.1}k", val as f64 / 1_000.0)
-    } else {
-        format!("{val}")
-    }
-}
-
-/// Format an RFC3339 timestamp into a human-readable relative time.
-fn format_relative_time(rfc3339: &str, reference_secs: i64) -> String {
-    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
-        return rfc3339.to_string();
-    };
-    let secs = reference_secs - dt.timestamp();
-    if secs <= 0 {
-        return "just now".to_string();
-    }
-    if secs < 60 {
-        return "just now".to_string();
-    }
-    let mins = secs / 60;
-    if mins < 60 {
-        return format!("{mins}m ago");
-    }
-    let hours = secs / 3600;
-    if hours < 24 {
-        return format!("{hours}h ago");
-    }
-    let days = secs / 86_400;
-    if days < 7 {
-        return format!("{days}d ago");
-    }
-    if days < 30 {
-        let weeks = days / 7;
-        return format!("{weeks}w ago");
-    }
-    // Fallback to short date
-    dt.format("%b %d, %Y").to_string()
-}
+/// Newer than this, the live feed counts as working.
+const LIVE_FRESH_SECS: i64 = 120;
 
 fn format_confidence(confidence: f32) -> String {
     format!("{:.0}%", (confidence.clamp(0.0, 1.0) * 100.0))
@@ -118,6 +76,11 @@ fn live_source_display_label(source: &str) -> Option<&'static str> {
     }
 }
 
+/// A guild's colour as the swatch and card edges use it.
+fn guild_css((r, g, b): (u8, u8, u8)) -> String {
+    rgba_css(r, g, b, 0.9)
+}
+
 /// Sidebar with search, leaderboard, detail panel, and stats.
 #[component]
 pub fn Sidebar() -> impl IntoView {
@@ -135,23 +98,14 @@ pub fn Sidebar() -> impl IntoView {
             return;
         }
         let idx = sidebar_index.get();
-        let Some(window) = web_sys::window() else {
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
             return;
         };
-        let Some(doc) = window.document() else {
-            return;
-        };
-        let Ok(Some(scroll_el)) = doc.query_selector("[data-sidebar-scroll]") else {
-            return;
-        };
-        let Ok(scroll_el) = scroll_el.dyn_into::<web_sys::HtmlElement>() else {
+        let Ok(Some(scroll_el)) = document.query_selector(SCROLLER) else {
             return;
         };
         let Ok(Some(item_el)) = scroll_el.query_selector(&format!("[data-sidebar-idx='{idx}']"))
         else {
-            return;
-        };
-        let Ok(item_el) = item_el.dyn_into::<web_sys::HtmlElement>() else {
             return;
         };
 
@@ -169,275 +123,48 @@ pub fn Sidebar() -> impl IntoView {
         }
     });
 
+    #[derive(Clone, Copy, PartialEq)]
+    enum View {
+        Settings,
+        Guild,
+        Territory,
+        Leaderboard,
+        Search,
+    }
+    let shown = Memo::new(move |_| {
+        if show_settings.get() {
+            View::Settings
+        } else if selected_guild.get().is_some() {
+            View::Guild
+        } else if selected.get().is_some() {
+            View::Territory
+        } else if search_query.with(String::is_empty) {
+            View::Leaderboard
+        } else {
+            View::Search
+        }
+    });
+
     view! {
-        <div
-            class="sidebar-inner"
-            class:sidebar-animate=move || sidebar_open.get()
-            style:display=move || if sidebar_open.get() { "flex" } else { "none" }
-            style="width: 100%; min-width: 100%; height: 100%; background: var(--color-deep); border-left: 1px solid var(--color-border-subtle); display: flex; flex-direction: column; z-index: 10; box-shadow: -4px 0 20px rgba(0,0,0,0.4), inset 1px 0 0 rgba(168,85,247,0.04);"
-        >
-            <SidebarHeader />
+        <div class="sidebar-inner" class:sidebar-animate=move || sidebar_open.get() style:display=move || if sidebar_open.get() { "flex" } else { "none" }>
             <SearchBar />
-            <div data-sidebar-scroll="" class="scrollbar-thin" style="flex: 1; overflow-y: auto;">
+            <div data-sidebar-scroll="" class="sb-scroll scrollbar-thin">
                 {move || {
-                    if show_settings.get() {
+                    let view = shown.get();
+                    if !matches!(view, View::Leaderboard | View::Search) {
                         sidebar_items.set(Vec::new());
                         sidebar_index.set(0);
-                        view! { <SettingsPanel /> }.into_any()
-                    } else if selected_guild.get().is_some() {
-                        sidebar_items.set(Vec::new());
-                        sidebar_index.set(0);
-                        view! { <GuildPanel /> }.into_any()
-                    } else if selected.get().is_some() {
-                        sidebar_items.set(Vec::new());
-                        sidebar_index.set(0);
-                        view! { <DetailPanel /> }.into_any()
-                    } else {
-                        let query = search_query.get();
-                        if query.is_empty() {
-                            view! { <LeaderboardPanel /> }.into_any()
-                        } else {
-                            view! { <SearchResults /> }.into_any()
-                        }
+                    }
+                    match view {
+                        View::Settings => view! { <SettingsPanel /> }.into_any(),
+                        View::Guild => view! { <GuildPanel /> }.into_any(),
+                        View::Territory => view! { <DetailPanel /> }.into_any(),
+                        View::Leaderboard => view! { <LeaderboardPanel /> }.into_any(),
+                        View::Search => view! { <SearchResults /> }.into_any(),
                     }
                 }}
             </div>
-            <StatsBar />
-        </div>
-    }
-}
-
-#[component]
-fn SidebarHeader() -> impl IntoView {
-    let IsMobile(is_mobile) = expect_context();
-    let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let tick: RwSignal<i64> = expect_context();
-    let ShowDebugInfo(show_debug_info) = expect_context();
-
-    #[derive(Clone, PartialEq)]
-    struct LiveDataBadgeStatus {
-        is_working: bool,
-        status_label: String,
-        status_reason: String,
-        source: String,
-        observed_label: String,
-        age_label: String,
-        reporter_count: u16,
-        visibility: String,
-        confidence: String,
-        tooltip: String,
-    }
-
-    let live_data_status = Memo::new(move |_| {
-        let now = tick.get();
-        let map = territories.get();
-        let mut latest_status: Option<(i64, String, String, u16, String, String)> = None;
-
-        for ct in map.values() {
-            let Some(runtime) = ct.territory.runtime.as_ref() else {
-                continue;
-            };
-            let Some(provenance) = runtime.provenance.as_ref() else {
-                continue;
-            };
-            let source = provenance.source.trim();
-            let Some(source_label) = live_source_display_label(source) else {
-                continue;
-            };
-
-            let observed_ts = chrono::DateTime::parse_from_rfc3339(&provenance.observed_at)
-                .map(|dt| dt.timestamp())
-                .unwrap_or(now);
-            if latest_status
-                .as_ref()
-                .is_none_or(|(prev_ts, _, _, _, _, _)| observed_ts > *prev_ts)
-            {
-                latest_status = Some((
-                    observed_ts,
-                    source_label.to_string(),
-                    provenance.observed_at.clone(),
-                    provenance.reporter_count,
-                    visibility_label(provenance).to_string(),
-                    format_confidence(provenance.confidence),
-                ));
-            }
-        }
-
-        match latest_status {
-            Some((observed_ts, source, observed_at, reporter_count, visibility, confidence)) => {
-                let age_secs = (now - observed_ts).max(0);
-                let is_active = age_secs <= 120;
-                let is_working = is_active && (reporter_count > 0 || source == "Wynncraft API");
-                let status_label = if is_working {
-                    "Working".to_string()
-                } else {
-                    "Not Working".to_string()
-                };
-                let observed_label = format_relative_time(&observed_at, now);
-                let age_label = format_age_seconds(age_secs);
-                let status_reason = if is_working {
-                    "recent Wynncraft API territory data is arriving".to_string()
-                } else if !is_active {
-                    format!("latest Wynncraft API data is stale ({age_label} old)")
-                } else {
-                    "no active live data source".to_string()
-                };
-                LiveDataBadgeStatus {
-                    is_working,
-                    status_label: status_label.clone(),
-                    status_reason: status_reason.clone(),
-                    source: source.clone(),
-                    observed_label: observed_label.clone(),
-                    age_label: age_label.clone(),
-                    reporter_count,
-                    visibility: visibility.clone(),
-                    confidence: confidence.clone(),
-                    tooltip: format!(
-                        "Live data: {status_label}\nReason: {status_reason}\nSource: {source}\nObserved: {observed_label}\nAge: {age_label}\nSamples: {reporter_count}\nVisibility: {visibility}\nConfidence: {confidence}\nFreshness window: 120s"
-                    ),
-                }
-            }
-            None => {
-                let status_label = "Not Working".to_string();
-                let status_reason = "no live API data received yet".to_string();
-                LiveDataBadgeStatus {
-                    is_working: false,
-                    status_label: status_label.clone(),
-                    status_reason: status_reason.clone(),
-                    source: "none".to_string(),
-                    observed_label: "no observations yet".to_string(),
-                    age_label: "n/a".to_string(),
-                    reporter_count: 0,
-                    visibility: "n/a".to_string(),
-                    confidence: "n/a".to_string(),
-                    tooltip: format!(
-                        "Live data: {status_label}\nReason: {status_reason}\nSource: none\nObserved: no observations yet"
-                    ),
-                }
-            }
-        }
-    });
-    let live_data_tooltip_visible = RwSignal::new(false);
-
-    let padding = move || {
-        if is_mobile.get() {
-            "padding: 10px 16px 8px; border-bottom: 1px solid var(--color-border-subtle);"
-        } else {
-            "padding: 20px 24px 16px; border-bottom: 1px solid var(--color-border-subtle);"
-        }
-    };
-    let divider_margin = move || {
-        if is_mobile.get() {
-            "margin-top: 6px;"
-        } else {
-            "margin-top: 12px;"
-        }
-    };
-
-    view! {
-        <div style=padding>
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
-                // The SEQUOIA wordmark now lives in the site navbar; the sidebar
-                // keeps only the build marker so the two do not compete.
-                <div style="font-family: var(--font-mono); font-size: 0.673rem; color: var(--color-border-accent); background: var(--surface-card); padding: 1px 6px; border-radius: var(--radius-xs); border: 1px solid rgba(245,197,66,0.15); letter-spacing: 0.04em;">
-                    "v0.1"
-                </div>
-                <div style=move || {
-                    let display = if show_debug_info.get() { "block" } else { "none" };
-                    format!("position: relative; flex-shrink: 0; display: {display};")
-                }>
-                    <a
-                        href="https://docs.wynncraft.com/"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title="Open Wynncraft API documentation"
-                        style=move || {
-                            let status = live_data_status.get();
-                            let (border, bg, fg) = if status.is_working {
-                                (
-                                    "rgba(var(--accent-live-rgb),0.42)",
-                                    "rgba(28, 42, 72, 0.65)",
-                                    "var(--accent-live)",
-                                )
-                            } else {
-                                (
-                                    "rgba(154,149,144,0.36)",
-                                    "rgba(32, 35, 48, 0.62)",
-                                    "var(--color-text-secondary)",
-                                )
-                            };
-                            format!(
-                                "display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-display); font-size: 0.66rem; letter-spacing: 0.08em; padding: 3px 7px; border-radius: 999px; border: 1px solid {border}; background: {bg}; color: {fg}; cursor: pointer; text-decoration: none;"
-                            )
-                        }
-                        aria-label=move || live_data_status.get().tooltip
-                        on:mouseenter=move |_| live_data_tooltip_visible.set(true)
-                        on:mouseleave=move |_| live_data_tooltip_visible.set(false)
-                    >
-                        <span style=move || {
-                            let status = live_data_status.get();
-                            let (dot_bg, dot_glow) = if status.is_working {
-                                ("var(--accent-live)", "0 0 6px var(--accent-live)")
-                            } else {
-                                ("var(--color-text-secondary)", "none")
-                            };
-                            format!(
-                                "width: 7px; height: 7px; border-radius: 50%; background: {dot_bg}; box-shadow: {dot_glow};"
-                            )
-                        } />
-                        <span>"API"</span>
-                    </a>
-                    <div
-                        style=move || {
-                            let status = live_data_status.get();
-                            let border = if status.is_working {
-                                "rgba(var(--accent-live-rgb),0.42)"
-                            } else {
-                                "rgba(154,149,144,0.45)"
-                            };
-                            let display = if live_data_tooltip_visible.get() {
-                                "block"
-                            } else {
-                                "none"
-                            };
-                            format!(
-                                "position: absolute; top: calc(100% + 8px); right: 0; min-width: 245px; max-width: 310px; border-radius: 8px; border: 1px solid {border}; background: rgba(15, 18, 30, 0.97); box-shadow: 0 10px 28px rgba(0,0,0,0.35); padding: 9px 10px; z-index: 20; pointer-events: none; display: {display};"
-                            )
-                        }
-                    >
-                        <div style=move || {
-                            let color = if live_data_status.get().is_working {
-                                "var(--accent-live)"
-                            } else {
-                                "#d5d2ce"
-                            };
-                            format!(
-                                "font-family: var(--font-display); font-size: 0.62rem; letter-spacing: 0.09em; text-transform: uppercase; color: {color};"
-                            )
-                        }>
-                            {move || format!("API {}", live_data_status.get().status_label)}
-                        </div>
-                        <div style="font-family: var(--font-mono); font-size: 0.67rem; color: #c5c2bc; margin-top: 4px;">
-                            {move || live_data_status.get().status_reason}
-                        </div>
-                        <div style="font-family: var(--font-mono); font-size: 0.645rem; color: var(--color-text-secondary); margin-top: 8px; line-height: 1.45;">
-                            <div>{move || format!("Observed: {}", live_data_status.get().observed_label)}</div>
-                            <div>{move || format!("Age: {}", live_data_status.get().age_label)}</div>
-                            <div>{move || format!("Source: {}", live_data_status.get().source)}</div>
-                            <div>{move || format!("Samples: {}", live_data_status.get().reporter_count)}</div>
-                            <div>{move || format!("Visibility: {}", live_data_status.get().visibility)}</div>
-                            <div>{move || format!("Confidence: {}", live_data_status.get().confidence)}</div>
-                            <div>"Freshness window: 120s"</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div
-                style="font-family: var(--font-body); font-size: 0.835rem; color: var(--color-text-dim); margin-top: 3px; letter-spacing: 0.08em;"
-                style:display=move || if is_mobile.get() { "none" } else { "block" }
-            >"Wynncraft Territories"</div>
-            // Gradient line divider
-            <div class="divider-gold" style=divider_margin />
+            <SidebarToolbar />
         </div>
     }
 }
@@ -445,61 +172,125 @@ fn SidebarHeader() -> impl IntoView {
 #[component]
 fn SearchBar() -> impl IntoView {
     let search_query: RwSignal<String> = expect_context();
-    let IsMobile(is_mobile) = expect_context();
+    let ShowDebugInfo(show_debug_info) = expect_context();
 
-    let on_input = move |e: leptos::ev::Event| {
-        let Some(target) = e.target() else {
-            return;
-        };
-        let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
-            return;
-        };
-        search_query.set(input.value());
-    };
+    view! {
+        <div class="sb-search">
+            <div class="sb-search-field">
+                <svg class="sb-search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
+                </svg>
+                <input
+                    data-search-input=""
+                    class="sb-search-input"
+                    type="text"
+                    placeholder="Search territories or guilds..."
+                    aria-label="Search territories or guilds"
+                    prop:value=move || search_query.get()
+                    on:input=move |event| search_query.set(event_target_value(&event))
+                />
+                <kbd class="sb-search-key" aria-hidden="true">"/"</kbd>
+            </div>
+            <Show when=move || show_debug_info.get()>
+                <LiveDataBadge />
+            </Show>
+        </div>
+    }
+}
 
-    let outer_padding = move || {
-        if is_mobile.get() {
-            "padding: 8px 12px; border-bottom: 1px solid var(--color-border-subtle);"
-        } else {
-            "padding: 12px 24px; border-bottom: 1px solid var(--color-border-subtle);"
-        }
+/// Diagnostics only: whether live territory data is arriving, and from where.
+#[component]
+fn LiveDataBadge() -> impl IntoView {
+    let territories: RwSignal<ClientTerritoryMap> = expect_context();
+    let tick: RwSignal<i64> = expect_context();
+
+    #[derive(Clone, PartialEq)]
+    struct Latest {
+        observed: i64,
+        observed_at: String,
+        source: &'static str,
+        reporters: u16,
+        visibility: &'static str,
+        confidence: String,
+    }
+
+    let latest = Memo::new(move |_| {
+        territories.with(|map| {
+            let now = tick.get_untracked();
+            map.values()
+                .filter_map(|ct| {
+                    let provenance = ct.territory.runtime.as_ref()?.provenance.as_ref()?;
+                    let source = live_source_display_label(provenance.source.trim())?;
+                    Some(Latest {
+                        observed: chrono::DateTime::parse_from_rfc3339(&provenance.observed_at)
+                            .map_or(now, |time| time.timestamp()),
+                        observed_at: provenance.observed_at.clone(),
+                        source,
+                        reporters: provenance.reporter_count,
+                        visibility: visibility_label(provenance),
+                        confidence: format_confidence(provenance.confidence),
+                    })
+                })
+                .max_by_key(|latest| latest.observed)
+        })
+    });
+    let status = Memo::new(move |_| {
+        let now = tick.get();
+        latest.with(|latest| match latest {
+            Some(latest) => {
+                let age = (now - latest.observed).max(0);
+                let fresh = age <= LIVE_FRESH_SECS;
+                let working = fresh && (latest.reporters > 0 || latest.source == "Wynncraft API");
+                let reason = if working {
+                    "recent Wynncraft API territory data is arriving".to_string()
+                } else if !fresh {
+                    format!(
+                        "latest Wynncraft API data is stale ({} old)",
+                        format_age_seconds(age)
+                    )
+                } else {
+                    "no active live data source".to_string()
+                };
+                let facts = vec![
+                    format!("Observed: {}", since(&latest.observed_at, now)),
+                    format!("Age: {}", format_age_seconds(age)),
+                    format!("Source: {}", latest.source),
+                    format!("Samples: {}", latest.reporters),
+                    format!("Visibility: {}", latest.visibility),
+                    format!("Confidence: {}", latest.confidence),
+                    format!("Freshness window: {LIVE_FRESH_SECS}s"),
+                ];
+                (working, reason, facts)
+            }
+            None => (
+                false,
+                "no live API data received yet".to_string(),
+                vec![
+                    "Source: none".to_string(),
+                    "Observed: no observations yet".to_string(),
+                ],
+            ),
+        })
+    });
+    let label = move || {
+        status.with(|(working, reason, facts)| {
+            let state = if *working { "Working" } else { "Not Working" };
+            format!("Live data: {state}\nReason: {reason}\n{}", facts.join("\n"))
+        })
     };
 
     view! {
-        <div style=outer_padding>
-            <div style="position: relative;">
-                // Search icon (inline SVG magnifying glass)
-                <div style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--color-text-dim); width: 14px; height: 14px;">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
-                        <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
-                    </svg>
-                </div>
-                <input
-                    data-search-input=""
-                    class="focus-ring"
-                    style="width: 100%; padding: 10px 14px 10px 34px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 6px; color: var(--color-text-primary); font-family: var(--font-body); font-size: 0.9rem; outline: none; transition: border-color 0.2s ease, box-shadow 0.3s ease;"
-                    type="text"
-                    placeholder="Search territories or guilds..."
-                    prop:value=move || search_query.get()
-                    on:input=on_input
-                    on:focus=|e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "var(--color-gold)").ok();
-                            el.style().set_property("box-shadow", "0 0 12px rgba(245,197,66,0.08)").ok();
-                        }
-                    }
-                    on:blur=|e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                            el.style().set_property("box-shadow", "none").ok();
-                        }
-                    }
-                />
-                // Keyboard hint — hidden on mobile (irrelevant on touch)
-                <div
-                    style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-family: var(--font-mono); font-size: 0.62rem; color: var(--color-border-accent); background: var(--color-deep); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--color-border-subtle); pointer-events: none;"
-                    style:display=move || if is_mobile.get() { "none" } else { "block" }
-                >"/"</div>
+        <div class="sb-live" data-working=move || status.with(|status| status.0).to_string()>
+            <a class="sb-live-badge" href="https://docs.wynncraft.com/" target="_blank" rel="noopener noreferrer" title="Open Wynncraft API documentation" aria-label=label>
+                <span class="sb-live-dot" aria-hidden="true" />
+                "API"
+            </a>
+            <div class="sb-live-tip" aria-hidden="true">
+                <div class="sb-live-state">{move || format!("API {}", if status.with(|status| status.0) { "Working" } else { "Not Working" })}</div>
+                <div class="sb-live-reason">{move || status.with(|status| status.1.clone())}</div>
+                <ul class="sb-live-facts">
+                    {move || status.with(|status| status.2.iter().map(|fact| view! { <li>{fact.clone()}</li> }).collect_view())}
+                </ul>
             </div>
         </div>
     }
@@ -520,7 +311,6 @@ fn SearchResults() -> impl IntoView {
         if query.is_empty() {
             return Vec::new();
         }
-
         let map = territories.get();
         let mut results: Vec<_> = map
             .iter()
@@ -533,12 +323,10 @@ fn SearchResults() -> impl IntoView {
                 (
                     name.clone(),
                     ct.territory.guild.name.clone(),
-                    ct.territory.guild.prefix.clone(),
                     ct.guild_color,
                 )
             })
             .collect();
-
         results.sort_by(|a, b| a.0.cmp(&b.0));
         results.truncate(50);
         results
@@ -546,70 +334,65 @@ fn SearchResults() -> impl IntoView {
 
     // Sync sidebar items for keyboard navigation
     Effect::new(move || {
-        let f = filtered.get();
-        let items: Vec<String> = f.iter().map(|(name, _, _, _)| name.clone()).collect();
-        let prev = sidebar_items.get_untracked();
-        if items != prev {
+        let items: Vec<String> =
+            filtered.with(|found| found.iter().map(|(name, ..)| name.clone()).collect());
+        if items != sidebar_items.get_untracked() {
             sidebar_index.set(0);
         }
         sidebar_items.set(items);
     });
 
-    let result_count = Memo::new(move |_| filtered.get().len());
-
     view! {
-        <div style="border-bottom: 1px solid var(--color-border-subtle);">
-            <div style="padding: 14px 24px 8px; display: flex; align-items: baseline; justify-content: space-between;">
-                <span style="font-family: var(--font-display); font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim);">"Search Results"</span>
-                <span style="font-family: var(--font-mono); font-size: 0.754rem; color: var(--color-border-accent);">{move || format!("{} found", result_count.get())}</span>
+        <section class="sb-list-section" aria-label="Search results">
+            <div class="sb-list-head">
+                <h2 class="sb-list-title">"Search Results"</h2>
+                <span class="sb-list-count">{move || format!("{} found", filtered.with(Vec::len))}</span>
             </div>
-            <div style="padding: 0 12px 12px;">
+            <ul class="sb-list">
                 <For
-                    each=move || { filtered.get().into_iter().enumerate().collect::<Vec<_>>() }
-                    key=|item| item.1.0.clone()
-                    children=move |item| {
-                        let list_idx = item.0;
-                        let name = item.1.0.clone();
-                        let guild = item.1.1.clone();
-                        let (r, g, b) = item.1.3;
-                        let name_click = name.clone();
+                    each=move || filtered.get()
+                    key=|(name, ..)| name.clone()
+                    children=move |(name, guild, color)| {
+                        // A kept row can move as the query changes, so its place in the list is
+                        // read from the current results rather than fixed when it was made.
+                        let index = Memo::new({
+                            let name = name.clone();
+                            move |_| filtered.with(|found| found.iter().position(|(found, ..)| *found == name))
+                        });
+                        let open = name.clone();
                         let on_click = move |_| {
                             detail_return_guild.set(None);
-                            selected.set(Some(name_click.clone()));
-                            let map = territories.get_untracked();
-                            if let Some(ct) = map.get(&name_click) {
-                                camera.focus(&ct.territory.location);
+                            selected.set(Some(open.clone()));
+                            if let Some(region) = territories.with_untracked(|map| map.get(&open).map(|ct| ct.territory.location.clone())) {
+                                camera.focus(&region);
                             }
                         };
                         view! {
-                            <div
-                                data-sidebar-idx={list_idx.to_string()}
-                                style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; transition: background 0.15s, box-shadow 0.15s;"
-                                style:box-shadow=move || if sidebar_index.get() == list_idx { "inset 2px 0 0 var(--color-gold)" } else { "none" }
-                                on:click=on_click
-                                on:mouseenter=|e| {
-                                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("background", "var(--color-surface-hover)").ok();
-                                    }
-                                }
-                                on:mouseleave=|e| {
-                                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("background", "transparent").ok();
-                                    }
-                                }
-                            >
-                                <div style={format!("width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; box-shadow: inset 1px 1px 0 rgba(255,255,255,0.06), inset -1px -1px 0 rgba(0,0,0,0.3); background: {};", rgba_css(r, g, b, 0.8))} />
-                                <div style="flex: 1; min-width: 0;">
-                                    <div style="font-size: 1.021rem; color: var(--color-text-primary); font-family: var(--font-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{name}</div>
-                                    <div style="font-size: 0.87rem; color: var(--color-text-secondary); font-family: var(--font-mono);">{guild}</div>
-                                </div>
-                            </div>
+                            <li data-sidebar-idx=move || index.get().map(|index| index.to_string()) class="sb-row" class:sb-row-focused=move || index.get() == Some(sidebar_index.get()) on:click=on_click>
+                                <span class="sb-swatch" style:--swatch=guild_css(color) aria-hidden="true" />
+                                <span class="sb-row-text">
+                                    <span class="sb-row-name">{name}</span>
+                                    <span class="sb-row-sub">{guild}</span>
+                                </span>
+                            </li>
                         }
                     }
                 />
-            </div>
-        </div>
+            </ul>
+        </section>
     }
+}
+
+/// One leaderboard line.
+#[derive(Clone, PartialEq)]
+struct GuildRow {
+    name: String,
+    prefix: String,
+    territories: usize,
+    color: (u8, u8, u8),
+    passive_sr_per_hour: f64,
+    season_rating: Option<i64>,
+    sr_gain_5m: Option<i64>,
 }
 
 #[component]
@@ -619,10 +402,6 @@ fn LeaderboardPanel() -> impl IntoView {
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
     let CurrentMode(mode) = expect_context();
-    let ManualSrScalar(manual_sr_scalar) = expect_context();
-    let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
-    let LiveSeasonScalarSample(live_scalar_sample) = expect_context();
-    let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
     let ShowLeaderboardSrGain(show_leaderboard_sr_gain) = expect_context();
     let ShowLeaderboardSrValue(show_leaderboard_sr_value) = expect_context();
     let ShowLeaderboardTerritoryCount(show_leaderboard_territory_count) = expect_context();
@@ -630,16 +409,7 @@ fn LeaderboardPanel() -> impl IntoView {
     let GuildOnlineData(guild_online_data) = expect_context();
     let HistorySeasonLeaderboard(history_sr_leaderboard) = expect_context();
     let LeaderboardSortBySr(sort_by_sr) = expect_context();
-
-    let scalar_state = Memo::new(move |_| {
-        effective_scalar(
-            mode.get(),
-            auto_sr_scalar_enabled.get(),
-            manual_sr_scalar.get(),
-            live_scalar_sample.get(),
-            history_scalar_sample.get(),
-        )
-    });
+    let scalar_state = scalar_state();
 
     let leaderboard = Memo::new(move |_| {
         let map = territories.get();
@@ -647,293 +417,181 @@ fn LeaderboardPanel() -> impl IntoView {
         let history_sr = history_sr_leaderboard.get().unwrap_or_default();
         let sort_sr = sort_by_sr.get();
         let history_mode = mode.get() == MapMode::History;
-        let mut guild_counts: HashMap<String, _> = HashMap::new();
-        let history_sr_map: HashMap<String, (i64, u32, Option<i64>)> = history_sr
+        let history_sr_map: HashMap<String, (i64, Option<i64>)> = history_sr
             .into_iter()
-            .map(|entry| {
-                (
-                    entry.guild_name,
-                    (entry.season_rating, entry.season_rank, entry.sr_gain_5m),
-                )
-            })
+            .map(|entry| (entry.guild_name, (entry.season_rating, entry.sr_gain_5m)))
             .collect();
-
+        let mut guilds: HashMap<&str, GuildRow> = HashMap::new();
         for ct in map.values() {
-            let entry = guild_counts
-                .entry(ct.territory.guild.name.clone())
-                .or_insert_with(|| {
-                    (
-                        ct.territory.guild.name.clone(),
-                        ct.territory.guild.prefix.clone(),
-                        0,
-                        ct.guild_color,
-                    )
-                });
-            entry.2 += 1;
+            let guild = &ct.territory.guild;
+            guilds
+                .entry(guild.name.as_str())
+                .or_insert_with(|| GuildRow {
+                    name: guild.name.clone(),
+                    prefix: guild.prefix.clone(),
+                    territories: 0,
+                    color: ct.guild_color,
+                    passive_sr_per_hour: 0.0,
+                    season_rating: None,
+                    sr_gain_5m: None,
+                })
+                .territories += 1;
         }
-
-        let mut sorted: Vec<_> = guild_counts.into_values().collect();
-
-        if sort_sr {
+        let rating = |name: &str| {
             if history_mode {
-                sorted.sort_by(|a, b| {
-                    let sr_a = history_sr_map.get(&a.0).map(|value| value.0);
-                    let sr_b = history_sr_map.get(&b.0).map(|value| value.0);
-                    match (sr_a, sr_b) {
-                        (Some(sr_a), Some(sr_b)) => sr_b
-                            .cmp(&sr_a)
-                            .then_with(|| b.2.cmp(&a.2))
-                            .then_with(|| a.0.cmp(&b.0)),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)),
-                    }
-                });
+                history_sr_map.get(name).map(|value| value.0)
             } else {
-                sorted.sort_by(|a, b| {
-                    let sr_a = online_data
-                        .get(&a.0)
-                        .and_then(|d| d.season_rating)
-                        .unwrap_or(0);
-                    let sr_b = online_data
-                        .get(&b.0)
-                        .and_then(|d| d.season_rating)
-                        .unwrap_or(0);
-                    sr_b.cmp(&sr_a)
-                        .then_with(|| b.2.cmp(&a.2))
-                        .then_with(|| a.0.cmp(&b.0))
-                });
+                online_data.get(name).and_then(|data| data.season_rating)
             }
-        } else {
-            sorted.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-        }
+        };
+        let mut sorted: Vec<GuildRow> = guilds.into_values().collect();
+        sorted.sort_by(|a, b| {
+            let by_count = b
+                .territories
+                .cmp(&a.territories)
+                .then_with(|| a.name.cmp(&b.name));
+            if !sort_sr {
+                return by_count;
+            }
+            if history_mode {
+                match (rating(&a.name), rating(&b.name)) {
+                    (Some(a), Some(b)) => b.cmp(&a).then(by_count),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => by_count,
+                }
+            } else {
+                // Live, a guild without a rating ranks as zero.
+                let rated = |name: &str| rating(name).unwrap_or(0);
+                rated(&b.name).cmp(&rated(&a.name)).then(by_count)
+            }
+        });
         sorted.truncate(20);
 
         let scalar = scalar_state.get().value;
+        for row in &mut sorted {
+            row.passive_sr_per_hour = passive_sr_per_hour(row.territories, scalar);
+            row.season_rating = rating(&row.name);
+            if history_mode {
+                row.sr_gain_5m = history_sr_map.get(&row.name).and_then(|value| value.1);
+            }
+        }
         sorted
-            .into_iter()
-            .map(|(name, prefix, count, color)| {
-                let passive_sr_h = passive_sr_per_hour(count as usize, scalar);
-                let (sr, season_rank, sr_gain_5m) = if history_mode {
-                    history_sr_map
-                        .get(&name)
-                        .copied()
-                        .map_or((None, None, None), |(rating, rank, gain)| {
-                            (Some(rating), Some(rank), gain)
-                        })
-                } else {
-                    (
-                        online_data.get(&name).and_then(|d| d.season_rating),
-                        None,
-                        None,
-                    )
-                };
-                (
-                    name,
-                    prefix,
-                    count,
-                    color,
-                    passive_sr_h,
-                    sr,
-                    season_rank,
-                    sr_gain_5m,
-                )
-            })
-            .collect::<Vec<_>>()
     });
 
     // Sync sidebar items for keyboard navigation (guild names for leaderboard)
     Effect::new(move || {
-        let lb = leaderboard.get();
-        let items: Vec<String> = lb
-            .iter()
-            .map(|(name, _, _, _, _, _, _, _)| name.clone())
-            .collect();
-        let prev = sidebar_items.get_untracked();
-        if items != prev {
+        let items: Vec<String> =
+            leaderboard.with(|rows| rows.iter().map(|row| row.name.clone()).collect());
+        if items != sidebar_items.get_untracked() {
             sidebar_index.set(0);
         }
         sidebar_items.set(items);
     });
 
-    let is_empty = Memo::new(move |_| territories.get().is_empty());
+    let is_empty = Memo::new(move |_| territories.with(|map| map.is_empty()));
+    let sort_button = move |by_sr: bool, label: &'static str| {
+        view! {
+            <button type="button" class="sb-sort" data-sort=if by_sr { "sr" } else { "territories" } aria-pressed=move || (sort_by_sr.get() == by_sr).to_string() on:click=move |_| sort_by_sr.set(by_sr)>
+                {label}
+            </button>
+        }
+    };
 
     view! {
-        <div style="border-bottom: 1px solid var(--color-border-subtle);">
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 24px 8px;">
-                <div style="font-family: var(--font-display); font-size: 0.986rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim);">
-                    <span style="color: var(--color-gold); margin-right: 6px; font-size: 0.812rem;">{"\u{25C6}"}</span>"Top Guilds"
-                </div>
-                <div style="display: flex; gap: 4px;">
-                    <span
-                        style=move || {
-                            let active = !sort_by_sr.get();
-                            format!(
-                                "font-family: var(--font-mono); font-size: 0.754rem; padding: 2px 8px; border-radius: 3px; cursor: pointer; transition: color 0.15s, background 0.15s; {}",
-                                if active {
-                                    "color: var(--color-gold); background: rgba(245,197,66,0.1);"
-                                } else {
-                                    "color: var(--color-border-accent); background: transparent;"
-                                }
-                            )
-                        }
-                        on:click=move |_| sort_by_sr.set(false)
-                    >"Territories"</span>
-                    <span
-                        style=move || {
-                            let active = sort_by_sr.get();
-                            format!(
-                                "font-family: var(--font-mono); font-size: 0.754rem; padding: 2px 8px; border-radius: 3px; cursor: pointer; transition: color 0.15s, background 0.15s; {}",
-                                if active {
-                                    "color: var(--accent-live); background: rgba(var(--accent-live-rgb),0.1);"
-                                } else {
-                                    "color: var(--color-border-accent); background: transparent;"
-                                }
-                            )
-                        }
-                        on:click=move |_| sort_by_sr.set(true)
-                    >"SR"</span>
+        <section class="sb-list-section" aria-labelledby="sb-top-guilds">
+            <div class="sb-list-head">
+                <h2 class="sb-list-title" id="sb-top-guilds">"Top Guilds"</h2>
+                <div class="sb-sorts" role="group" aria-label="Sort guilds by">
+                    {sort_button(false, "Territories")}
+                    {sort_button(true, "SR")}
                 </div>
             </div>
             <Show
                 when=move || !is_empty.get()
                 fallback=|| view! {
-                    <div style="padding: 24px; text-align: center;">
-                        <div class="status-pulse" style="font-family: var(--font-mono); font-size: 0.905rem; color: var(--color-border-accent); letter-spacing: 0.05em;">"Awaiting territory data..."</div>
-                        <div style="margin-top: 12px; display: flex; justify-content: center; gap: 4px;">
-                            <div style="width: 4px; height: 4px; border-radius: 50%; background: var(--color-gold); opacity: 0.3; animation: pulse-dot 1.5s ease-in-out infinite;" />
-                            <div style="width: 4px; height: 4px; border-radius: 50%; background: var(--color-gold); opacity: 0.3; animation: pulse-dot 1.5s ease-in-out 0.3s infinite;" />
-                            <div style="width: 4px; height: 4px; border-radius: 50%; background: var(--color-gold); opacity: 0.3; animation: pulse-dot 1.5s ease-in-out 0.6s infinite;" />
-                        </div>
+                    <div class="sb-empty" role="status">
+                        <div class="status-pulse">"Awaiting territory data..."</div>
+                        <div class="sb-empty-dots" aria-hidden="true"><span /><span /><span /></div>
                     </div>
                 }
             >
-            <ul style="list-style: none; padding: 0 12px 12px;">
-                <For
-                    each=move || {
-                        leaderboard.get().into_iter().enumerate().collect::<Vec<_>>()
-                    }
-                    key=|item| (item.0, item.1.0.clone())
-                    children=move |item| {
-                        let list_idx = item.0;
-                        let (
-                            name,
-                            prefix,
-                            count,
-                            (r, g, b),
-                            passive_sr_h,
-                            season_rating,
-                            _season_rank,
-                            sr_gain_5m,
-                        ) = item.1;
-                        let computed_rank = list_idx + 1;
-                        let display_rank = u32::try_from(computed_rank).unwrap_or(u32::MAX);
-                        let name_for_click = name.clone();
-                        let name_for_online = name.clone();
-                        let sr_badge = if mode.get_untracked() == MapMode::History {
-                            sr_gain_5m
-                                .map(|gain| {
-                                    if gain >= 0 {
-                                        format!("+{}/5m", format_sr_value(gain))
-                                    } else {
-                                        format!("-{}/5m", format_sr_value(-gain))
-                                    }
+                <ol class="sb-list">
+                    <For
+                        each=move || { leaderboard.get().into_iter().enumerate().collect::<Vec<_>>() }
+                        key=|(index, row)| (*index, row.name.clone())
+                        children=move |(index, row)| {
+                            let rank = index + 1;
+                            let history = mode.get_untracked() == MapMode::History;
+                            let sr_badge = if history {
+                                row.sr_gain_5m.map_or_else(|| "--".to_string(), |gain| {
+                                    let sign = if gain >= 0 { "+" } else { "" };
+                                    format!("{sign}{}/5m", compact(gain))
                                 })
-                                .unwrap_or_else(|| "--".to_string())
-                        } else {
-                            format!("{}/h", format_sr_rate(passive_sr_h))
-                        };
-                        let sr_display = season_rating.map(format_sr_value);
-                        let on_click = move |_| {
-                            selected_guild.set(Some(name_for_click.clone()));
-                        };
-                        let rank_class = match display_rank {
-                            1 => "text-gold-gradient",
-                            2 => "text-silver-gradient",
-                            3 => "text-bronze-gradient",
-                            _ => "",
-                        };
-                        let rank_style = if display_rank > 3 {
-                            "font-family: var(--font-mono); font-size: 0.87rem; color: #4a4e6a; width: 26px; text-align: right; flex-shrink: 0;"
-                        } else {
-                            "font-family: var(--font-mono); font-size: 0.87rem; font-weight: 700; width: 26px; text-align: right; flex-shrink: 0;"
-                        };
-                        let row_style = if mode.get_untracked() == MapMode::History {
-                            "display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; transition: background 0.15s, box-shadow 0.15s;".to_string()
-                        } else {
-                            let delay_ms = computed_rank * 30;
-                            format!(
-                                "display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; transition: background 0.15s, box-shadow 0.15s; animation: fade-in-up 0.3s ease-out {delay_ms}ms both;"
-                            )
-                        };
-                        // Top 3 get a subtle left accent
-                        let is_podium = display_rank <= 3;
-                        let color_bar_style = if is_podium {
-                            format!(
-                                "width: 3px; height: 100%; border-radius: 2px; background: {}; flex-shrink: 0; align-self: stretch;",
-                                rgba_css(r, g, b, 0.6)
-                            )
-                        } else {
-                            String::new()
-                        };
-                        view! {
-                            <li
-                                data-sidebar-idx={list_idx.to_string()}
-                                style=row_style
-                                style:box-shadow=move || if sidebar_index.get() == list_idx { "inset 2px 0 0 var(--color-gold)" } else { "none" }
-                                on:click=on_click
-                                on:mouseenter=|e| {
-                                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("background", "var(--color-surface-hover)").ok();
-                                    }
-                                }
-                                on:mouseleave=|e| {
-                                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("background", "transparent").ok();
-                                    }
-                                }
-                            >
-                                {is_podium.then(|| view! { <div style=color_bar_style.clone() /> })}
-                                <span class=rank_class style=rank_style>{display_rank}</span>
-                                <div style={format!("width: 16px; height: 16px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; box-shadow: 0 0 4px {}, inset 1px 1px 0 rgba(255,255,255,0.06), inset -1px -1px 0 rgba(0,0,0,0.3); background: {};", rgba_css(r, g, b, 0.15), rgba_css(r, g, b, 0.8))} />
-                                <span style="flex: 1; font-size: 1.044rem; color: var(--color-text-primary); font-family: var(--font-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{name}</span>
-                                <span style="font-size: 0.812rem; color: var(--color-text-secondary); font-family: var(--font-mono);">"[" {prefix} "]"</span>
-                                {move || show_leaderboard_sr_gain.get().then(|| view! {
-                                    <span style="font-size: 0.766rem; color: var(--accent-live); font-family: var(--font-mono); background: rgba(var(--accent-live-rgb),0.09); border: 1px solid rgba(var(--accent-live-rgb),0.2); padding: 1px 5px; border-radius: 3px; min-width: 58px; text-align: center;">
-                                        {sr_badge.clone()}
-                                    </span>
-                                })}
-                                {move || {
-                                    let show_sr = sort_by_sr.get() || show_leaderboard_sr_value.get();
-                                    show_sr.then(|| sr_display.clone().map(|sr| view! {
-                                        <span style="font-size: 0.766rem; color: var(--accent-live); font-family: var(--font-mono); background: rgba(var(--accent-live-rgb),0.06); padding: 1px 5px; border-radius: 3px; min-width: 40px; text-align: center;">
-                                            {sr}
-                                        </span>
-                                    }))
-                                }}
-                                {move || show_leaderboard_territory_count.get().then(|| view! {
-                                    <span style="font-size: 0.951rem; color: var(--color-gold); font-family: var(--font-mono); min-width: 24px; text-align: right; font-weight: 500; background: rgba(245,197,66,0.06); padding: 1px 6px; border-radius: 3px;">{count}</span>
-                                })}
-                                {move || {
-                                    if !show_leaderboard_online.get() {
-                                        return None;
-                                    }
-                                    let data = guild_online_data.get();
-                                    data.get(&name_for_online).map(|info| view! {
-                                        <span style="font-size: 0.766rem; color: var(--color-emerald); font-family: var(--font-mono); background: rgba(80,200,120,0.06); padding: 1px 5px; border-radius: 3px; min-width: 28px; text-align: center; display: inline-flex; align-items: center; gap: 3px;">
-                                            <span style="font-size: 0.522rem; line-height: 1;">{"\u{25CF}"}</span>
-                                            {info.online}
-                                        </span>
-                                    })
-                                }}
-                            </li>
+                            } else {
+                                format!("{}/h", rate(row.passive_sr_per_hour))
+                            };
+                            let rating = row.season_rating.map(compact);
+                            let open = row.name.clone();
+                            let online_name = row.name.clone();
+                            let podium = match rank {
+                                1 => "text-gold-gradient",
+                                2 => "text-silver-gradient",
+                                3 => "text-bronze-gradient",
+                                _ => "",
+                            };
+                            view! {
+                                <li
+                                    data-sidebar-idx=index.to_string()
+                                    class="sb-row sb-guild-row"
+                                    class:sb-row-podium=rank <= 3
+                                    class:sb-row-enter=!history
+                                    class:sb-row-focused=move || sidebar_index.get() == index
+                                    style:--swatch=guild_css(row.color)
+                                    style:--row-delay=format!("{}ms", rank * 30)
+                                    on:click=move |_| selected_guild.set(Some(open.clone()))
+                                >
+                                    <span class=format!("sb-rank {podium}")>{rank}</span>
+                                    <span class="sb-swatch" aria-hidden="true" />
+                                    <span class="sb-row-name">{row.name}</span>
+                                    <span class="sb-row-tag">"[" {row.prefix} "]"</span>
+                                    {move || show_leaderboard_sr_gain.get().then(|| view! { <span class="sb-chip sb-chip-rate">{sr_badge.clone()}</span> })}
+                                    {move || (sort_by_sr.get() || show_leaderboard_sr_value.get()).then(|| rating.clone().map(|rating| view! { <span class="sb-chip sb-chip-rating">{rating}</span> }))}
+                                    {move || show_leaderboard_territory_count.get().then(|| view! { <span class="sb-chip sb-chip-count">{row.territories}</span> })}
+                                    {move || {
+                                        if !show_leaderboard_online.get() {
+                                            return None;
+                                        }
+                                        guild_online_data.with(|data| data.get(&online_name).map(|info| info.online)).map(|online| view! {
+                                            <span class="sb-chip sb-chip-online"><span aria-hidden="true">{"\u{25CF}"}</span>{online}</span>
+                                        })
+                                    }}
+                                </li>
+                            }
                         }
-                    }
-                />
-            </ul>
+                    />
+                </ol>
             </Show>
-        </div>
+        </section>
     }
+}
+
+/// The SR scalar in use, for passive SR figures.
+fn scalar_state() -> Memo<EffectiveScalar> {
+    let CurrentMode(mode) = expect_context();
+    let ManualSrScalar(manual_sr_scalar) = expect_context();
+    let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
+    let LiveSeasonScalarSample(live_scalar_sample) = expect_context();
+    let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
+    Memo::new(move |_| {
+        effective_scalar(
+            mode.get(),
+            auto_sr_scalar_enabled.get(),
+            manual_sr_scalar.get(),
+            live_scalar_sample.get(),
+            history_scalar_sample.get(),
+        )
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1004,6 +662,56 @@ fn extract_online_members(json: &serde_json::Value) -> Vec<OnlineMemberRow> {
     result
 }
 
+/// What the guild endpoint says about a guild, as the panel shows it.
+#[derive(Clone, PartialEq)]
+struct GuildFacts {
+    prefix: String,
+    level: u64,
+    online: u64,
+    members: u64,
+    wars: u64,
+    season_rating: Option<(i32, i64)>,
+    created: String,
+    online_members: Vec<OnlineMemberRow>,
+}
+
+impl GuildFacts {
+    fn from_json(json: &serde_json::Value) -> Self {
+        let text = |key: &str| {
+            json.get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let number =
+            |value: Option<&serde_json::Value>| value.and_then(|v| v.as_u64()).unwrap_or(0);
+        let season_rating = json
+            .get("seasonRanks")
+            .and_then(|v| v.as_object())
+            .and_then(|ranks| {
+                ranks
+                    .iter()
+                    .filter_map(|(k, v)| k.parse::<i32>().ok().map(|id| (id, v)))
+                    .max_by_key(|(id, _)| *id)
+            })
+            .and_then(|(season_id, v)| {
+                v.get("rating")
+                    .and_then(|r| r.as_i64())
+                    .map(|r| (season_id, r))
+            });
+        Self {
+            prefix: text("prefix"),
+            level: number(json.get("level")),
+            online: number(json.get("online")),
+            members: number(json.get("members").and_then(|m| m.get("total"))),
+            wars: number(json.get("wars")),
+            season_rating,
+            created: text("created"),
+            online_members: extract_online_members(json),
+        }
+    }
+}
+
 #[component]
 fn GuildPanel() -> impl IntoView {
     let SelectedGuild(selected_guild) = expect_context();
@@ -1015,367 +723,223 @@ fn GuildPanel() -> impl IntoView {
     let camera = expect_context::<BrowserMap>().camera();
     let tick: RwSignal<i64> = expect_context();
 
-    let guild_detail: RwSignal<Option<serde_json::Value>> = RwSignal::new(None);
-    let guild_loading: RwSignal<bool> = RwSignal::new(false);
-    let guild_request_nonce: RwSignal<u64> = RwSignal::new(0);
+    // `None` while the guild's details are on their way.
+    let facts: RwSignal<Option<GuildFacts>> = RwSignal::new(None);
+    let failed = RwSignal::new(false);
+    let request_nonce = StoredValue::new(0u64);
 
-    // Fetch guild detail when selected_guild changes
     Effect::new(move || {
-        let request_nonce = guild_request_nonce.get_untracked().wrapping_add(1);
-        guild_request_nonce.set(request_nonce);
-
+        let nonce = request_nonce.get_value().wrapping_add(1);
+        request_nonce.set_value(nonce);
+        facts.set(None);
+        failed.set(false);
         let Some(name) = selected_guild.get() else {
-            guild_detail.set(None);
-            guild_loading.set(false);
             return;
         };
-        guild_loading.set(true);
-        guild_detail.set(None);
         wasm_bindgen_futures::spawn_local(async move {
-            let url = format!(
-                "/api/guild/{}",
-                js_sys::encode_uri_component(&name)
-                    .as_string()
-                    .unwrap_or_default()
-            );
+            let url = format!("/api/guild/{}", crate::encode_uri_component(&name));
             let detail = match gloo_net::http::Request::get(&url).send().await {
                 Ok(resp) if resp.ok() => resp.json::<serde_json::Value>().await.ok(),
                 _ => None,
             };
-
-            if guild_request_nonce.get_untracked() != request_nonce
-                || selected_guild.get_untracked().as_deref() != Some(name.as_str())
-            {
+            // Answers for an earlier guild, or for a panel that has closed, are dropped.
+            if request_nonce.try_get_value() != Some(nonce) {
                 return;
             }
-
-            guild_detail.set(detail);
-            guild_loading.set(false);
+            match detail {
+                Some(json) => facts.set(Some(GuildFacts::from_json(&json))),
+                None => failed.set(true),
+            }
         });
     });
 
-    let on_close = move |_| {
-        selected_guild.set(None);
-        sidebar_transient.set(false);
-    };
-
-    // Guild color from territory data
     let guild_color = Memo::new(move |_| {
         let name = selected_guild.get()?;
-        let map = territories.get();
-        let ct = map.values().find(|ct| ct.territory.guild.name == name)?;
-        Some(ct.guild_color)
+        territories.with(|map| {
+            map.values()
+                .find(|ct| ct.territory.guild.name == name)
+                .map(|ct| ct.guild_color)
+        })
     });
-
-    // Guild territories
     let guild_territories = Memo::new(move |_| {
         let name = selected_guild.get().unwrap_or_default();
-        let map = territories.get();
-        let mut terrs: Vec<(String, (u8, u8, u8))> = map
-            .iter()
-            .filter(|(_, ct)| ct.territory.guild.name == name)
-            .map(|(tn, ct)| (tn.clone(), ct.guild_color))
-            .collect();
-        terrs.sort_by(|a, b| a.0.cmp(&b.0));
-        terrs
+        let mut owned: Vec<String> = territories.with(|map| {
+            map.iter()
+                .filter(|(_, ct)| ct.territory.guild.name == name)
+                .map(|(territory, _)| territory.clone())
+                .collect()
+        });
+        owned.sort();
+        owned
     });
+    let close = Callback::new(move |()| {
+        selected_guild.set(None);
+        sidebar_transient.set(false);
+    });
+    let open_territory = Callback::new(move |territory: String| {
+        detail_return_guild.set(selected_guild.get_untracked());
+        if let Some(region) = territories
+            .with_untracked(|map| map.get(&territory).map(|ct| ct.territory.location.clone()))
+        {
+            camera.focus(&region);
+        }
+        selected.set(Some(territory));
+        if !sidebar_open.get_untracked() {
+            sidebar_open.set(true);
+        }
+    });
+    // Until the details arrive, each figure waits in its place rather than the panel growing.
+    let fact = move |pick: fn(&GuildFacts) -> String| {
+        move || facts.with(|facts| facts.as_ref().map_or_else(|| "\u{2026}".to_string(), pick))
+    };
 
     view! {
-        <div class="panel-reveal" style="border-bottom: 1px solid var(--color-border-subtle); position: relative;">
-            // Close button
-            <button
-                style="position: absolute; top: 12px; right: 12px; background: none; border: none; color: var(--color-text-dim); cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: color 0.15s, background 0.15s; z-index: 1; display: flex; align-items: center; justify-content: center;"
-                on:click=on_close
-                on:mouseenter=|e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "var(--color-nether)").ok();
-                        el.style().set_property("background", "var(--color-surface-hover)").ok();
-                    }
-                }
-                on:mouseleave=|e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                        el.style().set_property("color", "var(--color-text-dim)").ok();
-                        el.style().set_property("background", "transparent").ok();
-                    }
-                }
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-                    <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
-                </svg>
-            </button>
-
-            // Color accent bar
-            {move || {
-                guild_color.get().map(|(r, g, b)| {
-                    let gradient = format!(
-                        "height: 4px; background: linear-gradient(90deg, {}, transparent); border-radius: 2px 2px 0 0;",
-                        rgba_css(r, g, b, 0.7)
-                    );
-                    view! { <div style=gradient /> }
-                })
-            }}
-
-            <div style="padding: 16px 24px 12px;">
-                // Guild name + color swatch
-                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
-                    {move || {
-                        guild_color.get().map(|(r, g, b)| {
-                            let swatch = format!(
-                                "width: 20px; height: 20px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; box-shadow: 0 0 6px {}, inset 1px 1px 0 rgba(255,255,255,0.06), inset -1px -1px 0 rgba(0,0,0,0.3); background: {};",
-                                rgba_css(r, g, b, 0.2),
-                                rgba_css(r, g, b, 0.8)
-                            );
-                            view! { <div style=swatch /> }
-                        })
-                    }}
-                    {move || {
-                        let guild_name = selected_guild.get().unwrap_or_default();
-                        let guild_stats_url = crate::guild_stats_url(&guild_name);
-                        view! {
-                            <a href=guild_stats_url
-                               target="_blank"
-                               rel="noopener noreferrer"
-                               title="Open Wynncraft guild stats"
-                               style="font-family: var(--font-display); font-size: 1.188rem; color: var(--color-text-primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s;"
-                               on:mouseenter=|e| {
-                                   if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                       el.style().set_property("color", "var(--color-emerald)").ok();
-                                   }
-                               }
-                               on:mouseleave=|e| {
-                                   if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                       el.style().set_property("color", "var(--color-text-primary)").ok();
-                                   }
-                               }
-                            >
-                                {guild_name}
-                            </a>
-                        }
-                    }}
+        <div class="sb-panel panel-reveal" style:--tcard-guild=move || guild_color.get().map(guild_css)>
+            <PanelNav close=("Close guild", close) />
+            <article class="tcard tcard-sidebar" aria-busy=move || (facts.with(Option::is_none) && !failed.get()).to_string()>
+                <header class="tcard-head">
+                    <span class="tcard-swatch" aria-hidden="true" />
+                    <h2 class="tcard-name">
+                        {move || {
+                            let name = selected_guild.get().unwrap_or_default();
+                            let url = crate::guild_stats_url(&name);
+                            view! {
+                                <a class="tcard-name-link" href=url target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">{name}</a>
+                            }
+                        }}
+                    </h2>
+                </header>
+                <div class="tcard-owner">
+                    {move || facts.with(|facts| facts.as_ref().map(|facts| view! {
+                        <span class="tcard-tag">"[" {facts.prefix.clone()} "] \u{00b7} Lv. " {facts.level}</span>
+                        <span class="sb-online"><span aria-hidden="true">{"\u{25CF}"}</span>{facts.online} " online"</span>
+                    }))}
+                    {move || failed.get().then(|| view! { <span class="tcard-tag" role="status">"Guild details are unavailable"</span> })}
                 </div>
-
-                // Prefix · Level
-                {move || {
-                    guild_detail.get().map(|json| {
-                        let prefix = json.get("prefix").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let level = json.get("level").and_then(|v| v.as_u64()).unwrap_or(0);
-                        view! {
-                            <div style="font-family: var(--font-mono); font-size: 0.905rem; color: var(--color-text-secondary); margin-bottom: 10px;">
-                                "[" {prefix} "]" " \u{00b7} Lv. " {level}
-                            </div>
-                        }
-                    })
-                }}
-
-                // Online badge (prominent)
-                {move || {
-                    guild_detail.get().map(|json| {
-                        let online = json.get("online").and_then(|v| v.as_u64()).unwrap_or(0);
-                        view! {
-                            <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 14px;">
-                                <span style="font-size: 0.638rem; color: var(--color-emerald); line-height: 1;">{"\u{25CF}"}</span>
-                                <span style="font-family: var(--font-mono); font-size: 1.102rem; color: var(--color-emerald); font-weight: 600;">
-                                    {online}
-                                </span>
-                                <span style="font-family: var(--font-mono); font-size: 0.87rem; color: var(--color-emerald); opacity: 0.7;">
-                                    "online"
-                                </span>
-                            </div>
-                        }
-                    })
-                }}
-
-                // Loading indicator
-                {move || {
-                    guild_loading.get().then(|| view! {
-                        <div style="padding: 8px 0; text-align: center;">
-                            <span class="status-pulse" style="font-family: var(--font-mono); font-size: 0.905rem; color: var(--color-border-accent); letter-spacing: 0.05em;">"Loading guild data..."</span>
-                        </div>
-                    })
-                }}
-
-                // Stats rows
-                {move || {
-                    guild_detail.get().map(|json| {
-                        let territories_count = guild_territories.get().len();
-                        let members = json.get("members").and_then(|m| m.get("total")).and_then(|v| v.as_u64()).unwrap_or(0);
-                        let wars = json.get("wars").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let season_rating = json
-                            .get("seasonRanks")
-                            .and_then(|v| v.as_object())
-                            .and_then(|ranks| {
-                                ranks
-                                    .iter()
-                                    .filter_map(|(k, v)| k.parse::<i32>().ok().map(|id| (id, v)))
-                                    .max_by_key(|(id, _)| *id)
-                            })
-                            .and_then(|(season_id, v)| {
-                                v.get("rating")
-                                    .and_then(|r| r.as_i64())
-                                    .map(|r| (season_id, r))
-                            });
-                        let created = json.get("created").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let reference_secs = tick.get();
-                        let created_ago = if created.is_empty() {
-                            String::new()
-                        } else {
-                            format_relative_time(&created, reference_secs)
-                        };
-
-                        view! {
-                            <div style="display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; border-top: 1px solid var(--color-border-subtle); padding-top: 12px;">
-                                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
-                                    <span style="color: var(--color-text-dim);">"Territories"</span>
-                                    <span style="color: var(--color-gold);">{territories_count}</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
-                                    <span style="color: var(--color-text-dim);">"Members"</span>
-                                    <span style="color: var(--color-text-primary);">{members}</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
-                                    <span style="color: var(--color-text-dim);">"Wars"</span>
-                                    <span style="color: var(--color-text-primary);">{wars}</span>
-                                </div>
-                                {season_rating.map(|(season_id, rating)| {
-                                    let sr_text = format!("S{}: {}", season_id, format_sr_value(rating));
-                                    view! {
-                                        <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
-                                            <span style="color: var(--color-text-dim);">"Season Rating"</span>
-                                            <span style="color: var(--accent-live);">{sr_text}</span>
-                                        </div>
-                                    }
-                                })}
-                                <div style="display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.905rem;">
-                                    <span style="color: var(--color-text-dim);">"Created"</span>
-                                    <span style="color: var(--color-text-secondary);">{created_ago}</span>
-                                </div>
-                            </div>
-                        }
-                    })
-                }}
-
-                // Online Members section
-                {move || {
-                    guild_detail.get().map(|json| {
-                        let online_members = extract_online_members(&json);
-                        if online_members.is_empty() {
-                            return view! { <div /> }.into_any();
-                        }
-                        // Playercards only cover our own roster, so every other guild
-                        // keeps linking out to Wynncraft.
-                        let is_sequoia = json
-                            .get("prefix")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|p| p.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX));
-                        view! {
-                            <div style="margin-bottom: 14px;">
-                                <div style="font-family: var(--font-display); font-size: 0.87rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim); margin-bottom: 8px;">
-                                    <span style="color: var(--color-emerald); margin-right: 6px; font-size: 0.696rem;">{"\u{25C6}"}</span>"Online Members"
-                                </div>
-                                <div style="display: flex; flex-direction: column; gap: 3px;">
-                                    {online_members.into_iter().map(|member| {
-                                        let username = member.username;
-                                        let rank_label = member.rank_label;
-                                        let server = member.server;
-                                        let profile_url = if is_sequoia {
-                                            crate::player_card_url(&username)
-                                        } else {
-                                            format!("https://wynncraft.com/stats/player/{username}")
-                                        };
-                                        let profile_title = if is_sequoia {
-                                            "Open Sequoia playercard"
-                                        } else {
-                                            "Open Wynncraft player stats"
-                                        };
-                                        view! {
-                                            <div style="display: flex; align-items: center; gap: 8px; padding: 3px 0; font-family: var(--font-mono); font-size: 0.87rem;">
-                                                <span style="font-size: 0.464rem; color: var(--color-emerald); line-height: 1;">{"\u{25CF}"}</span>
-                                                <span style="color: var(--color-text-secondary); font-size: 0.812rem; min-width: 72px;">"[" {rank_label} "]"</span>
-                                                <a href=profile_url
-                                                   target="_blank"
-                                                   rel="noopener noreferrer"
-                                                   title=profile_title
-                                                   style="flex: 1; color: var(--color-text-primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.15s;"
-                                                   on:mouseenter=|e| {
-                                                       if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                                           el.style().set_property("color", "var(--color-emerald)").ok();
-                                                       }
-                                                   }
-                                                   on:mouseleave=|e| {
-                                                       if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                                           el.style().set_property("color", "var(--color-text-primary)").ok();
-                                                       }
-                                                   }
-                                                >
-                                                    {username}
-                                                </a>
-                                                <span style="color: var(--color-text-dim); font-size: 0.812rem;">{server}</span>
-                                            </div>
-                                        }
-                                    }).collect::<Vec<_>>()}
-                                </div>
-                            </div>
-                        }.into_any()
-                    })
-                }}
-
-                // Territories section
-                {move || {
-                    let terrs = guild_territories.get();
-                    if terrs.is_empty() {
-                        return view! { <div /> }.into_any();
+                <dl class="tcard-stats tcard-stats-wide">
+                    <div><dt>"Territories"</dt><dd class="sb-gold">{move || guild_territories.with(Vec::len)}</dd></div>
+                    <div><dt>"Members"</dt><dd>{fact(|facts| facts.members.to_string())}</dd></div>
+                    <div><dt>"Wars"</dt><dd>{fact(|facts| facts.wars.to_string())}</dd></div>
+                    <div><dt>"Season rating"</dt><dd class="tcard-sr">{fact(|facts| facts.season_rating.map_or_else(|| "\u{2013}".to_string(), |(season, rating)| format!("S{season}: {}", compact(rating))))}</dd></div>
+                    <div class="tcard-stat-span"><dt>"Created"</dt><dd>{move || facts.with(|facts| facts.as_ref().map_or_else(|| "\u{2026}".to_string(), |facts| since(&facts.created, tick.get())))}</dd></div>
+                </dl>
+                {move || facts.with(|facts| {
+                    let facts = facts.as_ref()?;
+                    if facts.online_members.is_empty() {
+                        return None;
                     }
-                    view! {
-                        <div>
-                            <div style="font-family: var(--font-display); font-size: 0.87rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--color-text-dim); margin-bottom: 8px; border-top: 1px solid var(--color-border-subtle); padding-top: 12px;">
-                                <span style="color: var(--color-gold); margin-right: 6px; font-size: 0.696rem;">{"\u{25C6}"}</span>"Territories"
-                            </div>
-                            <div style="display: flex; flex-direction: column; gap: 2px;">
-                                {terrs.into_iter().map(|(territory_name, (r, g, b))| {
-                                    let tn = territory_name.clone();
-                                    let on_terr_click = move |_| {
-                                        let tn_inner = tn.clone();
-                                        detail_return_guild.set(selected_guild.get_untracked());
-                                        selected.set(Some(tn_inner.clone()));
-                                        if !sidebar_open.get_untracked() {
-                                            sidebar_open.set(true);
-                                        }
-                                        let map = territories.get_untracked();
-                                        if let Some(ct) = map.get(&tn_inner) {
-                                            camera.focus(&ct.territory.location);
-                                        }
+                    // Playercards only cover our own roster, so every other guild keeps
+                    // linking out to Wynncraft.
+                    let ours = facts.prefix.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX);
+                    let members = facts.online_members.clone();
+                    Some(view! {
+                        <section class="tcard-section" aria-label="Online members">
+                            <h3 class="tcard-section-title">"Online members"</h3>
+                            <ul class="sb-members">
+                                {members.into_iter().map(|member| {
+                                    let (url, title) = if ours {
+                                        (crate::player_card_url(&member.username), "Open Sequoia playercard")
+                                    } else {
+                                        (format!("https://wynncraft.com/stats/player/{}", member.username), "Open Wynncraft player stats")
                                     };
-                                    let swatch = format!(
-                                        "width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; background: {};",
-                                        rgba_css(r, g, b, 0.7)
-                                    );
                                     view! {
-                                        <div
-                                            style="display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 3px; cursor: pointer; transition: background 0.15s; font-family: var(--font-mono); font-size: 0.87rem; color: var(--color-text-primary);"
-                                            on:click=on_terr_click
-                                            on:mouseenter=|e| {
-                                                if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                                    el.style().set_property("background", "var(--color-surface-hover)").ok();
-                                                }
-                                            }
-                                            on:mouseleave=|e| {
-                                                if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                                    el.style().set_property("background", "transparent").ok();
-                                                }
-                                            }
-                                        >
-                                            <div style=swatch />
-                                            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{territory_name}</span>
-                                        </div>
+                                        <li>
+                                            <span class="sb-member-rank">{member.rank_label}</span>
+                                            <a class="sb-member-name" href=url target="_blank" rel="noopener noreferrer" title=title>{member.username}</a>
+                                            <span class="sb-member-server">{member.server}</span>
+                                        </li>
                                     }
-                                }).collect::<Vec<_>>()}
-                            </div>
-                        </div>
-                    }.into_any()
-                }}
-            </div>
+                                }).collect_view()}
+                            </ul>
+                        </section>
+                    })
+                })}
+                <Show when=move || guild_territories.with(|owned| !owned.is_empty())>
+                    <section class="tcard-section" aria-label="Territories">
+                        <h3 class="tcard-section-title">"Territories"</h3>
+                        <ul class="sb-territories">
+                            <For
+                                each=move || guild_territories.get()
+                                key=|territory| territory.clone()
+                                children=move |territory| {
+                                    let open = territory.clone();
+                                    let title = format!("Open {territory}");
+                                    view! {
+                                        <li>
+                                            <button type="button" class="sb-territory" title=title on:click=move |_| open_territory.run(open.clone())>
+                                                <span class="sb-swatch" aria-hidden="true" />
+                                                <span class="sb-row-name">{territory}</span>
+                                            </button>
+                                        </li>
+                                    }
+                                }
+                            />
+                        </ul>
+                    </section>
+                </Show>
+            </article>
         </div>
     }
+}
+
+/// What the territory detail shows that does not change by the second. The view is rebuilt
+/// only when this does; the clock-driven figures update in place.
+#[derive(Clone, PartialEq)]
+struct TerritoryInfo {
+    name: String,
+    guild_name: String,
+    guild_prefix: String,
+    acquired: i64,
+    color: (u8, u8, u8),
+    runtime: Option<TerritoryRuntimeData>,
+    resources: Vec<ResourceRow>,
+    connections: usize,
+    guild_territories: usize,
+    takes_in_window: Option<u64>,
+}
+
+/// The scalar behind the passive SR figure, for diagnostics.
+fn scalar_note(scalar: &EffectiveScalar, now: i64) -> String {
+    let estimate = |kind: &str, sample: &sequoia_shared::SeasonScalarSample| {
+        format!(
+            "{kind} estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
+            sample.season_id,
+            sample.scalar_weighted,
+            sample.scalar_raw,
+            sample.confidence * 100.0,
+            since(&sample.sampled_at, now)
+        )
+    };
+    match (scalar.source, scalar.sample.as_ref()) {
+        (ScalarSource::Manual, _) => format!("Manual scalar {:.2} in use", scalar.value),
+        (ScalarSource::LiveEstimate, Some(sample)) => estimate("Live", sample),
+        (ScalarSource::HistoryEstimate, Some(sample)) => estimate("History", sample),
+        (_, None) => format!(
+            "Manual fallback scalar {:.2} (estimate unavailable)",
+            scalar.value
+        ),
+    }
+}
+
+/// Where a territory's live figures came from, for diagnostics.
+fn provenance_note(provenance: &DataProvenance, now: i64) -> (String, String) {
+    let source = if provenance.source.trim().is_empty() {
+        "unknown"
+    } else {
+        provenance.source.as_str()
+    };
+    (
+        format!(
+            "{} source \u{00b7} {source} \u{00b7} conf {}",
+            visibility_label(provenance),
+            format_confidence(provenance.confidence)
+        ),
+        format!(
+            "Observed {} \u{00b7} reporters {}",
+            since(&provenance.observed_at, now),
+            provenance.reporter_count
+        ),
+    )
 }
 
 #[component]
@@ -1390,53 +954,47 @@ fn DetailPanel() -> impl IntoView {
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
     let HistoryTimestamp(history_timestamp) = expect_context();
-    let ManualSrScalar(manual_sr_scalar) = expect_context();
-    let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
-    let LiveSeasonScalarSample(live_scalar_sample) = expect_context();
-    let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
     let ShowDebugInfo(show_debug_info) = expect_context();
-
+    let camera = expect_context::<BrowserMap>().camera();
     let tower_state: crate::tower::TowerState = expect_context();
-    // The detail below is rebuilt every second; its disclosures keep their state here and
-    // close again for the next territory.
+    let scalar_state = scalar_state();
+
+    // The detail is rebuilt when its territory's data changes; its disclosures keep their
+    // state here and close again for the next territory.
     let queue_details_open = RwSignal::new(false);
-    let location_open = RwSignal::new(false);
     Effect::new(move || {
         selected.track();
         queue_details_open.set(false);
-        location_open.set(false);
     });
 
-    let scalar_state = Memo::new(move |_| {
-        effective_scalar(
-            mode.get(),
-            auto_sr_scalar_enabled.get(),
-            manual_sr_scalar.get(),
-            live_scalar_sample.get(),
-            history_scalar_sample.get(),
-        )
+    let now = Memo::new(move |_| {
+        if mode.get() == MapMode::History {
+            history_timestamp.get().unwrap_or_else(|| tick.get())
+        } else {
+            tick.get()
+        }
     });
 
     // Guild-aware connection counts — only recomputes when territories/selection change, not every tick
     let guild_counts = Memo::new(move |_| {
         let name = selected.get()?;
-        let map = territories.get();
-        let ct = map.get(&name)?;
-        let guild_uuid = ct.territory.guild.uuid.as_str();
-        let connections = ct.territory.connections.as_slice();
-
-        let (guild_conn, total_conn, ext) =
-            sequoia_shared::tower::count_guild_connections(&name, connections, guild_uuid, |n| {
-                let ct2 = map.get(n)?;
-                Some((
-                    ct2.territory.guild.uuid.as_str(),
-                    ct2.territory.connections.as_slice(),
-                ))
-            });
-
-        Some((guild_conn, total_conn, ext))
+        territories.with(|map| {
+            let ct = map.get(&name)?;
+            Some(sequoia_shared::tower::count_guild_connections(
+                &name,
+                ct.territory.connections.as_slice(),
+                ct.territory.guild.uuid.as_str(),
+                |n| {
+                    let ct2 = map.get(n)?;
+                    Some((
+                        ct2.territory.guild.uuid.as_str(),
+                        ct2.territory.connections.as_slice(),
+                    ))
+                },
+            ))
+        })
     });
 
     // Sync tower connection counts when territory changes
@@ -1447,340 +1005,225 @@ fn DetailPanel() -> impl IntoView {
         }
     });
 
-    let detail = move || {
-        let reference_secs = if mode.get() == MapMode::History {
-            history_timestamp.get().unwrap_or_else(|| tick.get())
-        } else {
-            tick.get()
-        };
+    let info = Memo::new(move |_| {
         let name = selected.get()?;
-        let map = territories.get();
-        let ct = map.get(&name)?;
-        let takes_in_window = if heat_mode_enabled.get() {
-            Some(
-                heat_entries_by_territory
-                    .get()
-                    .get(&name)
-                    .copied()
-                    .unwrap_or(0),
-            )
-        } else {
-            None
-        };
-        let acquired_rfc = ct.territory.acquired.to_rfc3339();
-        let guild_uuid = ct.territory.guild.uuid.clone();
-        let guild_name = ct.territory.guild.name.clone();
-        let guild_territory_count = map
-            .values()
-            .filter(|candidate| {
-                if guild_uuid.is_empty() {
-                    candidate.territory.guild.name == guild_name
-                } else {
-                    candidate.territory.guild.uuid == guild_uuid
-                }
+        let takes_in_window = heat_mode_enabled
+            .get()
+            .then(|| heat_entries_by_territory.with(|heat| heat.get(&name).copied().unwrap_or(0)));
+        territories.with(|map| {
+            let ct = map.get(&name)?;
+            let guild = &ct.territory.guild;
+            let guild_territories = map
+                .values()
+                .filter(|candidate| {
+                    if guild.uuid.is_empty() {
+                        candidate.territory.guild.name == guild.name
+                    } else {
+                        candidate.territory.guild.uuid == guild.uuid
+                    }
+                })
+                .count();
+            Some(TerritoryInfo {
+                name: name.clone(),
+                guild_name: guild.name.clone(),
+                guild_prefix: guild.prefix.clone(),
+                acquired: ct.territory.acquired.timestamp(),
+                color: ct.guild_color,
+                runtime: ct.territory.runtime.clone(),
+                resources: territory_resource_rows(
+                    &ct.territory.resources,
+                    ct.territory.runtime.as_ref(),
+                ),
+                connections: ct.territory.connections.len(),
+                guild_territories,
+                takes_in_window,
             })
-            .count();
-        let treasury = ct
-            .territory
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.treasury.as_deref())
-            .and_then(TreasuryLevel::from_api_tier)
-            .or_else(|| {
-                chrono::DateTime::parse_from_rfc3339(&acquired_rfc)
-                    .ok()
-                    .map(|dt| {
-                        let secs = (reference_secs - dt.timestamp()).max(0);
-                        TreasuryLevel::from_held_seconds(secs)
-                    })
-            })
-            .unwrap_or(TreasuryLevel::VeryLow);
-        Some((
-            name,
-            ct.territory.guild.name.clone(),
-            ct.territory.guild.prefix.clone(),
-            ct.territory.guild.uuid.clone(),
-            acquired_rfc,
-            ct.territory.location.clone(),
-            ct.guild_color,
-            treasury,
-            ct.territory.resources.clone(),
-            ct.territory.runtime.clone(),
-            ct.territory.connections.len(),
-            guild_territory_count,
-            reference_secs,
-            takes_in_window,
-        ))
-    };
-
-    let current_territory_guild = Memo::new(move |_| {
+        })
+    });
+    let region = Memo::new(move |_| {
         let name = selected.get()?;
-        let map = territories.get();
-        map.get(&name).map(|ct| ct.territory.guild.name.clone())
+        territories.with(|map| map.get(&name).map(|ct| ct.territory.location.clone()))
     });
 
-    let on_back = move |_| {
-        let owner_guild = current_territory_guild.get_untracked();
+    let back = Callback::new(move |()| {
+        let owner = info.with_untracked(|info| info.as_ref().map(|info| info.guild_name.clone()));
         selected.set(None);
-        if let Some(guild_name) = owner_guild {
+        if let Some(guild_name) = owner {
             selected_guild.set(Some(guild_name));
         }
         detail_return_guild.set(None);
         sidebar_transient.set(false);
-    };
-
-    let on_close = move |_| {
+    });
+    let close = Callback::new(move |()| {
         // On mobile, closing the sheet hands the territory back to its peek card.
         if is_mobile.get_untracked() && detail_return_guild.get_untracked().is_none() {
             sidebar_transient.set(false);
             sidebar_open.set(false);
             return;
         }
+        selected.set(None);
         if let Some(return_guild) = detail_return_guild.get_untracked() {
-            selected.set(None);
             selected_guild.set(Some(return_guild));
-        } else {
-            selected.set(None);
         }
         detail_return_guild.set(None);
         sidebar_transient.set(false);
+    });
+    // The map behind the sidebar moves to the territory; a phone's sheet steps aside for it.
+    let show_on_map = move |_| {
+        if let Some(region) = region.get_untracked() {
+            camera.focus(&region);
+        }
+        if is_mobile.get_untracked() {
+            sidebar_transient.set(false);
+            sidebar_open.set(false);
+        }
     };
 
     view! {
-        <div class="panel-reveal tcard-detail">
-            <div class="tcard-detail-nav">
-                <button type="button" class="tcard-nav-button" title="Back to guild" aria-label="Back to guild" on:click=on_back>
-                    <span aria-hidden="true">{"\u{2039}"}</span>
-                    <span>"Back"</span>
-                </button>
-                <button type="button" class="tcard-nav-button tcard-nav-close" title="Close details" aria-label="Close details" on:click=on_close>
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true">
-                        <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+        <div class="sb-panel panel-reveal tcard-detail" style:--tcard-guild=move || info.with(|info| info.as_ref().map(|info| guild_css(info.color)))>
+            <PanelNav back=("Back to guild", back) close=("Close details", close)>
+                <button type="button" class="ui-button sb-show-on-map" on:click=show_on_map>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M10 2a6 6 0 00-6 6c0 4.2 5.3 9.4 5.5 9.6a.7.7 0 001 0C10.7 17.4 16 12.2 16 8a6 6 0 00-6-6zm0 8.5A2.5 2.5 0 1110 5.5a2.5 2.5 0 010 5z" clip-rule="evenodd" />
                     </svg>
+                    "Show on map"
                 </button>
-            </div>
-            {move || {
-                detail()
-                    .map(|(name, guild_name, guild_prefix, _uuid, acquired, location, (r, g, b), treasury, resources, runtime, conn_count, guild_territory_count, reference_secs, takes_in_window)| {
-                        let relative_time = format_relative_time(&acquired, reference_secs);
-                        let (tr, tg, tb) = treasury.color_rgb();
-                        let treasury_label = treasury.label();
-                        let buff = treasury.buff_percent();
-                        let scalar_details = scalar_state.get();
-                        let passive_sr_h = passive_sr_per_hour(guild_territory_count, scalar_details.value);
-                        let passive_sr_5s = passive_sr_per_5s(guild_territory_count, scalar_details.value);
-                        let passive_sr_label = format!(
-                            "{}/h \u{00b7} {}/5s",
-                            format_sr_rate(passive_sr_h),
-                            format_sr_rate(passive_sr_5s)
-                        );
-                        let show_debug_details = show_debug_info.get();
-                        let scalar_note = if show_debug_details {
-                            Some(match (scalar_details.source, scalar_details.sample.as_ref()) {
-                                (ScalarSource::Manual, _) => {
-                                    format!("Manual scalar {:.2} in use", scalar_details.value)
-                                }
-                                (ScalarSource::LiveEstimate, Some(sample)) => {
-                                    let sampled = format_relative_time(&sample.sampled_at, reference_secs);
-                                    format!(
-                                        "Live estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
-                                        sample.season_id,
-                                        sample.scalar_weighted,
-                                        sample.scalar_raw,
-                                        sample.confidence * 100.0,
-                                        sampled
-                                    )
-                                }
-                                (ScalarSource::HistoryEstimate, Some(sample)) => {
-                                    let sampled = format_relative_time(&sample.sampled_at, reference_secs);
-                                    format!(
-                                        "History estimate S{}/ weighted {:.2}, raw {:.2}, conf {:.0}% ({})",
-                                        sample.season_id,
-                                        sample.scalar_weighted,
-                                        sample.scalar_raw,
-                                        sample.confidence * 100.0,
-                                        sampled
-                                    )
-                                }
-                                (_, None) => {
-                                    format!("Manual fallback scalar {:.2} (estimate unavailable)", scalar_details.value)
-                                }
-                            })
-                        } else {
-                            None
-                        };
-
-                        let runtime_hq = runtime.as_ref().and_then(|runtime| runtime.headquarters);
-                        let runtime_defense = runtime
-                            .as_ref()
-                            .and_then(|runtime| runtime.defense_tier.clone());
-                        let runtime_provenance = if show_debug_details {
-                            runtime
-                                .as_ref()
-                                .and_then(|runtime| runtime.provenance.clone())
-                                .map(|provenance| {
-                                    let source = if provenance.source.trim().is_empty() {
-                                        "unknown".to_string()
-                                    } else {
-                                        provenance.source.clone()
-                                    };
-                                    let observed_label = format_relative_time(
-                                        &provenance.observed_at,
-                                        reference_secs,
-                                    );
-                                    let visibility = visibility_label(&provenance);
-                                    let confidence = format_confidence(provenance.confidence);
-                                    let reporter_count = provenance.reporter_count;
-                                    (
-                                        format!(
-                                            "{visibility} source \u{00b7} {source} \u{00b7} conf {confidence}"
-                                        ),
-                                        format!(
-                                            "Observed {observed_label} \u{00b7} reporters {reporter_count}"
-                                        ),
-                                    )
-                                })
-                        } else {
-                            None
-                        };
-
-                        // Cooldown: territory can be queued again after 10 minutes
-                        let cooldown = chrono::DateTime::parse_from_rfc3339(&acquired).ok().and_then(|dt| {
-                            let age = (reference_secs - dt.timestamp()).max(0);
-                            if age < 600 {
-                                let remaining = 600 - age;
-                                let frac = remaining as f64 / 600.0;
-                                Some((format!("{}:{:02}", remaining / 60, remaining % 60), frac))
-                            } else {
-                                None
-                            }
-                        });
-                        let guild_stats_url = crate::guild_stats_url(&guild_name);
-                        let resource_rows = territory_resource_rows(&resources, runtime.as_ref());
-                        let region = format!(
-                            "({}, {}) \u{2192} ({}, {})",
-                            location.start[0],
-                            location.start[1],
-                            location.end[0],
-                            location.end[1],
-                        );
-                        let size = format!("{}\u{00d7}{}", location.width(), location.height());
-                        let defense = runtime_defense.as_deref().map(defense_tier_display);
-                        let war_territory = Signal::stored(name.clone());
-                        view! {
-                            <div class="tcard tcard-sidebar" style:--tcard-guild=rgba_css(r, g, b, 0.9)>
-                                <header class="tcard-head">
-                                    <span class="tcard-swatch" aria-hidden="true" />
-                                    <h2 class="tcard-name">{name}</h2>
-                                    {(runtime_hq == Some(true)).then(|| view! { <span class="tcard-hq" title="Headquarters">"HQ"</span> })}
-                                </header>
-                                <div class="tcard-owner">
-                                    <a class="tcard-guild" href=guild_stats_url target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">
-                                        {guild_name}
-                                    </a>
-                                    <span class="tcard-tag">"[" {guild_prefix} "]"</span>
-                                </div>
-
-                                <TerritoryWar territory=war_territory details_open=queue_details_open />
-
-                                {cooldown.map(|(remaining_text, frac)| view! {
-                                    <div class="tcard-cooldown-row">
-                                        <span>"Cooldown"</span>
-                                        <span class="tcard-cooldown">{remaining_text}</span>
-                                        <span class="tcard-meter" aria-hidden="true">
-                                            <span style:width=format!("{:.1}%", frac * 100.0) />
-                                        </span>
-                                    </div>
-                                })}
-
-                                <dl class="tcard-stats tcard-stats-wide">
-                                    <div>
-                                        <dt>"Acquired"</dt>
-                                        <dd title=acquired>{relative_time}</dd>
-                                    </div>
-                                    <div>
-                                        <dt>"Treasury"</dt>
-                                        <dd style:color=rgba_css(tr, tg, tb, 1.0)>
-                                            {treasury_label}
-                                            {(buff > 0).then(|| view! { <span class="tcard-buff">{format!("+{buff}%")}</span> })}
-                                        </dd>
-                                    </div>
-                                    {defense.map(|(label, color)| view! {
-                                        <div><dt>"Defense"</dt><dd style:color=color>{label}</dd></div>
-                                    })}
-                                    <div>
-                                        <dt>"Connections"</dt>
-                                        <dd>{move || guild_counts.get().map(|(gc, tc, _)| format!("{gc}/{tc}")).unwrap_or_else(|| format!("{conn_count}"))}</dd>
-                                    </div>
-                                    <div class="tcard-stat-span">
-                                        <dt>"Passive SR"</dt>
-                                        <dd class="tcard-sr">{passive_sr_label}</dd>
-                                    </div>
-                                    {takes_in_window.map(|count| view! {
-                                        <div><dt>"Takes in window"</dt><dd>{count}</dd></div>
-                                    })}
-                                </dl>
-                                {scalar_note.map(|scalar_note| view! { <p class="tcard-debug">{scalar_note}</p> })}
-                                {runtime_provenance.map(|(primary, secondary)| view! {
-                                    <p class="tcard-debug">{primary}<br />{secondary}</p>
-                                })}
-
-                                <section class="tcard-section" aria-label="Resources">
-                                    <h3 class="tcard-section-title">"Resources"</h3>
-                                    <ResourceTable rows=resource_rows icon_px=14 />
-                                </section>
-
-                                <Disclosure open=location_open summary="Location" class="tcard-where">
-                                    <dl class="tcard-facts">
-                                        <div><dt>"Region"</dt><dd>{region}</dd></div>
-                                        <div><dt>"Size"</dt><dd>{size}</dd></div>
-                                    </dl>
-                                </Disclosure>
-                            </div>
-                        }
-                    })
-            }}
-            // Outside the per-second detail, so their state and any loaded activity survive it.
-            {move || selected.get().map(|name| {
-                let guild = territories.with_untracked(|map| map.get(&name).map(|ct| ct.guild_color));
-                let (r, g, b) = guild.unwrap_or((58, 63, 92));
+            </PanelNav>
+            {move || info.get().map(|info| {
+                let runtime = info.runtime.clone();
+                let acquired = info.acquired;
+                let held = move || now.get() - acquired;
+                let acquired_title = chrono::DateTime::from_timestamp(acquired, 0).map(|time| time.to_rfc3339()).unwrap_or_default();
+                let treasury_runtime = runtime.clone();
+                let provenance = runtime.as_ref().and_then(|runtime| runtime.provenance.clone());
+                let guild_territories = info.guild_territories;
+                let connections = info.connections;
                 view! {
-                    <div class="tcard tcard-sidebar tcard-sidebar-tail" style:--tcard-guild=rgba_css(r, g, b, 0.9)>
-                        <TerritoryActivity territory=name />
-                        <TowerCalculator />
-                    </div>
+                    <article class="tcard tcard-sidebar">
+                        <TerritoryHead name=info.name.clone() hq=runtime.as_ref().and_then(|runtime| runtime.headquarters) == Some(true) heading=true />
+                        <div class="tcard-owner">
+                            <a class="tcard-guild" href=crate::guild_stats_url(&info.guild_name) target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">
+                                {info.guild_name.clone()}
+                            </a>
+                            <span class="tcard-tag">"[" {info.guild_prefix.clone()} "]"</span>
+                        </div>
+
+                        <TerritoryWar territory=Signal::stored(info.name.clone()) details_open=queue_details_open />
+
+                        {move || cooldown(held()).map(|(left, share)| view! {
+                            <div class="tcard-cooldown-row">
+                                <span>"Cooldown"</span>
+                                <span class="tcard-cooldown">{left}</span>
+                                <span class="tcard-meter" aria-hidden="true">
+                                    <span style:width=format!("{:.1}%", share * 100.0) />
+                                </span>
+                            </div>
+                        })}
+
+                        <dl class="tcard-stats tcard-stats-wide">
+                            <div><dt>"Acquired"</dt><dd title=acquired_title>{move || crate::format::ago(held())}</dd></div>
+                            <div><dt>"Treasury"</dt>{move || view! { <TreasuryValue level=treasury(treasury_runtime.as_ref(), held()) buff=true /> }}</div>
+                            {runtime.as_ref().and_then(|runtime| runtime.defense_tier.clone()).map(|tier| view! {
+                                <div><dt>"Defense"</dt><DefenseValue tier /></div>
+                            })}
+                            <div>
+                                <dt>"Connections"</dt>
+                                <dd>{move || guild_counts.get().map_or_else(|| connections.to_string(), |(owned, total, _)| format!("{owned}/{total}"))}</dd>
+                            </div>
+                            <div class="tcard-stat-span">
+                                <dt>"Passive SR"</dt>
+                                <dd class="tcard-sr">{move || {
+                                    let scalar = scalar_state.get().value;
+                                    format!(
+                                        "{}/h \u{00b7} {}/5s",
+                                        rate(passive_sr_per_hour(guild_territories, scalar)),
+                                        rate(passive_sr_per_5s(guild_territories, scalar))
+                                    )
+                                }}</dd>
+                            </div>
+                            {info.takes_in_window.map(|count| view! {
+                                <div><dt>"Takes in window"</dt><dd>{count}</dd></div>
+                            })}
+                        </dl>
+                        {move || show_debug_info.get().then(|| {
+                            let note = scalar_note(&scalar_state.get(), now.get());
+                            let source = provenance.as_ref().map(|provenance| provenance_note(provenance, now.get()));
+                            view! {
+                                <p class="tcard-debug">{note}</p>
+                                {source.map(|(primary, secondary)| view! { <p class="tcard-debug">{primary}<br />{secondary}</p> })}
+                            }
+                        })}
+
+                        <section class="tcard-section" aria-label="Resources">
+                            <h3 class="tcard-section-title">"Resources"</h3>
+                            <ResourceTable rows=info.resources.clone() icon_px=14 />
+                        </section>
+                    </article>
                 }
             })}
+            // Keyed by territory alone, so the calculator, the disclosures and any loaded
+            // activity survive the detail above being rebuilt.
+            {move || selected.get().map(|name| view! { <TerritoryMore territory=name /> })}
         </div>
     }
 }
 
-/// A territory's recent activity, behind a disclosure, for members.
+/// Below the territory's own figures: the tower calculator, then where it is and what has
+/// happened there, each closed until asked for.
 #[component]
-fn TerritoryActivity(territory: String) -> impl IntoView {
+fn TerritoryMore(territory: String) -> impl IntoView {
     let room = expect_context::<crate::war_room::WarRoom>();
-    let open = RwSignal::new(false);
+    let territories: RwSignal<ClientTerritoryMap> = expect_context();
+    // The disclosure's state lives here for the territory's whole stay; its facts follow the
+    // territory's geometry, which a live correction can change under the same name.
+    let location_open = RwSignal::new(false);
+    let location = Memo::new({
+        let territory = territory.clone();
+        move |_| territories.with(|map| map.get(&territory).map(|ct| ct.territory.location.clone()))
+    });
+    let region = move || {
+        location.with(|location| {
+            location.as_ref().map_or_else(String::new, |location| {
+                format!(
+                    "({}, {}) \u{2192} ({}, {})",
+                    location.start[0], location.start[1], location.end[0], location.end[1]
+                )
+            })
+        })
+    };
+    let size = move || {
+        location.with(|location| {
+            location.as_ref().map_or_else(String::new, |location| {
+                format!("{}\u{00d7}{}", location.width(), location.height())
+            })
+        })
+    };
     let territory = Signal::stored(territory);
     view! {
-        <Show when=move || room.board.with(Option::is_some)>
-            <Disclosure open summary="Recent activity" class="activity-disclosure">
-                <Show when=move || open.get()>
-                    <ActivityFeed territory />
+        <div class="tcard tcard-sidebar tcard-sidebar-tail">
+            <TowerCalculator />
+            <div class="tcard-more">
+                <Show when=move || location.with(Option::is_some)>
+                    <Disclosure open=location_open summary="Location">
+                        <dl class="tcard-facts">
+                            <div><dt>"Region"</dt><dd>{region}</dd></div>
+                            <div><dt>"Size"</dt><dd>{size}</dd></div>
+                        </dl>
+                    </Disclosure>
                 </Show>
-            </Disclosure>
-        </Show>
+                <Show when=move || room.board.with(Option::is_some)>
+                    <ActivityDisclosure territory />
+                </Show>
+            </div>
+        </div>
     }
 }
 
-/// How long "Reset all" waits for its confirming second press.
-const RESET_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
-
 #[component]
-fn StatsBar() -> impl IntoView {
+fn SidebarToolbar() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let connection: RwSignal<ConnectionStatus> = expect_context();
     let ShowSettings(show_settings) = expect_context();
-    let SidebarOpen(sidebar_open) = expect_context();
     let CurrentMode(mode) = expect_context();
     let PlaybackActive(playback_active) = expect_context();
     let HistoryAvailable(history_available) = expect_context();
@@ -1799,23 +1242,14 @@ fn StatsBar() -> impl IntoView {
     let GuildColorStore(guild_color_store) = expect_context();
     let IsMobile(is_mobile) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
-    let ResetSettingsTrigger(reset_settings_trigger) = expect_context();
-    // "Reset all" asks once more before wiping every setting.
-    let reset_armed = RwSignal::new(false);
-    let reset_arming = StoredValue::new(0u32);
-    Effect::new(move || {
-        if !show_settings.get() || !sidebar_open.get() {
-            reset_armed.set(false);
-        }
-    });
 
     let guild_count = Memo::new(move |_| {
-        let map = territories.get();
-        let mut guilds: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for ct in map.values() {
-            guilds.insert(&ct.territory.guild.name);
-        }
-        guilds.len()
+        territories.with(|map| {
+            map.values()
+                .map(|ct| ct.territory.guild.name.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+        })
     });
 
     // A healthy feed shows nothing; only connecting and reconnecting get a lamp.
@@ -1825,189 +1259,96 @@ fn StatsBar() -> impl IntoView {
         ConnectionStatus::Reconnecting => Some("Reconnecting..."),
     });
 
-    let is_history = move || mode.get() == MapMode::History;
+    let is_history = Memo::new(move |_| mode.get() == MapMode::History);
+    let toggle_history = move |_| {
+        if is_history.get_untracked() {
+            history::exit_history_mode(history::ExitHistoryModeInput {
+                mode,
+                playback_active,
+                history_fetch_nonce,
+                history_timestamp,
+                history_legacy_geometry_active,
+                history_buffered_updates,
+                history_buffer_mode_active,
+                last_live_seq,
+                needs_live_resync,
+                live_handoff_resync_count,
+                history_sr_leaderboard,
+                territories,
+            });
+        } else {
+            history::enter_history_mode(history::EnterHistoryModeInput {
+                mode,
+                history_timestamp,
+                history_bounds,
+                history_fetch_nonce,
+                history_legacy_geometry_active,
+                history_buffered_updates,
+                history_buffer_mode_active,
+                needs_live_resync,
+                history_scalar_sample,
+                history_sr_leaderboard,
+                geo_store,
+                guild_color_store,
+                territories,
+            });
+        }
+    };
 
     view! {
-        <div style="padding: 10px 12px; border-top: 1px solid var(--color-border-subtle); display: flex; align-items: center; justify-content: space-between; gap: 8px; font-family: var(--font-mono); font-size: 0.789rem; color: #6a6870;">
-            <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: none;">
-            <KeybindHelp touch_target=is_mobile />
-            <button
-                style:display=move || if history_available.get() && !is_mobile.get() { "flex" } else { "none" }
-                style="background: none; border: 1px solid var(--color-border-subtle); border-radius: 999px; padding: 5px 10px; cursor: pointer; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; font-size: 0.766rem; min-width: 64px;"
-                title=move || if is_history() { "Disable history mode (h)" } else { "Enable history mode (h)" }
-                style:color=move || if is_history() { "var(--color-deep)" } else { "var(--color-text-dim)" }
-                style:background=move || if is_history() { "var(--color-gold)" } else { "var(--color-surface)" }
-                style:border-color=move || if is_history() { "var(--color-gold)" } else { "var(--color-border-subtle)" }
-                style:box-shadow=move || if is_history() { "0 0 8px rgba(245,197,66,0.35)" } else { "none" }
-                on:click=move |_| {
-                    if is_history() {
-                        history::exit_history_mode(history::ExitHistoryModeInput {
-                            mode,
-                            playback_active,
-                            history_fetch_nonce,
-                            history_timestamp,
-                            history_legacy_geometry_active,
-                            history_buffered_updates,
-                            history_buffer_mode_active,
-                            last_live_seq,
-                            needs_live_resync,
-                            live_handoff_resync_count,
-                            history_sr_leaderboard,
-                            territories,
-                        });
-                    } else {
-                        history::enter_history_mode(history::EnterHistoryModeInput {
-                            mode,
-                            history_timestamp,
-                            history_bounds,
-                            history_fetch_nonce,
-                            history_legacy_geometry_active,
-                            history_buffered_updates,
-                            history_buffer_mode_active,
-                            needs_live_resync,
-                            history_scalar_sample,
-                            history_sr_leaderboard,
-                            geo_store,
-                            guild_color_store,
-                            territories,
-                        });
-                    }
-                }
-                on:mouseenter=move |e| {
-                    if !is_history()
-                        && let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-                    {
-                        el.style().set_property("color", "var(--color-text-secondary)").ok();
-                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
-                    }
-                }
-                on:mouseleave=move |e| {
-                    if !is_history()
-                        && let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-                    {
-                        el.style().set_property("color", "var(--color-text-dim)").ok();
-                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                    }
-                }
-            >
-                "History"
-            </button>
-            <button
-                style:display=move || if !is_mobile.get() { "flex" } else { "none" }
-                style="background: none; border: 1px solid var(--color-border-subtle); border-radius: 999px; padding: 5px 10px; cursor: pointer; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; font-size: 0.766rem; min-width: 58px;"
-                title=move || if heat_mode_enabled.get() { "Disable heat map" } else { "Enable heat map" }
-                style:color=move || if heat_mode_enabled.get() { "var(--color-deep)" } else { "var(--color-text-dim)" }
-                style:background=move || if heat_mode_enabled.get() { "#f58c32" } else { "var(--color-surface)" }
-                style:border-color=move || if heat_mode_enabled.get() { "#f58c32" } else { "var(--color-border-subtle)" }
-                style:box-shadow=move || if heat_mode_enabled.get() { "0 0 8px rgba(245,140,50,0.35)" } else { "none" }
-                on:click=move |_| heat_mode_enabled.update(|v| *v = !*v)
-                on:mouseenter=move |e| {
-                    if !heat_mode_enabled.get()
-                        && let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-                    {
-                        el.style().set_property("color", "var(--color-text-secondary)").ok();
-                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
-                    }
-                }
-                on:mouseleave=move |e| {
-                    if !heat_mode_enabled.get()
-                        && let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-                    {
-                        el.style().set_property("color", "var(--color-text-dim)").ok();
-                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                    }
-                }
-            >
-                "Heat"
-            </button>
-            <div
-                style="background: var(--color-surface); border-radius: 999px; padding: 5px 10px; border: 1px solid var(--color-border-subtle); display: flex; align-items: center; gap: 4px;"
-                style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }
-            >
-                <span style="color: var(--color-text-secondary);">{move || guild_count.get()}</span>
-                <span>" guilds"</span>
-            </div>
-            </div>
-            <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
-            {move || status_text.get().map(|text| view! {
-                <div
-                    role="status"
-                    title=text
-                    aria-label=text
-                    style="width: 26px; height: 26px; border: 1px solid var(--color-border-subtle); border-radius: 999px; background: var(--color-surface); display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
-                >
-                    <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--color-gold); box-shadow: 0 0 8px rgba(245,197,66,0.35); animation: pulse-dot 1.5s ease-in-out infinite;"></span>
+        <div class="sb-toolbar">
+            <KeybindHelp />
+            // Phones switch these from the map's own buttons and Settings.
+            <Show when=move || !is_mobile.get()>
+                <div class="sb-modes" role="group" aria-label="Map modes">
+                    <Show when=move || history_available.get()>
+                        <button
+                            type="button"
+                            class="ui-button sb-mode"
+                            data-mode="history"
+                            aria-pressed=move || is_history.get().to_string()
+                            title=move || if is_history.get() { "Disable history mode (h)" } else { "Enable history mode (h)" }
+                            on:click=toggle_history
+                        >"History"</button>
+                    </Show>
+                    <button
+                        type="button"
+                        class="ui-button sb-mode"
+                        data-mode="heat"
+                        aria-pressed=move || heat_mode_enabled.get().to_string()
+                        title=move || if heat_mode_enabled.get() { "Disable heat map" } else { "Enable heat map" }
+                        on:click=move |_| heat_mode_enabled.update(|on| *on = !*on)
+                    >"Heat"</button>
                 </div>
+            </Show>
+            <span class="sb-toolbar-count">
+                <span class="sb-toolbar-figure">{move || guild_count.get()}</span>
+                " guilds"
+            </span>
+            {move || status_text.get().map(|text| view! {
+                <span class="sb-toolbar-status" role="status" title=text aria-label=text>
+                    <span aria-hidden="true" />
+                </span>
             })}
             <button
                 type="button"
-                class="settings-reset-all"
-                data-armed=move || reset_armed.get().to_string()
-                style:display=move || if show_settings.get() { "flex" } else { "none" }
-                style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }
-                title="Reset every setting in this menu to its default"
-                on:click=move |_| {
-                    if reset_armed.get_untracked() {
-                        reset_armed.set(false);
-                        reset_settings_trigger.update(|value| *value = value.saturating_add(1));
-                    } else {
-                        reset_armed.set(true);
-                        // Only the latest arming may disarm; an older timer is stale.
-                        let arming = reset_arming.get_value().wrapping_add(1);
-                        reset_arming.set_value(arming);
-                        set_timeout(
-                            move || {
-                                if reset_arming.get_value() == arming {
-                                    reset_armed.set(false);
-                                }
-                            },
-                            RESET_CONFIRM_WINDOW,
-                        );
-                    }
-                }
-            >
-                {move || if reset_armed.get() { "Confirm reset" } else { "Reset all" }}
-            </button>
-            <button
-                style="background: none; border: 1px solid var(--color-border-subtle); border-radius: 999px; padding: 5px 7px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s;"
-                style:min-height=move || if is_mobile.get() { "44px" } else { "auto" }
-                style:min-width=move || if is_mobile.get() { "44px" } else { "auto" }
-                style:color=move || if show_settings.get() { "var(--color-gold)" } else { "var(--color-text-dim)" }
-                style:background=move || if show_settings.get() { "rgba(245,197,66,0.06)" } else { "var(--color-surface)" }
-                style:border-color=move || if show_settings.get() { "rgba(245,197,66,0.25)" } else { "var(--color-border-subtle)" }
+                class="ui-button ui-icon-button sb-settings"
                 aria-label="Settings"
                 title="Settings"
                 aria-expanded=move || show_settings.get().to_string()
-                on:click=move |_| show_settings.update(|v| *v = !*v)
-                on:mouseenter=move |e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-                        && !show_settings.get_untracked()
-                    {
-                        el.style().set_property("color", "var(--color-text-secondary)").ok();
-                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
-                    }
-                }
-                on:mouseleave=move |e| {
-                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
-                        && !show_settings.get_untracked()
-                    {
-                        el.style().set_property("color", "var(--color-text-dim)").ok();
-                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                    }
-                }
+                on:click=move |_| show_settings.update(|open| *open = !*open)
             >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14" aria-hidden="true">
                     <path fill-rule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
                 </svg>
             </button>
-            </div>
         </div>
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::extract_online_members;
+    use super::{GuildFacts, extract_online_members};
     use serde_json::json;
 
     #[test]
@@ -2098,5 +1439,25 @@ mod tests {
         assert_eq!(row.rank_label, "Chief");
         assert_eq!(row.username, "Obstacles_");
         assert_eq!(row.server, "NA5");
+    }
+
+    #[test]
+    fn guild_facts_take_the_latest_season_and_the_member_total() {
+        let facts = GuildFacts::from_json(&json!({
+            "prefix": "SEQ",
+            "level": 268,
+            "online": 16,
+            "members": { "total": 146, "chief": { "GaztheCat": { "online": true, "server": "NA24" } } },
+            "wars": 173_747,
+            "seasonRanks": { "9": { "rating": 1_000 }, "33": { "rating": 2_900_000 } },
+            "created": "2022-10-14T00:00:00Z"
+        }));
+        assert_eq!(
+            (facts.level, facts.online, facts.members, facts.wars),
+            (268, 16, 146, 173_747)
+        );
+        assert_eq!(facts.season_rating, Some((33, 2_900_000)));
+        assert_eq!(facts.online_members.len(), 1);
+        assert_eq!(GuildFacts::from_json(&json!({})).season_rating, None);
     }
 }

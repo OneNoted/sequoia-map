@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod format;
 mod heat;
 mod history;
 mod keybinds;
@@ -14,6 +15,7 @@ mod site_nav;
 mod territory_card;
 mod timeline;
 mod tower;
+mod ui;
 mod ui_icons;
 mod war_room;
 

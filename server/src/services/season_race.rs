@@ -662,11 +662,7 @@ mod tests {
         ForecastSource, SeriesObservation, apply_projected_ranks, downsample_series_hourly,
         forecast_rate, observed_rate_per_hour, project_final_sr, recent_observation_query_start,
     };
-    use chrono::{DateTime, Utc};
-
-    fn ts(value: &str) -> DateTime<Utc> {
-        value.parse::<DateTime<Utc>>().expect("parse timestamp")
-    }
+    use crate::test_support::ts;
 
     #[test]
     fn observed_rate_uses_recent_window_when_available() {

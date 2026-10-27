@@ -512,12 +512,8 @@ mod tests {
     };
     use crate::config::SeasonScalarOverridePoint;
     use crate::services::season_data::{ResolvedSeasonWindow, SeasonWindowSource};
-    use chrono::{DateTime, Utc};
+    use crate::test_support::ts;
     use std::collections::HashMap;
-
-    fn ts(value: &str) -> DateTime<Utc> {
-        value.parse::<DateTime<Utc>>().expect("parse timestamp")
-    }
 
     fn season_window(season_id: i32, start: &str, end: &str) -> ResolvedSeasonWindow {
         ResolvedSeasonWindow {

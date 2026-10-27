@@ -819,11 +819,7 @@ fn map_intel_status(
 }
 
 fn format_count(value: usize) -> String {
-    if value >= 1000 {
-        format!("{:.1}k", value as f64 / 1000.0)
-    } else {
-        value.to_string()
-    }
+    crate::format::compact(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
 fn node_count_label(count: usize) -> &'static str {

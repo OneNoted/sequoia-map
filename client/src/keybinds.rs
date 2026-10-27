@@ -157,10 +157,10 @@ fn key_cap(key: &str) -> String {
 #[derive(Clone, Copy)]
 pub(crate) struct KeybindHelpOpen(pub RwSignal<bool>);
 
-/// The `?` button and the shortcut list it opens. `touch_target` grows the button to
-/// the 44px minimum used for touch controls on mobile.
+/// The `?` button and the shortcut list it opens. Touch screens get the toolbar's larger
+/// control size from the stylesheet.
 #[component]
-pub(crate) fn KeybindHelp(#[prop(into)] touch_target: Signal<bool>) -> impl IntoView {
+pub(crate) fn KeybindHelp() -> impl IntoView {
     let KeybindHelpOpen(open) = expect_context();
     let dialog_ref = NodeRef::<leptos::html::Dialog>::new();
     let button_ref = NodeRef::<leptos::html::Button>::new();
@@ -222,13 +222,11 @@ pub(crate) fn KeybindHelp(#[prop(into)] touch_target: Signal<bool>) -> impl Into
         <button
             node_ref=button_ref
             type="button"
-            class="keybind-help-button"
+            class="ui-button ui-icon-button keybind-help-button"
             title="Keyboard shortcuts"
             aria-label="Keyboard shortcuts"
             aria-haspopup="dialog"
             aria-expanded=move || open.get().to_string()
-            style:min-width=move || if touch_target.get() { "44px" } else { "26px" }
-            style:min-height=move || if touch_target.get() { "44px" } else { "26px" }
             on:click=move |_| open.update(|value| *value = !*value)
         >
             "?"
@@ -243,7 +241,7 @@ pub(crate) fn KeybindHelp(#[prop(into)] touch_target: Signal<bool>) -> impl Into
             <div class="keybind-help-body">
                 <div class="keybind-help-header">
                     <h2 id="keybind-help-title">"Keyboard shortcuts"</h2>
-                    <button type="button" class="keybind-help-close" aria-label="Close" on:click=move |_| open.set(false)>
+                    <button type="button" class="ui-button ui-icon-button keybind-help-close" aria-label="Close" on:click=move |_| open.set(false)>
                         "\u{00D7}"
                     </button>
                 </div>

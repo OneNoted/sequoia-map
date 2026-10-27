@@ -465,35 +465,19 @@ pub fn Timeline() -> impl IntoView {
                 // Play/Pause button
                 <button
                     title=move || if playing.get() { "Pause (Space)" } else { "Play (Space)" }
-                    style:min-width=move || if is_mobile.get() { "44px" } else { "32px" }
-                    style:min-height=move || if is_mobile.get() { "44px" } else { "32px" }
-                    style:width=move || if is_mobile.get() { "44px" } else { "32px" }
-                    style:height=move || if is_mobile.get() { "44px" } else { "32px" }
-                    style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 6px; cursor: pointer; color: var(--color-gold); font-size: 0.9rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
+                    type="button"
+                    class="ui-button ui-icon-button timeline-play"
+                    aria-label=move || if playing.get() { "Pause" } else { "Play" }
                     inner_html=move || if playing.get() { pause_svg } else { play_svg }
                     on:click=move |_| playing.update(|v| *v = !*v)
-                    on:mouseenter=move |e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "var(--color-surface-hover)").ok();
-                            el.style().set_property("border-color", "var(--color-border-accent)").ok();
-                        }
-                    }
-                    on:mouseleave=move |e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "var(--color-surface)").ok();
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                        }
-                    }
                 />
 
                 // Step backward
                 <button
                     title="Step back ([)"
-                    style:min-width=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style:min-height=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style:width=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style:height=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; cursor: pointer; color: var(--color-text-secondary); font-size: 0.75rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 4px; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
+                    type="button"
+                    class="ui-button ui-icon-button timeline-step"
+                    aria-label="Step back"
                     inner_html=skip_back_svg
                     on:click=move |_| {
                         history::step_backward(history::HistoryStepContext {
@@ -511,30 +495,14 @@ pub fn Timeline() -> impl IntoView {
                             },
                         });
                     }
-                    on:mouseenter=move |e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "var(--color-surface-hover)").ok();
-                            el.style().set_property("color", "var(--color-text-primary)").ok();
-                            el.style().set_property("border-color", "var(--color-border-accent)").ok();
-                        }
-                    }
-                    on:mouseleave=move |e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "var(--color-surface)").ok();
-                            el.style().set_property("color", "var(--color-text-secondary)").ok();
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                        }
-                    }
                 />
 
                 // Step forward
                 <button
                     title="Step forward (])"
-                    style:min-width=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style:min-height=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style:width=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style:height=move || if is_mobile.get() { "44px" } else { "28px" }
-                    style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; cursor: pointer; color: var(--color-text-secondary); font-size: 0.75rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 4px; transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease; touch-action: manipulation;"
+                    type="button"
+                    class="ui-button ui-icon-button timeline-step"
+                    aria-label="Step forward"
                     inner_html=skip_fwd_svg
                     on:click=move |_| {
                         history::step_forward(history::HistoryStepContext {
@@ -552,20 +520,6 @@ pub fn Timeline() -> impl IntoView {
                             },
                         });
                     }
-                    on:mouseenter=move |e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "var(--color-surface-hover)").ok();
-                            el.style().set_property("color", "var(--color-text-primary)").ok();
-                            el.style().set_property("border-color", "var(--color-border-accent)").ok();
-                        }
-                    }
-                    on:mouseleave=move |e| {
-                        if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                            el.style().set_property("background", "var(--color-surface)").ok();
-                            el.style().set_property("color", "var(--color-text-secondary)").ok();
-                            el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                        }
-                    }
                 />
 
                 // Divider: transport | speed
@@ -576,7 +530,9 @@ pub fn Timeline() -> impl IntoView {
                     if is_mobile.get() {
                         view! {
                             <button
-                                style="min-width: 44px; min-height: 44px; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-secondary); font-size: 0.68rem; padding: 4px 8px; cursor: pointer; font-family: var(--font-mono); flex-shrink: 0; transition: border-color 0.15s ease, color 0.15s ease; touch-action: manipulation;"
+                                type="button"
+                                class="ui-button timeline-speed"
+                                aria-label="Playback speed"
                                 on:click=cycle_speed
                             >
                                 {move || format!("{}x", speed.get() as i32)}
@@ -586,7 +542,8 @@ pub fn Timeline() -> impl IntoView {
                         view! {
                             <select
                                 prop:value=move || speed.get().to_string()
-                                style="background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; color: var(--color-text-secondary); font-size: 0.68rem; padding: 4px 6px; cursor: pointer; font-family: var(--font-mono); flex-shrink: 0; outline: none; transition: border-color 0.15s ease, color 0.15s ease;"
+                                class="ui-button timeline-speed"
+                                aria-label="Playback speed"
                                 on:change=move |e| {
                                     let Some(target) = e.target() else {
                                         return;
@@ -596,18 +553,6 @@ pub fn Timeline() -> impl IntoView {
                                     };
                                     if let Ok(val) = target.value().parse::<f64>() {
                                         speed.set(val);
-                                    }
-                                }
-                                on:mouseenter=move |e| {
-                                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("border-color", "var(--color-border-accent)").ok();
-                                        el.style().set_property("color", "var(--color-text-primary)").ok();
-                                    }
-                                }
-                                on:mouseleave=move |e| {
-                                    if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                                        el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                                        el.style().set_property("color", "var(--color-text-secondary)").ok();
                                     }
                                 }
                             >

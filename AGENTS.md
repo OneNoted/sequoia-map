@@ -2,7 +2,6 @@
 
 Use `mise tasks` for development commands and `mise run verify` for the Rust CI
 checks. Setup and local ports are in [docs/development.md](docs/development.md).
-The separate Fabric build is `mise run iris:build <profile>`.
 
 The ingest gateway has its own Cargo workspace and lockfile. Root-level Cargo
 commands alone do not check it. Both browser clients and `browser-map` also need

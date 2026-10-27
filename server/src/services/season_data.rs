@@ -537,11 +537,7 @@ mod tests {
         ResolvedSeasonWindow, SeasonDataError, SeasonWindowSource, merge_windows,
         normalize_requested_guild_names, select_default_window, select_window,
     };
-    use chrono::{DateTime, Utc};
-
-    fn ts(value: &str) -> DateTime<Utc> {
-        value.parse::<DateTime<Utc>>().expect("parse timestamp")
-    }
+    use crate::test_support::ts;
 
     #[test]
     fn merge_windows_uses_next_season_start_as_inferred_end() {

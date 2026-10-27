@@ -6,32 +6,77 @@ use leptos::prelude::*;
 use sequoia_shared::war_board::{
     Ending, FrontStage, QUEUE_ENTRY_TO_START_SECS, QueuedBy, WarFront, format_clock,
 };
-use sequoia_shared::{Resources, TerritoryRuntimeData};
+use sequoia_shared::{Resources, TerritoryRuntimeData, TreasuryLevel};
 
+use crate::colors::rgba_css;
+use crate::defense::DefenseTier;
+use crate::format::{ago, compact, local_time, local_time_seconds};
 use crate::territory::ClientTerritoryMap;
+use crate::ui::Disclosure;
 use crate::war_room::{WarRoom, clock_text, ending, stage_slug};
 
-/// A Unix time as the viewer's local wall-clock time, `14:02`.
-pub(crate) fn local_time(at: i64) -> String {
-    local(at).map_or_else(String::new, |time| time.format("%H:%M").to_string())
+/// How long a new capture stays protected from another queue.
+const COOLDOWN_SECS: i64 = 600;
+
+/// The treasury tier a reporter saw, or failing that the one the time held implies.
+pub(crate) fn treasury(runtime: Option<&TerritoryRuntimeData>, held_secs: i64) -> TreasuryLevel {
+    runtime
+        .and_then(|runtime| runtime.treasury.as_deref())
+        .and_then(TreasuryLevel::from_api_tier)
+        .unwrap_or_else(|| TreasuryLevel::from_held_seconds(held_secs.max(0)))
 }
 
-/// The same with seconds, for times a few seconds apart.
-pub(crate) fn local_time_seconds(at: i64) -> String {
-    local(at).map_or_else(String::new, |time| time.format("%H:%M:%S").to_string())
+/// The cooldown still left on a territory held for `held_secs`, as `m:ss` and the share left.
+pub(crate) fn cooldown(held_secs: i64) -> Option<(String, f64)> {
+    let remaining = COOLDOWN_SECS - held_secs.max(0);
+    (remaining > 0).then(|| {
+        (
+            format!("{}:{:02}", remaining / 60, remaining % 60),
+            remaining as f64 / COOLDOWN_SECS as f64,
+        )
+    })
 }
 
-fn local(at: i64) -> Option<chrono::DateTime<chrono::Local>> {
-    chrono::DateTime::from_timestamp(at, 0).map(|time| time.with_timezone(&chrono::Local))
-}
-
-/// How long ago, coarsely: `just now`, `6m ago`, `2h ago`.
-pub(crate) fn ago(seconds: i64) -> String {
-    match seconds.max(0) {
-        0..60 => "just now".to_string(),
-        seconds @ 60..3600 => format!("{}m ago", seconds / 60),
-        seconds => format!("{}h ago", seconds / 3600),
+/// The name line every card opens with: the guild's swatch, the name, and HQ when it is one.
+/// The sidebar's is the panel's heading; the glances' are plain text.
+#[component]
+pub(crate) fn TerritoryHead(
+    name: String,
+    hq: bool,
+    #[prop(optional)] heading: bool,
+) -> impl IntoView {
+    let name = if heading {
+        view! { <h2 class="tcard-name">{name}</h2> }.into_any()
+    } else {
+        view! { <span class="tcard-name">{name}</span> }.into_any()
+    };
+    view! {
+        <header class="tcard-head">
+            <span class="tcard-swatch" aria-hidden="true" />
+            {name}
+            {hq.then(|| view! { <span class="tcard-hq" title="Headquarters">"HQ"</span> })}
+        </header>
     }
+}
+
+/// A treasury tier in its colour, with the production buff it gives when asked for.
+#[component]
+pub(crate) fn TreasuryValue(level: TreasuryLevel, #[prop(optional)] buff: bool) -> impl IntoView {
+    let (r, g, b) = level.color_rgb();
+    let percent = level.buff_percent();
+    view! {
+        <dd style:color=rgba_css(r, g, b, 1.0)>
+            {level.label()}
+            {(buff && percent > 0).then(|| view! { <span class="tcard-buff">{format!("+{percent}%")}</span> })}
+        </dd>
+    }
+}
+
+/// A reported defense tier in the rating palette the calculator uses too.
+#[component]
+pub(crate) fn DefenseValue(tier: String) -> impl IntoView {
+    let tier = DefenseTier::parse(&tier);
+    view! { <dd class="tcard-defense" style:color=tier.color()>{tier.label().to_string()}</dd> }
 }
 
 /// When a queue was made and by whom, as words; `None` when the backend said neither.
@@ -182,29 +227,6 @@ pub(crate) fn QueueDetails(front: WarFront, open: RwSignal<bool>) -> impl IntoVi
     .into_any()
 }
 
-/// A `<details>` whose open state is held by `open`, so it survives its parent being rebuilt.
-#[component]
-pub(crate) fn Disclosure(
-    open: RwSignal<bool>,
-    summary: &'static str,
-    #[prop(optional)] class: &'static str,
-    children: Children,
-) -> impl IntoView {
-    view! {
-        <details
-            class=format!("tcard-disclosure {class}")
-            prop:open=move || open.get()
-            on:toggle=move |event| {
-                let element: web_sys::HtmlDetailsElement = event_target(&event);
-                open.set(element.open());
-            }
-        >
-            <summary>{summary}</summary>
-            {children()}
-        </details>
-    }
-}
-
 /// The queue's original length, or `Unknown` when the backend's timer is a guess.
 pub(crate) fn original_timer(front: &WarFront) -> String {
     front.timer().map_or_else(
@@ -293,17 +315,13 @@ pub(crate) fn resource_rows(
     .collect()
 }
 
-/// `9.0k`, `300`.
-pub(crate) fn compact_amount(value: i32) -> String {
-    if value >= 1000 {
-        format!("{:.1}k", f64::from(value) / 1000.0)
-    } else {
-        value.to_string()
-    }
+/// An amount as the resource table writes it, `9.0k`, or a dash while unreported.
+fn amount(value: Option<i32>) -> String {
+    value.map_or_else(|| "\u{2013}".to_string(), |value| compact(i64::from(value)))
 }
 
-/// Every resource as one row, with a column per kind of figure known: held, per hour and
-/// storage cap. Replaces a chip group per figure, which repeated every resource's name.
+/// Every resource as one row: what is held against its storage cap, and production per hour.
+/// The held and cap column only appears when either figure is known.
 #[component]
 pub(crate) fn ResourceTable(
     rows: Vec<ResourceRow>,
@@ -313,17 +331,16 @@ pub(crate) fn ResourceTable(
         return ().into_any();
     }
     let icon_px = if icon_px == 0 { 12 } else { icon_px };
-    let show_held = rows.iter().any(|row| row.held.is_some());
-    let show_cap = rows.iter().any(|row| row.cap.is_some());
-    let cell = |value: Option<i32>| value.map_or_else(|| "\u{2013}".to_string(), compact_amount);
+    let show_storage = rows
+        .iter()
+        .any(|row| row.held.is_some() || row.cap.is_some());
     view! {
         <table class="tcard-resources">
             <thead>
                 <tr>
                     <th scope="col"><span class="sr-only">"Resource"</span></th>
-                    {show_held.then(|| view! { <th scope="col">"Held"</th> })}
+                    {show_storage.then(|| view! { <th scope="col">"Held / Cap"</th> })}
                     <th scope="col">"Per hour"</th>
-                    {show_cap.then(|| view! { <th scope="col">"Cap"</th> })}
                 </tr>
             </thead>
             <tbody>
@@ -339,11 +356,13 @@ pub(crate) fn ResourceTable(
                                     <span class="tcard-double" title="Double generation">"\u{00D7}2"</span>
                                 })}
                             </th>
-                            {show_held.then(|| view! {
-                                <td class:tcard-full=full title=full.then_some("Storage nearly full")>{cell(row.held)}</td>
+                            {show_storage.then(|| view! {
+                                <td class="tcard-storage" class:tcard-full=full title=full.then_some("Storage nearly full")>
+                                    {amount(row.held)}
+                                    <span class="tcard-cap">" / " {amount(row.cap)}</span>
+                                </td>
                             })}
-                            <td>{compact_amount(row.per_hour)}</td>
-                            {show_cap.then(|| view! { <td>{cell(row.cap)}</td> })}
+                            <td>{amount(Some(row.per_hour))}</td>
                         </tr>
                     }
                 }).collect_view()}
@@ -393,11 +412,27 @@ mod tests {
     }
 
     #[test]
-    fn ago_is_coarse() {
-        assert_eq!(ago(-5), "just now");
-        assert_eq!(ago(59), "just now");
-        assert_eq!(ago(61), "1m ago");
-        assert_eq!(ago(7_300), "2h ago");
+    fn the_cooldown_runs_ten_minutes_from_the_capture() {
+        assert_eq!(cooldown(0), Some(("10:00".to_string(), 1.0)));
+        assert_eq!(
+            cooldown(545).map(|(left, _)| left),
+            Some("0:55".to_string())
+        );
+        assert_eq!(cooldown(600), None);
+        assert_eq!(
+            cooldown(-30).map(|(left, _)| left),
+            Some("10:00".to_string())
+        );
+    }
+
+    #[test]
+    fn a_reported_treasury_wins_over_the_time_held() {
+        let reported = TerritoryRuntimeData {
+            treasury: Some("HIGH".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(treasury(Some(&reported), 0), TreasuryLevel::High);
+        assert_eq!(treasury(None, 0), TreasuryLevel::from_held_seconds(0));
     }
 
     #[test]
@@ -492,12 +527,5 @@ mod tests {
         assert!(row(270, 300).nearly_full());
         assert!(!row(269, 300).nearly_full());
         assert!(!row(5, 0).nearly_full());
-    }
-
-    #[test]
-    fn amounts_are_compact() {
-        assert_eq!(compact_amount(300), "300");
-        assert_eq!(compact_amount(9_000), "9.0k");
-        assert_eq!(compact_amount(15_100), "15.1k");
     }
 }

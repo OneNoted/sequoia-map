@@ -32,7 +32,7 @@ use crate::app::{
 };
 use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
 
-pub(crate) use activity::ActivityFeed;
+pub(crate) use activity::ActivityDisclosure;
 pub(crate) use hud::WarRoomHud;
 
 const WARCONTROLLER_ENDPOINT: &str = "/api/warcontroller";

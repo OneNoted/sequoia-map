@@ -554,6 +554,7 @@ fn pair_geometry(contacts: &[Pointer], a: i32, b: i32) -> ((f64, f64), f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_close;
     use crate::viewport::{MAX_SCALE, MIN_SCALE};
 
     fn camera() -> Viewport {
@@ -580,13 +581,6 @@ mod tests {
             x,
             y,
         }
-    }
-
-    fn assert_close(actual: f64, expected: f64) {
-        assert!(
-            (actual - expected).abs() < 1e-9,
-            "expected {expected}, got {actual}"
-        );
     }
 
     fn assert_world_under(camera: &Viewport, world: (f64, f64), screen: (f64, f64)) {

@@ -24,8 +24,9 @@ use crate::app::{
     IsMobile, PeekTerritory, ShowWarPanel, SidebarOpen, WarPanelOpen, WarPanelWidth,
     clamp_war_panel_width,
 };
+use crate::format::{local_time, local_time_seconds};
 use crate::territory::ClientTerritoryMap;
-use crate::territory_card::{QueueOrigin, local_time, local_time_seconds, original_timer};
+use crate::territory_card::{QueueOrigin, original_timer};
 use crate::ui_icons::class_icon_url;
 
 /// At or below this viewport height (CSS pixels) the side panel would crowd the map, so the
@@ -97,7 +98,7 @@ fn WarRoomHeader(#[prop(optional)] on_close: Option<Callback<()>>) -> impl IntoV
                 <span class="war-room-stale" role="status">"Reconnecting"</span>
             </Show>
             {on_close.map(|close| view! {
-                <button type="button" class="war-icon-button" aria-label="Close war panel" on:click=move |_| close.run(())>
+                <button type="button" class="ui-button ui-icon-button war-icon-button" aria-label="Close war panel" on:click=move |_| close.run(())>
                     "\u{00D7}"
                 </button>
             })}

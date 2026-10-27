@@ -18,7 +18,7 @@ use sequoia_map_engine::claim_labels::{
 };
 use sequoia_map_engine::colors::brighten;
 use sequoia_map_engine::connections::{self, ConnectionMesh, ConnectionProjection};
-use sequoia_map_engine::defense::defense_tier_overlay_data;
+use sequoia_map_engine::defense::DefenseTier;
 use sequoia_map_engine::hq_layout::{Caption, HqCrown, HqLayout, TerritoryBox};
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
 use sequoia_map_engine::label_layout::{
@@ -2950,12 +2950,11 @@ impl GpuRenderer {
                 let is_selected = frame.selected == Some(name.as_str());
 
                 let resource_data = if settings.defense_highlight {
-                    defense_tier_overlay_data(
-                        ct.territory
-                            .runtime
-                            .as_ref()
-                            .and_then(|runtime| runtime.defense_tier.as_deref()),
-                    )
+                    ct.territory
+                        .runtime
+                        .as_ref()
+                        .and_then(|runtime| runtime.defense_tier.as_deref())
+                        .map_or([0.0; 4], |tier| DefenseTier::parse(tier).overlay_data())
                 } else if settings.resource_highlight {
                     ct.territory.resources.highlight_data()
                 } else {

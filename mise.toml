@@ -154,25 +154,6 @@ run = [
   { task = "build:claims" },
 ]
 
-[tasks."iris:test"]
-description = "Run Fabric reporter tests"
-dir = "mods/wynn-iris"
-tools.java = "temurin-21.0.13+9.0.LTS"
-run = "sh {{config_root}}/scripts/check-jdk-distrust.sh && ./gradlew --no-daemon test"
-
-[tasks."iris:build"]
-description = "Build a Fabric reporter profile (default 1.21.11)"
-dir = "mods/wynn-iris"
-tools.java = "temurin-21.0.13+9.0.LTS"
-usage = 'arg "[profile]" default="1.21.11"'
-run = 'sh {{config_root}}/scripts/check-jdk-distrust.sh && ./gradlew --no-daemon clean build -Pminecraft_profile="$usage_profile"'
-
-[tasks."iris:dev"]
-description = "Launch the Fabric development client"
-dir = "mods/wynn-iris"
-tools.java = "temurin-21.0.13+9.0.LTS"
-run = "sh {{config_root}}/scripts/check-jdk-distrust.sh && ./gradlew runClient"
-
 [tasks."smoke:install"]
 description = "Install Chromium for the browser smoke test"
 run = "uv run --script scripts/smoke-browser.py --install"
