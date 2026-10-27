@@ -351,7 +351,8 @@ fn SearchResults() -> impl IntoView {
             <ul class="sb-list">
                 <For
                     each=move || filtered.get()
-                    key=|(name, ..)| name.clone()
+                    // Rows are not redrawn in place, so the key covers the owner and colour they show.
+                    key=|row| row.clone()
                     children=move |(name, guild, color)| {
                         // A kept row can move as the query changes, so its place in the list is
                         // read from the current results rather than fixed when it was made.
@@ -519,7 +520,7 @@ fn LeaderboardPanel() -> impl IntoView {
                 <ol class="sb-list">
                     <For
                         each=move || { leaderboard.get().into_iter().enumerate().collect::<Vec<_>>() }
-                        key=|(index, row)| (*index, row.name.clone())
+                        key=|(index, row)| (*index, row.name.clone(), row.color)
                         children=move |(index, row)| {
                             let rank = index + 1;
                             let history = mode.get_untracked() == MapMode::History;

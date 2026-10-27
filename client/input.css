@@ -57,6 +57,10 @@
        just outside the gutter so its labels and icons meet it. */
     --sb-bar-control: 26px;
     --sb-bar-inset: 6px;
+    /* The owning guild's colour, set by a sidebar view or a map card. It is defined here,
+       not on the card, so a view's colour reaches the cards inside it. A guild with no
+       territories keeps this neutral edge. */
+    --tcard-guild: var(--color-border-accent);
 
     /* ── Semantic colour aliases ── */
     --bg-page: var(--color-abyss);
@@ -2823,7 +2827,6 @@ button.settings-row:hover {
    swatch beside the name. Labels are sentence case in the body face at readable contrast;
    numbers are tabular mono; only the territory name uses the pixel face. */
 .tcard {
-  --tcard-guild: var(--color-border-accent);
   --tcard-rule: rgba(58, 63, 92, 0.55);
   color: var(--color-text-primary);
   font-family: var(--font-body);
