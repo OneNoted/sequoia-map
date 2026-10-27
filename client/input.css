@@ -53,6 +53,10 @@
     --sb-gutter: 20px;
     --sb-control: 30px;
     --sb-radius: 4px;
+    /* The navigation row and the bar under each view use one smaller, quiet control, set
+       just outside the gutter so its labels and icons meet it. */
+    --sb-bar-control: 26px;
+    --sb-bar-inset: 6px;
 
     /* ── Semantic colour aliases ── */
     --bg-page: var(--color-abyss);
@@ -1371,9 +1375,10 @@
 }
 
 /* Sidebar (client/src/sidebar.rs, client/src/ui.rs). Every view uses the same gutter,
-   navigation row and controls; components only add what is particular to them. */
-@media (pointer: coarse), (max-width: 767px) {
-  :root { --sb-control: 44px; }
+   navigation row and controls; components only add what is particular to them. Any touch
+   input gets the touch size, including a touch laptop whose primary pointer is a mouse. */
+@media (any-pointer: coarse), (max-width: 767px) {
+  :root { --sb-control: 44px; --sb-bar-control: 44px; --sb-bar-inset: 10px; }
 }
 @media (max-width: 767px) {
   :root { --sb-gutter: 14px; }
@@ -1421,6 +1426,25 @@
   flex-shrink: 0;
   width: var(--sb-control);
   padding: 0;
+}
+
+/* The two bars: controls stay quiet until hovered, pressed, opened or focused. */
+.sb-bar .ui-button {
+  min-height: var(--sb-bar-control);
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 0.8rem;
+}
+.sb-bar .ui-icon-button {
+  width: var(--sb-bar-control);
+  padding: 0;
+}
+.sb-bar .ui-button:hover { background: var(--color-surface-hover); }
+.sb-bar .ui-button[aria-expanded="true"] { background: rgba(245,197,66,0.1); }
+.sb-bar .ui-button[aria-pressed="true"] {
+  border-color: rgba(245,197,66,0.4);
+  background: rgba(245,197,66,0.12);
 }
 
 .sidebar-inner {
@@ -1582,8 +1606,8 @@
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px var(--sb-gutter) 8px;
+  gap: 2px;
+  padding: 8px calc(var(--sb-gutter) - var(--sb-bar-inset)) 6px;
   background: var(--color-deep);
 }
 .sb-nav-middle {
@@ -1592,9 +1616,8 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 2px;
 }
-.sb-show-on-map { white-space: nowrap; }
 
 .sb-panel { border-bottom: 1px solid var(--color-border-subtle); }
 
@@ -1848,40 +1871,24 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px var(--sb-gutter);
+  padding: 6px calc(var(--sb-gutter) - var(--sb-bar-inset));
   border-top: 1px solid var(--color-border-subtle);
-  font-family: var(--font-mono);
-  font-size: 0.79rem;
-  color: var(--color-text-secondary);
 }
-.sb-modes { display: inline-flex; }
-.sb-mode {
-  min-width: 58px;
-  border-radius: 0;
-  font-family: var(--font-mono);
-  font-size: 0.766rem;
-}
-.sb-mode:first-child { border-radius: var(--sb-radius) 0 0 var(--sb-radius); }
-.sb-mode:last-child { border-radius: 0 var(--sb-radius) var(--sb-radius) 0; }
-.sb-mode:only-child { border-radius: var(--sb-radius); }
-.sb-mode + .sb-mode { margin-left: -1px; }
-.sb-mode[data-mode="history"][aria-pressed="true"] {
-  border-color: var(--color-gold);
-  background: var(--color-gold);
-  color: var(--color-deep);
-  box-shadow: 0 0 8px rgba(245,197,66,0.35);
+.sb-modes {
+  display: inline-flex;
+  gap: 2px;
 }
 .sb-mode[data-mode="heat"][aria-pressed="true"] {
-  border-color: #f58c32;
-  background: #f58c32;
-  color: var(--color-deep);
-  box-shadow: 0 0 8px rgba(245,140,50,0.35);
+  border-color: rgba(245,140,50,0.45);
+  background: rgba(245,140,50,0.12);
+  color: #f58c32;
 }
-.sb-toolbar-count {
+.sb-toolbar-end {
   margin-left: auto;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
-.sb-toolbar-figure { color: var(--color-text-primary); }
 .sb-toolbar-status {
   flex-shrink: 0;
   display: flex;
@@ -1897,7 +1904,6 @@
   box-shadow: 0 0 8px rgba(245,197,66,0.35);
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
-.sb-settings[aria-expanded="true"] { background: rgba(245,197,66,0.06); }
 
 /* History timeline transport (client/src/timeline.rs), on the shared button. */
 .timeline-play { color: var(--color-gold); }
@@ -2256,16 +2262,6 @@ button.settings-row:hover {
 }
 
 /* Keyboard shortcut help: the bar's "?" button and its dialog */
-.keybind-help-button {
-  font-family: var(--font-mono);
-  font-size: 0.766rem;
-}
-.keybind-help-button:hover,
-.keybind-help-button[aria-expanded="true"] {
-  color: var(--color-gold);
-  border-color: rgba(245,197,66,0.35);
-}
-.keybind-help-button:focus-visible,
 .keybind-help-close:focus-visible {
   outline: 2px solid rgba(245,197,66,0.5);
   outline-offset: 2px;

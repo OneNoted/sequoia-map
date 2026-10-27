@@ -32,7 +32,7 @@ use crate::territory_card::{
     territory_resource_rows, treasury,
 };
 use crate::tower::TowerCalculator;
-use crate::ui::{Disclosure, PanelNav, SCROLLER};
+use crate::ui::{CrosshairIcon, Disclosure, PanelNav, SCROLLER};
 use crate::war_room::ActivityDisclosure;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
@@ -1082,11 +1082,8 @@ fn DetailPanel() -> impl IntoView {
     view! {
         <div class="sb-panel panel-reveal tcard-detail" style:--tcard-guild=move || info.with(|info| info.as_ref().map(|info| guild_css(info.color)))>
             <PanelNav back=("Back to guild", back) close=("Close details", close)>
-                <button type="button" class="ui-button sb-show-on-map" on:click=show_on_map>
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14" aria-hidden="true">
-                        <path fill-rule="evenodd" d="M10 2a6 6 0 00-6 6c0 4.2 5.3 9.4 5.5 9.6a.7.7 0 001 0C10.7 17.4 16 12.2 16 8a6 6 0 00-6-6zm0 8.5A2.5 2.5 0 1110 5.5a2.5 2.5 0 010 5z" clip-rule="evenodd" />
-                    </svg>
-                    "Show on map"
+                <button type="button" class="ui-button ui-icon-button sb-show-on-map" aria-label="Show on map" title="Show on map" on:click=show_on_map>
+                    <CrosshairIcon />
                 </button>
             </PanelNav>
             {move || info.get().map(|info| {
@@ -1243,15 +1240,6 @@ fn SidebarToolbar() -> impl IntoView {
     let IsMobile(is_mobile) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
 
-    let guild_count = Memo::new(move |_| {
-        territories.with(|map| {
-            map.values()
-                .map(|ct| ct.territory.guild.name.as_str())
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-        })
-    });
-
     // A healthy feed shows nothing; only connecting and reconnecting get a lamp.
     let status_text = Memo::new(move |_| match connection.get() {
         ConnectionStatus::Live => None,
@@ -1296,7 +1284,7 @@ fn SidebarToolbar() -> impl IntoView {
     };
 
     view! {
-        <div class="sb-toolbar">
+        <div class="sb-toolbar sb-bar">
             <KeybindHelp />
             // Phones switch these from the map's own buttons and Settings.
             <Show when=move || !is_mobile.get()>
@@ -1321,27 +1309,25 @@ fn SidebarToolbar() -> impl IntoView {
                     >"Heat"</button>
                 </div>
             </Show>
-            <span class="sb-toolbar-count">
-                <span class="sb-toolbar-figure">{move || guild_count.get()}</span>
-                " guilds"
-            </span>
-            {move || status_text.get().map(|text| view! {
-                <span class="sb-toolbar-status" role="status" title=text aria-label=text>
-                    <span aria-hidden="true" />
-                </span>
-            })}
-            <button
-                type="button"
-                class="ui-button ui-icon-button sb-settings"
-                aria-label="Settings"
-                title="Settings"
-                aria-expanded=move || show_settings.get().to_string()
-                on:click=move |_| show_settings.update(|open| *open = !*open)
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14" aria-hidden="true">
-                    <path fill-rule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
-                </svg>
-            </button>
+            <div class="sb-toolbar-end">
+                {move || status_text.get().map(|text| view! {
+                    <span class="sb-toolbar-status" role="status" title=text aria-label=text>
+                        <span aria-hidden="true" />
+                    </span>
+                })}
+                <button
+                    type="button"
+                    class="ui-button ui-icon-button sb-settings"
+                    aria-label="Settings"
+                    title="Settings"
+                    aria-expanded=move || show_settings.get().to_string()
+                    on:click=move |_| show_settings.update(|open| *open = !*open)
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+                    </svg>
+                </button>
+            </div>
         </div>
     }
 }

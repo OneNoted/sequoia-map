@@ -74,6 +74,18 @@ pub(crate) fn CloseIcon() -> impl IntoView {
     }
 }
 
+/// A target: what Show on map centres the map on.
+#[component]
+pub(crate) fn CrosshairIcon() -> impl IntoView {
+    view! {
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" width="16" height="16" aria-hidden="true">
+            <circle cx="10" cy="10" r="5.5" />
+            <path d="M10 1.75v3M10 15.25v3M1.75 10h3M15.25 10h3" />
+            <circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none" />
+        </svg>
+    }
+}
+
 /// The row at the top of every sidebar view: Back on the left, Close on the right, and the
 /// view's own actions or title between. It stays in place while the view scrolls.
 #[component]
@@ -85,10 +97,12 @@ pub(crate) fn PanelNav(
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     view! {
-        <div class="sb-nav">
+        <div class="sb-nav sb-bar">
             {back.map(|(title, back)| view! {
                 <button type="button" class="ui-button sb-nav-back" title=title aria-label=title on:click=move |_| back.run(())>
-                    <span aria-hidden="true">{"\u{2039}"}</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="14" height="14" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.83 10l3.94 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clip-rule="evenodd" />
+                    </svg>
                     <span>"Back"</span>
                 </button>
             })}
