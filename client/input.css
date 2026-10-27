@@ -1692,8 +1692,7 @@
 }
 .sb-row:hover { background-color: var(--color-surface-hover); }
 .sb-row-enter { animation: fade-in-up 0.3s ease-out var(--row-delay, 0ms) both; }
-.sb-row-podium { background-image: linear-gradient(to right, var(--swatch) 3px, transparent 3px); }
-.sb-row-focused { box-shadow: inset 2px 0 0 var(--color-gold); }
+.sb-row-focused { background-color: var(--color-surface-hover); }
 .sb-swatch {
   flex-shrink: 0;
   width: 14px;
