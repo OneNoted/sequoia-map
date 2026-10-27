@@ -3115,3 +3115,117 @@ a.tcard-guild:focus-visible {
   font-size: 0.74rem;
   color: var(--color-text-secondary);
 }
+
+/* Recent activity (client/src/war_room/activity.rs): closed until opened, in the war panel
+   and in a territory's sidebar. */
+.war-section-activity {
+  flex: 0 0 auto;
+}
+
+.activity-disclosure > summary {
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+}
+
+/* Live fronts keep priority over the journal: the list stays short and scrolls on its own. */
+.activity {
+  max-height: min(28dvh, 15rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tcard-sidebar .activity {
+  max-height: none;
+}
+
+.activity-scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 4px;
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.activity-list {
+  list-style: none;
+}
+
+.activity-row {
+  --activity-tone: var(--war-muted);
+  padding: 2px 0 2px 8px;
+  border-left: 2px solid var(--activity-tone);
+}
+
+.activity-row + .activity-row {
+  margin-top: 1px;
+}
+
+.activity-row[data-outcome="captured"] { --activity-tone: var(--war-online); }
+.activity-row[data-outcome="lost"] { --activity-tone: var(--war-fighting); }
+
+.activity-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.activity-territory {
+  flex: 1;
+  min-width: 0;
+}
+
+.activity-outcome {
+  flex-shrink: 0;
+  font-size: 0.74rem;
+  color: var(--activity-tone);
+}
+
+.activity-row[data-outcome="ended"] .activity-outcome,
+.activity-row[data-outcome="cancelled"] .activity-outcome {
+  color: var(--color-text-secondary);
+}
+
+.activity-when {
+  flex-shrink: 0;
+  min-width: 3.5rem;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+
+.activity-detail dd {
+  font-family: var(--font-body);
+}
+
+.activity-older {
+  margin-top: 6px;
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.activity-older:hover,
+.activity-older:focus-visible {
+  border-color: rgba(245, 197, 66, 0.45);
+  color: var(--color-gold);
+}
+
+.activity-note {
+  padding: 3px 0;
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+
+@media (pointer: coarse) {
+  .activity-head { min-height: 32px; }
+  .activity-older { min-height: 36px; }
+}

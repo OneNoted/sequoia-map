@@ -24,6 +24,7 @@ use crate::settings_menu::SettingsPanel;
 use crate::territory::ClientTerritoryMap;
 use crate::territory_card::{Disclosure, ResourceTable, TerritoryWar, territory_resource_rows};
 use crate::tower::TowerCalculator;
+use crate::war_room::ActivityFeed;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
 
@@ -1735,13 +1736,39 @@ fn DetailPanel() -> impl IntoView {
                                         <div><dt>"Size"</dt><dd>{size}</dd></div>
                                     </dl>
                                 </Disclosure>
-
-                                <TowerCalculator />
                             </div>
                         }
                     })
             }}
+            // Outside the per-second detail, so their state and any loaded activity survive it.
+            {move || selected.get().map(|name| {
+                let guild = territories.with_untracked(|map| map.get(&name).map(|ct| ct.guild_color));
+                let (r, g, b) = guild.unwrap_or((58, 63, 92));
+                view! {
+                    <div class="tcard tcard-sidebar tcard-sidebar-tail" style:--tcard-guild=rgba_css(r, g, b, 0.9)>
+                        <TerritoryActivity territory=name />
+                        <TowerCalculator />
+                    </div>
+                }
+            })}
         </div>
+    }
+}
+
+/// A territory's recent activity, behind a disclosure, for members.
+#[component]
+fn TerritoryActivity(territory: String) -> impl IntoView {
+    let room = expect_context::<crate::war_room::WarRoom>();
+    let open = RwSignal::new(false);
+    let territory = Signal::stored(territory);
+    view! {
+        <Show when=move || room.board.with(Option::is_some)>
+            <Disclosure open summary="Recent activity" class="activity-disclosure">
+                <Show when=move || open.get()>
+                    <ActivityFeed territory />
+                </Show>
+            </Disclosure>
+        </Show>
     }
 }
 

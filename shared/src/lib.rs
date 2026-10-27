@@ -9,6 +9,7 @@ pub mod territory;
 pub mod tiles;
 pub mod tower;
 pub mod treasury;
+pub mod war_activity;
 pub mod war_board;
 pub mod warcontroller;
 

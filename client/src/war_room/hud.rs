@@ -12,6 +12,7 @@ use sequoia_shared::war_board::{
 };
 use wasm_bindgen::JsCast;
 
+use super::activity::RecentActivity;
 use super::modal::{focus_next_frame, focused_element, restore_focus, trap_tab};
 use super::plates::WarPlatesLayer;
 use super::player::PlayerDetail;
@@ -149,6 +150,7 @@ fn WarRoomBody() -> impl IntoView {
             </Show>
             <RosterSection />
         </Show>
+        <RecentActivity />
     }
 }
 

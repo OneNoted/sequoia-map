@@ -137,6 +137,10 @@ pub(crate) fn build_app(state: AppState) -> Router {
             axum::routing::get(routes::api::get_warcontroller),
         )
         .route(
+            "/api/war-activity",
+            axum::routing::get(routes::war_activity::get_war_activity),
+        )
+        .route(
             "/api/history/at",
             axum::routing::get(routes::history::history_at),
         )

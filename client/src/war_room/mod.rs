@@ -8,6 +8,7 @@
 //! `warcontroller` frames from everyone else, and [`WarRoom::board`] is `None` unless the
 //! viewer is a member looking at the live map.
 
+mod activity;
 mod hud;
 mod modal;
 mod plates;
@@ -31,6 +32,7 @@ use crate::app::{
 };
 use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
 
+pub(crate) use activity::ActivityFeed;
 pub(crate) use hud::WarRoomHud;
 
 const WARCONTROLLER_ENDPOINT: &str = "/api/warcontroller";

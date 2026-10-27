@@ -35,6 +35,7 @@ pub const DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS: u64 = 60;
 /// `/internal/<x>`, `/api/<x>`, and `/public/<x>` — and enforces the bearer token only on
 /// the `/internal/` prefix. Default to that prefix so the configured token is actually used.
 pub const DEFAULT_WARCONTROLLER_PATH: &str = "/internal/warcontroller";
+pub const WAR_ACTIVITY_PATH: &str = "/internal/war-activity";
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const SEASON_LEADERBOARD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const MAP_INTEL_CACHE_TTL_SECS: i64 = 60; // shortest public map endpoint cache
@@ -207,6 +208,14 @@ pub fn warcontroller_url() -> Option<String> {
     } else {
         Some(format!("{base}/{path}"))
     }
+}
+
+/// Full URL of the backend's recent war activity journal; `None` without a backend.
+pub fn war_activity_url() -> Option<String> {
+    Some(format!(
+        "{}{WAR_ACTIVITY_PATH}",
+        sequoia_backend_base_url()?
+    ))
 }
 
 pub fn territory_extra_url() -> Option<String> {
