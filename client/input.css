@@ -3424,9 +3424,88 @@ a.tcard-guild:focus-visible {
   font-family: var(--font-body);
 }
 
+/* Load older: the list trailing back in time, centred under it. Rows fade into the past in
+   enchant purple; offering more turns them gold, a failed page tints them red until retried. */
 .activity-older {
-  margin-top: 6px;
-  font-size: 0.78rem;
+  --older-tone: rgba(168, 85, 247, 0.75);
+  --older-rule: var(--color-border-accent);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 24px;
+  margin-top: 4px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--older-tone);
+  cursor: pointer;
+}
+
+.activity-older::before,
+.activity-older::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--older-rule));
+}
+
+.activity-older::after {
+  background: linear-gradient(to left, transparent, var(--older-rule));
+}
+
+.activity-older-glyph {
+  flex-shrink: 0;
+  fill: currentColor;
+  shape-rendering: crispEdges;
+}
+
+.activity-older-glyph path:nth-child(2) { opacity: 0.6; }
+.activity-older-glyph path:nth-child(3) { opacity: 0.3; }
+
+.activity-older[data-failed="true"] {
+  --older-tone: var(--color-nether);
+}
+
+.activity-older:hover,
+.activity-older:focus-visible {
+  --older-tone: var(--color-gold);
+  --older-rule: rgba(245, 197, 66, 0.55);
+}
+
+.activity-older:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: -2px;
+}
+
+/* Fetching: the rows light up one after another, reaching back. */
+.activity-older[aria-disabled="true"] {
+  --older-tone: var(--color-gold);
+  cursor: progress;
+}
+
+.activity-older[aria-disabled="true"] path {
+  animation: older-reach 0.9s steps(1, end) infinite;
+}
+
+.activity-older[aria-disabled="true"] path:nth-child(2) { animation-delay: 0.3s; }
+.activity-older[aria-disabled="true"] path:nth-child(3) { animation-delay: 0.6s; }
+
+@keyframes older-reach {
+  0% { opacity: 1; }
+  33% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-older[aria-disabled="true"] path {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+.activity-end {
+  text-align: center;
 }
 
 /* Rows from a selection that has since changed, kept in place until the new ones arrive. */
@@ -3448,6 +3527,7 @@ a.tcard-guild:focus-visible {
 
 @media (pointer: coarse) {
   .activity-head { min-height: 32px; }
+  .activity-older { min-height: 32px; }
 }
 
 /* A familiar secondary action: text, or an icon with text, without a box. Gold answers the

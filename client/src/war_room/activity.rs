@@ -470,15 +470,28 @@ pub(crate) fn ActivityFeed(
             }}
             <Show when=move || can_load_older.get()>
                 // Not disabled while loading, which would drop keyboard focus from it.
-                <button type="button" class="ui-button activity-older" aria-disabled=busy on:click=load_older.clone()>
-                    "Load older"
+                <button
+                    type="button"
+                    class="activity-older"
+                    aria-label="Load older activity"
+                    title="Load older"
+                    aria-disabled=busy
+                    data-failed=move || (load.get() == Load::Failed).to_string()
+                    on:click=load_older.clone()
+                >
+                    // Three more rows, fading out: each a tone stripe and its line.
+                    <svg class="activity-older-glyph" viewBox="0 0 16 10" width="16" height="10" aria-hidden="true">
+                        <path d="M0 0h2v2H0zM4 0h12v2H4z" />
+                        <path d="M0 4h2v2H0zM4 4h12v2H4z" />
+                        <path d="M0 8h2v2H0zM4 8h12v2H4z" />
+                    </svg>
                 </button>
             </Show>
             <Show when=move || ended.get() && has_entries.get()>
-                <p class="activity-note">"Activity is kept for 7 days"</p>
+                <p class="activity-note activity-end">"Activity is kept for 7 days"</p>
             </Show>
             <Show when=move || load.get() == Load::Failed && list.with(Option::is_some)>
-                <p class="activity-note" role="status">"Could not load more"</p>
+                <p class="activity-note activity-end" role="status">"Could not load more"</p>
             </Show>
         </div>
     }
