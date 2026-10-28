@@ -228,6 +228,19 @@ elif args[0] in ("ps", "images"):
             with self.assertRaisesRegex(release.ReleaseFailure, "no server service"):
                 release.apply_services(compose, ["server"], False, self.receipts(scratch))
 
+    def test_json_survives_warnings_on_stderr(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            fake = Path(scratch) / "compose"
+            fake.write_text(f"""#!{sys.executable}
+import sys
+print('[{{"Service": "server", "ID": "s1", "State": "running"}}]')
+print('WARN[0000] the attribute `version` is obsolete', file=sys.stderr)
+""")
+            fake.chmod(0o755)
+            compose = release.Compose(str(fake))
+            self.assertEqual(compose.rows("ps"), [{"Service": "server", "ID": "s1", "State": "running"}])
+            self.assertIn("obsolete", compose.output("ps"))
+
     def test_rejects_services_it_does_not_manage(self):
         refused = subprocess.run([sys.executable, "-I", str(ROOT / "scripts/release.py"), "services", "postgres"],
                                  capture_output=True, text=True, check=False)

@@ -310,13 +310,20 @@ class Compose:
         self.prefix = shlex.split(prefix)
 
     def run(self, *args):
+        """Run a Compose command; its stdout and its stderr, kept apart. Compose writes data
+        such as `--format json` to stdout, and warnings and progress to stderr."""
         result = subprocess.run([*self.prefix, *args], capture_output=True, text=True, check=False)
         if result.returncode:
             raise ReleaseFailure(f"compose {args[0]}: {result.stderr.strip()[-600:]}")
-        return result.stdout + result.stderr
+        return result.stdout, result.stderr
+
+    def output(self, *args):
+        """Everything a Compose command printed, for receipts and dry-run plans."""
+        return "".join(self.run(*args))
 
     def rows(self, *args):
-        output = self.run(*args, "--format", "json").strip()
+        output, _ = self.run(*args, "--format", "json")
+        output = output.strip()
         if output.startswith("["):
             return json.loads(output)
         return [json.loads(line) for line in output.splitlines() if line.startswith("{")]
@@ -341,12 +348,12 @@ def apply_services(compose, services, dry_run, receipts):
         raise ReleaseFailure(f"the project has no {', '.join(missing)} service")
     up = ["up", "--detach", "--no-deps", "--wait", "--pull", "never", *services]
     if dry_run:
-        plan = receipts.stage("dry-run", lambda: compose.run("--dry-run", "pull", *services)
-                              + compose.run("--dry-run", *up))
+        plan = receipts.stage("dry-run", lambda: compose.output("--dry-run", "pull", *services)
+                              + compose.output("--dry-run", *up))
         return {"dry_run": True, "services": services, "compose": plan.strip().splitlines(),
                 "before": before}
-    receipts.stage("pull", compose.run, "pull", *services)
-    receipts.stage("up", compose.run, *up)
+    receipts.stage("pull", compose.output, "pull", *services)
+    receipts.stage("up", compose.output, *up)
     after = receipts.stage("after", compose.identities)
     replaced = [service for service in after if before.get(service, {}).get("container")
                 != after[service]["container"]]
