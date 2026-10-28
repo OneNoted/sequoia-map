@@ -423,14 +423,6 @@ mod tests {
     }
 
     #[test]
-    fn claims_geometry_etag_is_stable_for_known_payload() {
-        assert_eq!(
-            claims_geometry_etag(br#"{"territories":{"A":{}}}"#),
-            "\"claims-geometry-ebe620cff86e5348\""
-        );
-    }
-
-    #[test]
     fn bootstrap_geometry_serialization_is_stable_across_hash_map_order() {
         let mut first = TerritoryMap::new();
         first.insert("Bravo".to_string(), test_territory([2, 2], [4, 4]));

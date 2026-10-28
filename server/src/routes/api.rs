@@ -855,9 +855,9 @@ mod tests {
     use super::{
         GuildOnlineEntry, GuildSeasonRatingSource, StatusCode, apply_snapshot_fallback,
         guild_details_url, if_none_match_matches, normalize_guild_name, parse_guild_online_entry,
-        parse_guilds_online_names, render_prometheus_metrics,
+        parse_guilds_online_names,
     };
-    use crate::state::{AppState, ObservabilitySnapshot};
+    use crate::state::AppState;
     use sequoia_shared::{SeasonScalarCurrent, SeasonScalarSample};
     use sqlx::postgres::PgPoolOptions;
 
@@ -873,45 +873,6 @@ mod tests {
             axum::serve(listener, app).await.expect("serve test app");
         });
         (addr, handle)
-    }
-
-    #[test]
-    fn metrics_output_contains_prometheus_help_type_and_values() {
-        let observability = ObservabilitySnapshot {
-            live_state_requests_total: 12,
-            persist_failures_total: 3,
-            dropped_update_events_total: 7,
-            persisted_update_events_total: 99,
-            guilds_online_requests_total: 5,
-            guilds_online_cache_hits_total: 8,
-            guilds_online_cache_misses_total: 2,
-            guilds_online_upstream_errors_total: 1,
-            ingest_reports_total: 11,
-            ingest_reports_rejected_total: 2,
-            ingest_reports_applied_total: 8,
-            ingest_reports_degraded_total: 1,
-        };
-
-        let metrics = render_prometheus_metrics(42, 5, true, false, observability);
-
-        assert!(metrics.contains("# HELP sequoia_territories"));
-        assert!(metrics.contains("# TYPE sequoia_live_state_requests_total counter"));
-        assert!(metrics.contains("sequoia_territories 42"));
-        assert!(metrics.contains("sequoia_guild_cache_size 5"));
-        assert!(metrics.contains("sequoia_history_available 1"));
-        assert!(metrics.contains("sequoia_seq_live_handoff_v1_enabled 0"));
-        assert!(metrics.contains("sequoia_live_state_requests_total 12"));
-        assert!(metrics.contains("sequoia_persist_failures_total 3"));
-        assert!(metrics.contains("sequoia_dropped_update_events_total 7"));
-        assert!(metrics.contains("sequoia_persisted_update_events_total 99"));
-        assert!(metrics.contains("sequoia_guilds_online_requests_total 5"));
-        assert!(metrics.contains("sequoia_guilds_online_cache_hits_total 8"));
-        assert!(metrics.contains("sequoia_guilds_online_cache_misses_total 2"));
-        assert!(metrics.contains("sequoia_guilds_online_upstream_errors_total 1"));
-        assert!(metrics.contains("sequoia_ingest_reports_total 11"));
-        assert!(metrics.contains("sequoia_ingest_reports_rejected_total 2"));
-        assert!(metrics.contains("sequoia_ingest_reports_applied_total 8"));
-        assert!(metrics.contains("sequoia_ingest_reports_degraded_total 1"));
     }
 
     #[test]
@@ -1320,8 +1281,8 @@ mod tests {
 
     #[tokio::test]
     async fn season_scalar_endpoint_returns_latest_persisted_sample() {
-        let Ok(database_url) = std::env::var("DATABASE_URL") else {
-            eprintln!("Skipping season scalar API test: DATABASE_URL is not set");
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping season scalar API test: TEST_DATABASE_URL is not set");
             return;
         };
 

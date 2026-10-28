@@ -956,7 +956,7 @@ pub(crate) fn serve_from_environment() -> Option<ServedReleases> {
     let prepared = server_backend_key().and_then(|key| {
         let store = ReleaseStore::open(PathBuf::from(&root))?;
         let commit = source_commit().unwrap_or_default();
-        let activation = store.reconcile_embedded(Path::new(""), &commit, &key)?;
+        let activation = store.reconcile_embedded(&crate::config::client_root(), &commit, &key)?;
         Ok((store, activation))
     });
     match prepared {

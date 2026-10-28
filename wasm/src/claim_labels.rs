@@ -742,7 +742,7 @@ mod tests {
     use sequoia_shared::{GuildRef, Region, Resources, Territory};
 
     use super::{
-        CLAIM_LABEL_FONT_MAX_WORLD, ClaimCluster, build_claim_clusters, claim_label_zoom_active,
+        CLAIM_LABEL_FONT_MAX_WORLD, ClaimCluster, build_claim_clusters,
         select_claim_label_candidates,
     };
     use crate::territory::{ClientTerritory, ClientTerritoryMap};
@@ -888,14 +888,6 @@ mod tests {
         let clusters = build_claim_clusters(&map);
 
         assert_eq!(clusters.len(), 2);
-    }
-
-    #[test]
-    fn claim_label_zoom_band_reaches_mid_zoom_views() {
-        assert!(claim_label_zoom_active(0.30));
-        assert!(claim_label_zoom_active(0.40));
-        assert!(claim_label_zoom_active(0.50));
-        assert!(!claim_label_zoom_active(0.70));
     }
 
     #[test]

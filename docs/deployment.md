@@ -1,8 +1,8 @@
 # Deployment and operations
 
-The production Compose files remain Docker-based. Mise's rootless Podman
-container is a separate [local development database](development.md#local-data).
-Run commands below from the repository root against the intended deployment.
+The production Compose files are Docker-based; local development uses none of them
+([development](development.md)). Run commands below from the repository root against
+the intended deployment.
 
 ## Standalone Compose
 
@@ -24,12 +24,12 @@ Normal restarts do not need a rebuild:
 docker compose up -d --no-build
 ```
 
-Production images can also be built locally with Podman:
+Production images build with Docker or Podman from the repository root:
 
 ```bash
-podman build -t sequoia-map-server .
-podman build -f services/sequoia-ingest/Dockerfile -t sequoia-map-ingest .
-podman build -f ops/caddy/Dockerfile -t sequoia-map-edge .
+docker build -t sequoia-map-server .
+docker build -f services/sequoia-ingest/Dockerfile -t sequoia-map-ingest .
+docker build -f ops/caddy/Dockerfile.coolify -t sequoia-map-edge .
 ```
 
 ## Coolify
@@ -88,16 +88,18 @@ the existing registry build cache even on fresh runners. First-party stub
 artifacts are cleaned before copying real source, preventing Cargo from
 mistaking old source timestamps for fresh binaries. Keep the stub manifest
 and source lists aligned with workspace members and any future build scripts;
-the separately locked ingest workspace has its own dependency layer. Client
-tooling is independent of these manifests, and Trunk matches the Mise pin.
+the separately locked ingest workspace has its own dependency layer. The clients are
+built by `cargo xtask web --release`, the same command as locally: its own workspace,
+a wasm-bindgen library pinned to the application's version, and the Dockerfile's
+Binaryen and Tailwind, which `release:client` requires to match locally.
 The parallel native/WASM stages each use the Dockerfile's two Cargo jobs, which
 fit the 4-vCPU image runner. The value is fixed because it is part of the
 dependency layers' cache key; local builds can override `CARGO_BUILD_JOBS` with
 a Docker build argument.
-After pushing a server candidate, the build job pulls it and checks the map
-client against the compressed size budget. It also checks that the image's
-`/app/backend-key` equals `scripts/release.py key` for the same commit. An
-over-budget or mismatched candidate is never promoted.
+The client build fails when the map's compressed WASM is over its budget, so an
+over-budget image is never pushed. After pushing a server candidate, the build job
+checks that the image's `/app/backend-key` equals `cargo xtask release key` for the
+same commit; a mismatched candidate is never promoted.
 
 `docker-compose.coolify.dev.yml` is the separate deployed development stack,
 not the local hot-reload environment.
@@ -106,7 +108,7 @@ not the local hot-reload environment.
 
 Both browser clients can change without rebuilding or restarting a service. The
 server serves them from immutable releases in the `client-releases` volume
-(`SEQUOIA_CLIENT_RELEASES`), and `scripts/release.py` publishes them:
+(`SEQUOIA_CLIENT_RELEASES`), and `cargo xtask release` publishes them:
 
 ```bash
 mise run release:plan                         # what a change needs, from its paths
@@ -128,8 +130,9 @@ What each part guarantees:
   release's commit is only `client/input.css` (plus paths that need nothing,
   such as docs), `release:client` reuses every other byte of that release. It
   compiles the stylesheet with the image's Tailwind version and rewrites only its
-  link, integrity and compressed copies. Any other client change runs each Trunk
-  build once.
+  link, integrity and compressed copies. Any other client change runs the release
+  client build once. Compressed copies carry no timestamp, so rebuilding the same
+  commit produces the same release.
 - **Installs are checked before anything changes.** The server installs a bundle
   only when every file matches its manifest and every page integrity reference
   matches the release's own bytes. A release's id comes from its contents, so a

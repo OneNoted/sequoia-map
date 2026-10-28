@@ -12,7 +12,8 @@ sequoia-shared = { path = "../shared" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["fs", "compression-gzip", "compression-br", "cors"] }
-reqwest = { version = "0.12", features = ["json"] }
+# Rustls with the OS trust store (no OpenSSL to install or link); the other defaults kept.
+reqwest = { version = "0.12", default-features = false, features = ["json", "charset", "http2", "system-proxy", "rustls-tls-native-roots"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

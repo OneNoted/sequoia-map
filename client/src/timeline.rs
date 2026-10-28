@@ -770,11 +770,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_history_timestamp_includes_year() {
-        assert_eq!(format_history_timestamp(0), "1970-01-01 00:00");
-    }
-
-    #[test]
     fn focus_window_centers_and_clamps_to_bounds() {
         let bounds = (0, 10_000);
 

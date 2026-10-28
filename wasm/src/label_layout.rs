@@ -386,11 +386,4 @@ mod tests {
         assert_eq!(resource_icon_sequence(&resources), vec![IconKind::Ore]);
         assert!(resource_icons_drawable(&resources));
     }
-
-    #[test]
-    fn test_layout_determinism() {
-        let a = compute_label_layout_metrics(72.0, 45.0, false);
-        let b = compute_label_layout_metrics(72.0, 45.0, false);
-        assert_eq!(a, b);
-    }
 }

@@ -74,6 +74,7 @@ jobs:
           workspaces: |
             . -> target
             services/sequoia-ingest -> target
+            tools/xtask -> target
 
       # Reuse still runs the checks when main lacks this exact dependency cache, to save it.
       - name: Run the hosted checks

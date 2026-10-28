@@ -11,28 +11,28 @@ Inspired by [Wynnmap](http://wynnmap.zatzou.com/) and
 
 ## Run locally
 
-Install [mise](https://mise.jdx.dev/getting-started.html),
-[rootless Podman](https://podman.io/docs/installation) and the
-[system build dependencies](docs/development.md#prerequisites), then:
+Install [mise](https://mise.jdx.dev/getting-started.html) and a
+[C toolchain](docs/development.md#setup), then:
 
 ```bash
 mise trust
-mise install
 mise run dev
 ```
 
-Open <http://127.0.0.1:8081>. Mise runs the API and map with hot reload and
-starts PostgreSQL in Podman. `mise run dev:full` also starts the claims editor at
-<http://127.0.0.1:8082/claims-app/> and the Iris ingest gateway on port 3010.
+`mise run dev` prints the ports; in a primary checkout the map is at
+<http://127.0.0.1:3000> and the claims editor at <http://127.0.0.1:3000/claims/new>.
+Saves rebuild and update the open pages. PostgreSQL, the API and the watcher run as this
+worktree's Mise daemons; `mise run stop` stops them. `mise run dev:full` adds the Iris
+ingest gateway. See [development](docs/development.md).
 
 The map fetches public territory data from Wynncraft. Website sign-in, season
 backend data and the war-controller feed need a separate Sequoia backend;
 see [configuration](docs/configuration.md).
 
 ```bash
-mise tasks       # available commands
-mise run fmt         # format both Rust workspaces
-mise run verify      # every check: tests with PostgreSQL, release builds, size budget, CI lint
+mise tasks           # available commands
+mise run fmt         # format every Rust workspace
+mise run verify      # every check: Clippy, all tests, CI lint and the release client build
 ```
 
 ## Repository layout
@@ -46,11 +46,12 @@ mise run verify      # every check: tests with PostgreSQL, release builds, size 
 - `wasm/`: UI-independent map engine (camera gestures, scene invalidation,
   layout math) shared by both clients and tested natively.
 - `services/sequoia-ingest/`: separately locked Rust workspace for Iris reports.
+- `tools/xtask/`: separately locked repository tool: client builds, the dev watcher and releases.
 - `ops/`: deployment edge, monitoring, backups and database maintenance.
 
 ## Documentation
 
-- [Development](docs/development.md): tools, tasks, local data and testing.
+- [Development](docs/development.md): setup, the dev stack, caches and checks.
 - [Configuration](docs/configuration.md): server settings and backend integration.
 - [Deployment and operations](docs/deployment.md): Compose, Coolify, backups and monitoring.
 - [Iris gateway](services/sequoia-ingest/README.md): enrollment, quorum and ingest settings.

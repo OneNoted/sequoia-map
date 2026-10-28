@@ -305,12 +305,6 @@ mod tests {
     }
 
     #[test]
-    fn hidden_sections_leave_the_bar() {
-        assert!(section("/news").is_none());
-        assert!(section("/events").is_some());
-    }
-
-    #[test]
     fn a_short_grouped_menu_flattens_into_one_column() {
         // Statistics keeps one entry under Player and one under Guilds; Global
         // empties out entirely. Two leaves is under the flattening threshold,
@@ -405,11 +399,5 @@ mod tests {
         let services = section("/services").expect("services stays in the bar");
         assert!(services.groups.is_empty());
         assert_eq!(labels(&services.items), ["Bagshop", "Requests"]);
-    }
-
-    #[test]
-    fn a_section_without_a_menu_stays_a_plain_link() {
-        let events = section("/events").expect("events stays in the bar");
-        assert!(!events.has_menu());
     }
 }

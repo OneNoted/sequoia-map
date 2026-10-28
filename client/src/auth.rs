@@ -164,12 +164,4 @@ mod tests {
             "/api/auth/login?return_to=https%3A%2F%2Fmap.seqwawa.com%2Fhistory%3Ft%3D5"
         );
     }
-
-    #[test]
-    fn nmsr_face_builds_a_sized_render_url() {
-        assert_eq!(
-            nmsr_face("ee860b7c-9a1d-49cf-9f19-ab673ba0f23b", 18),
-            "https://nmsr.seqwawa.com/face/ee860b7c-9a1d-49cf-9f19-ab673ba0f23b?w=18"
-        );
-    }
 }

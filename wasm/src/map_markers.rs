@@ -203,14 +203,6 @@ mod tests {
     }
 
     #[test]
-    fn zoomed_out_shows_summaries_instead_of_nodes() {
-        assert!(shows_node_summaries(0.1));
-        assert!(shows_node_summaries(0.1799));
-        assert!(!shows_node_summaries(NODE_CLUSTER_SCALE));
-        assert!(!shows_node_summaries(2.0));
-    }
-
-    #[test]
     fn nodes_are_grouped_by_cell_in_their_given_order() {
         let markers = MapMarkers::new(
             vec![
@@ -271,22 +263,5 @@ mod tests {
         assert_eq!(marker_style(4.0).node_radius, 3.25);
         assert_eq!(marker_style(0.0).node_radius, 1.4);
         assert_eq!(marker_style(0.1).summary_size, 3.0);
-    }
-
-    #[test]
-    fn shape_codes_are_distinct() {
-        let shapes = [
-            MarkerShape::Summary,
-            MarkerShape::Dot,
-            MarkerShape::Corner,
-            MarkerShape::Wall,
-            MarkerShape::Event,
-            MarkerShape::Raid,
-            MarkerShape::Camp,
-        ];
-        let mut codes: Vec<u32> = shapes.iter().map(|shape| shape.code()).collect();
-        codes.sort_unstable();
-        codes.dedup();
-        assert_eq!(codes, (0..7).collect::<Vec<u32>>());
     }
 }

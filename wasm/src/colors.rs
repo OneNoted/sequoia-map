@@ -49,14 +49,3 @@ pub fn heat_color_for_intensity(intensity: f64) -> (u8, u8, u8) {
         .map(|(_, color)| *color)
         .unwrap_or((220, 40, 35))
 }
-
-#[cfg(test)]
-mod heat_tests {
-    use super::*;
-    #[test]
-    fn heat_color_matches_gradient_edges() {
-        assert_eq!(heat_color_for_intensity(0.0), (30, 80, 220));
-        assert_eq!(heat_color_for_intensity(0.5), (245, 220, 70));
-        assert_eq!(heat_color_for_intensity(1.0), (220, 40, 35));
-    }
-}

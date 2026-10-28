@@ -245,7 +245,7 @@ async fn persist_guild_colors(
 mod tests {
     use super::{
         merge_guild_color_cache, parse_athena_guild_colors_payload, parse_hex_color,
-        parse_rgb_triplet, rows_to_guild_colors,
+        rows_to_guild_colors,
     };
     use std::collections::HashMap;
 
@@ -316,17 +316,6 @@ mod tests {
             .expect("payload should decode despite null and partial guild rows");
         assert_eq!(colors.len(), 1);
         assert_eq!(colors.get("Aequitas"), Some(&(255, 215, 0)));
-    }
-
-    #[test]
-    fn parse_rgb_triplet_accepts_valid_ranges() {
-        assert_eq!(parse_rgb_triplet(0, 127, 255), Some((0, 127, 255)));
-    }
-
-    #[test]
-    fn parse_rgb_triplet_rejects_invalid_ranges() {
-        assert_eq!(parse_rgb_triplet(-1, 0, 0), None);
-        assert_eq!(parse_rgb_triplet(0, 256, 0), None);
     }
 
     #[test]

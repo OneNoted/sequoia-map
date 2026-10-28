@@ -977,8 +977,10 @@ mod tests {
 
     #[tokio::test]
     async fn history_events_paginates_with_after_seq() {
-        let Ok(database_url) = std::env::var("DATABASE_URL") else {
-            eprintln!("Skipping real-Postgres history pagination test: DATABASE_URL is not set");
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!(
+                "Skipping real-Postgres history pagination test: TEST_DATABASE_URL is not set"
+            );
             return;
         };
 
@@ -1331,8 +1333,8 @@ mod tests {
 
     #[tokio::test]
     async fn history_at_includes_latest_scalar_sample_at_or_before_timestamp() {
-        let Ok(database_url) = std::env::var("DATABASE_URL") else {
-            eprintln!("Skipping history scalar sample test: DATABASE_URL is not set");
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping history scalar sample test: TEST_DATABASE_URL is not set");
             return;
         };
 
@@ -1496,8 +1498,8 @@ mod tests {
 
     #[tokio::test]
     async fn history_heat_season_falls_back_to_last_sixty_days_without_season_metadata() {
-        let Ok(database_url) = std::env::var("DATABASE_URL") else {
-            eprintln!("Skipping history heat fallback test: DATABASE_URL is not set");
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping history heat fallback test: TEST_DATABASE_URL is not set");
             return;
         };
 

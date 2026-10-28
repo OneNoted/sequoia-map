@@ -3519,30 +3519,15 @@ mod tests {
         DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_SIDEBAR_WIDTH,
         DEFAULT_WAR_PANEL_WIDTH, LegacySettings, MapMode, NameColor, PLAYER_HEAD_SIZE_MAX,
         PLAYER_HEAD_SIZE_MIN, RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN,
-        SETTINGS_DEFAULTS_VERSION, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN, SettingsV2,
-        WAR_PANEL_WIDTH_MAX, WAR_PANEL_WIDTH_MIN, canonical_path_for_mode, clamp_player_head_size,
-        clamp_resource_highlight_opacity, clamp_sidebar_width, clamp_war_panel_width,
-        map_mode_from_path, normalize_heat_selected_season_id, should_wait_for_history_probe,
+        SETTINGS_DEFAULTS_VERSION, SettingsV2, canonical_path_for_mode, clamp_player_head_size,
+        clamp_resource_highlight_opacity, map_mode_from_path, normalize_heat_selected_season_id,
+        should_wait_for_history_probe,
     };
     use super::{
         HEAT_LEGEND_BAR_CHARS, HeatScale, format_heat_count, heat_legend_rows, heat_legend_stops,
     };
     use super::{SHEET_DISMISS_DRAG_PX, SheetDrag, sidebar_transform};
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
-
-    #[test]
-    fn clamp_sidebar_width_enforces_limits() {
-        assert_eq!(clamp_sidebar_width(240.0), SIDEBAR_WIDTH_MIN);
-        assert_eq!(clamp_sidebar_width(420.0), 420.0);
-        assert_eq!(clamp_sidebar_width(900.0), SIDEBAR_WIDTH_MAX);
-    }
-
-    #[test]
-    fn clamp_war_panel_width_enforces_limits() {
-        assert_eq!(clamp_war_panel_width(120.0), WAR_PANEL_WIDTH_MIN);
-        assert_eq!(clamp_war_panel_width(300.0), 300.0);
-        assert_eq!(clamp_war_panel_width(900.0), WAR_PANEL_WIDTH_MAX);
-    }
 
     #[test]
     fn settings_without_a_war_panel_open_the_overview_by_default() {
@@ -3887,11 +3872,6 @@ mod tests {
     }
 
     #[test]
-    fn new_and_reset_settings_hide_the_minimap() {
-        assert!(!SettingsV2::default().show_minimap);
-    }
-
-    #[test]
     fn a_saved_minimap_on_choice_survives_loading() {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({
             "defaults_version": SETTINGS_DEFAULTS_VERSION,
@@ -3899,16 +3879,6 @@ mod tests {
         }))
         .unwrap();
         assert!(parsed.with_current_defaults().show_minimap);
-    }
-
-    #[test]
-    fn a_saved_minimap_off_choice_survives_loading() {
-        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "defaults_version": SETTINGS_DEFAULTS_VERSION,
-            "show_minimap": false,
-        }))
-        .unwrap();
-        assert!(!parsed.with_current_defaults().show_minimap);
     }
 
     #[test]

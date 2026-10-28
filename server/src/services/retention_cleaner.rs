@@ -143,8 +143,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_cleanup_once_removes_old_scalar_samples() {
-        let Ok(database_url) = std::env::var("DATABASE_URL") else {
-            eprintln!("Skipping retention cleaner scalar test: DATABASE_URL is not set");
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping retention cleaner scalar test: TEST_DATABASE_URL is not set");
             return;
         };
 

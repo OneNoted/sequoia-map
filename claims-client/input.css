@@ -1,9 +1,9 @@
 /* ═══════════════════════════════════════════════════════════════════
    SEQUOIA DESIGN TOKENS — claims editor
    Duplicated from client/input.css, which in turn mirrors the token files
-   under sequoia-web/frontend/src/lib/design-system/tokens. This build is
-   plain CSS served by Trunk's `rel="css"`, which does not resolve @import,
-   so the block is copied rather than shared. Keep the three in step.
+   under sequoia-web/frontend/src/lib/design-system/tokens. This stylesheet
+   is published as is, with no @import resolution, so the block is copied
+   rather than shared. Keep the three in step.
    ═══════════════════════════════════════════════════════════════════ */
 :root {
   /* ── Base surfaces ── */

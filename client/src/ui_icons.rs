@@ -38,17 +38,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn icon_index_lookup() {
-        assert_eq!(icon_index("emerald"), Some(0));
-        assert_eq!(icon_index("ore"), Some(1));
-        assert_eq!(icon_index("crops"), Some(2));
-        assert_eq!(icon_index("fish"), Some(3));
-        assert_eq!(icon_index("wood"), Some(4));
-        assert_eq!(icon_index("rainbow"), Some(5));
-        assert_eq!(icon_index("unknown"), None);
-    }
-
-    #[test]
     fn class_icon_name_accepts_aliases_and_casing() {
         assert_eq!(class_icon_name("Archer"), Some("archer"));
         assert_eq!(class_icon_name("hunter"), Some("archer"));

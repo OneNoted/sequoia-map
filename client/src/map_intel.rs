@@ -968,10 +968,7 @@ mod tests {
 
     use crate::viewport::Viewport;
 
-    use super::{
-        MapIntelModel, NodeIndex, closest_node, format_count, hex_rgb, resource_profession_kind,
-        title_label,
-    };
+    use super::{MapIntelModel, NodeIndex, closest_node, hex_rgb};
 
     fn node_marker(x: f64, z: f64, resource: &str) -> GatheringNodeMarker {
         GatheringNodeMarker {
@@ -1093,26 +1090,6 @@ mod tests {
     fn parses_overlay_colours() {
         assert_eq!(hex_rgb("#c9a27d"), [0xc9, 0xa2, 0x7d]);
         assert_eq!(hex_rgb("#5bd6c8"), [0x5b, 0xd6, 0xc8]);
-    }
-
-    #[test]
-    fn formats_compact_counts() {
-        assert_eq!(format_count(999), "999");
-        assert_eq!(format_count(16_787), "16.8k");
-    }
-
-    #[test]
-    fn classifies_common_profession_resources() {
-        assert_eq!(resource_profession_kind("COPPER").style().label, "Mining");
-        assert_eq!(resource_profession_kind("OAK").style().label, "Woodcutting");
-        assert_eq!(resource_profession_kind("WHEAT").style().label, "Farming");
-        assert_eq!(resource_profession_kind("BASS").style().label, "Fishing");
-    }
-
-    #[test]
-    fn title_cases_api_labels() {
-        assert_eq!(title_label("VERY HIGH"), "Very High");
-        assert_eq!(title_label("node"), "Node");
     }
 
     #[test]

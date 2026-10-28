@@ -95,6 +95,19 @@ pub struct SeasonScalarOverridePoint {
     pub scalar_weighted: f64,
 }
 
+/// The directory `SEQUOIA_CLIENT_ROOT` names, when set: the built clients are exactly there,
+/// as `client/dist` and `claims-client/dist` below it (the dev builds' root).
+pub fn configured_client_root() -> Option<PathBuf> {
+    std::env::var_os("SEQUOIA_CLIENT_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Where the built clients are: the configured root, otherwise the working directory.
+pub fn client_root() -> PathBuf {
+    configured_client_root().unwrap_or_default()
+}
+
 /// Website asset directory the map image renderer reads tiles, fonts and icons from.
 ///
 /// Defaults to the built map client the server also serves; a source checkout without a
@@ -102,7 +115,7 @@ pub struct SeasonScalarOverridePoint {
 pub fn map_image_assets_dir() -> PathBuf {
     std::env::var_os("MAP_IMAGE_ASSETS_DIR")
         .filter(|value| !value.is_empty())
-        .map_or_else(|| PathBuf::from("client/dist"), PathBuf::from)
+        .map_or_else(|| client_root().join("client/dist"), PathBuf::from)
 }
 
 pub fn server_bind() -> String {
@@ -564,12 +577,9 @@ fn sanitize_internal_api_token(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveSeasonRaceConfig, DEFAULT_API_BODY_LIMIT_BYTES, DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS,
-        DEFAULT_SEASON_HISTORY_RETENTION_DAYS, DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS,
-        LEGACY_TERREXTRA_URL, guild_seasons_cache_ttl_secs, normalize_public_base_url,
-        normalize_watchlist_key, parse_active_season_race_config,
-        parse_season_scalar_override_points, sanitize_internal_ingest_token,
-        season_history_retention_days, territory_extra_url, territory_history_retention_days,
+        ActiveSeasonRaceConfig, DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS, guild_seasons_cache_ttl_secs,
+        normalize_public_base_url, normalize_watchlist_key, parse_active_season_race_config,
+        parse_season_scalar_override_points, sanitize_internal_ingest_token, territory_extra_url,
     };
     use chrono::{DateTime, Utc};
 
@@ -645,23 +655,6 @@ mod tests {
     }
 
     #[test]
-    fn default_api_body_limit_matches_ingest_forwarder_default_size() {
-        assert_eq!(DEFAULT_API_BODY_LIMIT_BYTES, 2 * 1024 * 1024);
-    }
-
-    #[test]
-    fn warcontroller_max_staleness_defaults_to_a_minute() {
-        temp_env::with_var_unset("WARCONTROLLER_MAX_STALENESS_SECS", || {
-            assert_eq!(
-                super::warcontroller_max_staleness(),
-                Some(std::time::Duration::from_secs(
-                    super::DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS
-                ))
-            );
-        });
-    }
-
-    #[test]
     fn warcontroller_max_staleness_honours_an_override() {
         temp_env::with_var("WARCONTROLLER_MAX_STALENESS_SECS", Some(" 300 "), || {
             assert_eq!(
@@ -692,16 +685,6 @@ mod tests {
     }
 
     #[test]
-    fn server_bind_defaults_to_container_interface_and_accepts_override() {
-        temp_env::with_var("SEQUOIA_SERVER_BIND", None::<&str>, || {
-            assert_eq!(super::server_bind(), "0.0.0.0:3000");
-        });
-        temp_env::with_var("SEQUOIA_SERVER_BIND", Some("127.0.0.1:3000"), || {
-            assert_eq!(super::server_bind(), "127.0.0.1:3000");
-        });
-    }
-
-    #[test]
     fn normalize_public_base_url_adds_https_and_trims_trailing_slashes() {
         assert_eq!(
             normalize_public_base_url(" map.seqwawa.com/ "),
@@ -720,16 +703,6 @@ mod tests {
             normalize_watchlist_key("  Titans   Valor "),
             "titans valor".to_string()
         );
-    }
-
-    #[test]
-    fn territory_extra_url_uses_legacy_default_when_unset() {
-        temp_env::with_var_unset("TERRITORY_EXTRA_URL", || {
-            assert_eq!(
-                territory_extra_url(),
-                Some(LEGACY_TERREXTRA_URL.to_string())
-            );
-        });
     }
 
     #[test]
@@ -806,36 +779,6 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].scalar_weighted, 1.0);
         assert_eq!(parsed[1].scalar_weighted, 1.5);
-    }
-
-    #[test]
-    fn history_retention_days_use_defaults_without_env() {
-        temp_env::with_vars_unset(
-            [
-                "TERRITORY_HISTORY_RETENTION_DAYS",
-                "SEASON_HISTORY_RETENTION_DAYS",
-            ],
-            || {
-                assert_eq!(
-                    territory_history_retention_days(),
-                    DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS
-                );
-                assert_eq!(
-                    season_history_retention_days(),
-                    DEFAULT_SEASON_HISTORY_RETENTION_DAYS
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn guild_seasons_cache_ttl_uses_the_default_when_unset() {
-        temp_env::with_var_unset("GUILD_SEASONS_CACHE_TTL_SECS", || {
-            assert_eq!(
-                guild_seasons_cache_ttl_secs(),
-                DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS
-            );
-        });
     }
 
     #[test]

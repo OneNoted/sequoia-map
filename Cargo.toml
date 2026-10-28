@@ -11,6 +11,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde", "wasmbind"] }
 
+# No debug info for this workspace's crates in dev, whichever entry point builds, so plain
+# Cargo and Mise share artifacts. Dependencies keep Cargo's own dev setting (line tables).
+[profile.dev]
+debug = 0
+
 [profile.release]
 opt-level = 3
 lto = "fat"

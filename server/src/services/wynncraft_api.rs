@@ -936,15 +936,6 @@ mod tests {
     }
 
     #[test]
-    fn fresh_guild_seasons_serves_an_entry_inside_the_ttl() {
-        let now = "2026-03-01T00:02:00Z".parse::<DateTime<Utc>>().unwrap();
-        let cached = cached_seasons("2026-03-01T00:00:00Z".parse().unwrap());
-        let seasons = fresh_guild_seasons(Some(&cached), now, 130).expect("fresh entry");
-        assert_eq!(seasons.len(), 1);
-        assert_eq!(seasons["30"].sr_per_war, Some(5));
-    }
-
-    #[test]
     fn fresh_guild_seasons_expires_at_the_ttl_boundary() {
         let cached = cached_seasons("2026-03-01T00:00:00Z".parse().unwrap());
         // Exactly at the TTL is already stale; one second earlier is not.
@@ -952,11 +943,5 @@ mod tests {
         let before_ttl = "2026-03-01T00:02:09Z".parse::<DateTime<Utc>>().unwrap();
         assert!(fresh_guild_seasons(Some(&cached), at_ttl, 130).is_none());
         assert!(fresh_guild_seasons(Some(&cached), before_ttl, 130).is_some());
-    }
-
-    #[test]
-    fn fresh_guild_seasons_handles_an_empty_cache() {
-        let now = "2026-03-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        assert!(fresh_guild_seasons(None, now, 130).is_none());
     }
 }

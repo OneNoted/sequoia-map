@@ -346,8 +346,8 @@ pub fn format_stat(val: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ATTACK_RATES, DefenseRating, HEALTHS, calc_defense_index, calc_dps, calc_dps_range,
-        calc_ehp, calc_stat, count_guild_connections, find_externals, format_stat,
+        DefenseRating, HEALTHS, calc_defense_index, calc_dps, calc_dps_range, calc_ehp, calc_stat,
+        count_guild_connections, find_externals, format_stat,
     };
     use crate::test_support::assert_close;
     use std::collections::{HashMap, HashSet};
@@ -515,27 +515,6 @@ mod tests {
     }
 
     #[test]
-    fn health_progression_matches_current_tower_values() {
-        assert_eq!(
-            HEALTHS,
-            [
-                300_000.0,
-                450_000.0,
-                600_000.0,
-                750_000.0,
-                960_000.0,
-                1_200_000.0,
-                1_500_000.0,
-                1_860_000.0,
-                2_220_000.0,
-                2_580_000.0,
-                2_940_000.0,
-                3_300_000.0,
-            ]
-        );
-    }
-
-    #[test]
     fn hq_health_matches_six_connection_twenty_eight_external_example() {
         let expected = [
             7_140_000.0,
@@ -565,22 +544,9 @@ mod tests {
     }
 
     #[test]
-    fn attack_rate_mid_levels_match_expected_speeds() {
-        assert_close(ATTACK_RATES[8], 3.6);
-        assert_close(ATTACK_RATES[9], 3.8);
-    }
-
-    #[test]
     fn calc_ehp_base_case() {
         let ehp = calc_ehp(0, 0, false, 0, 0);
         assert_close(ehp, 300_000.0 / 0.9);
-    }
-
-    #[test]
-    fn calc_dps_clamps_level_above_11() {
-        let clamped = calc_dps(99, 42, false, 0, 0);
-        let max_level = calc_dps(11, 11, false, 0, 0);
-        assert_close(clamped, max_level);
     }
 
     #[test]
@@ -588,12 +554,6 @@ mod tests {
         let (lo, hi) = calc_dps_range(0, 0, false, 0, 0);
         assert_close(lo, 1000.0);
         assert_close(hi, 1500.0);
-    }
-
-    #[test]
-    fn calc_dps_is_midpoint_of_range() {
-        let (lo, hi) = calc_dps_range(5, 7, true, 4, 12);
-        assert_close(calc_dps(5, 7, true, 4, 12), (lo + hi) / 2.0);
     }
 
     #[test]

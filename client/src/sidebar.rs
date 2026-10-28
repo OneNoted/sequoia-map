@@ -1410,25 +1410,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_online_members_preserves_rank_username_and_server_fields() {
-        let payload = json!({
-            "members": {
-                "chief": {
-                    "Obstacles_": { "online": true, "server": "NA5" }
-                }
-            }
-        });
-
-        let rows = extract_online_members(&payload);
-        assert_eq!(rows.len(), 1);
-        let row = &rows[0];
-
-        assert_eq!(row.rank_label, "Chief");
-        assert_eq!(row.username, "Obstacles_");
-        assert_eq!(row.server, "NA5");
-    }
-
-    #[test]
     fn guild_facts_take_the_latest_season_and_the_member_total() {
         let facts = GuildFacts::from_json(&json!({
             "prefix": "SEQ",

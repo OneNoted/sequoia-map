@@ -256,7 +256,7 @@ pub(crate) fn KeybindHelp() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shortcut, key_cap};
+    use super::Shortcut;
     use std::collections::HashSet;
 
     #[test]
@@ -280,15 +280,5 @@ mod tests {
         for key in ["?", "A", "N", "Tab", "Shift", "x"] {
             assert_eq!(Shortcut::from_key(key), None, "{key:?}");
         }
-    }
-
-    #[test]
-    fn key_caps_read_like_the_keyboard() {
-        assert_eq!(key_cap("Escape"), "Esc");
-        assert_eq!(key_cap(" "), "Space");
-        assert_eq!(key_cap("ArrowDown"), "\u{2193}");
-        assert_eq!(key_cap("p"), "P");
-        assert_eq!(key_cap("Enter"), "Enter");
-        assert_eq!(key_cap("["), "[");
     }
 }

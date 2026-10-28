@@ -37,15 +37,12 @@ ARG TARGETARCH
 ARG BINARYEN_VERSION=126
 ARG BINARYEN_ARCH=
 ARG TAILWINDCSS_VERSION=4.2.0
-ARG WASM_BINDGEN_VERSION=0.2.113
-ARG TRUNK_VERSION=0.22.0
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends brotli gzip ca-certificates curl pkg-config libssl-dev \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY .ci/binaryen/ /tmp/binaryen-assets/
 COPY .ci/tailwindcss/ /tmp/tailwindcss-assets/
-COPY .ci/wasm-bindgen/ /tmp/wasm-bindgen-assets/
 RUN set -eux; \
     TARGET_ARCH="${TARGETARCH:-}"; \
     if [ -z "${TARGET_ARCH}" ]; then \
@@ -102,47 +99,19 @@ RUN set -eux; \
         rm -f /tmp/tailwindcss; \
     fi; \
     tailwindcss --help >/dev/null
-RUN set -eux; \
-    TARGET_ARCH="${TARGETARCH:-}"; \
-    if [ -z "${TARGET_ARCH}" ]; then \
-        TARGET_ARCH="$(dpkg --print-architecture)"; \
-    fi; \
-    if [ -f /tmp/wasm-bindgen-assets/wasm-bindgen.tar.gz ] && [ -f /tmp/wasm-bindgen-assets/wasm-bindgen.tar.gz.sha256 ]; then \
-        cp /tmp/wasm-bindgen-assets/wasm-bindgen.tar.gz /tmp/wasm-bindgen.tar.gz; \
-        cp /tmp/wasm-bindgen-assets/wasm-bindgen.tar.gz.sha256 /tmp/wasm-bindgen.tar.gz.sha256; \
-    else \
-        case "${TARGET_ARCH}" in \
-            amd64|x86_64) \
-                WASM_BINDGEN_TARGET="x86_64-unknown-linux-musl"; \
-                EXPECTED_SHA="0366bf5936d5e2578b06fc318a5696ddecfb66382e671e51f469b83f3494712f" ;; \
-            arm64|aarch64) \
-                WASM_BINDGEN_TARGET="aarch64-unknown-linux-gnu"; \
-                EXPECTED_SHA="965dd0d7aff65600f44b500a19b38fce68ec6ff135f3683d35731294ed46d66d" ;; \
-            *) \
-                echo "Unsupported architecture '${TARGET_ARCH}' for wasm-bindgen auto-selection."; \
-                exit 1 ;; \
-        esac; \
-        curl --proto '=https' --tlsv1.2 --http1.1 --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 --max-time 120 --speed-limit 1024 --speed-time 30 -fsSLo /tmp/wasm-bindgen.tar.gz "https://github.com/rustwasm/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-${WASM_BINDGEN_TARGET}.tar.gz"; \
-        printf '%s\n' "${EXPECTED_SHA}" > /tmp/wasm-bindgen.tar.gz.sha256; \
-    fi; \
-    EXPECTED_SHA="$(awk '{print $1}' /tmp/wasm-bindgen.tar.gz.sha256)"; \
-    echo "${EXPECTED_SHA}  /tmp/wasm-bindgen.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/wasm-bindgen.tar.gz -C /tmp; \
-    EXTRACTED_DIR="$(find /tmp -maxdepth 1 -type d -name "wasm-bindgen-${WASM_BINDGEN_VERSION}-*" | head -n 1)"; \
-    test -n "${EXTRACTED_DIR}"; \
-    install -m 0755 "${EXTRACTED_DIR}/wasm-bindgen" /usr/local/bin/wasm-bindgen; \
-    rm -rf /tmp/wasm-bindgen.tar.gz /tmp/wasm-bindgen.tar.gz.sha256 "${EXTRACTED_DIR}"; \
-    wasm-bindgen --version >/dev/null
 RUN rustup target add wasm32-unknown-unknown
-RUN --mount=type=cache,id=sequoia-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=sequoia-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    cargo install trunk --version "${TRUNK_VERSION}" --locked --no-default-features --features native-tls
+# The repository tool builds both clients: Cargo, wasm-bindgen (a library pinned to the
+# application's version), wasm-opt, Tailwind, the pages, compressed copies and the map's size
+# budget. Its own workspace and lockfile keep its dependencies out of the application's.
+WORKDIR /app
+COPY .cargo/config.toml .cargo/config.toml
+COPY tools/xtask/ tools/xtask/
+RUN cargo build --locked --manifest-path tools/xtask/Cargo.toml
 
 FROM client-tools AS client-build
 
 ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
-WORKDIR /app
 COPY --from=workspace-deps /app/ /app/
 RUN cargo build --release --locked --target wasm32-unknown-unknown -p sequoia-client -p sequoia-claims-client \
     && cargo clean --release --locked --target wasm32-unknown-unknown \
@@ -153,15 +122,7 @@ COPY wasm/ wasm/
 COPY browser-map/ browser-map/
 COPY client/ client/
 COPY claims-client/ claims-client/
-WORKDIR /app/client
-# Trunk runs wasm-opt (data-wasm-opt) before writing integrity hashes; optimizing the
-# bundle afterwards would invalidate the WASM preload's integrity.
-RUN trunk build --release --locked
-RUN find dist -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' \) -exec sh -c 'brotli -f -q 11 "$1" -o "$1.br"; gzip -f -k -9 "$1"' _ {} \;
-
-WORKDIR /app/claims-client
-RUN trunk build --release --locked
-RUN find dist -type f \( -name '*.wasm' -o -name '*.js' -o -name '*.css' -o -name '*.html' -o -name '*.json' -o -name '*.svg' \) -exec sh -c 'brotli -f -q 11 "$1" -o "$1.br"; gzip -f -k -9 "$1"' _ {} \;
+RUN cargo xtask web --release
 
 ### Build the server
 FROM workspace-deps AS server-build
@@ -176,7 +137,7 @@ COPY wasm/ wasm/
 COPY server/ server/
 # The backend key names the server's source closure. A static client release records the key
 # it was built against and is only activated on a server with the same key;
-# scripts/release.py computes the same value from a commit.
+# `cargo xtask release key` computes the same value from a commit.
 RUN find Cargo.toml Cargo.lock shared server -type f -print0 | LC_ALL=C sort -z \
     | xargs -0 sha256sum | sha256sum | cut -c1-16 > /app/backend-key
 

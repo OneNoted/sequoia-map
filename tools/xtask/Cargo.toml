@@ -1,0 +1,40 @@
+[package]
+name = "xtask"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+# A separate workspace: tool dependencies stay out of the application's Cargo.lock, so a
+# tool-only change does not change the server's backend key or select an image rebuild.
+[workspace]
+
+# Release selection (`release plan`, `release key`) also builds without the default `web`
+# feature, so the image-selection job compiles only anyhow, serde, serde_json and sha2.
+[features]
+default = ["web"]
+web = [
+  "dep:base64",
+  "dep:brotli",
+  "dep:flate2",
+  "dep:notify",
+  "dep:notify-debouncer-full",
+  "dep:wasm-bindgen-cli-support",
+]
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = { version = "0.22", optional = true }
+brotli = { version = "8", optional = true }
+flate2 = { version = "1", optional = true }
+notify = { version = "8", optional = true }
+notify-debouncer-full = { version = "0.7", optional = true }
+# Must equal the application's wasm-bindgen version; `web` refuses to run otherwise.
+wasm-bindgen-cli-support = { version = "=0.2.113", optional = true }
+
+# wasm-bindgen and Brotli run inside this tool on every rebuild; unoptimised, binding a debug
+# map takes seconds.
+[profile.dev.package."*"]
+opt-level = 3

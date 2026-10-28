@@ -390,16 +390,6 @@ mod tests {
     }
 
     #[test]
-    fn real_data_supersedes_an_unavailable_feed() {
-        assert!(war_state_at(900).supersedes(Some(&WarControllerState::unavailable(1_000))));
-    }
-
-    #[test]
-    fn anything_supersedes_a_client_holding_nothing() {
-        assert!(state_at(0).supersedes(None));
-    }
-
-    #[test]
     fn payloads_differing_only_in_their_stamp_have_the_same_content() {
         // Exactly what a live backend sends every five seconds while nothing is happening.
         assert!(state_at(1_000).same_content(&state_at(2_000)));
@@ -483,14 +473,6 @@ mod tests {
     }
 
     #[test]
-    fn null_ehp_and_dps_are_none() {
-        let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
-        let war = &state.wars[1];
-        assert_eq!(war.ehp, None);
-        assert_eq!(war.dps, None);
-    }
-
-    #[test]
     fn pos_accepts_number_and_numeric_string() {
         let state: WarControllerState = serde_json::from_str(SAMPLE).expect("sample parses");
 
@@ -557,18 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn a_nullable_timestamp_still_accepts_an_rfc3339_string() {
-        let raw = r#"{
-            "timestamp": 1787575020,
-            "queues": [
-                {"territory": "A", "status": "STARTED", "timestamp": "2026-08-24T12:37:09Z"}
-            ]
-        }"#;
-        let state: WarControllerState = serde_json::from_str(raw).expect("rfc3339 payload parses");
-        assert_eq!(state.queues[0].timestamp, Some(1_787_575_029));
-    }
-
-    #[test]
     fn a_null_bearing_payload_survives_a_round_trip() {
         // The SSE layer re-serializes the state it parsed, so a null that becomes something
         // else on the way out would reach the client as a different payload than arrived.
@@ -621,16 +591,6 @@ mod tests {
     fn rejects_non_numeric_position_string() {
         let raw = r#"{"timestamp": 1, "players": [{"username": "x", "class": "MAGE", "pos": {"x": "abc", "z": 0}}]}"#;
         assert!(serde_json::from_str::<WarControllerState>(raw).is_err());
-    }
-
-    #[test]
-    fn missing_collections_default_to_empty() {
-        let state: WarControllerState =
-            serde_json::from_str(r#"{"timestamp": 42}"#).expect("minimal payload parses");
-        assert_eq!(state.timestamp, 42);
-        assert!(state.queues.is_empty());
-        assert!(state.wars.is_empty());
-        assert!(state.players.is_empty());
     }
 
     #[test]

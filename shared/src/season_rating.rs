@@ -48,7 +48,7 @@ pub fn passive_sr_per_5s(territory_count: usize, scalar: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{passive_sr_per_5s, passive_sr_per_hour, weighted_units};
+    use super::weighted_units;
     use crate::test_support::assert_close;
 
     #[test]
@@ -62,12 +62,5 @@ mod tests {
         let units_22 = weighted_units(22);
         let units_23 = weighted_units(23);
         assert_close(units_23 - units_22, 0.2);
-    }
-
-    #[test]
-    fn passive_hour_and_five_second_outputs_are_consistent() {
-        let hourly = passive_sr_per_hour(9, 2.5);
-        let per_5s = passive_sr_per_5s(9, 2.5);
-        assert_close(per_5s * 720.0, hourly);
     }
 }

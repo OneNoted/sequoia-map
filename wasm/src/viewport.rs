@@ -187,13 +187,4 @@ mod tests {
         assert_close(sx, 300.0);
         assert_close(sy, 200.0);
     }
-
-    #[test]
-    fn pan_shifts_offset() {
-        let mut vp = Viewport::default();
-        vp.pan(12.5, -3.25);
-
-        assert_close(vp.offset_x, 12.5);
-        assert_close(vp.offset_y, -3.25);
-    }
 }

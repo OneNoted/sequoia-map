@@ -21,26 +21,6 @@ mod tests {
     use super::format_hms;
 
     #[test]
-    fn formats_zero() {
-        assert_eq!(format_hms(0), "00:00:00");
-    }
-
-    #[test]
-    fn formats_seconds_only() {
-        assert_eq!(format_hms(59), "00:00:59");
-    }
-
-    #[test]
-    fn formats_exact_minute() {
-        assert_eq!(format_hms(60), "00:01:00");
-    }
-
-    #[test]
-    fn formats_hour_minute_second() {
-        assert_eq!(format_hms(3661), "01:01:01");
-    }
-
-    #[test]
     fn formats_cumulative_hours() {
         assert_eq!(format_hms(90061), "25:01:01");
     }

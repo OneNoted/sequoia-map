@@ -20,8 +20,7 @@ outside_checks() {
   case "$1" in
     README.md|AGENTS.md|LICENSE|docs/*|ops/*|.ci/*|.cargo/audit.toml|\
     Dockerfile|.dockerignore|services/sequoia-ingest/Dockerfile|docker-compose*.yml|\
-    .github/workflows/deploy-images.yml|client/input.css|\
-    scripts/check-wasm-size.py|scripts/smoke-browser.py|scripts/release.py|scripts/test-release.py) return 0 ;;
+    .github/workflows/deploy-images.yml|client/input.css) return 0 ;;
     *) return 1 ;;
   esac
 }

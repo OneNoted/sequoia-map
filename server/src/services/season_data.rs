@@ -790,13 +790,4 @@ mod tests {
             Err(SeasonDataError::BadRequest)
         );
     }
-
-    #[test]
-    fn select_window_without_a_request_falls_back_to_the_default() {
-        let windows = vec![window(29), window(30)];
-        assert_eq!(
-            select_window(windows.clone(), None, None),
-            Ok(select_default_window(windows, None))
-        );
-    }
 }

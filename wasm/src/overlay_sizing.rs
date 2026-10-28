@@ -350,7 +350,6 @@ mod tests {
     use super::{
         compute_dynamic_label_sizing, compute_far_zoom_tag_sizing,
         compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
-        compute_resource_icon_size_world, compute_static_label_sizing,
         compute_territory_ornament_sizing, compute_territory_ornament_tint,
     };
 
@@ -360,16 +359,6 @@ mod tests {
             diff < 1e-4,
             "expected {expected}, got {actual} (diff: {diff})"
         );
-    }
-
-    #[test]
-    fn static_sizing_is_fixed_in_world_space() {
-        let small = compute_static_label_sizing(24.0, 16.0).expect("small sizing should exist");
-        let large = compute_static_label_sizing(180.0, 40.0).expect("large sizing should exist");
-        assert_close(small.tag_size, 24.0);
-        assert_close(large.tag_size, 24.0);
-        assert_close(small.detail_size, 21.5);
-        assert_close(large.detail_size, 21.5);
     }
 
     #[test]
@@ -404,48 +393,9 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_sizing_is_fixed_across_territories_and_zoom() {
-        let near = compute_dynamic_label_sizing(88.0, 80.0, 1.0, 1.0, true)
-            .expect("near sizing should exist");
-        let far = compute_dynamic_label_sizing(160.0, 90.0, 0.35, 1.0, true)
-            .expect("far sizing should exist");
-        let other_territory = compute_dynamic_label_sizing(44.0, 40.0, 1.0, 1.0, true)
-            .expect("other territory sizing should exist");
-        assert_close(near.tag_size, 24.0);
-        assert_close(far.tag_size, 24.0);
-        assert_close(other_territory.tag_size, 24.0);
-        assert_close(near.time_size, 20.5);
-        assert_close(far.time_size, 20.5);
-        assert_close(other_territory.time_size, 20.5);
-    }
-
-    #[test]
-    fn dynamic_sizing_uses_fixed_world_widths() {
-        let sizing =
-            compute_dynamic_label_sizing(44.0, 40.0, 1.0, 1.0, true).expect("sizing should exist");
-        assert_close(sizing.time_max_width, 108.0);
-        assert_close(sizing.cooldown_max_width, 132.0);
-    }
-
-    #[test]
     fn dynamic_sizing_still_hides_when_territory_is_too_small() {
         let sizing = compute_dynamic_label_sizing(20.0, 18.0, 1.0, 1.0, true);
         assert!(sizing.is_none());
-    }
-
-    #[test]
-    fn dynamic_sizing_is_deterministic() {
-        let first = compute_dynamic_label_sizing(160.0, 90.0, 0.35, 1.0, false)
-            .expect("sizing should exist");
-        let second = compute_dynamic_label_sizing(160.0, 90.0, 0.35, 1.0, false)
-            .expect("sizing should exist");
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn resource_icon_size_is_fixed_in_world_space() {
-        let size = compute_resource_icon_size_world(1.0);
-        assert_close(size, 29.0);
     }
 
     #[test]

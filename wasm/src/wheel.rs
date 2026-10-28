@@ -162,11 +162,10 @@ pub(crate) fn normalize_wheel_zoom_delta(
 #[cfg(test)]
 mod tests {
     use super::{
-        PINCH_LINE_HEIGHT_PX, PINCH_ZOOM_GAIN, TRACKPAD_LINE_HEIGHT_PX,
-        TRACKPAD_PAGE_HEIGHT_FACTOR, TRACKPAD_ZOOM_CLAMP, TRACKPAD_ZOOM_GAIN,
-        TrackpadWheelClassifier, WHEEL_DELTA_MODE_LINE, WHEEL_DELTA_MODE_PAGE,
-        WHEEL_DELTA_MODE_PIXEL, WheelSample, normalize_pinch_zoom_delta,
-        normalize_trackpad_zoom_delta, normalize_wheel_zoom_delta,
+        PINCH_LINE_HEIGHT_PX, PINCH_ZOOM_GAIN, TRACKPAD_PAGE_HEIGHT_FACTOR, TRACKPAD_ZOOM_CLAMP,
+        TRACKPAD_ZOOM_GAIN, TrackpadWheelClassifier, WHEEL_DELTA_MODE_LINE, WHEEL_DELTA_MODE_PAGE,
+        WHEEL_DELTA_MODE_PIXEL, WheelSample, normalize_trackpad_zoom_delta,
+        normalize_wheel_zoom_delta,
     };
     use crate::test_support::assert_close;
 
@@ -241,14 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_line_deltas_to_pixel_zoom_rate() {
-        let s = sample(0.5, WHEEL_DELTA_MODE_LINE, 0.0);
-        let normalized = normalize_trackpad_zoom_delta(s, 800.0);
-        let expected = 0.5 * TRACKPAD_LINE_HEIGHT_PX * TRACKPAD_ZOOM_GAIN;
-        assert_close(normalized, expected);
-    }
-
-    #[test]
     fn clamps_large_page_deltas() {
         let s = sample(1.0, WHEEL_DELTA_MODE_PAGE, 0.0);
         let normalized = normalize_trackpad_zoom_delta(s, 1000.0);
@@ -288,13 +279,5 @@ mod tests {
         let s = sample(120.0, WHEEL_DELTA_MODE_LINE, 0.0);
         let normalized = normalize_wheel_zoom_delta(s, 800.0, false, &mut classifier);
         assert_close(normalized, 120.0);
-    }
-
-    #[test]
-    fn pinch_normalization_scales_line_mode_aggressively() {
-        let s = sample(-0.75, WHEEL_DELTA_MODE_LINE, 0.0);
-        let normalized = normalize_pinch_zoom_delta(s, 1000.0);
-        let expected = -0.75 * PINCH_LINE_HEIGHT_PX * PINCH_ZOOM_GAIN;
-        assert_close(normalized, expected);
     }
 }

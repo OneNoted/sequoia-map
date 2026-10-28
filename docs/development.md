@@ -1,161 +1,111 @@
 # Development
 
-## Prerequisites
+## Setup
 
-Install mise and configure rootless Podman. On macOS, start a Podman machine
-before running database tasks. On Linux, `podman info` should work without sudo.
-
-Rust crates also need a C compiler, linker, `pkg-config` and OpenSSL headers.
-On Debian/Ubuntu these are `build-essential pkg-config libssl-dev`; on Arch,
-`base-devel openssl`. Mise manages Rust (including rustfmt, Clippy and the WASM
-target), Trunk, Tailwind, Binaryen, watchexec, Python and uv.
-
-From the repository root:
+Install [mise](https://mise.jdx.dev) and a C toolchain (`build-essential` on Debian/Ubuntu,
+`base-devel` on Arch, the Xcode command line tools on macOS). Then, from a checkout or a
+new worktree:
 
 ```bash
-mise trust
-mise install
+mise trust      # once per checkout: approve this mise.toml
 mise run dev
 ```
 
+Mise installs the pinned tools from `mise.toml` and `mise.lock`: Rust with the WASM
+target, Tailwind, Binaryen, PostgreSQL, pitchfork and sccache. Nothing else is needed:
+no Docker, Podman, Node, Python or global Cargo installs.
+
 ## Daily work
 
-`mise run dev` runs the API and map. `mise run dev:full` adds claims and the Iris gateway.
-The claims client rebuilds on changes; refresh its page after the build finishes.
-Its route HTML comes from Axum, so Trunk browser autoreload is disabled there.
-The map client reloads automatically.
+`mise run dev` builds the API, starts this worktree's daemons and prints their ports:
 
-Ctrl-C stops the native processes; PostgreSQL stays up until `mise run db:stop`.
-Use `mise tasks` for the command list. Individual processes are `mise run server`,
-`mise run client`, `mise run claims` and `mise run ingest`.
+- `postgres`, PostgreSQL 18 with its data in `.data/postgres`, kept across stops;
+- `api`, the server, which serves the map at `/`, the claims editor at `/claims/new`
+  and the API, exactly as production does;
+- `watch`, which rebuilds after each save and updates open pages.
 
-- Map: <http://127.0.0.1:8081>
-- Claims: <http://127.0.0.1:8082/claims/new/blank>
-- API: <http://127.0.0.1:3000/api/health>
-- Gateway: <http://127.0.0.1:3010/health>
+`mise run dev:full` adds `ingest`, the Iris gateway. `mise run stop` stops every daemon
+and `mise run logs` follows their output. `mise daemons status` and `mise daemons tui`
+show their state. Ports start at 3000 (API), 3900 (watcher), 3010 (gateway) and 15432
+(PostgreSQL) in a primary checkout; each linked worktree gets its own stable offset,
+so worktrees can run side by side. `mise daemons urls` lists them.
 
-Both Trunk servers proxy `/api/` to port 3000 and watch their shared Rust sources.
-The native API and gateway use watchexec to rebuild and restart after changes.
-Release builds are explicit (`mise run build:client`, `mise run build:claims`,
-`mise run build:server`, `mise run build:ingest`).
-Client releases that switch without a restart are the `release:*` tasks; see
-[Client releases](deployment.md#client-releases).
+What a save does:
 
-The API still binds to `0.0.0.0:3000` outside the dev task; `mise run server` sets
-`SEQUOIA_SERVER_BIND=127.0.0.1:3000`. Local PostgreSQL, Trunk and the gateway also
-bind to loopback. Development ingest credentials are public local defaults,
-not production secrets. Set `INTERNAL_INGEST_TOKEN` to override the shared
-API/gateway token.
+| You edit | What happens |
+|---|---|
+| `client/input.css`, `claims-client/input.css` | the stylesheet is rebuilt and swapped in place; the page keeps its state |
+| client Rust (`client`, `claims-client`, `browser-map`, `wasm`) | the affected clients' WASM is rebuilt and their pages reload |
+| `server/`, `shared/` | the server is rebuilt; only a successful build restarts it, then pages reload |
+| `services/sequoia-ingest/` | the gateway is rebuilt and restarted, when it is running |
 
-Map image exports (`/api/live/map.webp`) read tiles, fonts and icons from the built
-client in `client/dist`. Without a client build, run the API with
-`MAP_IMAGE_ASSETS_DIR=client/public`.
+A failed build leaves the last good version running and shows the error at the bottom
+of the page as well as in `mise run logs`.
 
-`SEQUOIA_BACKEND_BASE_URL` enables backend-dependent features. Without it, live
-territory data still works, but sign-in and the war-controller feed do not.
-Do not add production credentials to `mise.toml`. Use exported variables or the
-gitignored `mise.local.toml` for local configuration. Avoid real credentials
-when running untrusted reporter builds against a local gateway.
+Dev WASM is built with Leptos's type-erased views (`--cfg erase_components`), which
+turns a minute-long client rebuild into seconds. Release builds keep the typed views.
 
-## Local data
+Development credentials are public local defaults, not production secrets. Use exported
+variables or the gitignored `mise.local.toml` for anything else, including a different
+port base (redeclare the daemon there). `SEQUOIA_BACKEND_BASE_URL` enables sign-in and
+the war-controller feed; without it, live territory data still works.
 
-`mise run db:start` creates or starts `sequoia-map-dev-postgres`, using PostgreSQL 18
-and the named volume `sequoia-map-dev-postgres-data`. `mise run db:status` checks
-readiness; `mise run db:stop` stops it without removing data. `mise run db:url` prints
-the development connection string.
+## Builds and caches
 
-The container exposes only `127.0.0.1:55432`. Set `SEQUOIA_PG_PORT` before first
-creation to change the host port. Set `SEQUOIA_PG_CONTAINER` as well when running
-independent checkouts side by side; each container gets its own named volume.
-A pre-existing container retains the port it was created with.
+Each worktree has its own `target/`, so its first-party crates and incremental state are
+its own and never shared or copied. sccache (`RUSTC_WRAPPER`, set by Mise outside CI)
+keeps compiled registry dependencies in one local cache, so a new worktree reuses them
+instead of compiling them again. Incremental first-party crates are never cached by
+sccache, so another worktree's edits cannot leak into your build. Builds outside Mise
+work too, just without the shared cache. `sccache --show-stats` shows its hit rate.
 
-Export `DATABASE_URL` to use an external development database; the server task
-then skips Podman. The gateway stores its SQLite database in `.data/`.
+`mise run build` makes the release clients (with wasm-opt, integrity, compressed copies
+and the map's WASM size budget) and the release API and gateway. `cargo xtask web --release`
+builds only the release clients, into `client/dist` and `claims-client/dist`, the layout the
+image and client releases use. Dev builds (`cargo xtask web` and the watcher) go to
+`.data/dev-web` instead, which the dev API serves through `SEQUOIA_CLIENT_ROOT`, so a release
+build never replaces the pages you are working on. The client build, the watcher and the
+release commands live in
+`tools/xtask`, its own workspace, so tool changes do not change the application's lockfile.
 
-The old `just`/`dev.sh` launchers, native PostgreSQL bootstrap and Docker hot-reload
-stack have been replaced. Their `.data/postgres`, Docker containers and volumes
-are not migrated or deleted by mise. Stop the old stack before using the same
-ports. Export/import any history you need rather than mounting an old data
-directory into the new container.
+## Checks
 
-## Verification
+Run what the change touches:
 
-```bash
-mise run fmt
-mise run verify
-mise run lint
-```
+| Change | Check |
+|---|---|
+| Rust, dependencies, or anything unclassified | `mise run verify` before merging; hosted CI runs only `mise run ci` |
+| Stylesheet only (`mise run release:plan` says so) | view it in `mise run dev`, then build it with `mise run release:client` |
+| The repository tool | `mise run lint:tools` and `mise run test:tools` |
+| Workflows or the CI lane script | `mise run lint:ci` and `mise run test:ci` |
+| A Dockerfile | qualify the image from a `build-only` Deploy Images run ([deployment](deployment.md#coolify)) |
 
-`mise run verify` is the complete gate. It checks formatting, all native Rust
-targets and both WASM clients; runs both Rust workspaces' tests; builds both
-browser clients in release mode; enforces the map's compressed WASM budget; and
-lints and tests the CI workflows and the release selection. The separately locked ingest workspace is
-included, rather than relying on the root Cargo workspace to find it. Clippy
-rejects warnings on native, WASM and ingest targets. Intentional argument-count
-exceptions use function-local `#[expect]` with a reason; Clippy reports
-expectations that are no longer needed. Do not add crate-wide warning
-suppression or change API shapes solely to silence lints.
+`mise run verify` runs formatting, Clippy on native, WASM, gateway and tool targets,
+every test, the CI lane tests and the release client build. The server tests that use
+PostgreSQL read only `TEST_DATABASE_URL`; `mise run test:db` (part of `mise run test`)
+recreates a `sequoia_test` database in this worktree's PostgreSQL for each run unless
+you set `TEST_DATABASE_URL` to another disposable database. Development data is never
+used for tests.
 
-Hosted CI runs `mise run ci`: formatting, Clippy on every target, and the
-server's tests (`mise run test:db`), which are the ones that use PostgreSQL, against
-a fresh database. The other tests are pure logic or in-memory SQLite and run in
-`mise run test` and `verify`; hosted Clippy still compiles all of them. The
-release browser builds and the size budget run when the server image is built
-for deployment, which fails before promotion if the published map client is over
-budget. Hosted CI installs only Rust.
+Hosted CI runs `mise run ci`: formatting, Clippy on every target and the server's tests
+against a fresh database. The pull-request run cancels superseded revisions; a change
+that touches only files the checks never read skips them (`scripts/ci-lane.sh`).
 
-CI runs for pull requests, main pushes, merge-queue revisions and manual
-dispatches. Feature-branch pushes do not duplicate the pull-request checks;
-new pull-request revisions cancel their superseded runs. A change that touches
-only files the checks never read, such as documentation, deployment files or
-Dockerfiles, skips the checks (`scripts/ci-lane.sh` lists them). A main push
-skips them when its merged pull request's head already passed them with the
-same checked content, unless main has no dependency cache for that content
-yet. Main pushes populate the dependency cache; pull requests and merge-queue
-runs restore it.
+## Rendering diagnostics
 
-`mise run test` starts the local container and creates **`sequoia_test`**, separate
-from the development database. Some integration tests truncate tables.
-To use external PostgreSQL in CI or locally, set `TEST_DATABASE_URL` to a
-**disposable test database**. The task deliberately does not inherit
-`DATABASE_URL` for tests. Running `cargo test` directly without a database skips
-some database integration coverage and is not a substitute for `mise run test`.
+For renderer changes, compare the map and claims editor at the same data, zoom and
+viewport: labels, resource icons, selection, panning and live/history transitions. Set
+`window.__SEQUOIA_GPU_DIAG__ = true` before renderer initialization for `gpu-diag`
+rebuild counters; set `window.__SEQUOIA_RENDER_STATS__ = true` before the map mounts
+for an overlay with draw calls, uploads and the layers each frame rebuilt. Touch
+gestures need a touch device or emulated touch input. Use release builds on the same
+machine for performance comparisons, and do not commit temporary instrumentation.
 
-Release builds run `wasm-opt -Oz` inside Trunk (`data-wasm-opt` on the Rust link,
-Binaryen pinned in `Trunk.toml`), before Trunk writes the bundles' integrity hashes.
-The map size check measures the shipped WASM's Brotli and gzip sizes.
+Map image exports (`/api/live/map.webp`) read tiles, fonts and icons from the served map
+client: `.data/dev-web/client/dist` in development, `client/dist` in the image.
 
-## Browser smoke test
+## Migrating from the old setup
 
-After starting `mise run dev:full` in another terminal:
-
-```bash
-mise run smoke:install  # one-time Chromium download
-mise run smoke
-```
-
-The test opens the map and both claims entry points, waits for their canvases,
-and fails on browser exceptions or failed HTTP requests. Screenshots and results
-are written to `.data/browser-smoke/`. It uses software rendering, not a GPU
-performance benchmark. Set `SEQUOIA_BROWSER_EXECUTABLE` to use an existing Chromium
-binary instead of the Playwright download. Linux still needs Chromium's shared
-libraries; Playwright reports missing host dependencies on startup.
-
-For renderer changes, also compare the map and claims editor at the same data,
-zoom and viewport: labels, resource icons, selection, panning and live/history
-transitions. The smoke test detects startup and resource failures, not visual
-parity. Use release builds on the same machine for performance comparisons.
-Set `window.__SEQUOIA_GPU_DIAG__ = true` before renderer initialization for
-`gpu-diag` rebuild counters; pan-only frames reuse labels and icons. Set
-`window.__SEQUOIA_RENDER_STATS__ = true` before the map mounts for an overlay with
-draw calls, uploads and the layers each frame rebuilt. Touch gestures need a touch
-device or emulated touch input; mouse drags do not exercise pinch handling.
-Do not commit temporary diagnostic instrumentation.
-
-## Containers
-
-Podman is only required for the default local database. Native compilation
-keeps hot reload and debugger access outside a development image. For production
-images, use the existing Dockerfiles with `podman build` or Docker; see
-[deployment](deployment.md). Database maintenance scripts under `ops/` target
-production Docker Compose, not the local Podman container.
+The Podman database (`sequoia-map-dev-postgres` and its volume) and Trunk servers are
+no longer used and are not deleted. To keep old local history, `pg_dump` it from the old
+container and restore it into `mise run psql`.

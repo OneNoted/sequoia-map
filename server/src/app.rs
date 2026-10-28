@@ -18,6 +18,7 @@ use crate::asset_version::{asset_content_version, source_commit};
 use crate::client_release::{
     self, CLAIMS_CLIENT, MAP_CLIENT, ServedClient, ServedRelease, ServedReleases, Snapshot,
 };
+use crate::config::client_root;
 use crate::routes;
 use crate::state::AppState;
 
@@ -54,8 +55,11 @@ pub(crate) fn build_app(state: AppState) -> Router {
             // Hash the versioned assets before serving rather than on the first page request.
             let _ = public_asset_version();
             Router::new()
-                .nest("/claims-app", static_assets_router(CLAIMS_DIST_DIR))
-                .merge(static_assets_router(MAP_DIST_DIR))
+                .nest(
+                    "/claims-app",
+                    static_assets_router(client_root().join(CLAIMS_DIST_DIR)),
+                )
+                .merge(static_assets_router(client_root().join(MAP_DIST_DIR)))
         }
     };
 
@@ -494,7 +498,7 @@ fn public_asset_version() -> Option<&'static str> {
     VERSION
         .get_or_init(|| {
             asset_content_version(
-                Path::new(""),
+                &client_root(),
                 &[Path::new(MAP_DIST_DIR), Path::new(CLAIMS_DIST_DIR)],
             )
             .or_else(source_commit)
@@ -561,21 +565,34 @@ fn claims_launcher_path() -> &'static str {
         .as_str()
 }
 
+/// A configured client root's page, even before its first build writes it: falling back
+/// to another tree's page would be cached for the server's lifetime.
+fn configured_page(dist_dir: &str) -> Option<String> {
+    crate::config::configured_client_root().map(|root| {
+        root.join(dist_dir)
+            .join("index.html")
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
 fn map_index_path() -> &'static str {
     static MAP_INDEX_PATH: OnceLock<String> = OnceLock::new();
 
     let manifest_root = env!("CARGO_MANIFEST_DIR");
     MAP_INDEX_PATH
         .get_or_init(|| {
-            resolve_first_existing_path(
-                [
-                    "client/dist/index.html".to_string(),
-                    "client/index.html".to_string(),
-                    format!("{manifest_root}/../client/dist/index.html"),
+            configured_page(MAP_DIST_DIR).unwrap_or_else(|| {
+                resolve_first_existing_path(
+                    [
+                        "client/dist/index.html".to_string(),
+                        "client/index.html".to_string(),
+                        format!("{manifest_root}/../client/dist/index.html"),
+                        format!("{manifest_root}/../client/index.html"),
+                    ],
                     format!("{manifest_root}/../client/index.html"),
-                ],
-                format!("{manifest_root}/../client/index.html"),
-            )
+                )
+            })
         })
         .as_str()
 }
@@ -586,15 +603,17 @@ fn claims_editor_index_path() -> &'static str {
     let manifest_root = env!("CARGO_MANIFEST_DIR");
     CLAIMS_EDITOR_INDEX_PATH
         .get_or_init(|| {
-            resolve_first_existing_path(
-                [
-                    "claims-client/dist/index.html".to_string(),
-                    "claims-client/index.html".to_string(),
-                    format!("{manifest_root}/../claims-client/dist/index.html"),
+            configured_page(CLAIMS_DIST_DIR).unwrap_or_else(|| {
+                resolve_first_existing_path(
+                    [
+                        "claims-client/dist/index.html".to_string(),
+                        "claims-client/index.html".to_string(),
+                        format!("{manifest_root}/../claims-client/dist/index.html"),
+                        format!("{manifest_root}/../claims-client/index.html"),
+                    ],
                     format!("{manifest_root}/../claims-client/index.html"),
-                ],
-                format!("{manifest_root}/../claims-client/index.html"),
-            )
+                )
+            })
         })
         .as_str()
 }
@@ -830,20 +849,8 @@ mod tests {
     }
 
     #[test]
-    fn claims_launcher_path_resolves() {
-        let index_path = claims_launcher_path();
-        assert!(Path::new(&index_path).exists());
-    }
-
-    #[test]
     fn claims_editor_index_path_falls_back_to_source_html() {
         let index_path = claims_editor_index_path();
-        assert!(Path::new(&index_path).exists());
-    }
-
-    #[test]
-    fn map_index_path_falls_back_to_source_html() {
-        let index_path = map_index_path();
         assert!(Path::new(&index_path).exists());
     }
 

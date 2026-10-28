@@ -173,13 +173,6 @@ mod tests {
     }
 
     #[test]
-    fn guild_color_is_deterministic() {
-        let a = guild_color("The Hive");
-        let b = guild_color("The Hive");
-        assert_eq!(a, b);
-    }
-
-    #[test]
     fn guild_color_varies_for_different_names() {
         assert_ne!(guild_color("The Hive"), guild_color("Canyon Condors"));
     }

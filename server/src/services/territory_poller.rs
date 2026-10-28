@@ -624,12 +624,25 @@ fn split_color(color: Option<(u8, u8, u8)>) -> (Option<i16>, Option<i16>, Option
     }
 }
 
+/// An error and its causes, outermost first: reqwest's own message omits why a request
+/// failed, such as an expired or untrusted certificate.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
 async fn fetch_territories(client: &reqwest::Client, url: &str) -> Result<TerritoryMap, String> {
     let resp = client
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("request failed: {e}"))?;
+        .map_err(|e| format!("request failed: {}", error_chain(&e)))?;
     let status = resp.status();
     let bytes = resp
         .bytes()
@@ -1720,8 +1733,8 @@ mod tests {
 
     #[tokio::test]
     async fn persists_updates_and_serves_history_endpoints_with_real_postgres() {
-        let Ok(database_url) = std::env::var("DATABASE_URL") else {
-            eprintln!("Skipping real-Postgres integration test: DATABASE_URL is not set");
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping real-Postgres integration test: TEST_DATABASE_URL is not set");
             return;
         };
 
