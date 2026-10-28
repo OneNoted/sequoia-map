@@ -158,11 +158,54 @@ stylesheet. Hosted checks skip stylesheet-only changes, since no Rust source
 reads `client/input.css`. Mixed, shared, configuration and unknown changes
 select images as before.
 
-Compose recreates only the services whose image or configuration changed, so a
-server release leaves PostgreSQL, ingest and edge running. A platform that sets
-a per-deploy variable such as `SOURCE_COMMIT` on every service recreates them
-all, so give such variables a stable value. The server labels releases with the
-commit recorded in the image (`/app/source-commit`), not with that variable.
+The server labels releases with the commit recorded in the image
+(`/app/source-commit`), not with a platform's `SOURCE_COMMIT` variable.
+
+## Service images without a full redeploy
+
+A Coolify deploy of the compose application stops every container before it
+starts the stack again. That holds even when a service's image and configuration
+are unchanged, so every normal deploy, including a hosted promote run, restarts
+all five services. Compose itself recreates only what changed, and
+`release:services` uses that directly for operator-driven image updates:
+
+```bash
+mise run release:services -- server --dry-run
+mise run release:services -- server            # or any of server, ingest, edge
+```
+
+`SEQUOIA_COMPOSE_EXEC` is the `docker compose` command prefix for the deployed
+project and its existing rendered configuration. For example:
+
+```bash
+ssh <host> docker compose -p <project> -f <rendered compose file> --env-file <its env file>
+```
+
+The tool never reads that configuration or its secrets.
+
+For the services named, the command:
+
+1. pulls their images;
+2. runs `up --detach --no-deps --wait --pull never`, which recreates a service
+   only if its image or configuration changed. A no-op recreates nothing.
+
+PostgreSQL, the backup and every unnamed service are left alone. The command
+records every service's container, image, state and health before and after. It
+fails if anything outside the selection was replaced, or if a named service is
+not running and healthy. `--dry-run` prints Compose's own dry-run plan.
+
+The command pulls whatever the deployed configuration references, normally the
+`main` tags. To prepare an image without a full redeploy:
+
+1. Build it with a `build-only` Deploy Images run.
+2. Move the referenced tag to the verified `sha-<commit>` digest, the registry
+   copy the promote job performs.
+3. Apply it with `release:services`.
+
+To roll an image back, point the referenced tag at the previous digest and run
+the same command. Static client releases are unaffected. Commits marked
+`[skip ci]` start no hosted deploy, and the next normal Coolify deploy restarts
+every service as before.
 
 ## Network and ingest policy
 

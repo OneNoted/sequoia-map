@@ -163,6 +163,78 @@ class ServedCheck(unittest.TestCase):
         self.assertEqual(seen, [("/api/health", release.USER_AGENT, "identity")])
 
 
+class Services(unittest.TestCase):
+    """`services` through a stand-in compose prefix that records its calls and answers `ps` and
+    `images` from the project state before and after `up`."""
+
+    def project(self, scratch, after):
+        state = Path(scratch)
+        rows = {"postgres": "p1", "server": "s1", "ingest": "i1", "edge": "e1", "postgres-backup": "b1"}
+        for name, containers in (("before", rows), ("after", {**rows, **after})):
+            (state / f"ps-{name}.json").write_text("\n".join(json.dumps(
+                {"Service": service, "Name": f"map-{service}-1", "ID": container, "Image": f"img/{service}",
+                 "State": "running", "Health": "healthy"}) for service, container in containers.items()))
+            (state / f"images-{name}.json").write_text(json.dumps([
+                {"ContainerName": f"map-{service}-1", "ID": f"sha256:{container}"} for service, container in containers.items()]))
+        fake = state / "compose"
+        fake.write_text(f"""#!{sys.executable}
+import pathlib, sys
+state = pathlib.Path({str(state)!r})
+with (state / "calls").open("a") as calls:
+    calls.write(" ".join(sys.argv[1:]) + "\\n")
+args = sys.argv[3:]
+phase = "after" if (state / "up").exists() else "before"
+if args[0] == "up":
+    (state / "up").write_text("")
+elif args[0] in ("ps", "images"):
+    print((state / f"{{args[0]}}-{{phase}}.json").read_text())
+""")
+        fake.chmod(0o755)
+        return release.Compose(f"{fake} -p map"), state
+
+    def receipts(self, scratch):
+        data, release.DATA = release.DATA, Path(scratch) / "receipts"
+        self.addCleanup(setattr, release, "DATA", data)
+        return release.Receipts("services")
+
+    def test_updates_only_the_named_services(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            compose, state = self.project(scratch, {"server": "s2"})
+            result = release.apply_services(compose, ["server"], False, self.receipts(scratch))
+            calls = (state / "calls").read_text().splitlines()
+        self.assertIn("-p map pull server", calls)
+        self.assertIn("-p map up --detach --no-deps --wait --pull never server", calls)
+        self.assertEqual(result["replaced"], ["server"])
+        self.assertEqual(sorted(result["unchanged"]), ["edge", "ingest", "postgres", "postgres-backup"])
+
+    def test_a_dry_run_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            compose, state = self.project(scratch, {"server": "s2"})
+            result = release.apply_services(compose, ["server", "edge"], True, self.receipts(scratch))
+            calls = (state / "calls").read_text().splitlines()
+        self.assertTrue(result["dry_run"])
+        self.assertEqual([call for call in calls if " ps " not in f" {call} " and "images" not in call],
+                         ["-p map --dry-run pull server edge",
+                          "-p map --dry-run up --detach --no-deps --wait --pull never server edge"])
+
+    def test_refuses_unrelated_replacements_and_absent_services(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            compose, _ = self.project(scratch, {"server": "s2", "postgres": "p2"})
+            with self.assertRaisesRegex(release.ReleaseFailure, "outside the selection.*postgres"):
+                release.apply_services(compose, ["server"], False, self.receipts(scratch))
+        with tempfile.TemporaryDirectory() as scratch:
+            compose, state = self.project(scratch, {})
+            (state / "ps-before.json").write_text(json.dumps({"Service": "postgres", "ID": "p1", "State": "running"}))
+            with self.assertRaisesRegex(release.ReleaseFailure, "no server service"):
+                release.apply_services(compose, ["server"], False, self.receipts(scratch))
+
+    def test_rejects_services_it_does_not_manage(self):
+        refused = subprocess.run([sys.executable, "-I", str(ROOT / "scripts/release.py"), "services", "postgres"],
+                                 capture_output=True, text=True, check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("invalid choice: 'postgres'", refused.stderr)
+
+
 class CssRelease(unittest.TestCase):
     def test_replaces_only_the_stylesheet(self):
         with tempfile.TemporaryDirectory() as scratch:

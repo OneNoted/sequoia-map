@@ -175,6 +175,10 @@ run = "uv run --script scripts/release.py status"
 description = "Activate the target's previous client release"
 run = "uv run --script scripts/release.py rollback"
 
+[tasks."release:services"]
+description = "Pull and update only the named service images through SEQUOIA_COMPOSE_EXEC"
+run = "uv run --script scripts/release.py services"
+
 [tasks."test:release"]
 description = "Test release selection, the backend key and the CSS-only release path"
 run = "uv run --script scripts/test-release.py"

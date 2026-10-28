@@ -10,6 +10,7 @@
     release.py activate BUNDLE [--dry-run]
     release.py status
     release.py rollback [--dry-run]
+    release.py services SERVICE... [--dry-run]
 
 `plan` says which artifacts a change needs: a CSS-only client release, a rebuilt client
 release, or new service images. `client` builds a client release bundle. When the only
@@ -20,7 +21,10 @@ it current and checks the served page, rolling back if that check fails.
 
 The target is the server container: SEQUOIA_RELEASE_EXEC is the command prefix that runs a
 command in it (for example `docker compose -p map exec -T server`), and SEQUOIA_RELEASE_URL
-is the public base URL. Every stage appends a timed receipt to .data/releases/receipts.jsonl.
+is the public base URL. `services` applies already-published server, ingest or edge images
+through SEQUOIA_COMPOSE_EXEC, the `docker compose` command prefix for the deployed project
+and its existing configuration; it pulls and recreates only the services named. Every stage
+appends a timed receipt to .data/releases/receipts.jsonl.
 """
 
 import argparse
@@ -296,6 +300,68 @@ class Target:
         return self.json("status")
 
 
+class Compose:
+    """The deployed Compose project: a `docker compose` command prefix that already names its
+    project, files and environment, which this tool never reads."""
+
+    def __init__(self, prefix):
+        if not prefix:
+            raise ReleaseFailure("set SEQUOIA_COMPOSE_EXEC or pass --compose")
+        self.prefix = shlex.split(prefix)
+
+    def run(self, *args):
+        result = subprocess.run([*self.prefix, *args], capture_output=True, text=True, check=False)
+        if result.returncode:
+            raise ReleaseFailure(f"compose {args[0]}: {result.stderr.strip()[-600:]}")
+        return result.stdout + result.stderr
+
+    def rows(self, *args):
+        output = self.run(*args, "--format", "json").strip()
+        if output.startswith("["):
+            return json.loads(output)
+        return [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+
+    def identities(self):
+        """Each service's container, image and state, for every service in the project."""
+        images = {row.get("ContainerName"): row.get("ID") for row in self.rows("images")}
+        return {
+            row["Service"]: {"container": row.get("ID", "")[:12], "image": row.get("Image"),
+                             "image_id": (images.get(row.get("Name")) or "")[:19],
+                             "state": row.get("State"), "health": row.get("Health", "")}
+            for row in self.rows("ps", "--all")
+        }
+
+
+def apply_services(compose, services, dry_run, receipts):
+    """Pull the named services' images and let Compose recreate only those whose image or
+    configuration changed, without touching their dependencies."""
+    before = receipts.stage("before", compose.identities)
+    missing = [service for service in services if service not in before]
+    if missing:
+        raise ReleaseFailure(f"the project has no {', '.join(missing)} service")
+    up = ["up", "--detach", "--no-deps", "--wait", "--pull", "never", *services]
+    if dry_run:
+        plan = receipts.stage("dry-run", lambda: compose.run("--dry-run", "pull", *services)
+                              + compose.run("--dry-run", *up))
+        return {"dry_run": True, "services": services, "compose": plan.strip().splitlines(),
+                "before": before}
+    receipts.stage("pull", compose.run, "pull", *services)
+    receipts.stage("up", compose.run, *up)
+    after = receipts.stage("after", compose.identities)
+    replaced = [service for service in after if before.get(service, {}).get("container")
+                != after[service]["container"]]
+    unrelated = [service for service in replaced if service not in services]
+    if unrelated:
+        raise ReleaseFailure(f"services outside the selection were replaced: {', '.join(unrelated)}")
+    unhealthy = [service for service in services if after[service]["state"] != "running"
+                 or after[service]["health"] not in ("", "healthy")]
+    if unhealthy:
+        raise ReleaseFailure(f"not running and healthy after the update: {', '.join(unhealthy)}")
+    return {"services": services, "replaced": replaced,
+            "unchanged": [service for service in after if service not in replaced],
+            "before": before, "after": after}
+
+
 def bundle_tar(bundle):
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -452,6 +518,12 @@ def command_rollback(options):
     print(json.dumps(activation, indent=2))
 
 
+def command_services(options):
+    services = sorted(set(options.service), key=ALL_SERVICES.index)
+    result = apply_services(Compose(options.compose), services, options.dry_run, Receipts("services"))
+    print(json.dumps(result, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -468,6 +540,11 @@ def main():
     activate_parser = commands.add_parser("activate", help="install, activate and check a bundle")
     activate_parser.add_argument("bundle", type=Path)
     activate_parser.add_argument("--dry-run", action="store_true")
+    services_parser = commands.add_parser(
+        "services", help="pull and update only the named service images, leaving the rest running")
+    services_parser.add_argument("service", nargs="+", choices=ALL_SERVICES)
+    services_parser.add_argument("--dry-run", action="store_true")
+    services_parser.add_argument("--compose", default=os.environ.get("SEQUOIA_COMPOSE_EXEC"))
     commands.add_parser("status", help="show the target's releases")
     rollback_parser = commands.add_parser("rollback", help="activate the previous release")
     rollback_parser.add_argument("--dry-run", action="store_true")
@@ -489,6 +566,8 @@ def main():
                 print(json.dumps(Target(options.exec, options.url).status(), indent=2))
             case "rollback":
                 command_rollback(options)
+            case "services":
+                command_services(options)
     except ReleaseFailure as error:
         print(f"release: {error}", file=sys.stderr)
         sys.exit(1)
