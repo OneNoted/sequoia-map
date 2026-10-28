@@ -7,6 +7,7 @@
 //! <root>/releases/<id>/claims-client/dist/...  the claims client
 //! <root>/current -> releases/<id>              switched by renaming a new link over it
 //! <root>/history                               one activated id per line, oldest first
+//! <root>/image                                 the image last reconciled at a start
 //! <root>/.lock                                 serializes every change
 //! ```
 //!
@@ -32,6 +33,7 @@ pub(crate) const RELEASES_ENV: &str = "SEQUOIA_CLIENT_RELEASES";
 const BACKEND_KEY_FILE: &str = "backend-key";
 const MANIFEST: &str = "release.json";
 const HISTORY: &str = "history";
+const IMAGE: &str = "image";
 /// Releases kept for rollback and for pages still holding older HTML: current and the two
 /// most recently active before it.
 const RETAINED_RELEASES: usize = 3;
@@ -130,6 +132,26 @@ impl Manifest {
             hasher.update(b"\n");
         }
         hex(&hasher.finalize())[..16].to_owned()
+    }
+}
+
+/// The image a server start reconciled: the source revision baked into it, and the release
+/// its own clients make.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct ImageRecord {
+    source_commit: String,
+    release: String,
+}
+
+impl ImageRecord {
+    /// Images are the same when built from the same revision. Rebuilds of one revision can
+    /// differ in their compressed copies' timestamps, so content decides only when either
+    /// revision is unknown.
+    fn is_same_image(&self, other: &Self) -> bool {
+        if self.source_commit.is_empty() || other.source_commit.is_empty() {
+            return self.release == other.release;
+        }
+        self.source_commit == other.source_commit
     }
 }
 
@@ -375,28 +397,9 @@ impl ReleaseStore {
             .map_err(io_error("write the release archive"))
     }
 
-    /// Install the clients built into this image, found under `app_root`, unless that exact
-    /// release is already installed.
-    pub(crate) fn install_embedded(
-        &self,
-        app_root: &Path,
-        source_commit: &str,
-        backend_key: &str,
-    ) -> Result<(String, bool)> {
-        let mut files = BTreeMap::new();
-        for client in SERVED_CLIENTS {
-            let dir = app_root.join(client.dir);
-            for (path, digest) in digest_tree(&dir)? {
-                files.insert(format!("{}/{path}", client.dir), digest);
-            }
-        }
-        let manifest = Manifest {
-            id: String::new(),
-            source_commit: source_commit.to_owned(),
-            backend_key: backend_key.to_owned(),
-            asset_version: None,
-            files,
-        };
+    /// Install an image's clients, found under `app_root` and described by `manifest`, unless
+    /// that exact release is already installed.
+    fn install_embedded(&self, app_root: &Path, manifest: &Manifest) -> Result<(String, bool)> {
         let id = manifest.derived_id();
         if self.release_dir(&id).is_dir() {
             return Ok((id, false));
@@ -411,7 +414,7 @@ impl ReleaseStore {
                 .map(drop)
                 .map_err(io_error(format!("copy {path}")))
         });
-        if let Err(error) = copied.and_then(|()| write_json(&staged.join(MANIFEST), &manifest)) {
+        if let Err(error) = copied.and_then(|()| write_json(&staged.join(MANIFEST), manifest)) {
             let _ = fs::remove_dir_all(&staged);
             return Err(error);
         }
@@ -489,31 +492,62 @@ impl ReleaseStore {
         self.switch(&target, server_key)
     }
 
-    /// At server start: install the image's own clients, then activate them if they are new
-    /// to the store or the current release was built for a different backend. Otherwise the
-    /// current release, possibly a later static release or a rollback, stays.
+    /// At server start: activate the image's own clients when this image has not been
+    /// reconciled before, or when the current release was built for a different backend.
+    /// Otherwise the current release, possibly a later static release or a rollback, stays.
+    /// Which image was last reconciled is recorded apart from the releases, so retention
+    /// pruning the image's own clients does not make a restart look like a new deployment.
+    /// An image is its source revision: a revert to earlier client bytes is a new image,
+    /// and a rebuild of the same revision is not.
     pub(crate) fn reconcile_embedded(
         &self,
         app_root: &Path,
         source_commit: &str,
         server_key: &str,
     ) -> Result<Option<Activation>> {
-        let (embedded, installed) = self.install_embedded(app_root, source_commit, server_key)?;
+        let embedded = embedded_manifest(app_root, source_commit, server_key)?;
+        let image = embedded.derived_id();
+        let started = ImageRecord {
+            source_commit: source_commit.to_owned(),
+            release: image.clone(),
+        };
         let _lock = self.lock()?;
         let current = self.current()?;
-        let compatible = match current.as_deref() {
-            Some(id) => self
-                .manifest(id)
-                .is_ok_and(|manifest| manifest.backend_key == server_key),
-            None => false,
+        let compatible = current.as_deref().is_some_and(|id| {
+            self.manifest(id)
+                .is_ok_and(|manifest| manifest.backend_key == server_key)
+        });
+        if compatible
+            && self
+                .reconciled_image()?
+                .is_some_and(|recorded| recorded.is_same_image(&started))
+        {
+            return Ok(None);
+        }
+        self.install_embedded(app_root, &embedded)?;
+        let activation = if current.as_deref() == Some(image.as_str()) {
+            None
+        } else {
+            Some(self.switch(&image, server_key)?)
         };
-        if !installed && compatible {
-            return Ok(None);
+        self.record_image(&started)?;
+        Ok(activation)
+    }
+
+    fn reconciled_image(&self) -> Result<Option<ImageRecord>> {
+        match fs::read(self.root.join(IMAGE)) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io_error("read the reconciled image")(error)),
         }
-        if current.as_deref() == Some(embedded.as_str()) {
-            return Ok(None);
-        }
-        self.switch(&embedded, server_key).map(Some)
+    }
+
+    fn record_image(&self, image: &ImageRecord) -> Result<()> {
+        let staged = self.root.join(".image.new");
+        write_json(&staged, image)?;
+        fs::rename(&staged, self.root.join(IMAGE))
+            .map_err(io_error("record the reconciled image"))?;
+        sync_dir(&self.root)
     }
 
     /// Point `current` at `id`, record it and prune. The caller holds the lock.
@@ -618,6 +652,23 @@ fn hex(bytes: &[u8]) -> String {
             let _ = write!(out, "{byte:02x}");
             out
         })
+}
+
+/// The release the clients built into an image under `app_root` make.
+fn embedded_manifest(app_root: &Path, source_commit: &str, backend_key: &str) -> Result<Manifest> {
+    let mut files = BTreeMap::new();
+    for client in SERVED_CLIENTS {
+        for (path, digest) in digest_tree(&app_root.join(client.dir))? {
+            files.insert(format!("{}/{path}", client.dir), digest);
+        }
+    }
+    Ok(Manifest {
+        id: String::new(),
+        source_commit: source_commit.to_owned(),
+        backend_key: backend_key.to_owned(),
+        asset_version: None,
+        files,
+    })
 }
 
 fn read_manifest(path: &Path) -> Result<Manifest> {
@@ -1271,6 +1322,124 @@ pub(crate) mod tests {
             store.rollback_target().expect("target").as_deref(),
             Some(ids[3].as_str())
         );
+    }
+
+    /// An image directory as the server finds it: both clients, no manifest.
+    fn image(css: &str) -> tempfile::TempDir {
+        let image = tempfile::tempdir().expect("image");
+        write_bundle(image.path(), css, "tile");
+        fs::remove_file(image.path().join(MANIFEST)).expect("images carry no manifest");
+        image
+    }
+
+    fn activate_static(store: &ReleaseStore, css: &str) -> String {
+        let current = store
+            .current()
+            .expect("current")
+            .expect("a release is current");
+        let id = installed(store, css, "tile");
+        store
+            .activate(&id, &Expected::Release(current), KEY)
+            .expect("static release");
+        id
+    }
+
+    #[test]
+    fn restarting_an_image_keeps_a_static_release_after_its_own_clients_are_pruned() {
+        let (_root, store) = store();
+        let running = image("image{}");
+        let first = store
+            .reconcile_embedded(running.path(), "c0ffee", KEY)
+            .expect("first start")
+            .expect("a new image activates its own clients");
+        let statics: Vec<String> = (0..RETAINED_RELEASES)
+            .map(|index| activate_static(&store, &format!("static-{index}{{}}")))
+            .collect();
+        assert!(
+            !store.release_dir(&first.current).exists(),
+            "retention pruned the image's own clients"
+        );
+
+        let restart = store
+            .reconcile_embedded(running.path(), "c0ffee", KEY)
+            .expect("restart");
+        assert_eq!(restart, None, "the same image is not a new deployment");
+        assert_eq!(store.current().expect("current").as_ref(), statics.last());
+
+        let back = store
+            .rollback(&Expected::Release(statics[2].clone()), KEY)
+            .expect("roll back");
+        let restart = store
+            .reconcile_embedded(running.path(), "c0ffee", KEY)
+            .expect("restart after a rollback");
+        assert_eq!(restart, None, "a restart keeps the rollback");
+        assert_eq!(store.current().expect("current"), Some(back.current));
+
+        let next = image("next-image{}");
+        let deployed = store
+            .reconcile_embedded(next.path(), "d00d", KEY)
+            .expect("new image")
+            .expect("a new image activates its own clients");
+        assert_ne!(deployed.current, first.current);
+        let restart = store
+            .reconcile_embedded(next.path(), "d00d", KEY)
+            .expect("restart of the new image");
+        assert_eq!(restart, None);
+
+        let rebuilt = store
+            .reconcile_embedded(next.path(), "d00d", "backend-b")
+            .expect("new backend")
+            .expect("clients built for another backend are replaced");
+        assert_eq!(
+            store
+                .manifest(&rebuilt.current)
+                .expect("manifest")
+                .backend_key,
+            "backend-b"
+        );
+    }
+
+    #[test]
+    fn a_new_revision_with_earlier_client_bytes_activates_its_own_clients() {
+        let (_root, store) = store();
+        let clients = image("image{}");
+        let first = store
+            .reconcile_embedded(clients.path(), "aaaa", KEY)
+            .expect("first start")
+            .expect("a new image activates its own clients");
+        let static_release = activate_static(&store, "static{}");
+
+        let reverted = store
+            .reconcile_embedded(clients.path(), "cccc", KEY)
+            .expect("a source revert deploys the same client bytes")
+            .expect("a new revision activates its own clients");
+        assert_eq!(reverted.current, first.current);
+        assert_eq!(reverted.previous, Some(static_release.clone()));
+
+        activate_static(&store, "static-again{}");
+        let rebuilt = image("image{}");
+        fs::write(
+            rebuilt.path().join("client/dist/index.html.gz"),
+            "rebuilt sidecar",
+        )
+        .expect("sidecar");
+        let restart = store
+            .reconcile_embedded(rebuilt.path(), "cccc", KEY)
+            .expect("a rebuild of the same revision");
+        assert_eq!(
+            restart, None,
+            "a same-revision rebuild keeps the static release"
+        );
+
+        let unknown = store
+            .reconcile_embedded(rebuilt.path(), "", KEY)
+            .expect("an image without a revision")
+            .expect("its own clients, compared by content, are new");
+        let restart = store
+            .reconcile_embedded(rebuilt.path(), "", KEY)
+            .expect("a restart without a revision");
+        assert_eq!(restart, None);
+        assert_eq!(store.current().expect("current"), Some(unknown.current));
     }
 
     #[test]
