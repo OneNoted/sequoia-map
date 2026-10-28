@@ -1,66 +1,95 @@
-pub const DEFENSE_TIERS: &[(&str, &str)] = &[
-    ("Very Low", "#00aa00"),
-    ("Low", "#55ff55"),
-    ("Medium", "#ffff55"),
-    ("High", "#ff5555"),
-    ("Very High", "#aa0000"),
-];
+//! Territory defense as the map shows it. The palette belongs to [`DefenseRating`], which the
+//! tower calculator's rating uses too, so a rating reads the same colour everywhere.
 
-pub fn normalize_defense_tier(tier: &str) -> String {
-    tier.trim()
-        .replace(['_', '-'], " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_ascii_uppercase()
+use sequoia_shared::tower::DefenseRating;
+
+/// What a reported tier is shown as: a rating, a territory without defenses, or a spelling the
+/// map does not know, kept as reported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefenseTier {
+    Rated(DefenseRating),
+    None,
+    Unknown(String),
 }
 
-pub fn defense_tier_display(tier: &str) -> (String, &'static str) {
-    let normalized = normalize_defense_tier(tier);
-    match normalized.as_str() {
-        "NONE" => ("None".to_string(), "#ffffff"),
-        "VERY LOW" => ("Very Low".to_string(), "#00aa00"),
-        "LOW" => ("Low".to_string(), "#55ff55"),
-        "MEDIUM" => ("Medium".to_string(), "#ffff55"),
-        "HIGH" => ("High".to_string(), "#ff5555"),
-        "VERY HIGH" => ("Very High".to_string(), "#aa0000"),
-        _ => (tier.to_string(), "#e2e0d8"),
+impl DefenseTier {
+    pub fn parse(tier: &str) -> Self {
+        if let Some(rating) = DefenseRating::from_api(tier) {
+            Self::Rated(rating)
+        } else if tier.trim().eq_ignore_ascii_case("none") {
+            Self::None
+        } else {
+            Self::Unknown(tier.to_string())
+        }
     }
-}
 
-pub fn defense_tier_overlay_data(tier: Option<&str>) -> [f32; 4] {
-    let Some(tier) = tier else {
-        return [0.0; 4];
-    };
-    let tier_index = match normalize_defense_tier(tier).as_str() {
-        "NONE" => 0.0,
-        "VERY LOW" => 1.0,
-        "LOW" => 2.0,
-        "MEDIUM" => 3.0,
-        "HIGH" => 4.0,
-        "VERY HIGH" => 5.0,
-        _ => return [0.0; 4],
-    };
-    [4.0, tier_index, 0.0, 0.0]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Rated(rating) => rating.label(),
+            Self::None => "None",
+            Self::Unknown(tier) => tier,
+        }
+    }
+
+    pub fn color(&self) -> &'static str {
+        match self {
+            Self::Rated(rating) => rating.color_hex(),
+            Self::None => "#ffffff",
+            Self::Unknown(_) => "#e2e0d8",
+        }
+    }
+
+    /// The overlay's per-territory data: a mode marker and the tier's slot in the shader's
+    /// colour table, which mirrors [`DefenseRating::color_hex`].
+    pub fn overlay_data(&self) -> [f32; 4] {
+        let slot = match self {
+            Self::None => 0.0,
+            Self::Rated(rating) => match rating {
+                DefenseRating::VeryLow => 1.0,
+                DefenseRating::Low => 2.0,
+                DefenseRating::Medium => 3.0,
+                DefenseRating::High => 4.0,
+                DefenseRating::VeryHigh => 5.0,
+            },
+            Self::Unknown(_) => return [0.0; 4],
+        };
+        [4.0, slot, 0.0, 0.0]
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{defense_tier_display, defense_tier_overlay_data};
+    use super::*;
 
     #[test]
-    fn defense_tiers_normalize_api_values() {
+    fn reported_tiers_take_the_rating_palette() {
+        let tier = DefenseTier::parse("VERY_HIGH");
+        assert_eq!((tier.label(), tier.color()), ("Very High", "#aa0000"));
+        assert_eq!(DefenseTier::parse("very-low").color(), "#00aa00");
+        assert_eq!(DefenseTier::parse("NONE").label(), "None");
+        assert_eq!(DefenseTier::parse("Fortified").label(), "Fortified");
+    }
+
+    #[test]
+    fn the_overlay_slots_follow_the_ratings() {
         assert_eq!(
-            defense_tier_display("VERY_HIGH"),
-            ("Very High".into(), "#aa0000")
-        );
-        assert_eq!(
-            defense_tier_display("very-low"),
-            ("Very Low".into(), "#00aa00")
-        );
-        assert_eq!(
-            defense_tier_overlay_data(Some("medium")),
+            DefenseTier::parse("medium").overlay_data(),
             [4.0, 3.0, 0.0, 0.0]
         );
+        assert_eq!(
+            DefenseTier::parse("none").overlay_data(),
+            [4.0, 0.0, 0.0, 0.0]
+        );
+        assert_eq!(DefenseTier::parse("?").overlay_data(), [0.0; 4]);
+    }
+
+    #[test]
+    fn the_calculator_and_a_reported_tier_share_a_colour() {
+        for rating in DefenseRating::ALL {
+            assert_eq!(
+                DefenseTier::parse(rating.label()).color(),
+                rating.color_hex()
+            );
+        }
     }
 }

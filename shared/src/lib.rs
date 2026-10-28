@@ -6,9 +6,13 @@ pub mod ingest;
 pub mod map_intel;
 pub mod season_rating;
 pub mod territory;
+#[cfg(test)]
+mod test_support;
 pub mod tiles;
 pub mod tower;
 pub mod treasury;
+pub mod war_activity;
+pub mod war_board;
 pub mod warcontroller;
 
 pub use claims::*;

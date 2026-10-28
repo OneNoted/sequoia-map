@@ -1,5 +1,5 @@
-//! Host overlays: Map Intel site names, then teammates (faces or dots, and names),
-//! drawn after the map and minimap with the main projection (`overlay.wgsl`).
+//! Host overlays: Map Intel site names, war plates, then teammates (faces or dots, and
+//! names), drawn after the map and minimap with the main projection (`overlay.wgsl`).
 //!
 //! Each layer owns one atlas of sprites: text with its shadow, rasterized by Canvas2D in the
 //! overlay font at the surface's device pixel ratio, and teammate faces. Atlases are baked
@@ -11,10 +11,11 @@
 
 use std::sync::Arc;
 
+use sequoia_shared::war_board::{Ending, StageKind};
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, HtmlImageElement};
 
-use crate::overlay::{Prepared, SiteLabels, Teammates, atlas_extent};
+use crate::overlay::{PlateLabel, Prepared, SiteLabels, Teammates, WarPlates, atlas_extent};
 
 /// The canvas overlays' font, which is kept: 10 CSS pixels of the monospace UI face.
 const FONT_CSS: &str = "10px 'JetBrains Mono', monospace";
@@ -26,6 +27,8 @@ const SHADOW_COLOR: &str = "rgba(0,0,0,0.85)";
 const SHADOW_BLUR: f64 = 4.0;
 /// Room around the text for its shadow, device pixels.
 const SPRITE_MARGIN: f64 = 8.0;
+/// Room around a shadowless plate glyph, device pixels.
+const GLYPH_MARGIN: f64 = 1.0;
 /// From a site to its name's baseline-left origin, CSS pixels.
 const SITE_LABEL_OFFSET: (f64, f64) = (9.0, -7.0);
 /// Site names show above this scale.
@@ -44,13 +47,53 @@ const FAN_RADIUS_FACTOR: f64 = 0.65;
 /// Face images are drawn into the atlas at this size, as requested from the skin renderer.
 const FACE_PX: u32 = 64;
 const ATLAS_WIDTH: u32 = 2048;
+/// War plates use the map's pixel face, so they read as part of the territory labelling.
+const PLATE_FONT_CSS: &str = "16px Minecraft";
+const PLATE_FONT_PX: f64 = 16.0;
+const PLATE_FONT_FAMILY: &str = "Minecraft, monospace";
+/// Plate box, CSS pixels: padding around the content and the icon-to-text gap.
+const PLATE_PAD_X: f64 = 3.0;
+const PLATE_PAD_Y: f64 = 1.0;
+const PLATE_GAP: f64 = 2.0;
+/// Backing around an ending's glyph, CSS pixels, and the glyph's magnification: its 7x7
+/// pixel art drawn two pixels to a cell.
+const PIN_PAD: f64 = 2.0;
+const PIN_ZOOM: f32 = 2.0;
+const PLATE_BAR_HEIGHT: f64 = 2.0;
+/// Plates show their text from this camera scale; further out they are icon-only pins.
+const PLATE_TEXT_MIN_SCALE: f32 = 0.32;
+const PLATE_FILL: [u8; 4] = [12, 14, 23, 232];
+const PLATE_TRACK: [u8; 3] = [0x3a, 0x3f, 0x5c];
+/// Dimming applied to every plate while the feed is reconnecting.
+const PLATE_STALE_ALPHA: f32 = 0.5;
+/// 7x7 icons, one CSS pixel per cell: the countdown's hourglass and the war's crossed swords.
+const HOURGLASS: [&str; 7] = [
+    "#######", ".#...#.", "..#.#..", "...#...", "..#.#..", ".#...#.", "#######",
+];
+const SWORDS: [&str; 7] = [
+    "#.....#", ".#...#.", "..#.#..", "...#...", "..#.#..", "##...##", "#.....#",
+];
+/// An ending's pin: captured, cancelled, or ended some other way.
+const CHECK: [&str; 7] = [
+    "......#", ".....##", "#...##.", "##.##..", ".###...", "..#....", ".......",
+];
+const CROSS: [&str; 7] = [
+    ".......", ".##.##.", "..###..", "...#...", "..###..", ".##.##.", ".......",
+];
+const STOP: [&str; 7] = [
+    ".......", ".#####.", ".#####.", ".#####.", ".#####.", ".#####.", ".......",
+];
 
 /// `kind` in overlay.wgsl.
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum OverlayKind {
     Sprite = 0,
+    /// A white sprite drawn in the instance colour.
+    Tinted = 1,
     Dot = 2,
+    /// A solid rectangle in the instance colour.
+    Rect = 3,
 }
 
 #[repr(C)]
@@ -61,19 +104,27 @@ struct OverlayInstance {
     size: [f32; 2],
     uv_rect: [f32; 4],
     rgba: [u8; 4],
-    min_scale: f32,
+    /// Drawn while `scales[0] <= camera scale < scales[1]`.
+    scales: [f32; 2],
     kind: u32,
 }
 
 const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
     1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Float32x4, 5 => Unorm8x4,
-    6 => Float32, 7 => Uint32
+    6 => Float32x2, 7 => Uint32
 ];
 
 /// What one sprite is drawn from.
 enum SpriteSource<'a> {
-    Text { text: &'a str, rgb: [u8; 3] },
+    Text {
+        text: &'a str,
+        rgb: [u8; 3],
+    },
     Face(&'a HtmlImageElement),
+    /// One plate glyph, white, without the shadow.
+    Glyph(char),
+    /// Pixel art, `#` for a white cell, one CSS pixel per cell.
+    Pixels(&'a [&'a str]),
 }
 
 /// A sprite's place in its atlas, in device pixels.
@@ -150,14 +201,44 @@ pub(super) struct GpuOverlayRenderer {
     sampler: wgpu::Sampler,
     params: wgpu::Buffer,
     sites: Layer,
+    plates: Layer,
     teammates: Layer,
     /// What the layers were prepared from.
     sites_from: Prepared<SiteLabels>,
+    plates_from: Prepared<WarPlates>,
     teammates_from: Prepared<Teammates>,
     teammate_atlas: Option<TeammateAtlasKey>,
-    /// The ratio and font the atlases were baked with.
+    /// The glyphs in `plates`' atlas. Baked once per ratio and font: plate text changes every
+    /// second, and only the instances follow it.
+    plate_glyphs: Option<PlateGlyphs>,
+    /// The ratio the atlases were baked with.
     dpr: f32,
-    font_ready: bool,
+    /// Fonts an atlas was baked in before they loaded.
+    pending_fonts: Vec<&'static str>,
+}
+
+/// Where each plate glyph and icon sits in the plate atlas, in device pixels.
+struct PlateGlyphs {
+    /// Sorted by character.
+    glyphs: Vec<(char, Sprite)>,
+    hourglass: Sprite,
+    swords: Sprite,
+    /// Captured, cancelled and ended pins.
+    check: Sprite,
+    cross: Sprite,
+    stop: Sprite,
+    /// Baseline to the top of the tallest glyph, and to the bottom of the lowest.
+    ascent: f32,
+    descent: f32,
+}
+
+impl PlateGlyphs {
+    fn glyph(&self, ch: char) -> Option<&Sprite> {
+        self.glyphs
+            .binary_search_by_key(&ch, |(glyph, _)| *glyph)
+            .ok()
+            .map(|index| &self.glyphs[index].1)
+    }
 }
 
 impl GpuOverlayRenderer {
@@ -265,22 +346,26 @@ impl GpuOverlayRenderer {
             sampler,
             params,
             sites: Layer::new(device),
+            plates: Layer::new(device),
             teammates: Layer::new(device),
             sites_from: Prepared::new(),
+            plates_from: Prepared::new(),
             teammates_from: Prepared::new(),
             teammate_atlas: None,
+            plate_glyphs: None,
             dpr: 0.0,
-            font_ready: true,
+            pending_fonts: Vec::new(),
         }
     }
 
-    /// Brings both layers up to date with the host's overlays and the surface ratio; returns
+    /// Brings every layer up to date with the host's overlays and the surface ratio; returns
     /// the bytes uploaded. Does nothing when nothing changed.
     pub(super) fn sync(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         sites: Option<&Arc<SiteLabels>>,
+        plates: Option<&Arc<WarPlates>>,
         teammates: Option<&Arc<Teammates>>,
         dpr: f32,
     ) -> u64 {
@@ -295,6 +380,9 @@ impl GpuOverlayRenderer {
         if let Some(sites) = self.sites_from.update(sites) {
             bytes += self.sync_sites(device, queue, sites);
         }
+        if let Some(plates) = self.plates_from.update(plates) {
+            bytes += self.sync_plates(device, queue, plates);
+        }
         if let Some(teammates) = self.teammates_from.update(teammates) {
             bytes += self.sync_teammates(device, queue, teammates);
         }
@@ -303,8 +391,79 @@ impl GpuOverlayRenderer {
 
     fn invalidate_atlases(&mut self) {
         self.sites_from.invalidate();
+        self.plates_from.invalidate();
         self.teammates_from.invalidate();
         self.teammate_atlas = None;
+        self.plate_glyphs = None;
+    }
+
+    fn sync_plates(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        plates: Option<Arc<WarPlates>>,
+    ) -> u64 {
+        let Some(plates) = plates.filter(|plates| !plates.plates.is_empty()) else {
+            // The glyph atlas stays: it does not depend on which plates are shown.
+            self.plates.count = 0;
+            return 0;
+        };
+        let mut bytes = 0;
+        if self.plate_glyphs.is_none() {
+            bytes += self.bake_plate_glyphs(device, queue);
+        }
+        let Some(glyphs) = self.plate_glyphs.as_ref() else {
+            self.plates.count = 0;
+            return bytes;
+        };
+        let instances = plate_instances(&plates, glyphs, f64::from(self.dpr));
+        bytes + self.plates.upload(device, queue, &instances)
+    }
+
+    fn bake_plate_glyphs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> u64 {
+        let mut chars: Vec<char> = PlateLabel::WORDS
+            .concat()
+            .chars()
+            .chain("0123456789:".chars())
+            .collect();
+        chars.sort_unstable();
+        chars.dedup();
+        let mut sources: Vec<SpriteSource> =
+            chars.iter().map(|&ch| SpriteSource::Glyph(ch)).collect();
+        for art in [&HOURGLASS, &SWORDS, &CHECK, &CROSS, &STOP] {
+            sources.push(SpriteSource::Pixels(art));
+        }
+        let bytes = self.bake(device, queue, &sources, Which::Plates);
+        let sprites = &self.plates.sprites;
+        let [glyph_sprites @ .., hourglass, swords, check, cross, stop] = sprites.as_slice() else {
+            return bytes;
+        };
+        if glyph_sprites.len() != chars.len() {
+            return bytes;
+        }
+        let margin = GLYPH_MARGIN as f32;
+        let (ascent, descent) = glyph_sprites
+            .iter()
+            .fold((0.0f32, 0.0f32), |(a, d), sprite| {
+                (
+                    a.max(sprite.origin[1] - margin),
+                    d.max(sprite.size[1] - sprite.origin[1] - margin),
+                )
+            });
+        self.plate_glyphs = Some(PlateGlyphs {
+            glyphs: chars
+                .into_iter()
+                .zip(glyph_sprites.iter().copied())
+                .collect(),
+            hourglass: *hourglass,
+            swords: *swords,
+            check: *check,
+            cross: *cross,
+            stop: *stop,
+            ascent,
+            descent,
+        });
+        bytes
     }
 
     fn sync_sites(
@@ -341,7 +500,7 @@ impl GpuOverlayRenderer {
                 size: sprite.size,
                 uv_rect: sprite.uv_rect,
                 rgba: [255; 4],
-                min_scale: SITE_LABEL_MIN_SCALE.next_up(),
+                scales: [SITE_LABEL_MIN_SCALE.next_up(), f32::MAX],
                 kind: OverlayKind::Sprite as u32,
             })
             .collect();
@@ -412,7 +571,7 @@ impl GpuOverlayRenderer {
                     size: [extent as f32, extent as f32],
                     uv_rect: [0.0; 4],
                     rgba,
-                    min_scale: 0.0,
+                    scales: [0.0, f32::MAX],
                     kind: kind as u32,
                 }
             };
@@ -457,7 +616,7 @@ impl GpuOverlayRenderer {
                     size: name.size,
                     uv_rect: name.uv_rect,
                     rgba: [255; 4],
-                    min_scale: TEAMMATE_NAME_MIN_SCALE,
+                    scales: [TEAMMATE_NAME_MIN_SCALE, f32::MAX],
                     kind: OverlayKind::Sprite as u32,
                 });
             }
@@ -475,14 +634,23 @@ impl GpuOverlayRenderer {
         sources: &[SpriteSource],
         which: Which,
     ) -> u64 {
-        let font_ready = font_loaded(FONT_CSS);
-        if !font_ready {
-            self.font_ready = false;
+        let (font_css, font_px, font_family) = match which {
+            Which::Plates => (PLATE_FONT_CSS, PLATE_FONT_PX, PLATE_FONT_FAMILY),
+            Which::Sites | Which::Teammates => (FONT_CSS, FONT_PX, FONT_FAMILY),
+        };
+        if !font_loaded(font_css) && !self.pending_fonts.contains(&font_css) {
+            self.pending_fonts.push(font_css);
         }
         let max_side = device.limits().max_texture_dimension_2d;
-        let baked = bake_atlas(sources, f64::from(self.dpr), max_side);
+        let baked = bake_atlas(
+            sources,
+            (font_px, font_family),
+            f64::from(self.dpr),
+            max_side,
+        );
         let layer = match which {
             Which::Sites => &mut self.sites,
+            Which::Plates => &mut self.plates,
             Which::Teammates => &mut self.teammates,
         };
         let Some((image, sprites, (width, height))) = baked.and_then(|(image, sprites)| {
@@ -555,25 +723,26 @@ impl GpuOverlayRenderer {
         4 * u64::from(size.width) * u64::from(size.height)
     }
 
-    /// The overlay font, if an atlas was baked before it loaded.
+    /// A font an atlas was baked in before it loaded.
     pub(super) fn pending_font(&self) -> Option<&'static str> {
-        (!self.font_ready).then_some(FONT_CSS)
+        self.pending_fonts.first().copied()
     }
 
-    /// Re-bakes both atlases in `font` now that it has loaded.
+    /// Re-bakes the atlases now that `font` has loaded.
     pub(super) fn font_loaded(&mut self, font: &str) {
-        if font == FONT_CSS && !self.font_ready {
-            self.font_ready = true;
+        let pending = self.pending_fonts.len();
+        self.pending_fonts.retain(|waiting| *waiting != font);
+        if self.pending_fonts.len() != pending {
             self.invalidate_atlases();
         }
     }
 
-    /// Whether either layer has anything to draw this frame.
+    /// Whether any layer has anything to draw this frame.
     pub(super) fn has_instances(&self) -> bool {
-        self.sites.count > 0 || self.teammates.count > 0
+        self.sites.count > 0 || self.plates.count > 0 || self.teammates.count > 0
     }
 
-    /// Draws site names, then teammates; returns the draw calls made.
+    /// Draws site names, war plates, then teammates; returns the draw calls made.
     pub(super) fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -582,7 +751,7 @@ impl GpuOverlayRenderer {
         quad_indices: &wgpu::Buffer,
     ) -> u32 {
         let mut draws = 0;
-        for layer in [&self.sites, &self.teammates] {
+        for layer in [&self.sites, &self.plates, &self.teammates] {
             let Some(bind_group) = layer.bind_group.as_ref().filter(|_| layer.count > 0) else {
                 continue;
             };
@@ -604,7 +773,288 @@ impl GpuOverlayRenderer {
 #[derive(Clone, Copy)]
 enum Which {
     Sites,
+    Plates,
     Teammates,
+}
+
+/// Plate colours as (border and icon, text): queued lavender, entered amber, war red and a
+/// capture green. Endings that do not say who won are grey.
+fn plate_tones(label: PlateLabel) -> ([u8; 3], [u8; 3]) {
+    match label {
+        PlateLabel::Front {
+            stage: StageKind::Queued,
+            ..
+        } => ([0xc7, 0xa3, 0xf0], [0xe6, 0xd8, 0xf8]),
+        PlateLabel::Front {
+            stage: StageKind::Entered,
+            ..
+        } => ([0xff, 0xa1, 0x3d], [0xff, 0xd6, 0xa3]),
+        PlateLabel::Front {
+            stage: StageKind::Fighting,
+            ..
+        } => ([0xff, 0x45, 0x45], [0xff, 0xb4, 0xb4]),
+        PlateLabel::Ending(Ending::Captured) => ([0x50, 0xc8, 0x78], [0xb8, 0xf0, 0xca]),
+        PlateLabel::Ending(Ending::Cancelled | Ending::Ended) => {
+            ([0x6f, 0x74, 0x8f], [0xc4, 0xc2, 0xbc])
+        }
+    }
+}
+
+/// Lays each plate out around its anchor in whole device pixels, so glyphs land texel for
+/// pixel: a bordered box holding the stage icon and the text, and for a war the tower's
+/// remaining health along the bottom. Below [`PLATE_TEXT_MIN_SCALE`] the same plate shrinks
+/// to a pin with only its icon, so neighbouring war territories do not bury each other. An
+/// ending is only ever a small glyph on a dark backing.
+fn plate_instances(plates: &WarPlates, glyphs: &PlateGlyphs, dpr: f64) -> Vec<OverlayInstance> {
+    let px = |css: f64| (css * dpr).round().max(1.0);
+    let metrics = PlateMetrics {
+        pad_x: px(PLATE_PAD_X),
+        pad_y: px(PLATE_PAD_Y),
+        gap: px(PLATE_GAP),
+        border: px(1.0),
+        bar: px(PLATE_BAR_HEIGHT),
+        line: f64::from(glyphs.ascent + glyphs.descent).ceil(),
+        fade: if plates.stale { PLATE_STALE_ALPHA } else { 1.0 },
+    };
+    let mut instances = Vec::with_capacity(plates.plates.len() * 14);
+    for plate in &plates.plates {
+        if let PlateLabel::Ending(ending) = plate.label {
+            let glyph = match ending {
+                Ending::Captured => glyphs.check,
+                Ending::Cancelled => glyphs.cross,
+                Ending::Ended => glyphs.stop,
+            };
+            // A capture keeps its green; the others need the light ink to read on the backing.
+            let (accent, ink) = plate_tones(plate.label);
+            let tone = if ending == Ending::Captured {
+                accent
+            } else {
+                ink
+            };
+            metrics.push_pin(&mut instances, plate.world, glyph, tone, px(PIN_PAD));
+            continue;
+        }
+        let (icon, health) = match plate.label {
+            PlateLabel::Front {
+                stage: StageKind::Fighting,
+                health,
+                ..
+            } => (Some(glyphs.swords), health),
+            PlateLabel::Front { .. } => (Some(glyphs.hourglass), None),
+            PlateLabel::Ending(_) => (None, None),
+        };
+        let (accent, ink) = plate_tones(plate.label);
+        let text = plate.label.text().unwrap_or_default();
+        let full: Vec<&Sprite> = text.chars().filter_map(|ch| glyphs.glyph(ch)).collect();
+        let mut push = |glyph_run: &[&Sprite], health, scales| {
+            metrics.push(
+                &mut instances,
+                PlateContent {
+                    world: plate.world,
+                    icon,
+                    glyphs: glyph_run,
+                    health,
+                    accent,
+                    ink,
+                    ascent: glyphs.ascent,
+                },
+                scales,
+            );
+        };
+        push(&full, health, [PLATE_TEXT_MIN_SCALE, f32::MAX]);
+        push(&[], None, [0.0, PLATE_TEXT_MIN_SCALE]);
+    }
+    instances
+}
+
+/// Device-pixel plate geometry, fixed for one atlas.
+struct PlateMetrics {
+    pad_x: f64,
+    pad_y: f64,
+    gap: f64,
+    border: f64,
+    bar: f64,
+    line: f64,
+    fade: f32,
+}
+
+/// What one plate box shows.
+struct PlateContent<'a> {
+    world: [f32; 2],
+    icon: Option<Sprite>,
+    glyphs: &'a [&'a Sprite],
+    health: Option<f32>,
+    accent: [u8; 3],
+    ink: [u8; 3],
+    ascent: f32,
+}
+
+impl PlateMetrics {
+    fn color(&self, [r, g, b]: [u8; 3], alpha: u8) -> [u8; 4] {
+        [r, g, b, (f32::from(alpha) * self.fade).round() as u8]
+    }
+
+    /// An ending's glyph on a backing just larger than it, centred on the anchor, at every
+    /// zoom.
+    fn push_pin(
+        &self,
+        instances: &mut Vec<OverlayInstance>,
+        world: [f32; 2],
+        glyph: Sprite,
+        accent: [u8; 3],
+        pad: f64,
+    ) {
+        let size = [glyph.size[0] * PIN_ZOOM, glyph.size[1] * PIN_ZOOM];
+        let [w, h] = [f64::from(size[0]), f64::from(size[1])];
+        let (left, top) = (-((w / 2.0).round() + pad), -((h / 2.0).round() + pad));
+        let [fr, fg, fb, fa] = PLATE_FILL;
+        let place =
+            |x: f64, y: f64, size: [f32; 2], uv_rect, rgba, kind: OverlayKind| OverlayInstance {
+                world,
+                offset: [x as f32, y as f32],
+                size,
+                uv_rect,
+                rgba,
+                scales: [0.0, f32::MAX],
+                kind: kind as u32,
+            };
+        instances.push(place(
+            left,
+            top,
+            [(w + pad * 2.0) as f32, (h + pad * 2.0) as f32],
+            [0.0; 4],
+            self.color([fr, fg, fb], fa),
+            OverlayKind::Rect,
+        ));
+        instances.push(place(
+            left + pad,
+            top + pad,
+            size,
+            glyph.uv_rect,
+            self.color(accent, 255),
+            OverlayKind::Tinted,
+        ));
+    }
+
+    /// One plate box, centred on its anchor and straddling the territory's top edge, shown
+    /// while the camera scale is within `scales`.
+    fn push(&self, instances: &mut Vec<OverlayInstance>, plate: PlateContent, scales: [f32; 2]) {
+        let place = |x: f64, y: f64, size: [f32; 2], uv_rect: [f32; 4], rgba, kind: OverlayKind| {
+            OverlayInstance {
+                world: plate.world,
+                offset: [x as f32, y as f32],
+                size,
+                uv_rect,
+                rgba,
+                scales,
+                kind: kind as u32,
+            }
+        };
+        let rect = |x: f64, y: f64, w: f64, h: f64, rgba| {
+            place(
+                x,
+                y,
+                [w as f32, h as f32],
+                [0.0; 4],
+                rgba,
+                OverlayKind::Rect,
+            )
+        };
+        // A plate without an icon still needs something to show as a pin.
+        let marker = plate.icon.map_or([self.line * 0.6; 2], |icon| {
+            [f64::from(icon.size[0]), f64::from(icon.size[1])]
+        });
+        let text_w: f64 = plate
+            .glyphs
+            .iter()
+            .map(|glyph| f64::from(glyph.advance).round())
+            .sum();
+        let has_text = !plate.glyphs.is_empty();
+        let show_marker = plate.icon.is_some() || !has_text;
+        let content_w = if show_marker { marker[0] } else { 0.0 }
+            + if show_marker && has_text {
+                self.gap
+            } else {
+                0.0
+            }
+            + text_w;
+        let content_h = if has_text {
+            self.line.max(marker[1])
+        } else {
+            marker[1]
+        };
+        let bar_h = if plate.health.is_some() {
+            self.bar + self.border
+        } else {
+            0.0
+        };
+        let inner_w = self.pad_x * 2.0 + content_w;
+        let inner_h = self.pad_y * 2.0 + content_h + bar_h;
+        let left = -((inner_w / 2.0).round() + self.border);
+        let top = -((inner_h / 2.0).round() + self.border);
+        let [fr, fg, fb, fa] = PLATE_FILL;
+        instances.push(rect(
+            left,
+            top,
+            inner_w + self.border * 2.0,
+            inner_h + self.border * 2.0,
+            self.color(plate.accent, 255),
+        ));
+        instances.push(rect(
+            left + self.border,
+            top + self.border,
+            inner_w,
+            inner_h,
+            self.color([fr, fg, fb], fa),
+        ));
+
+        let content_top = top + self.border + self.pad_y;
+        let mut x = left + self.border + self.pad_x;
+        if show_marker {
+            let y = content_top + ((content_h - marker[1]) / 2.0).round();
+            let accent = self.color(plate.accent, 255);
+            instances.push(match plate.icon {
+                Some(icon) => place(x, y, icon.size, icon.uv_rect, accent, OverlayKind::Tinted),
+                None => rect(x, y, marker[0], marker[1], accent),
+            });
+            x += marker[0] + self.gap;
+        }
+        let baseline =
+            content_top + ((content_h - self.line) / 2.0).round() + f64::from(plate.ascent).round();
+        for glyph in plate.glyphs {
+            instances.push(place(
+                x - f64::from(glyph.origin[0]),
+                baseline - f64::from(glyph.origin[1]),
+                glyph.size,
+                glyph.uv_rect,
+                self.color(plate.ink, 255),
+                OverlayKind::Tinted,
+            ));
+            x += f64::from(glyph.advance).round();
+        }
+        if let Some(health) = plate.health {
+            let bar_x = left + self.border + self.pad_x;
+            let bar_y = top + self.border + inner_h - self.pad_y - self.bar;
+            let bar_w = inner_w - self.pad_x * 2.0;
+            instances.push(rect(
+                bar_x,
+                bar_y,
+                bar_w,
+                self.bar,
+                self.color(PLATE_TRACK, 255),
+            ));
+            let filled = (bar_w * f64::from(health.clamp(0.0, 1.0))).round();
+            if filled > 0.0 {
+                instances.push(rect(
+                    bar_x,
+                    bar_y,
+                    filled,
+                    self.bar,
+                    self.color(plate.accent, 255),
+                ));
+            }
+        }
+    }
 }
 
 fn allocate(device: &wgpu::Device, capacity: u32) -> wgpu::Buffer {
@@ -629,6 +1079,7 @@ fn font_loaded(font: &str) -> bool {
 /// sprite or the atlas would not fit in a `max_side` texture (or measured nonsense).
 fn bake_atlas(
     sources: &[SpriteSource],
+    (font_px, font_family): (f64, &str),
     dpr: f64,
     max_side: u32,
 ) -> Option<(web_sys::ImageData, Vec<Sprite>)> {
@@ -642,8 +1093,27 @@ fn bake_atlas(
         .dyn_into::<HtmlCanvasElement>()
         .ok()?;
     let ctx = super::get_2d_context(&canvas, true)?;
-    let font = format!("{}px {FONT_FAMILY}", FONT_PX * dpr);
+    let font = format!("{}px {font_family}", font_px * dpr);
     ctx.set_font(&font);
+    // Device pixels per pixel-art cell: whole, so the art stays crisp.
+    let cell = dpr.round().max(1.0);
+    let measure = |text: &str, margin: f64| {
+        let metrics = ctx.measure_text(text).ok()?;
+        let left = metrics.actual_bounding_box_left().max(0.0).ceil();
+        let right = metrics
+            .actual_bounding_box_right()
+            .max(metrics.width())
+            .ceil();
+        let ascent = metrics.actual_bounding_box_ascent().max(0.0).ceil();
+        let descent = metrics.actual_bounding_box_descent().max(0.0).ceil();
+        let origin = (margin + left, margin + ascent);
+        Some((
+            origin.0 + right + margin,
+            origin.1 + descent + margin,
+            origin,
+            metrics.width(),
+        ))
+    };
 
     // Measure, then place: (x, y, sprite) in device pixels.
     let mut placed = Vec::with_capacity(sources.len());
@@ -651,24 +1121,18 @@ fn bake_atlas(
     let atlas_width = f64::from(ATLAS_WIDTH.min(max_side));
     for source in sources {
         let (w, h, origin, advance) = match source {
-            SpriteSource::Text { text, .. } => {
-                let metrics = ctx.measure_text(text).ok()?;
-                let left = metrics.actual_bounding_box_left().max(0.0).ceil();
-                let right = metrics
-                    .actual_bounding_box_right()
-                    .max(metrics.width())
-                    .ceil();
-                let ascent = metrics.actual_bounding_box_ascent().max(0.0).ceil();
-                let descent = metrics.actual_bounding_box_descent().max(0.0).ceil();
-                let origin = (SPRITE_MARGIN + left, SPRITE_MARGIN + ascent);
+            SpriteSource::Text { text, .. } => measure(text, SPRITE_MARGIN)?,
+            SpriteSource::Glyph(ch) => measure(ch.encode_utf8(&mut [0; 4]), GLYPH_MARGIN)?,
+            SpriteSource::Face(_) => (f64::from(FACE_PX), f64::from(FACE_PX), (0.0, 0.0), 0.0),
+            SpriteSource::Pixels(rows) => {
+                let columns = rows.iter().map(|row| row.len()).max().unwrap_or(0);
                 (
-                    origin.0 + right + SPRITE_MARGIN,
-                    origin.1 + descent + SPRITE_MARGIN,
-                    origin,
-                    metrics.width(),
+                    columns as f64 * cell,
+                    rows.len() as f64 * cell,
+                    (0.0, 0.0),
+                    0.0,
                 )
             }
-            SpriteSource::Face(_) => (f64::from(FACE_PX), f64::from(FACE_PX), (0.0, 0.0), 0.0),
         };
         // Every sprite has to fit on its own; this also keeps NaN out of the sums below.
         atlas_extent(w, h, max_side)?;
@@ -706,6 +1170,26 @@ fn bake_atlas(
                 ctx.set_shadow_blur(0.0);
                 ctx.draw_image_with_html_image_element_and_dw_and_dh(image, sx, sy, w, h)
                     .ok()?;
+            }
+            SpriteSource::Glyph(ch) => {
+                ctx.set_shadow_color("rgba(0,0,0,0)");
+                ctx.set_shadow_blur(0.0);
+                ctx.set_fill_style_str("#fff");
+                ctx.fill_text(ch.encode_utf8(&mut [0; 4]), sx + origin.0, sy + origin.1)
+                    .ok()?;
+            }
+            SpriteSource::Pixels(rows) => {
+                ctx.set_fill_style_str("#fff");
+                for (row_index, row) in rows.iter().enumerate() {
+                    for (column, _) in row.bytes().enumerate().filter(|(_, pixel)| *pixel == b'#') {
+                        ctx.fill_rect(
+                            sx + column as f64 * cell,
+                            sy + row_index as f64 * cell,
+                            cell,
+                            cell,
+                        );
+                    }
+                }
             }
         }
         sprites.push(Sprite {

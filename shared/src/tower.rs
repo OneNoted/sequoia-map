@@ -188,6 +188,14 @@ pub enum DefenseRating {
 }
 
 impl DefenseRating {
+    pub const ALL: [DefenseRating; 5] = [
+        DefenseRating::VeryLow,
+        DefenseRating::Low,
+        DefenseRating::Medium,
+        DefenseRating::High,
+        DefenseRating::VeryHigh,
+    ];
+
     /// Determine rating from the full defense index.
     pub fn from_index(index: u32) -> Self {
         match index {
@@ -197,11 +205,6 @@ impl DefenseRating {
             31..=48 => DefenseRating::High,
             _ => DefenseRating::VeryHigh,
         }
-    }
-
-    /// Backward-compatible alias that maps an already-computed index to a rating.
-    pub fn from_sum(stat_sum: u32) -> Self {
-        Self::from_index(stat_sum)
     }
 
     pub fn label(&self) -> &'static str {
@@ -214,13 +217,32 @@ impl DefenseRating {
         }
     }
 
-    pub fn color_rgb(&self) -> (u8, u8, u8) {
+    /// The game's own colour for the rating, as its territory menu and the map's defense
+    /// overlay show it: green while weak, red while strong. Not the treasury palette.
+    pub fn color_hex(&self) -> &'static str {
         match self {
-            DefenseRating::VeryLow => (140, 140, 140),
-            DefenseRating::Low => (235, 87, 87),
-            DefenseRating::Medium => (245, 197, 66),
-            DefenseRating::High => (102, 204, 102),
-            DefenseRating::VeryHigh => (80, 200, 220),
+            DefenseRating::VeryLow => "#00aa00",
+            DefenseRating::Low => "#55ff55",
+            DefenseRating::Medium => "#ffff55",
+            DefenseRating::High => "#ff5555",
+            DefenseRating::VeryHigh => "#aa0000",
+        }
+    }
+
+    /// A rating as the API and reporters write it: `VERY_HIGH`, `very-low`, `Medium`.
+    pub fn from_api(tier: &str) -> Option<Self> {
+        let words: Vec<String> = tier
+            .split(|c: char| c == '_' || c == '-' || c.is_whitespace())
+            .filter(|word| !word.is_empty())
+            .map(str::to_ascii_uppercase)
+            .collect();
+        match words.join(" ").as_str() {
+            "VERY LOW" => Some(DefenseRating::VeryLow),
+            "LOW" => Some(DefenseRating::Low),
+            "MEDIUM" => Some(DefenseRating::Medium),
+            "HIGH" => Some(DefenseRating::High),
+            "VERY HIGH" => Some(DefenseRating::VeryHigh),
+            _ => None,
         }
     }
 }
@@ -327,15 +349,8 @@ mod tests {
         ATTACK_RATES, DefenseRating, HEALTHS, calc_defense_index, calc_dps, calc_dps_range,
         calc_ehp, calc_stat, count_guild_connections, find_externals, format_stat,
     };
+    use crate::test_support::assert_close;
     use std::collections::{HashMap, HashSet};
-
-    fn assert_close(actual: f64, expected: f64) {
-        let diff = (actual - expected).abs();
-        assert!(
-            diff < 1e-9,
-            "expected {expected}, got {actual} (diff: {diff})"
-        );
-    }
 
     #[test]
     fn count_guild_connections_counts_same_guild_within_three_hops_as_externals() {
@@ -602,12 +617,20 @@ mod tests {
     }
 
     #[test]
-    fn defense_rating_from_sum_is_compatibility_alias() {
-        assert_eq!(DefenseRating::from_sum(0), DefenseRating::VeryLow);
-        assert_eq!(DefenseRating::from_sum(18), DefenseRating::Low);
-        assert_eq!(DefenseRating::from_sum(19), DefenseRating::Medium);
-        assert_eq!(DefenseRating::from_sum(48), DefenseRating::High);
-        assert_eq!(DefenseRating::from_sum(49), DefenseRating::VeryHigh);
+    fn defense_ratings_parse_api_spellings() {
+        assert_eq!(
+            DefenseRating::from_api("VERY_HIGH"),
+            Some(DefenseRating::VeryHigh)
+        );
+        assert_eq!(
+            DefenseRating::from_api(" very-low "),
+            Some(DefenseRating::VeryLow)
+        );
+        assert_eq!(
+            DefenseRating::from_api("Medium"),
+            Some(DefenseRating::Medium)
+        );
+        assert_eq!(DefenseRating::from_api("NONE"), None);
     }
 
     #[test]

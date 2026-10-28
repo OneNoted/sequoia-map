@@ -11,31 +11,37 @@ use wasm_bindgen::JsCast;
 use sequoia_shared::history::HistoryHeatMeta;
 
 use crate::app::{
-    AbbreviateNames, AutoSrScalarEnabled, BoldConnections, CONNECTION_OPACITY_SCALE_MAX,
-    CONNECTION_OPACITY_SCALE_MIN, CONNECTION_SOLID_OPACITY_MAX, CONNECTION_SOLID_OPACITY_MIN,
-    CONNECTION_THICKNESS_SCALE_MAX, CONNECTION_THICKNESS_SCALE_MIN, ConnectionOpacityScale,
-    ConnectionSolidOpacity, ConnectionStyle, ConnectionStyleSetting, ConnectionThicknessScale,
-    CurrentMode, DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_SOLID_OPACITY,
-    DEFAULT_CONNECTION_THICKNESS_SCALE, DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER,
-    DEFAULT_LABEL_SCALE_STATIC_NAME, DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight,
+    AbbreviateNames, ActivityIncludeUnconfirmed, AutoSrScalarEnabled, BoldConnections,
+    CONNECTION_OPACITY_SCALE_MAX, CONNECTION_OPACITY_SCALE_MIN, CONNECTION_SOLID_OPACITY_MAX,
+    CONNECTION_SOLID_OPACITY_MIN, CONNECTION_THICKNESS_SCALE_MAX, CONNECTION_THICKNESS_SCALE_MIN,
+    ConnectionOpacityScale, ConnectionSolidOpacity, ConnectionStyle, ConnectionStyleSetting,
+    ConnectionThicknessScale, CurrentMode, DEFAULT_CONNECTION_OPACITY_SCALE,
+    DEFAULT_CONNECTION_SOLID_OPACITY, DEFAULT_CONNECTION_THICKNESS_SCALE,
+    DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER, DEFAULT_LABEL_SCALE_STATIC_NAME,
+    DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight, HQ_CROWN_SCALE_MAX, HQ_CROWN_SCALE_MIN,
     HeatFallbackApplied, HeatHistoryBasis, HeatHistoryBasisSetting, HeatLiveSource,
     HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId, HeatWindowLabel,
-    IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX,
-    LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
-    LabelScaleStaticName, ManualSrScalar, MapIntelModeEnabled, MapMode, NameColor,
-    NameColorSetting, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN, PlayerHeadRenderHead,
-    PlayerHeadRenderLabel, PlayerHeadSize, RESOURCE_HIGHLIGHT_OPACITY_MAX,
-    RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont, ResourceHighlight, ResourceHighlightOpacity,
-    ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
+    HqCrownScale, HqCrownStyle, HqCrownStyleSetting, IsMobile, LABEL_SCALE_GROUP_MAX,
+    LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic,
+    LabelScaleIcons, LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, ManualSrScalar,
+    MapIntelModeEnabled, MapMode, NameColor, NameColorSetting, PLAYER_HEAD_SIZE_MAX,
+    PLAYER_HEAD_SIZE_MIN, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize,
+    RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont,
+    ResetSettingsTrigger, ResourceHighlight, ResourceHighlightOpacity, ShowClaimLabels,
+    ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
     ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
     ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
-    ShowSettings, ShowTerritoryOrnaments, ShowWarQueue, ShowWarStats, TagColorSetting,
-    ThickCooldownBorders, WarFeedVisible, clamp_connection_opacity_scale,
-    clamp_connection_solid_opacity, clamp_connection_thickness_scale, clamp_label_scale_group,
+    ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel, TagColorSetting,
+    ThickCooldownBorders, WAR_OUTLINE_OPACITY_MAX, WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_WIDTH_MAX,
+    WAR_OUTLINE_WIDTH_MIN, WarFeedVisible, WarOutlineColor, WarOutlineControls, WarOutlineStyle,
+    clamp_connection_opacity_scale, clamp_connection_solid_opacity,
+    clamp_connection_thickness_scale, clamp_hq_crown_scale, clamp_label_scale_group,
     clamp_label_scale_master, clamp_player_head_size, clamp_resource_highlight_opacity,
+    clamp_war_outline_opacity, clamp_war_outline_width,
 };
 use crate::season_scalar::clamp_manual_scalar;
 use crate::territory::ClientTerritoryMap;
+use crate::ui::PanelNav;
 
 /// The one territory overlay that can be on at a time. Resource, defense and intel are
 /// already mutually exclusive in the app; this is that rule shown as a single choice.
@@ -183,6 +189,9 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let MapIntelModeEnabled(map_intel_enabled) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
     let ShowTerritoryOrnaments(show_territory_ornaments) = expect_context();
+    let HqCrownStyleSetting(hq_crown_style) = expect_context();
+    let HqCrownScale(hq_crown_scale) = expect_context();
+    let war_outline = expect_context::<WarOutlineControls>();
     let ManualSrScalar(manual_sr_scalar) = expect_context();
     let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
     let ShowLeaderboardSrGain(show_leaderboard_sr_gain) = expect_context();
@@ -194,8 +203,8 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let NameColorSetting(name_color) = expect_context();
     let TagColorSetting(tag_color) = expect_context();
     let ShowMinimap(show_minimap) = expect_context();
-    let ShowWarQueue(show_war_queue) = expect_context();
-    let ShowWarStats(show_war_stats) = expect_context();
+    let ShowWarPanel(show_war_panel) = expect_context();
+    let ShowWarMarkers(show_war_markers) = expect_context();
     let ShowPlayerHeads(show_player_heads) = expect_context();
     let PlayerHeadRenderHead(player_head_render_head) = expect_context();
     let PlayerHeadRenderLabel(player_head_render_label) = expect_context();
@@ -208,6 +217,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let LabelScaleDynamic(label_scale_dynamic) = expect_context();
     let LabelScaleIcons(label_scale_icons) = expect_context();
     let ShowDebugInfo(show_debug_info) = expect_context();
+    let ActivityIncludeUnconfirmed(activity_include_unconfirmed) = expect_context();
     let territory_count = Memo::new(move |_| territories.with(|map| map.len()));
 
     let overlay = Signal::derive(move || {
@@ -249,21 +259,9 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
 
     view! {
         <div class="settings-panel">
-            <div class="settings-header">
-                <button
-                    type="button"
-                    class="settings-back"
-                    title="Back"
-                    aria-label="Close settings"
-                    on:click=move |_| show_settings.set(false)
-                >
-                    "\u{2039}"
-                </button>
-                <h2 class="settings-title">
-                    <span aria-hidden="true">{"\u{2699}"}</span>
-                    "Settings"
-                </h2>
-            </div>
+            <PanelNav back=("Back from settings", Callback::new(move |()| show_settings.set(false)))>
+                <h2 class="settings-title">"Settings"</h2>
+            </PanelNav>
 
             <SettingsSection title="Map">
                 <SettingsChoice
@@ -320,6 +318,27 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSwitch label="Readable Font" shortcut="F" hint="Plain text instead of the pixel font" active=readable_font />
                 <SettingsColorRow label="Territory name color" color=name_color />
                 <SettingsColorRow label="Guild tag color" color=tag_color />
+                <SettingsChoice
+                    label="HQ crown"
+                    hint="Fill hides the owner when zoomed out"
+                    name="settings-hq-crown"
+                    options=vec![
+                        (HqCrownStyle::NameBelow, Signal::stored("Name below")),
+                        (HqCrownStyle::Compact, Signal::stored("Compact")),
+                        (HqCrownStyle::Fill, Signal::stored("Fill")),
+                    ]
+                    selected=hq_crown_style
+                    on_select=Callback::new(move |style| hq_crown_style.set(style))
+                />
+                <SettingsSlider
+                    label="Crown size"
+                    value=hq_crown_scale
+                    min=HQ_CROWN_SCALE_MIN
+                    max=HQ_CROWN_SCALE_MAX
+                    step=0.1
+                    clamp=clamp_hq_crown_scale
+                    format=percent
+                />
             </SettingsSection>
 
             <SettingsSection title="Timers">
@@ -342,17 +361,58 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
             // panels themselves follow. For everyone else these would be dead toggles.
             <Show when=move || war_feed_visible.get()>
                 <SettingsSection title="War">
-                    <SettingsSwitch label="War Queue" active=show_war_queue />
-                    // Desktop only: `WarStatsStrip` never renders on a phone.
-                    <Show when=move || !is_mobile.get()>
-                        <SettingsSwitch label="War Stats" active=show_war_stats />
-                    </Show>
+                    <SettingsSwitch label="War Panel" hint="Queued territories, wars and members" active=show_war_panel />
+                    <SettingsSwitch label="War Markers" hint="Countdowns and war clocks on territories" active=show_war_markers />
+                    <SettingsSwitch
+                        label="Unconfirmed Activity"
+                        hint="Recent activity also lists cancelled queues and attacks without a confirmed capture"
+                        active=activity_include_unconfirmed
+                    />
+                    <SettingsChoice
+                        label="War outline"
+                        name="settings-war-outline-style"
+                        options=vec![
+                            (WarOutlineStyle::Dashed, Signal::stored("Dashed")),
+                            (WarOutlineStyle::Solid, Signal::stored("Solid")),
+                        ]
+                        selected=war_outline.style
+                        on_select=Callback::new(move |style| war_outline.style.set(style))
+                    />
+                    <SettingsChoice
+                        label="Outline color"
+                        hint="Urgency warms over the last three minutes"
+                        name="settings-war-outline-color"
+                        options=vec![
+                            (WarOutlineColor::Stage, Signal::stored("Stage")),
+                            (WarOutlineColor::Urgency, Signal::stored("Urgency")),
+                        ]
+                        selected=war_outline.color
+                        on_select=Callback::new(move |color| war_outline.color.set(color))
+                    />
+                    <SettingsSwitch label="Queue Progress" hint="The outline shows the queue time left" active=war_outline.progress />
+                    <SettingsSlider
+                        label="Outline width"
+                        value=war_outline.width
+                        min=WAR_OUTLINE_WIDTH_MIN
+                        max=WAR_OUTLINE_WIDTH_MAX
+                        step=0.25
+                        clamp=clamp_war_outline_width
+                        format=times
+                    />
+                    <SettingsSlider
+                        label="Outline opacity"
+                        value=war_outline.opacity
+                        min=WAR_OUTLINE_OPACITY_MIN
+                        max=WAR_OUTLINE_OPACITY_MAX
+                        step=0.05
+                        clamp=clamp_war_outline_opacity
+                        format=percent
+                    />
                     <SettingsSwitch label="Teammate Heads" active=show_player_heads />
                     <Show when=move || show_player_heads.get()>
                         <SettingsSwitch label="Show Faces" hint="A dot when off" nested=true active=player_head_render_head />
                         <SettingsSwitch label="Show Names" hint="Hidden when zoomed far out" nested=true active=player_head_render_label />
                     </Show>
-                    <crate::players::PlayerRosterDetails />
                 </SettingsSection>
             </Show>
 
@@ -509,6 +569,8 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     <span class="settings-value">{move || territory_count.get()}</span>
                 </div>
             </SettingsDisclosure>
+
+            <SettingsResetAll />
         </div>
     }
 }
@@ -814,12 +876,60 @@ fn SettingsScalarRow(scalar: RwSignal<f64>) -> impl IntoView {
     }
 }
 
+/// How long "Reset all" waits for its confirming second press.
+const RESET_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Puts every setting back to its default, on a second press within a few seconds.
+#[component]
+fn SettingsResetAll() -> impl IntoView {
+    let ResetSettingsTrigger(reset_settings_trigger) = expect_context();
+    let armed = RwSignal::new(false);
+    // Only the latest arming may disarm; an older timer is stale.
+    let arming = StoredValue::new(0u32);
+    let on_click = move |_| {
+        if armed.get_untracked() {
+            armed.set(false);
+            reset_settings_trigger.update(|value| *value = value.saturating_add(1));
+            return;
+        }
+        armed.set(true);
+        let this = arming.get_value().wrapping_add(1);
+        arming.set_value(this);
+        set_timeout(
+            move || {
+                if arming.try_get_value() == Some(this) {
+                    armed.set(false);
+                }
+            },
+            RESET_CONFIRM_WINDOW,
+        );
+    };
+    view! {
+        <div class="settings-reset-all-row">
+            <span class="settings-row-text">
+                <span class="settings-row-label">"Reset all settings"</span>
+                <span class="settings-row-hint" role="status">
+                    {move || if armed.get() { "Press again to confirm" } else { "Every setting in this menu" }}
+                </span>
+            </span>
+            <button
+                type="button"
+                class="ui-button settings-reset-all"
+                data-armed=move || armed.get().to_string()
+                on:click=on_click
+            >
+                {move || if armed.get() { "Confirm reset" } else { "Reset all" }}
+            </button>
+        </div>
+    }
+}
+
 /// A small right-aligned button that resets one group of values; the label names the group.
 #[component]
 fn SettingsResetButton(label: &'static str, on_reset: Callback<()>) -> impl IntoView {
     view! {
         <div class="settings-reset-row">
-            <button type="button" class="settings-reset" on:click=move |_| on_reset.run(())>
+            <button type="button" class="ui-button settings-reset" on:click=move |_| on_reset.run(())>
                 {label}
             </button>
         </div>

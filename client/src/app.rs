@@ -5,7 +5,7 @@ use leptos_router::hooks::{use_location, use_navigate};
 use wasm_bindgen::JsCast;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ pub(crate) fn clamp_sidebar_width(value: f64) -> f64 {
     value.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)
 }
 
-pub(crate) const DEFAULT_WAR_PANEL_WIDTH: f64 = 278.0;
+pub(crate) const DEFAULT_WAR_PANEL_WIDTH: f64 = 300.0;
 pub(crate) const WAR_PANEL_WIDTH_MIN: f64 = 220.0;
 pub(crate) const WAR_PANEL_WIDTH_MAX: f64 = 460.0;
 
@@ -150,6 +150,76 @@ pub(crate) struct ShowResourceIcons(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
+pub(crate) struct HqCrownStyleSetting(pub RwSignal<HqCrownStyle>);
+#[derive(Clone, Copy)]
+pub(crate) struct HqCrownScale(pub RwSignal<f64>);
+/// The war outline settings, one signal per control; saved together as one [`WarOutline`].
+#[derive(Clone, Copy)]
+pub(crate) struct WarOutlineControls {
+    pub style: RwSignal<WarOutlineStyle>,
+    pub color: RwSignal<WarOutlineColor>,
+    pub progress: RwSignal<bool>,
+    pub width: RwSignal<f64>,
+    pub opacity: RwSignal<f64>,
+}
+
+impl WarOutlineControls {
+    fn new(outline: WarOutline) -> Self {
+        let outline = outline.clamped();
+        Self {
+            style: RwSignal::new(outline.style),
+            color: RwSignal::new(outline.color),
+            progress: RwSignal::new(outline.progress),
+            width: RwSignal::new(f64::from(outline.width)),
+            opacity: RwSignal::new(f64::from(outline.opacity)),
+        }
+    }
+
+    fn get(self) -> WarOutline {
+        WarOutline {
+            style: self.style.get(),
+            color: self.color.get(),
+            progress: self.progress.get(),
+            width: self.width.get() as f32,
+            opacity: self.opacity.get() as f32,
+        }
+        .clamped()
+    }
+
+    fn set(self, outline: WarOutline) {
+        let outline = outline.clamped();
+        self.style.set(outline.style);
+        self.color.set(outline.color);
+        self.progress.set(outline.progress);
+        self.width.set(f64::from(outline.width));
+        self.opacity.set(f64::from(outline.opacity));
+    }
+}
+
+// Exact decimal twins of the renderer's `f32` outline bounds, so the sliders snap to their
+// steps.
+pub(crate) const WAR_OUTLINE_WIDTH_MIN: f64 = 0.5;
+pub(crate) const WAR_OUTLINE_WIDTH_MAX: f64 = 2.0;
+pub(crate) const WAR_OUTLINE_OPACITY_MIN: f64 = 0.3;
+pub(crate) const WAR_OUTLINE_OPACITY_MAX: f64 = 1.0;
+
+pub(crate) fn clamp_war_outline_width(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(WAR_OUTLINE_WIDTH_MIN, WAR_OUTLINE_WIDTH_MAX)
+    } else {
+        f64::from(WarOutline::default().width)
+    }
+}
+
+pub(crate) fn clamp_war_outline_opacity(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_OPACITY_MAX)
+    } else {
+        f64::from(WarOutline::default().opacity)
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct ManualSrScalar(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct AutoSrScalarEnabled(pub RwSignal<bool>);
@@ -166,9 +236,13 @@ pub(crate) struct ReadableFont(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowMinimap(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
-pub(crate) struct ShowWarQueue(pub RwSignal<bool>);
+pub(crate) struct ShowWarPanel(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
-pub(crate) struct ShowWarStats(pub RwSignal<bool>);
+pub(crate) struct ShowWarMarkers(pub RwSignal<bool>);
+/// Whether Recent activity also lists cancelled queues and attacks without a confirmed
+/// capture. Off, its lists hold only confirmed captures and losses.
+#[derive(Clone, Copy)]
+pub(crate) struct ActivityIncludeUnconfirmed(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowPlayerHeads(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -205,12 +279,6 @@ pub(crate) struct ShowSettings(pub RwSignal<bool>);
 pub(crate) struct ShowDebugInfo(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct IsMobile(pub RwSignal<bool>);
-/// Viewport width in CSS pixels, refreshed by the window resize listener.
-///
-/// [`IsMobile`] only carries the breakpoint; an overlay that has to fit a computed number of
-/// fixed-width children needs the width itself, as a signal rather than a one-shot read.
-#[derive(Clone, Copy)]
-pub(crate) struct WindowWidth(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct PeekTerritory(pub RwSignal<Option<String>>);
 #[derive(Clone, Copy)]
@@ -350,24 +418,17 @@ pub(crate) struct HistorySeasonScalarSample(pub RwSignal<Option<SeasonScalarSamp
 pub(crate) struct HistorySeasonLeaderboard(pub RwSignal<Option<Vec<HistoryGuildSrEntry>>>);
 #[derive(Clone, Copy)]
 pub(crate) struct WarControllerData(pub RwSignal<Option<WarControllerState>>);
-/// Names of the territories with a war in progress, derived from [`WarControllerData`].
-///
-/// A `Memo` rather than a derived closure on purpose: the war feed re-broadcasts every few
-/// seconds as tower health moves, but the set of names rarely changes, and the memo's equality
-/// check keeps those no-op updates from rebuilding the GPU instance buffer.
-#[derive(Clone, Copy)]
-pub(crate) struct TerritoriesInWar(pub Memo<HashSet<String>>);
 /// Whether the viewer may see the war feed at all: signed in *and* in Sequoia.
 ///
 /// The server is the real gate - it refuses `/api/warcontroller` and withholds the SSE
-/// `warcontroller` frames from everyone else. This is the display side of the same rule,
-/// covering the war queue panel and, through [`TerritoriesInWar`], the at-war highlight.
+/// `warcontroller` frames from everyone else. This is the display side of the same rule, which
+/// [`crate::war_room::WarRoom`] applies to everything war-related on the map and in the HUD.
 #[derive(Clone, Copy)]
 pub(crate) struct WarFeedVisible(pub Memo<bool>);
-/// Whether the top-left war queue overview is expanded.
+/// Whether the war panel is expanded.
 #[derive(Clone, Copy)]
 pub(crate) struct WarPanelOpen(pub RwSignal<bool>);
-/// Width of the war queue overview, drag-resizable like the sidebar's.
+/// Width of the war panel, drag-resizable like the sidebar's.
 #[derive(Clone, Copy)]
 pub(crate) struct WarPanelWidth(pub RwSignal<f64>);
 
@@ -387,7 +448,9 @@ pub(crate) struct GuildColorStore(pub StoredValue<GuildColorMap>);
 // Defined in the engine crate so the renderer can name it without depending on
 // the UI. Re-exported here to keep `crate::app::NameColor` paths working; its
 // serde form is PascalCase and is persisted in localStorage.
-pub(crate) use sequoia_map_engine::settings::NameColor;
+pub(crate) use sequoia_map_engine::settings::{
+    HqCrownStyle, NameColor, WarOutline, WarOutlineColor, WarOutlineStyle,
+};
 
 use gloo_storage::Storage;
 
@@ -424,10 +487,13 @@ struct SettingsV2 {
     war_panel_open: bool,
     #[serde(default = "default_war_panel_width")]
     war_panel_width: f64,
+    /// The war panel; the key predates the panel's other contents.
     #[serde(default = "default_true")]
     show_war_queue: bool,
     #[serde(default = "default_true")]
-    show_war_stats: bool,
+    show_war_markers: bool,
+    #[serde(default)]
+    activity_include_unconfirmed: bool,
     #[serde(default = "default_true")]
     show_player_heads: bool,
     #[serde(default = "default_true")]
@@ -447,6 +513,12 @@ struct SettingsV2 {
     show_resource_icons: bool,
     #[serde(default = "default_true")]
     show_territory_ornaments: bool,
+    #[serde(default, deserialize_with = "lenient_hq_crown_style")]
+    hq_crown_style: HqCrownStyle,
+    #[serde(default = "default_hq_crown_scale")]
+    hq_crown_scale: f64,
+    #[serde(default, deserialize_with = "lenient_war_outline")]
+    war_outline: WarOutline,
     #[serde(default = "default_manual_sr_scalar")]
     manual_sr_scalar: f64,
     #[serde(default = "default_true")]
@@ -564,6 +636,45 @@ const fn default_player_head_size() -> f64 {
     DEFAULT_PLAYER_HEAD_SIZE
 }
 
+/// A style this build does not know, saved by a newer one, falls back to the default
+/// rather than failing the whole settings blob.
+fn lenient_hq_crown_style<'de, D>(deserializer: D) -> Result<HqCrownStyle, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
+/// Like [`lenient_hq_crown_style`]: an outline saved by a newer build falls back to the
+/// default rather than failing the whole settings blob.
+fn lenient_war_outline<'de, D>(deserializer: D) -> Result<WarOutline, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(serde_json::from_value::<WarOutline>(value)
+        .unwrap_or_default()
+        .clamped())
+}
+
+const fn default_hq_crown_scale() -> f64 {
+    DEFAULT_HQ_CROWN_SCALE
+}
+
+pub(crate) const DEFAULT_HQ_CROWN_SCALE: f64 = 1.0;
+// Exact decimal twins of the renderer's `f32` bounds, so the slider snaps to its steps.
+pub(crate) const HQ_CROWN_SCALE_MIN: f64 = 0.6;
+pub(crate) const HQ_CROWN_SCALE_MAX: f64 = 1.6;
+
+pub(crate) fn clamp_hq_crown_scale(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(HQ_CROWN_SCALE_MIN, HQ_CROWN_SCALE_MAX)
+    } else {
+        DEFAULT_HQ_CROWN_SCALE
+    }
+}
+
 pub(crate) const DEFAULT_LABEL_SCALE_MASTER: f64 = 1.0;
 pub(crate) const DEFAULT_LABEL_SCALE_GROUP: f64 = 1.0;
 pub(crate) const DEFAULT_LABEL_SCALE_STATIC_TAG: f64 = 1.0;
@@ -670,7 +781,8 @@ impl Default for SettingsV2 {
             war_panel_open: true,
             war_panel_width: default_war_panel_width(),
             show_war_queue: true,
-            show_war_stats: true,
+            show_war_markers: true,
+            activity_include_unconfirmed: false,
             show_player_heads: true,
             player_head_render_head: true,
             player_head_render_label: false,
@@ -681,6 +793,9 @@ impl Default for SettingsV2 {
             map_intel_enabled: false,
             show_resource_icons: true,
             show_territory_ornaments: false,
+            hq_crown_style: HqCrownStyle::default(),
+            hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
+            war_outline: WarOutline::default(),
             manual_sr_scalar: default_manual_sr_scalar(),
             auto_sr_scalar_enabled: true,
             show_leaderboard_sr_gain: false,
@@ -806,7 +921,8 @@ impl From<LegacySettings> for SettingsV2 {
             war_panel_open: true,
             war_panel_width: default_war_panel_width(),
             show_war_queue: true,
-            show_war_stats: true,
+            show_war_markers: true,
+            activity_include_unconfirmed: false,
             show_player_heads: true,
             player_head_render_head: true,
             player_head_render_label: false,
@@ -817,6 +933,9 @@ impl From<LegacySettings> for SettingsV2 {
             map_intel_enabled: value.map_intel_enabled,
             show_resource_icons: value.show_resource_icons,
             show_territory_ornaments: false,
+            hq_crown_style: HqCrownStyle::default(),
+            hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
+            war_outline: WarOutline::default(),
             manual_sr_scalar: value.manual_sr_scalar,
             auto_sr_scalar_enabled: value.auto_sr_scalar_enabled,
             show_leaderboard_sr_gain: value.show_leaderboard_sr_gain,
@@ -854,7 +973,6 @@ fn load_settings_v2() -> SettingsV2 {
 }
 
 use crate::colors::rgba_css;
-use crate::defense::{DEFENSE_TIERS, defense_tier_display};
 use crate::heat::{self, HeatFetchInput};
 use crate::history;
 use crate::keybinds::{KeybindHelpOpen, Shortcut};
@@ -863,47 +981,19 @@ use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
 use crate::sidebar::Sidebar;
 use crate::territory::{ClientTerritoryMap, from_snapshot};
+use crate::territory_card::{
+    DefenseValue, ResourceRow, ResourceTable, TerritoryHead, TerritoryWar, TreasuryValue, cooldown,
+    territory_resource_rows, treasury,
+};
 use crate::time_format::format_hms;
 use crate::timeline::Timeline;
 use crate::viewport::Viewport;
-use crate::warcontroller;
+use crate::war_room::{self, WarRoom, WarRoomInputs};
 use sequoia_browser_map::live_feed::{self, LiveFeed};
 use sequoia_browser_map::{BrowserMap, HeatLayer, MapCanvas, MapEvent, MapInputs};
 use sequoia_map_engine::heat::HeatScale;
 pub(crate) use sequoia_map_engine::settings::ConnectionStyle;
 use sequoia_map_engine::settings::{LabelScales, RenderSettings};
-
-/// Format a resource value for compact display (e.g. 9000 -> "9.0k").
-fn format_resource_compact(val: i32) -> String {
-    if val >= 1000 {
-        format!("{:.1}k", val as f64 / 1000.0)
-    } else {
-        format!("{val}")
-    }
-}
-
-fn tooltip_resource_items(
-    values: &Resources,
-    double_source: &Resources,
-) -> Vec<(i32, bool, &'static str, &'static str)> {
-    vec![
-        (
-            values.emeralds,
-            double_source.has_double_emeralds(),
-            "emerald",
-            "Emeralds",
-        ),
-        (values.ore, double_source.has_double_ore(), "ore", "Ore"),
-        (
-            values.crops,
-            double_source.has_double_crops(),
-            "crops",
-            "Crops",
-        ),
-        (values.fish, double_source.has_double_fish(), "fish", "Fish"),
-        (values.wood, double_source.has_double_wood(), "wood", "Wood"),
-    ]
-}
 
 fn format_heat_window_time(raw: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(raw)
@@ -988,6 +1078,9 @@ pub fn MapPage() -> impl IntoView {
     let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
     let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
+    let hq_crown_style: RwSignal<HqCrownStyle> = RwSignal::new(saved.hq_crown_style);
+    let hq_crown_scale: RwSignal<f64> = RwSignal::new(clamp_hq_crown_scale(saved.hq_crown_scale));
+    let war_outline = WarOutlineControls::new(saved.war_outline);
     let manual_sr_scalar: RwSignal<f64> =
         RwSignal::new(season_scalar::clamp_manual_scalar(saved.manual_sr_scalar));
     let auto_sr_scalar_enabled: RwSignal<bool> = RwSignal::new(saved.auto_sr_scalar_enabled);
@@ -1017,8 +1110,9 @@ pub fn MapPage() -> impl IntoView {
     let war_panel_open: RwSignal<bool> = RwSignal::new(saved.war_panel_open);
     let war_panel_width: RwSignal<f64> =
         RwSignal::new(clamp_war_panel_width(saved.war_panel_width));
-    let show_war_queue: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
-    let show_war_stats: RwSignal<bool> = RwSignal::new(saved.show_war_stats);
+    let show_war_panel: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
+    let show_war_markers: RwSignal<bool> = RwSignal::new(saved.show_war_markers);
+    let activity_include_unconfirmed = RwSignal::new(saved.activity_include_unconfirmed);
     let show_player_heads: RwSignal<bool> = RwSignal::new(saved.show_player_heads);
     let player_head_render_head: RwSignal<bool> = RwSignal::new(saved.player_head_render_head);
     let player_head_render_label: RwSignal<bool> = RwSignal::new(saved.player_head_render_label);
@@ -1043,7 +1137,6 @@ pub fn MapPage() -> impl IntoView {
 
     // Mobile detection
     let is_mobile: RwSignal<bool> = RwSignal::new(canvas_dimensions().0 < MOBILE_BREAKPOINT);
-    let window_width: RwSignal<f64> = RwSignal::new(canvas_dimensions().0);
     let peek_territory: RwSignal<Option<String>> = RwSignal::new(None);
     let selected_guild: RwSignal<Option<String>> = RwSignal::new(None);
     let detail_return_guild: RwSignal<Option<String>> = RwSignal::new(None);
@@ -1092,17 +1185,6 @@ pub fn MapPage() -> impl IntoView {
                 .is_some_and(crate::auth::Viewer::is_guild_member)
         })
     });
-    let territories_in_war: Memo<HashSet<String>> = Memo::new(move |_| {
-        if !war_feed_visible.get() {
-            return HashSet::new();
-        }
-        warcontroller_state.with(|state| {
-            state
-                .as_ref()
-                .map(WarControllerState::territories_at_war)
-                .unwrap_or_default()
-        })
-    });
     let territory_geometry: StoredValue<TerritoryGeometryMap> = StoredValue::new(HashMap::new());
     let guild_colors: StoredValue<GuildColorMap> = StoredValue::new(HashMap::new());
 
@@ -1121,6 +1203,13 @@ pub fn MapPage() -> impl IntoView {
         needs_resync: needs_live_resync,
         ..
     } = feed;
+    let war_room = WarRoom::new(WarRoomInputs {
+        feed: warcontroller_state,
+        visible: Signal::derive(move || war_feed_visible.get() && map_mode.get() == MapMode::Live),
+        territories,
+        connection,
+        tick,
+    });
 
     let render_settings = Memo::new(move |_| RenderSettings {
         thick_cooldown_borders: thick_cooldown_borders.get(),
@@ -1148,6 +1237,9 @@ pub fn MapPage() -> impl IntoView {
         compound_map_time: show_compound_map_time.get(),
         show_resource_icons: show_resource_icons.get(),
         show_territory_ornaments: show_territory_ornaments.get(),
+        hq_crown_style: hq_crown_style.get(),
+        hq_crown_scale: hq_crown_scale.get() as f32,
+        war_outline: war_outline.get(),
         label_scales: LabelScales {
             master: label_scale_master.get() as f32,
             static_tag: label_scale_static.get() as f32,
@@ -1160,12 +1252,6 @@ pub fn MapPage() -> impl IntoView {
     let map_clock = Memo::new(move |_| match map_mode.get() {
         MapMode::History => history_timestamp.get().unwrap_or_else(|| tick.get()),
         MapMode::Live => tick.get(),
-    });
-    // The war feed is live-only, so replaying history must not paint today's wars onto a
-    // past snapshot.
-    let war_outlines = Memo::new(move |_| match map_mode.get() {
-        MapMode::History => HashSet::new(),
-        MapMode::Live => territories_in_war.get(),
     });
     let minimap_inset = Memo::new(move |_| {
         (!is_mobile.get() && show_minimap.get()).then_some(match map_mode.get() {
@@ -1188,7 +1274,7 @@ pub fn MapPage() -> impl IntoView {
             // Paused history holds `map_clock` still; cooldown pulses keep animating.
             animation_tick: Some(tick.into()),
             heat: Some(heat_layer),
-            wars: Some(war_outlines.into()),
+            war_marks: Some(war_room.marks().into()),
             minimap_inset: minimap_inset.into(),
             edit: Signal::stored(Default::default()),
         },
@@ -1226,6 +1312,9 @@ pub fn MapPage() -> impl IntoView {
     provide_context(MapIntelModeEnabled(map_intel_enabled));
     provide_context(ShowResourceIcons(show_resource_icons));
     provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
+    provide_context(HqCrownStyleSetting(hq_crown_style));
+    provide_context(HqCrownScale(hq_crown_scale));
+    provide_context(war_outline);
     provide_context(ManualSrScalar(manual_sr_scalar));
     provide_context(AutoSrScalarEnabled(auto_sr_scalar_enabled));
     provide_context(ShowLeaderboardSrGain(show_leaderboard_sr_gain));
@@ -1242,8 +1331,9 @@ pub fn MapPage() -> impl IntoView {
     provide_context(SidebarOpen(sidebar_open));
     provide_context(WarPanelOpen(war_panel_open));
     provide_context(WarPanelWidth(war_panel_width));
-    provide_context(ShowWarQueue(show_war_queue));
-    provide_context(ShowWarStats(show_war_stats));
+    provide_context(ShowWarPanel(show_war_panel));
+    provide_context(ShowWarMarkers(show_war_markers));
+    provide_context(ActivityIncludeUnconfirmed(activity_include_unconfirmed));
     provide_context(ShowPlayerHeads(show_player_heads));
     provide_context(PlayerHeadRenderHead(player_head_render_head));
     provide_context(PlayerHeadRenderLabel(player_head_render_label));
@@ -1270,7 +1360,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(LiveHandoffResyncCount(live_handoff_resync_count));
     provide_context(LiveSeasonScalarSample(live_season_scalar_sample));
     provide_context(WarControllerData(warcontroller_state));
-    provide_context(TerritoriesInWar(territories_in_war));
+    provide_context(war_room);
     provide_context(WarFeedVisible(war_feed_visible));
     provide_context(HistorySeasonScalarSample(history_season_scalar_sample));
     provide_context(HistorySeasonLeaderboard(history_season_leaderboard));
@@ -1278,7 +1368,6 @@ pub fn MapPage() -> impl IntoView {
     provide_context(GuildColorStore(guild_colors));
     provide_context(crate::tower::TowerState::new());
     provide_context(IsMobile(is_mobile));
-    provide_context(WindowWidth(window_width));
 
     // Website session, resolved on mount (the signal itself is declared alongside the war
     // feed above). The navbar shows who is signed in, and the war feed is gated on
@@ -1412,6 +1501,9 @@ pub fn MapPage() -> impl IntoView {
         map_intel_enabled.set(defaults.map_intel_enabled);
         show_resource_icons.set(defaults.show_resource_icons);
         show_territory_ornaments.set(defaults.show_territory_ornaments);
+        hq_crown_style.set(defaults.hq_crown_style);
+        hq_crown_scale.set(clamp_hq_crown_scale(defaults.hq_crown_scale));
+        war_outline.set(defaults.war_outline);
         manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
             defaults.manual_sr_scalar,
         ));
@@ -1427,8 +1519,9 @@ pub fn MapPage() -> impl IntoView {
         heat_selected_season_id.set(defaults.heat_selected_season_id);
         readable_font.set(defaults.readable_font);
         show_minimap.set(defaults.show_minimap);
-        show_war_queue.set(defaults.show_war_queue);
-        show_war_stats.set(defaults.show_war_stats);
+        show_war_panel.set(defaults.show_war_queue);
+        show_war_markers.set(defaults.show_war_markers);
+        activity_include_unconfirmed.set(defaults.activity_include_unconfirmed);
         show_player_heads.set(defaults.show_player_heads);
         player_head_render_head.set(defaults.player_head_render_head);
         player_head_render_label.set(defaults.player_head_render_label);
@@ -1801,12 +1894,13 @@ pub fn MapPage() -> impl IntoView {
             }
             return;
         }
+        // What the feed held when the request went out: anything the stream delivers while
+        // it is in flight is at least as current as the answer, which then only fills in.
+        let held = warcontroller_state.get_untracked();
         wasm_bindgen_futures::spawn_local(async move {
-            match warcontroller::fetch_warcontroller().await {
-                // The SSE stream may already have delivered something newer while this was in
-                // flight - including the empty payload this endpoint falls back to.
+            match war_room::fetch_warcontroller().await {
                 Ok(state) => warcontroller_state.maybe_update(|current| {
-                    if !state.supersedes(current.as_ref()) {
+                    if *current != held || !state.supersedes(current.as_ref()) {
                         return false;
                     }
                     *current = Some(state);
@@ -1955,8 +2049,9 @@ pub fn MapPage() -> impl IntoView {
             sidebar_open: sidebar_open.get(),
             war_panel_open: war_panel_open.get(),
             war_panel_width: clamp_war_panel_width(war_panel_width.get()),
-            show_war_queue: show_war_queue.get(),
-            show_war_stats: show_war_stats.get(),
+            show_war_queue: show_war_panel.get(),
+            show_war_markers: show_war_markers.get(),
+            activity_include_unconfirmed: activity_include_unconfirmed.get(),
             show_player_heads: show_player_heads.get(),
             player_head_render_head: player_head_render_head.get(),
             player_head_render_label: player_head_render_label.get(),
@@ -1969,6 +2064,9 @@ pub fn MapPage() -> impl IntoView {
             map_intel_enabled: map_intel_enabled.get(),
             show_resource_icons: show_resource_icons.get(),
             show_territory_ornaments: show_territory_ornaments.get(),
+            hq_crown_style: hq_crown_style.get(),
+            hq_crown_scale: clamp_hq_crown_scale(hq_crown_scale.get()),
+            war_outline: war_outline.get(),
             manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
             auto_sr_scalar_enabled: auto_sr_scalar_enabled.get(),
             show_leaderboard_sr_gain: show_leaderboard_sr_gain.get(),
@@ -2021,11 +2119,6 @@ pub fn MapPage() -> impl IntoView {
 
             let cb = Closure::<dyn Fn()>::new(move || {
                 let (w, _) = canvas_dimensions();
-                // Whole pixels only: sub-pixel and DPR resize noise must not wake the
-                // overlays that derive their layout from this.
-                if (w - window_width.get_untracked()).abs() >= 1.0 {
-                    window_width.set(w);
-                }
                 let mobile = w < MOBILE_BREAKPOINT;
                 if mobile != is_mobile.get_untracked() {
                     is_mobile.set(mobile);
@@ -2221,8 +2314,12 @@ pub fn MapPage() -> impl IntoView {
 
         let handler =
             Closure::<dyn Fn(web_sys::KeyboardEvent)>::new(move |e: web_sys::KeyboardEvent| {
-                // The help dialog handles its own keys (Tab, Esc).
-                if keybind_help_open.get_untracked() {
+                // The help dialog, the war sheet and the player detail handle their own keys,
+                // and a key a control already acted on is not a map shortcut.
+                if keybind_help_open.get_untracked()
+                    || e.default_prevented()
+                    || war_room.handle_stray_key(&e)
+                {
                     return;
                 }
                 let key = e.key();
@@ -2609,8 +2706,7 @@ pub fn MapPage() -> impl IntoView {
                 <DefenseLegend />
                 <MapIntelOverlay />
                 <crate::players::PlayerHeadsOverlay />
-                <crate::warcontroller::WarQueuePanel />
-                <crate::war_stats::WarStatsStrip />
+                <crate::war_room::WarRoomHud />
                 // Mobile HUD buttons — bottom-right stack
                 <MobileHistoryToggle />
                 // Mobile FAB — opens sidebar
@@ -2620,6 +2716,7 @@ pub fn MapPage() -> impl IntoView {
                         if is_mobile.get() && !sidebar_open.get() { "flex" } else { "none" }
                     }
                     style="position: absolute; bottom: 16px; right: 16px; z-index: 20; width: 48px; height: 48px; border-radius: 12px; background: var(--color-deep); border: 1px solid var(--color-border-accent); align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.15); color: var(--color-gold); font-size: 1.4rem; font-family: var(--font-mono); touch-action: manipulation;"
+                    aria-label="Open sidebar"
                     on:click=move |_| {
                         sidebar_open.set(true);
                         sidebar_transient.set(false);
@@ -2826,26 +2923,13 @@ fn SidebarToggle() -> impl IntoView {
 
     view! {
         <button
+            type="button"
             class="sidebar-toggle"
             title=move || if sidebar_open.get() { "Hide sidebar" } else { "Show sidebar" }
-            style="position: absolute; top: 16px; left: -44px; z-index: 11; width: 32px; height: 32px; background: var(--color-deep); border: 1px solid var(--color-border-subtle); border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: border-color 0.15s, background 0.15s, color 0.15s; color: var(--color-text-dim); font-family: var(--font-mono); font-size: 1.1rem; line-height: 1;"
+            aria-label=move || if sidebar_open.get() { "Hide sidebar" } else { "Show sidebar" }
             on:click=move |_| {
                 sidebar_open.update(|v| *v = !*v);
                 sidebar_transient.set(false);
-            }
-            on:mouseenter=move |e| {
-                if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("border-color", "rgba(245,197,66,0.4)").ok();
-                    el.style().set_property("color", "var(--color-gold)").ok();
-                    el.style().set_property("background", "var(--color-surface)").ok();
-                }
-            }
-            on:mouseleave=move |e| {
-                if let Some(el) = e.target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
-                    el.style().set_property("border-color", "var(--color-border-subtle)").ok();
-                    el.style().set_property("color", "var(--color-text-dim)").ok();
-                    el.style().set_property("background", "var(--color-deep)").ok();
-                }
             }
         >
             {move || if sidebar_open.get() { "\u{00BB}" } else { "\u{00AB}" }}
@@ -3077,6 +3161,8 @@ fn MobileHistoryToggle() -> impl IntoView {
 
     view! {
         <button
+            class="mobile-history-toggle"
+            aria-label="History"
             style:display=move || {
                 if is_mobile.get() && !sidebar_open.get() && history_available.get() && !is_history() {
                     "flex"
@@ -3150,14 +3236,9 @@ struct TooltipInfo {
     guild_color: (u8, u8, u8),
     cooldown: Option<(String, f64)>,
     treasury: TreasuryLevel,
-    base_resources: Resources,
-    resources: Resources,
-    resources_from_live: bool,
+    resources: Vec<ResourceRow>,
     defense_tier: Option<String>,
     is_headquarters: bool,
-    is_at_war: bool,
-    live_production_rates: Option<Resources>,
-    live_storage_capacity: Option<Resources>,
     takes_in_window: Option<u64>,
 }
 
@@ -3188,10 +3269,10 @@ fn DefenseLegend() -> impl IntoView {
                 "Defense"
             </div>
             <div style="display: grid; grid-template-columns: auto auto; gap: 4px 8px; align-items: center;">
-                {DEFENSE_TIERS.iter().map(|(label, color)| view! {
-                    <span style={format!("width: 10px; height: 10px; border-radius: 2px; background: {color}; border: 1px solid rgba(255,255,255,0.18);")} />
+                {sequoia_shared::tower::DefenseRating::ALL.iter().map(|rating| view! {
+                    <span style={format!("width: 10px; height: 10px; border-radius: 2px; background: {}; border: 1px solid rgba(255,255,255,0.18);", rating.color_hex())} />
                     <span style="font-family: var(--font-mono); font-size: 0.64rem; color: #d8d5cb; white-space: nowrap;">
-                        {*label}
+                        {rating.label()}
                     </span>
                 }).collect_view()}
             </div>
@@ -3210,7 +3291,6 @@ fn Tooltip() -> impl IntoView {
     let HistoryTimestamp(history_timestamp) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
-    let TerritoriesInWar(territories_in_war) = expect_context();
 
     let tooltip_info = Memo::new(move |_| {
         let reference_secs = if mode.get() == MapMode::History {
@@ -3222,28 +3302,11 @@ fn Tooltip() -> impl IntoView {
         let map = territories.get();
         let ct = map.get(&name)?;
         let runtime = ct.territory.runtime.as_ref();
-        let base_resources = ct.territory.resources.clone();
-        let live_held_resources = runtime
-            .and_then(|runtime| runtime.held_resources.clone())
-            .filter(|value| !value.is_empty());
-        let live_production_rates = runtime
-            .and_then(|runtime| runtime.production_rates.clone())
-            .filter(|value| !value.is_empty());
-        let live_storage_capacity = runtime
-            .and_then(|runtime| runtime.storage_capacity.clone())
-            .filter(|value| !value.is_empty());
-        let resources = live_held_resources
-            .clone()
-            .unwrap_or_else(|| base_resources.clone());
-        let resources_from_live = live_held_resources.is_some();
+        let resources = territory_resource_rows(&ct.territory.resources, runtime);
         let defense_tier = runtime.and_then(|runtime| runtime.defense_tier.clone());
         let is_headquarters = runtime
             .and_then(|runtime| runtime.headquarters)
             .unwrap_or(false);
-        // Matches the red map border: the war feed is live-only, so it must not be
-        // reported against a past snapshot.
-        let is_at_war = mode.get() != MapMode::History
-            && territories_in_war.with(|in_war| in_war.contains(&name));
         let takes_in_window = if heat_mode_enabled.get() {
             Some(
                 heat_entries_by_territory
@@ -3256,17 +3319,8 @@ fn Tooltip() -> impl IntoView {
             None
         };
         let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
-        let treasury = runtime
-            .and_then(|runtime| runtime.treasury.as_deref())
-            .and_then(TreasuryLevel::from_api_tier)
-            .unwrap_or_else(|| TreasuryLevel::from_held_seconds(secs));
-        let cooldown = if secs < 600 {
-            let remaining = 600 - secs;
-            let frac = remaining as f64 / 600.0;
-            Some((format!("{}:{:02}", remaining / 60, remaining % 60), frac))
-        } else {
-            None
-        };
+        let treasury = treasury(runtime, secs);
+        let cooldown = cooldown(secs);
 
         Some(TooltipInfo {
             name,
@@ -3276,221 +3330,71 @@ fn Tooltip() -> impl IntoView {
             guild_color: ct.guild_color,
             cooldown,
             treasury,
-            base_resources,
             resources,
-            resources_from_live,
             defense_tier,
             is_headquarters,
-            is_at_war,
-            live_production_rates,
-            live_storage_capacity,
             takes_in_window,
         })
     });
 
+    // Keyed by territory so the war line keeps its own state while the pointer stays on one.
+    let hovered_name =
+        Memo::new(move |_| tooltip_info.with(|info| info.as_ref().map(|info| info.name.clone())));
+
     view! {
         {move || {
             let Some(info) = tooltip_info.get() else {
-                return view! { <div style="display:none;" /> }.into_any();
+                return ().into_any();
             };
             let (x, y) = pointer.get();
             let (r, g, b) = info.guild_color;
-            let (tr, tg, tb) = info.treasury.color_rgb();
-            let buff = info.treasury.buff_percent();
-            let treasury_label = info.treasury.label();
-            let defense_row = info.defense_tier.as_ref().map(|tier| {
-                let (label, color) = defense_tier_display(tier);
-                view! {
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                        <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Defense"</span>
-                        <span style={format!("color: {color}; font-size: 0.78rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;")}>{label}</span>
-                    </div>
-                }
-            });
-
-            let render_resource_section = |title: &str,
-                                           title_color: &str,
-                                           resources: &Resources,
-                                           double_source: &Resources| {
-                let chips = tooltip_resource_items(resources, double_source)
-                    .into_iter()
-                    .filter(|(val, _, _, _)| *val > 0)
-                    .collect::<Vec<_>>();
-                if chips.is_empty() {
-                    return view! { <div style="display:none;" /> }.into_any();
-                }
-                view! {
-                    <div style="padding: 7px 0 3px; border-top: 1px solid rgba(40,44,62,0.6);">
-                        <div style={format!(
-                            "font-family: var(--font-display); font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.10em; color: {title_color}; margin-bottom: 5px;"
-                        )}>
-                            {title.to_string()}
-                        </div>
-                        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
-                            {chips.into_iter().map(|(val, is_double, icon, label)| {
-                                let icon_style = crate::ui_icons::sprite_style(icon, 12).unwrap_or_default();
-                                let double_style = icon_style.clone();
-                                let amount = format_resource_compact(val);
-                                view! {
-                                    <div style="display: flex; align-items: center; gap: 4px; background: #111722; padding: 3px 7px; border-radius: 4px; border: 1px solid rgba(129,140,160,0.34); box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);">
-                                        <span style={icon_style} />
-                                        {(is_double).then(|| view! { <span style={double_style} /> })}
-                                        <span style="font-family: var(--font-mono); font-size: 0.70rem; color: var(--color-text-primary); font-variant-numeric: tabular-nums;">
-                                            {amount}
-                                        </span>
-                                        <span style="font-family: var(--font-body); font-size: 0.60rem; color: #aeb7c7;">
-                                            {label}
-                                        </span>
-                                    </div>
-                                }
-                            }).collect::<Vec<_>>()}
-                        </div>
-                    </div>
-                }.into_any()
-            };
-
-            let held_section = if info.resources_from_live {
-                render_resource_section(
-                    "Held Resources",
-                    "#b8c2d6",
-                    &info.resources,
-                    &info.base_resources,
-                )
-            } else {
-                render_resource_section(
-                    "Resources",
-                    "#aeb7c7",
-                    &info.resources,
-                    &info.base_resources,
-                )
-            };
-            let production_section = info
-                .live_production_rates
-                .as_ref()
-                .map(|resources| {
-                    render_resource_section(
-                        "Production/Hr",
-                        "#b8c2d6",
-                        resources,
-                        &info.base_resources,
-                    )
-                })
-                .unwrap_or_else(|| view! { <div style="display:none;" /> }.into_any());
-            let storage_section = info
-                .live_storage_capacity
-                .as_ref()
-                .map(|resources| {
-                    render_resource_section(
-                        "Storage Capacity",
-                        "#b8c2d6",
-                        resources,
-                        &info.base_resources,
-                    )
-                })
-                .unwrap_or_else(|| view! { <div style="display:none;" /> }.into_any());
-
+            let territory = Signal::derive(move || hovered_name.get().unwrap_or_default());
             view! {
                 <div
-                    class="tooltip-animate"
+                    class="tooltip-animate tcard tcard-hover"
                     style:left=format!("{}px", x + 16.0)
                     style:top=format!("{}px", y - 8.0)
-                    style="position: fixed; pointer-events: none; z-index: 100; min-width: 280px; max-width: 340px; background: var(--color-deep); border: 1px solid var(--color-border-subtle); border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.02) inset; backdrop-filter: blur(2px); display: flex; flex-direction: row;"
+                    style:--tcard-guild=rgba_css(r, g, b, 0.9)
                 >
-                    <div style={format!(
-                        "width: 4px; flex-shrink: 0; background: linear-gradient(180deg, {} 0%, {} 100%);",
-                        rgba_css(r, g, b, 0.85),
-                        rgba_css(r, g, b, 0.30),
-                    )} />
-                    <div style="padding: 12px 14px 10px; flex: 1; min-width: 0;">
-                        // Header: swatch + territory name
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 3px;">
-                            <div style={format!(
-                                "width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.10); background: {}; flex-shrink: 0; box-shadow: 0 0 4px {};",
-                                rgba_css(r, g, b, 0.75),
-                                rgba_css(r, g, b, 0.25),
-                            )} />
-                            <div style="font-size: 0.92rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;">
-                                {info.name.clone()}
-                            </div>
-                            {info.is_at_war.then(|| view! {
-                                <span style="font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; color: #ff4545; flex-shrink: 0;">
-                                    "In War"
-                                </span>
-                            })}
-                            {info.is_headquarters.then(|| view! {
-                                <span style="font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-gold); flex-shrink: 0;">
-                                    "[HQ]"
-                                </span>
-                            })}
-                        </div>
-                        // Guild name + prefix
-                        <div style="display: flex; align-items: baseline; gap: 4px; margin-left: 22px; margin-bottom: 8px;">
-                            <a
-                                href=crate::guild_stats_url(&info.guild_name)
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title="Open Wynncraft guild stats"
-                                style="font-size: 0.78rem; color: var(--color-gold); font-family: var(--font-body); text-decoration: none; pointer-events: auto;"
-                            >
-                                {info.guild_name.clone()}
-                            </a>
-                            <span style="font-size: 0.70rem; color: var(--color-text-secondary); font-family: var(--font-mono);">"[" {info.guild_prefix.clone()} "]"</span>
-                        </div>
-
-                        // Key-value rows
-                        <div style="display: flex; flex-direction: column;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Held"</span>
-                                <span style="color: var(--color-text-primary); font-size: 0.82rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{info.held.clone()}</span>
-                            </div>
+                    <TerritoryHead name=info.name.clone() hq=info.is_headquarters />
+                    <div class="tcard-owner">
+                        <a
+                            class="tcard-guild"
+                            href=crate::guild_stats_url(&info.guild_name)
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open Wynncraft guild stats"
+                        >
+                            {info.guild_name.clone()}
+                        </a>
+                        <span class="tcard-tag">"[" {info.guild_prefix.clone()} "]"</span>
+                        <span class="tcard-held" title="Held for">{info.held.clone()}</span>
+                    </div>
+                    <TerritoryWar territory />
+                    <dl class="tcard-stats">
+                        <div>
+                            <dt>"Cooldown"</dt>
                             {match info.cooldown.clone() {
                                 Some((remaining, frac)) => view! {
-                                    <div style="padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                                            <span style="color: var(--color-gold); font-size: 0.72rem; font-family: var(--font-display);">"Cooldown"</span>
-                                            <span style="color: var(--color-gold); font-size: 0.82rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{remaining}</span>
-                                        </div>
-                                        <div style="height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;">
-                                            <div style={format!(
-                                                "height: 100%; width: {:.1}%; background: linear-gradient(to right, var(--color-gold), #d4a030); border-radius: 2px; box-shadow: 0 0 6px rgba(245,197,66,0.1);",
-                                                frac * 100.0
-                                            )} />
-                                        </div>
-                                    </div>
+                                    <dd class="tcard-cooldown">
+                                        {remaining}
+                                        <span class="tcard-meter" aria-hidden="true">
+                                            <span style:width=format!("{:.1}%", frac * 100.0) />
+                                        </span>
+                                    </dd>
                                 }.into_any(),
-                                None => view! {
-                                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                        <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Cooldown"</span>
-                                        <span style="color: var(--color-emerald); font-size: 0.82rem; font-family: var(--font-mono);">"Ready"</span>
-                                    </div>
-                                }.into_any(),
+                                None => view! { <dd class="tcard-ready">"Ready"</dd> }.into_any(),
                             }}
-                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Treasury"</span>
-                                <span style="display: inline-flex; align-items: center; gap: 5px;">
-                                    <span style={format!("color: {}; font-family: var(--font-mono); font-size: 0.78rem;", rgba_css(tr, tg, tb, 1.0))}>{treasury_label}</span>
-                                    {(buff > 0).then(|| view! {
-                                        <span style={format!(
-                                            "font-size: 0.65rem; font-family: var(--font-mono); color: {}; background: {}; padding: 1px 5px; border-radius: 3px;",
-                                            rgba_css(tr, tg, tb, 0.9),
-                                            rgba_css(tr, tg, tb, 0.08),
-                                        )}>{format!("+{buff}%")}</span>
-                                    })}
-                                </span>
-                            </div>
-                            {defense_row}
-                            {info.takes_in_window.map(|count| view! {
-                                <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid rgba(40,44,62,0.6);">
-                                    <span style="color: var(--color-text-secondary); font-size: 0.72rem; font-family: var(--font-body);">"Takes in window"</span>
-                                    <span style="color: var(--color-text-primary); font-size: 0.78rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{count}</span>
-                                </div>
-                            })}
                         </div>
-
-                        {held_section}
-                        {production_section}
-                        {storage_section}
-                    </div>
+                        <div><dt>"Treasury"</dt><TreasuryValue level=info.treasury buff=true /></div>
+                        {info.defense_tier.clone().map(|tier| view! {
+                            <div><dt>"Defense"</dt><DefenseValue tier /></div>
+                        })}
+                        {info.takes_in_window.map(|count| view! {
+                            <div><dt>"Takes"</dt><dd>{count}</dd></div>
+                        })}
+                    </dl>
+                    <ResourceTable rows=info.resources.clone() />
                 </div>
             }.into_any()
         }}
@@ -3533,18 +3437,9 @@ fn TerritoryPeekCard() -> impl IntoView {
         } else {
             None
         };
-        let acquired = ct.territory.acquired.to_rfc3339();
-        let secs = chrono::DateTime::parse_from_rfc3339(&acquired)
-            .map(|dt| (reference_secs - dt.timestamp()).max(0))
-            .unwrap_or(0);
+        let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
         let held = format_hms(secs);
-        let treasury = ct
-            .territory
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.treasury.as_deref())
-            .and_then(TreasuryLevel::from_api_tier)
-            .unwrap_or_else(|| TreasuryLevel::from_held_seconds(secs));
+        let treasury = treasury(ct.territory.runtime.as_ref(), secs);
         Some((
             name,
             ct.territory.guild.name.clone(),
@@ -3566,42 +3461,35 @@ fn TerritoryPeekCard() -> impl IntoView {
             let (r, g, b) = info.4;
             let treasury = info.5;
             let takes_in_window = info.6;
-            let (tr, tg, tb) = treasury.color_rgb();
             let name = info.0.clone();
             let is_history = mode.get_untracked() == MapMode::History;
             let bottom_px = if is_history { 96 } else { 16 };
+            let bottom = format!("calc({bottom_px}px + env(safe-area-inset-bottom, 0px))");
+            let territory = Signal::stored(name.clone());
             view! {
                 <div
-                    class="peek-card-animate"
-                    style:bottom=format!("{}px", bottom_px)
-                    style="position: fixed; left: 16px; right: 76px; z-index: 90; background: #161921; border: 1px solid var(--color-border-subtle); border-radius: 10px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: row;"
+                    class="peek-card-animate tcard tcard-peek"
+                    style:bottom=bottom
+                    style:--tcard-guild=rgba_css(r, g, b, 0.9)
                 >
-                    <div style={format!("width: 4px; flex-shrink: 0; background: {};", rgba_css(r, g, b, 0.85))} />
-                    <div style="padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 4px;">
-                        <div style="font-size: 0.85rem; font-weight: 700; color: var(--color-text-primary); font-family: var(--font-display); line-height: 1.3;">
-                            <span style="color: var(--color-text-secondary); font-weight: 400;">"[" {info.2.clone()} "] "</span>
-                            {info.1}
+                    <div class="tcard-peek-body">
+                        <TerritoryHead name=info.0.clone() hq=false />
+                        <div class="tcard-owner">
+                            <span class="tcard-guild">{info.1}</span>
+                            <span class="tcard-tag">"[" {info.2.clone()} "]"</span>
+                            <span class="tcard-held" title="Held for">{info.3}</span>
                         </div>
-                        <div style="font-size: 0.72rem; color: var(--color-text-secondary); font-family: var(--font-mono);">
-                            {info.0.clone()}
-                        </div>
-                        <div style="font-size: 0.68rem; display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 2px;">
-                            <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Held"</span>
-                            <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{info.3}</span>
-                        </div>
-                        {takes_in_window.map(|count| view! {
-                            <div style="font-size: 0.68rem; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-                                <span style="color: var(--color-text-secondary); font-family: var(--font-body);">"Takes in window"</span>
-                                <span style="color: var(--color-text-primary); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">{count}</span>
-                            </div>
-                        })}
-                        <div style="font-size: 0.68rem; font-family: var(--font-mono); display: flex; align-items: center; gap: 4px;">
-                            <span style={format!("color: {}; font-size: 0.52rem;", rgba_css(tr, tg, tb, 1.0))}>{"\u{25C6}"}</span>
-                            <span style={format!("color: {};", rgba_css(tr, tg, tb, 0.9))}>{treasury.label()}</span>
-                        </div>
+                        <TerritoryWar territory />
+                        <dl class="tcard-stats">
+                            <div><dt>"Treasury"</dt><TreasuryValue level=treasury /></div>
+                            {takes_in_window.map(|count| view! {
+                                <div><dt>"Takes"</dt><dd>{count}</dd></div>
+                            })}
+                        </dl>
                     </div>
                     <button
-                        style="align-self: center; margin-right: 14px; min-height: 44px; min-width: 44px; padding: 8px 16px; background: var(--color-surface); border: 1px solid var(--color-border-accent); border-radius: 6px; color: var(--color-gold); font-family: var(--font-mono); font-size: 0.72rem; cursor: pointer; touch-action: manipulation; white-space: nowrap;"
+                        type="button"
+                        class="tcard-peek-details"
                         on:click=move |_| {
                             show_settings.set(false);
                             detail_return_guild.set(None);
@@ -3610,7 +3498,7 @@ fn TerritoryPeekCard() -> impl IntoView {
                             peek_territory.set(None);
                         }
                     >
-                        "Details \u{203A}"
+                        "Details"
                     </button>
                 </div>
             }.into_any()
@@ -3626,6 +3514,7 @@ mod tests {
         DEFAULT_CONNECTION_THICKNESS_SCALE, clamp_connection_opacity_scale,
         clamp_connection_solid_opacity, clamp_connection_thickness_scale,
     };
+    use super::{DEFAULT_HQ_CROWN_SCALE, HQ_CROWN_SCALE_MAX, HqCrownStyle, clamp_hq_crown_scale};
     use super::{
         DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_SIDEBAR_WIDTH,
         DEFAULT_WAR_PANEL_WIDTH, LegacySettings, MapMode, NameColor, PLAYER_HEAD_SIZE_MAX,
@@ -3665,16 +3554,58 @@ mod tests {
     }
 
     #[test]
-    fn settings_without_war_visibility_show_both_war_overlays() {
+    fn hq_crown_settings_default_to_name_below_and_round_trip() {
+        let old: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(old.hq_crown_style, HqCrownStyle::NameBelow);
+        assert_eq!(old.hq_crown_scale, DEFAULT_HQ_CROWN_SCALE);
+
+        let saved = SettingsV2 {
+            hq_crown_style: HqCrownStyle::Fill,
+            hq_crown_scale: 1.4,
+            ..SettingsV2::default()
+        };
+        let round_trip: SettingsV2 =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!(round_trip.hq_crown_style, HqCrownStyle::Fill);
+        assert_eq!(round_trip.hq_crown_scale, 1.4);
+        assert_eq!(clamp_hq_crown_scale(f64::NAN), DEFAULT_HQ_CROWN_SCALE);
+        assert_eq!(clamp_hq_crown_scale(9.0), HQ_CROWN_SCALE_MAX);
+
+        let future: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "hq_crown_style": "Banner",
+            "show_names": true,
+        }))
+        .unwrap();
+        assert_eq!(future.hq_crown_style, HqCrownStyle::NameBelow);
+        assert!(future.show_names);
+    }
+
+    #[test]
+    fn settings_without_war_visibility_show_the_panel_and_markers() {
         // Same reasoning as the war panel above: these post-date every saved blob, so on
         // is a serde default rather than a defaults-version migration.
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(parsed.show_war_queue);
-        assert!(parsed.show_war_stats);
+        assert!(parsed.show_war_markers);
 
         let defaults = SettingsV2::default();
         assert!(defaults.show_war_queue);
-        assert!(defaults.show_war_stats);
+        assert!(defaults.show_war_markers);
+    }
+
+    #[test]
+    fn recent_activity_shows_only_confirmed_results_until_asked_otherwise() {
+        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!parsed.activity_include_unconfirmed);
+        assert!(!SettingsV2::default().activity_include_unconfirmed);
+
+        let saved = SettingsV2 {
+            activity_include_unconfirmed: true,
+            ..SettingsV2::default()
+        };
+        let round_trip: SettingsV2 =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert!(round_trip.activity_include_unconfirmed);
     }
 
     #[test]

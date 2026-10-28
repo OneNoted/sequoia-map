@@ -26,7 +26,8 @@ const SHARP_YUV_MAX_PIXELS: u64 = 12_000_000;
 /// Returns [`MapImageError::Encode`] when the codec rejects the image.
 pub(super) fn encode(canvas: &Pixmap, format: ImageFormat) -> Result<Vec<u8>, MapImageError> {
     match format {
-        ImageFormat::Png => png(canvas),
+        ImageFormat::Png => png(canvas, false),
+        ImageFormat::CompactPng => png(canvas, true),
         ImageFormat::Webp => {
             let pixels = u64::from(canvas.width()) * u64::from(canvas.height());
             webp(canvas, pixels <= SHARP_YUV_MAX_PIXELS)
@@ -34,7 +35,8 @@ pub(super) fn encode(canvas: &Pixmap, format: ImageFormat) -> Result<Vec<u8>, Ma
     }
 }
 
-fn png(canvas: &Pixmap) -> Result<Vec<u8>, MapImageError> {
+/// Streams opaque RGB rows, optionally reducing precision without spatial resampling.
+fn png(canvas: &Pixmap, compact: bool) -> Result<Vec<u8>, MapImageError> {
     let encode_error = |error: &dyn std::fmt::Display| MapImageError::Encode(error.to_string());
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, canvas.width(), canvas.height());
@@ -50,13 +52,20 @@ fn png(canvas: &Pixmap) -> Result<Vec<u8>, MapImageError> {
     // The canvas starts from an opaque background, so its premultiplied RGB is the straight
     // colour. Converting a row at a time avoids a second full-size buffer.
     let mut row = Vec::with_capacity(canvas.width() as usize * 3);
+    let compact_rgb = compact.then(compact_rgb_table);
     for pixels in canvas.data().chunks_exact(canvas.width() as usize * 4) {
         row.clear();
-        row.extend(
-            pixels
-                .chunks_exact(4)
-                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]),
-        );
+        if let Some(table) = &compact_rgb {
+            row.extend(pixels.chunks_exact(4).flat_map(|pixel| {
+                [pixel[0], pixel[1], pixel[2]].map(|value| table[usize::from(value)])
+            }));
+        } else {
+            row.extend(
+                pixels
+                    .chunks_exact(4)
+                    .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]]),
+            );
+        }
         stream
             .write_all(&row)
             .map_err(|error| encode_error(&error))?;
@@ -64,6 +73,22 @@ fn png(canvas: &Pixmap) -> Result<Vec<u8>, MapImageError> {
     stream.finish().map_err(|error| encode_error(&error))?;
     writer.finish().map_err(|error| encode_error(&error))?;
     Ok(out)
+}
+
+/// Nearest eight-level channel value, retaining 0/255 and limiting error to four.
+fn compact_rgb_table() -> [u8; 256] {
+    std::array::from_fn(|value| {
+        let lower = value / 8 * 8;
+        let upper = (lower + 8).min(255);
+        let down = value - lower;
+        let up = upper - value;
+        // Ties to an even grid index avoid consistently shifting colours upward.
+        if up < down || (up == down && (lower / 8) % 2 == 1) {
+            upper as u8
+        } else {
+            lower as u8
+        }
+    })
 }
 
 fn webp(canvas: &Pixmap, sharp_yuv: bool) -> Result<Vec<u8>, MapImageError> {
@@ -87,6 +112,43 @@ mod tests {
     use tiny_skia::{Color, Paint, Rect, Transform};
 
     use super::*;
+
+    #[test]
+    fn compact_png_keeps_dimensions_and_bounds_colours_while_default_is_exact() {
+        let mut canvas = Pixmap::new(256, 2).expect("canvas");
+        for (index, pixel) in canvas.data_mut().chunks_exact_mut(4).enumerate() {
+            let value = index as u8;
+            pixel.copy_from_slice(&[value, 255 - value, value.wrapping_mul(73), 255]);
+        }
+        let decoded = |format| {
+            let bytes = encode(&canvas, format).expect("PNG");
+            let mut reader = png::Decoder::new(Cursor::new(bytes))
+                .read_info()
+                .expect("header");
+            let mut pixels = vec![0; reader.output_buffer_size().expect("size")];
+            let info = reader.next_frame(&mut pixels).expect("pixels");
+            assert_eq!((info.width, info.height), (256, 2));
+            assert_eq!(info.color_type, png::ColorType::Rgb);
+            pixels
+        };
+        let exact = decoded(ImageFormat::Png);
+        let compact = decoded(ImageFormat::CompactPng);
+        for ((source, exact), compact) in canvas
+            .data()
+            .chunks_exact(4)
+            .zip(exact.chunks_exact(3))
+            .zip(compact.chunks_exact(3))
+        {
+            assert_eq!(&source[..3], exact);
+            for (&original, &rounded) in exact.iter().zip(compact) {
+                assert!(original.abs_diff(rounded) <= 4);
+                if original == 0 || original == 255 {
+                    assert_eq!(original, rounded);
+                }
+            }
+        }
+        assert_ne!(exact, compact, "compact encoding must not be a no-op");
+    }
 
     /// Mean of max(r, g, b) - min(r, g, b) over the pixels where `mask` holds.
     fn chroma(rgb: &[u8], mask: impl Fn(usize) -> bool) -> f64 {

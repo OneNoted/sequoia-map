@@ -7,6 +7,8 @@ mod map_image;
 mod routes;
 mod services;
 mod state;
+#[cfg(test)]
+mod test_support;
 
 extern crate self as sqlx;
 pub use crate::db_sqlx::{PgPool, Postgres, QueryBuilder, postgres, query, query_as, query_scalar};

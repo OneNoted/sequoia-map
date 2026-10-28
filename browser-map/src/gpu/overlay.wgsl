@@ -1,5 +1,5 @@
-// Host overlays (Map Intel site names, teammates): instanced quads placed in device pixels
-// around world anchors, so prepared sprites land texel for pixel at any camera.
+// Host overlays (Map Intel site names, war plates, teammates): instanced quads placed in
+// device pixels around world anchors, so prepared sprites land texel for pixel at any camera.
 
 struct Viewport {
     offset: vec2<f32>,
@@ -24,7 +24,9 @@ var<uniform> params: vec4<f32>;
 
 // `OverlayKind` in overlay.rs.
 const SPRITE: u32 = 0u;
+const TINTED: u32 = 1u;
 const DOT: u32 = 2u;
+const RECT: u32 = 3u;
 
 // Teammate dot, CSS pixels: a filled circle with a centred one-pixel outline.
 const DOT_RADIUS: f32 = 3.0;
@@ -39,8 +41,8 @@ struct VertexInput {
     @location(3) size: vec2<f32>,
     @location(4) uv_rect: vec4<f32>,
     @location(5) color: vec4<f32>,
-    // Hidden below this camera scale.
-    @location(6) min_scale: f32,
+    // Drawn while scales.x <= camera scale < scales.y.
+    @location(6) scales: vec2<f32>,
     @location(7) kind: u32,
 };
 
@@ -60,7 +62,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.local = vec2<f32>(0.0);
     out.color = in.color;
     out.kind = in.kind;
-    if vp.scale < in.min_scale {
+    if vp.scale < in.scales.x || vp.scale >= in.scales.y {
         // Every corner on one point outside the view: nothing is rasterized.
         out.clip_position = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
         return out;
@@ -79,6 +81,13 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if in.kind == SPRITE {
         return textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
+    }
+    if in.kind == RECT {
+        return in.color;
+    }
+    if in.kind == TINTED {
+        let texel = textureSampleLevel(atlas, atlas_sampler, in.uv, 0.0);
+        return vec4<f32>(in.color.rgb * texel.rgb, texel.a * in.color.a);
     }
     // Canvas arc + fill + stroke: one device pixel of antialiasing on each edge.
     let dpr = params.x;

@@ -11,10 +11,9 @@ use super::glyphs::{CAP_CELLS, Face, TextStyle, draw_text};
 use super::palette::{self, color};
 use super::scene::{Guild, MapScene, Plot};
 
-/// How strongly a guild's own colour covers the terrain inside its territories and along
-/// their edges, as on the website's map: a light wash with a clearly stronger edge.
+/// A light guild-coloured wash with a stronger edge, without changing the border geometry.
 const FILL_OPACITY: f32 = 0.26;
-const BORDER_OPACITY: f32 = 0.72;
+const BORDER_OPACITY: f32 = 0.90;
 const CROWN_ART_PIXELS: u32 = 16;
 /// Smallest label cell: two pixels per font cell gives 14-pixel capitals.
 const MIN_CELL: u32 = 2;
@@ -44,7 +43,7 @@ pub(super) fn paint(canvas: &mut Pixmap, scene: &MapScene, frame: Frame, assets:
     }
     draw_connections(canvas, scene, frame, ui);
     let border = border_width(ui);
-    // Borders are stroked over the fill, so their own alpha only makes up the difference.
+    // The fill already contributes some of the edge's guild colour.
     let border_alpha = alpha(1.0 - (1.0 - BORDER_OPACITY) / (1.0 - FILL_OPACITY));
     for (plot, rect) in scene.territories().iter().zip(&rects) {
         let Some(rect) = rect else {
@@ -61,7 +60,7 @@ pub(super) fn paint(canvas: &mut Pixmap, scene: &MapScene, frame: Frame, assets:
     }
     for (plot, rect) in scene.territories().iter().zip(&rects) {
         if let (Some(rect), Some(guild)) = (rect, owner(guilds, plot)) {
-            label_territory(canvas, assets, plot, &guild.prefix, *rect, ui);
+            label_territory(canvas, assets, plot, guild, *rect, ui);
         }
     }
     if let Some(area) = frame.title_area() {
@@ -140,7 +139,7 @@ fn draw_connections(canvas: &mut Pixmap, scene: &MapScene, frame: Frame, ui: u32
         return;
     };
     let stroke = Stroke {
-        width: (ui as f32 * 0.45).max(1.5),
+        width: (ui as f32 * 0.65).max(1.5),
         line_cap: LineCap::Round,
         ..Stroke::default()
     };
@@ -170,9 +169,13 @@ impl LabelPlan {
 
     /// Width and height of the stacked parts, including the text halo.
     fn size(self, assets: &Assets, tag: &str, held: &str) -> (f32, f32) {
-        let halo = 2.0 * self.tag.halo_width();
+        let halo = 2.0
+            * self
+                .tag
+                .halo_width
+                .max(self.held.map_or(0.0, |style| style.halo_width));
         let mut width = assets.bold.width(tag, self.tag.cell) + halo;
-        let mut height = self.tag.cap_height() + halo;
+        let mut height = self.tag.cap_height() + assets.bold.descent(tag, self.tag.cell) + halo;
         if let Some(style) = self.held {
             width = width.max(assets.regular.width(held, style.cell) + halo);
             height += self.gap() + style.cap_height();
@@ -190,6 +193,15 @@ fn label_style(cell: u32, fill: ColorU8) -> TextStyle {
         cell,
         fill: color(fill),
         halo: color(palette::HALO),
+        halo_width: (cell / 2 + 1).clamp(2, 3) as f32,
+    }
+}
+
+fn tag_style(cell: u32) -> TextStyle {
+    TextStyle {
+        halo: color(palette::OUTLINE),
+        halo_width: 1.0,
+        ..label_style(cell, palette::TEXT)
     }
 }
 
@@ -197,49 +209,46 @@ fn label_territory(
     canvas: &mut Pixmap,
     assets: &Assets,
     plot: &Plot,
-    tag: &str,
+    guild: &Guild,
     rect: Rect,
     max_cell: u32,
 ) {
+    let tag = guild.prefix.as_str();
     if tag.is_empty() {
         return;
     }
-    let Some(plan) = plan_label(assets, plot, tag, rect, max_cell) else {
-        return;
-    };
+    let mut plan = plan_label(assets, plot, tag, rect, max_cell);
+    let [r, g, b] = guild.color;
+    plan.tag.fill = color(ColorU8::from_rgba(r, g, b, 255));
     let (_, height) = plan.size(assets, tag, &plot.held);
     let centre_x = rect.left() + rect.width() / 2.0;
-    let mut top = (rect.top() + (rect.height() - height) / 2.0 + plan.tag.halo_width()).round();
+    let mut top = (rect.top() + (rect.height() - height) / 2.0 + plan.tag.halo_width)
+        .round()
+        .clamp(
+            plan.tag.halo_width,
+            (canvas.height() as f32 - height + plan.tag.halo_width).max(plan.tag.halo_width),
+        );
     if let Some(size) = plan.crown {
         let left = centre_x - size as f32 / 2.0;
         draw_crown(canvas, &assets.crown, (left, top), size);
         top += size as f32 + plan.gap();
     }
     let width = assets.bold.width(tag, plan.tag.cell);
-    draw_text(
-        canvas,
-        &assets.bold,
-        tag,
-        (centre_x - width / 2.0, top),
-        plan.tag,
+    let left = (centre_x - width / 2.0).clamp(
+        plan.tag.halo_width,
+        (canvas.width() as f32 - width - plan.tag.halo_width).max(plan.tag.halo_width),
     );
+    draw_text(canvas, &assets.bold, tag, (left, top), plan.tag);
     if let Some(style) = plan.held {
-        top += plan.tag.cap_height() + plan.gap();
+        top += plan.tag.cap_height() + assets.bold.descent(tag, plan.tag.cell) + plan.gap();
         let width = assets.regular.width(&plot.held, style.cell);
         let left = centre_x - width / 2.0;
         draw_text(canvas, &assets.regular, &plot.held, (left, top), style);
     }
 }
 
-/// The richest label that fits inside the territory with a pixel to spare: a hold time is
-/// preferred over larger text, and the headquarters crown over neither.
-fn plan_label(
-    assets: &Assets,
-    plot: &Plot,
-    tag: &str,
-    rect: Rect,
-    max_cell: u32,
-) -> Option<LabelPlan> {
+/// Prefer a fitted label with hold time and crown; never drop a guild tag for lack of space.
+fn plan_label(assets: &Assets, plot: &Plot, tag: &str, rect: Rect, max_cell: u32) -> LabelPlan {
     // About 1.4 times the tag's cap height, at a whole number of pixels per art pixel.
     let crown_size = |cell: u32| {
         let art_scale = (14 * CAP_CELLS * cell + 5 * CROWN_ART_PIXELS) / (10 * CROWN_ART_PIXELS);
@@ -253,7 +262,7 @@ fn plan_label(
             (MIN_CELL..=max_cell.max(MIN_CELL))
                 .rev()
                 .map(move |cell| LabelPlan {
-                    tag: label_style(cell, palette::TEXT),
+                    tag: tag_style(cell),
                     held: held
                         .then(|| label_style(cell.saturating_sub(1).max(MIN_CELL), palette::HELD)),
                     crown: crown.then(|| crown_size(cell)),
@@ -262,6 +271,13 @@ fn plan_label(
         .find(|plan| {
             let (width, height) = plan.size(assets, tag, &plot.held);
             width <= rect.width() - 2.0 && height <= rect.height() - 2.0
+        })
+        // A tiny territory still gets a complete seven-pixel guild tag. Only this fallback
+        // may extend beyond its rectangle; clipping or shrinking it further loses letters.
+        .unwrap_or_else(|| LabelPlan {
+            tag: tag_style(1),
+            held: None,
+            crown: None,
         })
 }
 
@@ -361,7 +377,7 @@ impl LegendLayout {
             })
             .collect();
         if let Some(width) = summary {
-            if shown % rows == 0 {
+            if shown.is_multiple_of(rows) {
                 widths.push(LegendColumn::default());
             }
             if let Some(last) = widths.last_mut() {
@@ -526,6 +542,148 @@ mod tests {
             (f32::from(pixel[channel]) - f32::from(terrain[channel]))
                 / (f32::from(guild[channel]) - f32::from(terrain[channel]))
         })
+    }
+
+    #[test]
+    fn guild_labels_use_exact_guild_colours_with_dark_outlines() {
+        let assets = Assets::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../client/public"
+        )))
+        .expect("assets");
+        let plot = Plot {
+            bounds: [0; 4],
+            owner: None,
+            held: String::new(),
+            headquarters: false,
+        };
+        for rgb in [
+            [0, 0, 255],
+            [58, 38, 81],
+            [0, 0, 0],
+            [255, 255, 255],
+            [255, 255, 0],
+        ] {
+            let guild = Guild {
+                prefix: "SEQ".to_string(),
+                name: "Sequoia".to_string(),
+                color: rgb,
+                territories: 1,
+            };
+            let mut canvas = Pixmap::new(160, 80).expect("canvas");
+            let rect = Rect::from_xywh(8.0, 8.0, 144.0, 64.0).expect("rectangle");
+            label_territory(&mut canvas, &assets, &plot, &guild, rect, MIN_CELL);
+            let [r, g, b] = rgb;
+            assert!(canvas.data().chunks_exact(4).any(|p| p == [r, g, b, 255]));
+            assert!(canvas.data().chunks_exact(4).any(|p| p == [0, 0, 0, 255]));
+            assert!(
+                canvas
+                    .data()
+                    .chunks_exact(4)
+                    .all(|p| { p[3] == 0 || p == [r, g, b, 255] || p == [0, 0, 0, 255] })
+            );
+            if rgb[0] < 60 {
+                assert!(!canvas.data().chunks_exact(4).any(|p| p == [255; 4]));
+            }
+        }
+    }
+
+    #[test]
+    fn hold_times_do_not_overpaint_lowercase_guild_descenders() {
+        let assets = Assets::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../client/public"
+        )))
+        .expect("assets");
+        let guild = Guild {
+            prefix: "gpgp".to_string(),
+            name: "Lowercase guild".to_string(),
+            color: [255, 255, 0],
+            territories: 1,
+        };
+        let plot = Plot {
+            bounds: [0; 4],
+            owner: None,
+            held: "1h".to_string(),
+            headquarters: false,
+        };
+        let rect = Rect::from_xywh(0.0, 0.0, 160.0, 120.0).expect("rectangle");
+        let mut actual = Pixmap::new(160, 120).expect("canvas");
+        label_territory(&mut actual, &assets, &plot, &guild, rect, 4);
+        let mut standalone = Pixmap::new(160, 120).expect("canvas");
+        draw_text(
+            &mut standalone,
+            &assets.bold,
+            &guild.prefix,
+            (8.0, 8.0),
+            TextStyle {
+                fill: color(ColorU8::from_rgba(255, 255, 0, 255)),
+                ..tag_style(4)
+            },
+        );
+        let ink = |canvas: &Pixmap| {
+            canvas
+                .data()
+                .chunks_exact(4)
+                .filter(|p| *p == [255, 255, 0, 255])
+                .count()
+        };
+        assert_eq!(ink(&actual), ink(&standalone));
+    }
+
+    #[test]
+    fn tiny_and_narrow_territories_still_draw_the_complete_guild_tag() {
+        let assets = Assets::load(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../client/public"
+        )))
+        .expect("assets");
+        let plot = Plot {
+            bounds: [0; 4],
+            owner: None,
+            held: "12h".to_string(),
+            headquarters: true,
+        };
+        let guild = Guild {
+            prefix: "PLHR".to_string(),
+            name: "Polish Hussars".to_string(),
+            color: [255, 255, 0],
+            territories: 1,
+        };
+        for (width, height) in [(1.0, 1.0), (8.0, 6.0), (26.0, 76.0)] {
+            let rect = Rect::from_xywh(40.0, 20.0, width, height).expect("rectangle");
+            let plan = plan_label(&assets, &plot, &guild.prefix, rect, 4);
+            assert_eq!(plan.tag.cell, 1);
+            assert!(plan.held.is_none() && plan.crown.is_none());
+            let mut actual = Pixmap::new(120, 120).expect("canvas");
+            label_territory(&mut actual, &assets, &plot, &guild, rect, 4);
+            // Compare the whole rendered tag, not a nonblank dot from a clipped letter.
+            let mut expected = Pixmap::new(120, 120).expect("canvas");
+            let tag_width = assets.bold.width(&guild.prefix, 1);
+            draw_text(
+                &mut expected,
+                &assets.bold,
+                &guild.prefix,
+                (
+                    rect.left() + (rect.width() - tag_width) / 2.0,
+                    rect.top() + (rect.height() - 9.0) / 2.0 + 1.0,
+                ),
+                TextStyle {
+                    fill: color(ColorU8::from_rgba(255, 255, 0, 255)),
+                    ..tag_style(1)
+                },
+            );
+            assert!(
+                actual.data() == expected.data(),
+                "incomplete {width}x{height} tag"
+            );
+            assert!(
+                actual
+                    .data()
+                    .chunks_exact(4)
+                    .any(|p| p == [255, 255, 0, 255])
+            );
+        }
     }
 
     #[test]

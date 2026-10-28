@@ -103,14 +103,7 @@ impl Viewport {
 #[cfg(test)]
 mod tests {
     use super::{MAX_SCALE, MIN_SCALE, Viewport};
-
-    fn assert_close(actual: f64, expected: f64) {
-        let diff = (actual - expected).abs();
-        assert!(
-            diff < 1e-9,
-            "expected {expected}, got {actual} (diff: {diff})"
-        );
-    }
+    use crate::test_support::assert_close;
 
     #[test]
     fn world_to_screen_and_back_roundtrip() {

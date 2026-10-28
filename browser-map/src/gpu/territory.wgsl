@@ -39,6 +39,10 @@ struct VertexOutput {
     @location(5) anim_color: vec3<f32>,
     @location(6) anim_time: vec2<f32>,
     @location(7) resource_data: vec4<f32>,
+    // War start, queue start and queue end, on the cooldown clock.
+    @location(8) war_times: vec3<f32>,
+    // War outline width multiplier and opacity.
+    @location(9) war_outline: vec2<f32>,
 };
 
 fn world_to_ndc(world_pos: vec2<f32>) -> vec4<f32> {
@@ -61,6 +65,8 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.anim_color = instance.anim_color.xyz;
     out.anim_time = instance.anim_time.xy;
     out.resource_data = instance.resource_data;
+    out.war_times = instance.cooldown.yzw;
+    out.war_outline = instance.anim_time.zw;
 
     return out;
 }
@@ -147,6 +153,81 @@ fn war_accent_color(guild: vec3<f32>) -> vec3<f32> {
         return dark_red;
     }
     return pink;
+}
+
+// Queued territories are lavender, entered ones amber: an escalation toward the war red
+// that stays clear of the HQ gold.
+fn pending_war_color(entered: bool) -> vec3<f32> {
+    if entered {
+        return vec3<f32>(1.0, 0.631, 0.239);   // #ffa13d
+    }
+    return vec3<f32>(0.780, 0.639, 0.941);     // #c7a3f0
+}
+
+// A cooling territory's bar: a cool tone no war stage or HQ uses.
+fn cooldown_bar_color() -> vec3<f32> {
+    return vec3<f32>(0.561, 0.808, 0.910);     // #8fcee8
+}
+
+// Headquarters are marked by gold brackets on their corners rather than a full rectangle,
+// leaving the edges to the guild's border or a war outline. 1.0 inside a bracket.
+fn hq_corner(uv: vec2<f32>, size_px: vec2<f32>) -> f32 {
+    let px = uv * size_px;
+    let to_x = min(px.x, size_px.x - px.x);
+    let to_y = min(px.y, size_px.y - px.y);
+    let arm = clamp(min(size_px.x, size_px.y) * 0.2, 5.0, 16.0);
+    return select(0.0, 1.0, to_x <= arm && to_y <= arm);
+}
+
+// Urgency warms a pending outline toward coral, well clear of the fighting red.
+fn urgent_war_color() -> vec3<f32> {
+    return vec3<f32>(1.0, 0.435, 0.380);       // #ff6f61
+}
+
+// 1.0 on a dash, 0.0 in a gap, in screen pixels so the rhythm holds at every zoom. Each edge
+// holds a whole number of periods with a dash centred on both corners, so every dash and gap
+// has the same length, and a corner's dash bends round it with the same length as the rest.
+fn pending_dash(uv: vec2<f32>, size_px: vec2<f32>, border_width: f32) -> f32 {
+    let px = uv * size_px;
+    let near_x_edge = min(px.x, size_px.x - px.x) <= border_width + 0.5;
+    let near_y_edge = min(px.y, size_px.y - px.y) <= border_width + 0.5;
+    if near_x_edge && near_y_edge {
+        return 1.0;
+    }
+    var along = px.x;
+    var length = size_px.x;
+    if near_x_edge {
+        along = px.y;
+        length = size_px.y;
+    }
+    let target_period = 9.0;
+    let period = length / max(round(length / target_period), 1.0);
+    let half_dash = period * 0.31;
+    let from_centre = abs(fract(along / period + 0.5) - 0.5) * period;
+    return 1.0 - smoothstep(half_dash - 0.5, half_dash + 0.5, from_centre);
+}
+
+// Where a border pixel sits along the outline, clockwise from the top-left corner, 0 to 1.
+fn perimeter_position(uv: vec2<f32>, size_px: vec2<f32>) -> f32 {
+    let px = uv * size_px;
+    let w = size_px.x;
+    let h = size_px.y;
+    let to_top = px.y;
+    let to_right = w - px.x;
+    let to_bottom = h - px.y;
+    let to_left = px.x;
+    let nearest = min(min(to_top, to_bottom), min(to_left, to_right));
+    var along: f32;
+    if nearest == to_top {
+        along = px.x;
+    } else if nearest == to_right {
+        along = w + px.y;
+    } else if nearest == to_bottom {
+        along = w + h + (w - px.x);
+    } else {
+        along = 2.0 * w + h + (h - px.y);
+    }
+    return along / (2.0 * (w + h));
 }
 
 fn count_bits_5(mask: u32) -> u32 {
@@ -255,6 +336,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let is_selected = (u32(flags) & 2u) != 0u;
     let is_headquarters = (u32(flags) & 4u) != 0u;
     let is_at_war = (u32(flags) & 8u) != 0u;
+    let is_entered = (u32(flags) & 16u) != 0u;
+    let is_queued = (u32(flags) & 32u) != 0u;
+    let is_pending_war = is_entered || is_queued;
+    let war_solid = (u32(flags) & 64u) != 0u;
+    let war_urgency = (u32(flags) & 128u) != 0u;
+    let war_progress = (u32(flags) & 256u) != 0u;
+    let war_width = in.war_outline.x;
+    let war_opacity = in.war_outline.y;
 
     // GPU-side color animation
     var base_color = in.color.rgb;
@@ -285,7 +374,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if cooldown_frac > 0.0 {
         border_mult = in.state.w;
     }
-    let border_width = max(3.2 * border_mult * vp.scale, 0.8);
+    var border_width = max(3.2 * border_mult * vp.scale, 0.8);
+    // War stages and an HQ's corner brackets have to read at far zoom too, where a
+    // world-scaled border thins to a hairline.
+    if is_pending_war || is_at_war || (is_headquarters && hq_corner(in.uv, in.size_px) > 0.5) {
+        border_width = max(border_width, 2.0);
+    }
+    if is_pending_war || is_at_war {
+        border_width = border_width * war_width;
+    }
     let feather = max(0.4 * vp.scale, 0.15);
 
     // Outer edge AA: fade alpha at territory boundary
@@ -307,8 +404,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         b_alpha = border_alpha;
     }
-    if is_headquarters || is_at_war {
+    if is_headquarters {
         b_alpha = max(b_alpha, 0.88);
+    }
+    if is_at_war || is_pending_war {
+        b_alpha = max(b_alpha, war_opacity);
+    }
+    // The war outline's own strength, 1 at the default opacity.
+    let war_strength = clamp(war_opacity / 0.88, 0.0, 1.14);
+
+    // Over the last three minutes before the expected start the pending colour warms; once
+    // the start has passed unconfirmed it settles back, since that is not a war.
+    var pending_color = pending_war_color(is_entered);
+    if is_pending_war && war_urgency {
+        let left = in.war_times.x - reference_rel_secs;
+        if left > 0.0 {
+            let urgency = 1.0 - clamp(left / 180.0, 0.0, 1.0);
+            pending_color = mix(pending_color, urgent_war_color(), urgency * urgency * 0.9);
+        }
     }
 
     // Fill zone — compute color and alpha with all effects
@@ -317,6 +430,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let war_color = war_accent_color(base_color);
     if is_at_war {
         fill_color = mix(fill_color, war_color, 0.06);
+    } else if is_pending_war {
+        fill_color = mix(fill_color, pending_color, select(0.05, 0.08, is_entered));
     } else if is_headquarters {
         let hq_tint = vec3<f32>(0.973, 0.831, 0.275);
         fill_color = mix(fill_color, hq_tint, 0.06);
@@ -358,46 +473,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Cooldown urgency system — strip + fill wash + pulse
+    // Cooldown: one thin, steady bar inside the bottom edge whose length is the cooldown
+    // left. A fixed screen height keeps it discoverable when zoomed out without crowding the
+    // guild's border or a war outline; the exact time is on the label and the hover card.
     if cooldown_frac > 0.0 {
-        let urgency = 1.0 - cooldown_frac;  // 0 at fresh → 1 at expiry
-
-        // 4-step color: green → yellow → orange → red at 2.5m intervals
-        var cd_color: vec3<f32>;
-        if urgency < 0.25 {
-            cd_color = vec3<f32>(0.400, 0.800, 0.400);  // green  (0–2.5m)
-        } else if urgency < 0.50 {
-            cd_color = vec3<f32>(0.961, 0.773, 0.259);  // yellow (2.5–5m)
-        } else if urgency < 0.75 {
-            cd_color = vec3<f32>(0.961, 0.620, 0.259);  // orange (5–7.5m)
-        } else {
-            cd_color = vec3<f32>(0.922, 0.341, 0.341);  // red    (7.5–10m)
-        }
-
-        // Smooth pulse ramp: 0 at urgency 0.5, 1 at urgency 1.0
-        let pulse_t = saturate((urgency - 0.5) * 2.0);
-        let pulse_intensity = pulse_t * pulse_t * (3.0 - 2.0 * pulse_t);  // smoothstep
-        let frequency = mix(1.0, 4.0, pulse_intensity);  // 1→4 Hz
-        let pulse = (sin(vp.time * frequency * 6.2832) * 0.5 + 0.5) * pulse_intensity;
-
-        // Strip: grows from left, brightens with urgency, pulses when urgent
-        let strip_h = clamp(in.size_px.y * 0.11, 4.0, 8.0);
+        let bar_h = clamp(2.0 + vp.scale * 0.6, 2.0, 3.0);
+        let inset = border_width + 1.0;
         let px_from_bottom = (1.0 - in.uv.y) * in.size_px.y;
-        if px_from_bottom < strip_h && in.uv.x < (1.0 - cooldown_frac) {
-            let strip_alpha = 0.55 + urgency * 0.35 + pulse * 0.10;
-            fill_color = mix(fill_color, cd_color, strip_alpha);
-            f_alpha = max(f_alpha, strip_alpha);
-            cooldown_strip_mix = max(cooldown_strip_mix, 0.75 + urgency * 0.2 + pulse * 0.05);
-            cooldown_strip_color = cd_color;
-        }
-
-        // Fill wash: smooth ramp from urgency 0.5→1.0
-        let fill_t = saturate((urgency - 0.5) * 2.0);
-        let fill_smooth = fill_t * fill_t * (3.0 - 2.0 * fill_t);  // smoothstep
-        let wash_alpha = fill_smooth * (0.04 + pulse * 0.06);
-        if wash_alpha > 0.001 {
-            fill_color = mix(fill_color, cd_color, wash_alpha);
-            f_alpha = max(f_alpha, f_alpha + wash_alpha * 0.5);
+        let px_from_left = in.uv.x * in.size_px.x;
+        let bar_len = (in.size_px.x - inset * 2.0) * cooldown_frac;
+        if px_from_bottom >= inset && px_from_bottom < inset + bar_h
+            && px_from_left >= inset && px_from_left < inset + bar_len {
+            cooldown_strip_mix = 0.85;
+            cooldown_strip_color = cooldown_bar_color();
         }
     }
 
@@ -406,15 +494,34 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if is_at_war {
         // Distinct from the cooldown/defense reds, which only ever tint the fill. Mixed
         // hard toward the accent so a same-hue guild color can't wash it back out.
-        border_color = mix(base_color, war_color, 0.92);
-    } else if is_headquarters {
-        border_color = mix(base_color, vec3<f32>(0.973, 0.831, 0.275), 0.8);
+        border_color = mix(base_color, war_color, min(0.92 * war_strength, 1.0));
+    } else if is_pending_war {
+        // Dashed by default so a queued territory never reads as a war in progress, whatever
+        // its guild color; the gaps keep the guild's own border visible.
+        var on = 1.0;
+        if !war_solid {
+            on = pending_dash(in.uv, in.size_px, border_width);
+        }
+        // The progress outline lights the share of the queue timer still to run, clockwise
+        // from the top-left corner; the run-down share stays faintly marked.
+        if war_progress {
+            let duration = max(in.war_times.z - in.war_times.y, 1.0);
+            let remaining = clamp((in.war_times.z - reference_rel_secs) / duration, 0.0, 1.0);
+            let position = perimeter_position(in.uv, in.size_px);
+            let edge = 1.0 / max(2.0 * (in.size_px.x + in.size_px.y), 1.0);
+            let lit = 1.0 - smoothstep(remaining - edge, remaining + edge, position);
+            on = on * mix(0.28, 1.0, lit);
+        }
+        border_color = mix(base_color, pending_color, min(on * war_strength, 1.0));
+    }
+    if is_headquarters {
+        border_color = mix(border_color, vec3<f32>(0.973, 0.831, 0.275), hq_corner(in.uv, in.size_px));
     }
     var color = mix(fill_color, border_color, border_t);
     var alpha = mix(f_alpha, b_alpha, border_t) * outer_aa;
     if cooldown_strip_mix > 0.0 {
         color = mix(color, cooldown_strip_color, cooldown_strip_mix);
-        alpha = max(alpha, 0.9);
+        alpha = max(alpha, 0.85);
     }
 
     return vec4<f32>(color, alpha);

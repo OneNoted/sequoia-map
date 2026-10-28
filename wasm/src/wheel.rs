@@ -168,6 +168,7 @@ mod tests {
         WHEEL_DELTA_MODE_PIXEL, WheelSample, normalize_pinch_zoom_delta,
         normalize_trackpad_zoom_delta, normalize_wheel_zoom_delta,
     };
+    use crate::test_support::assert_close;
 
     fn sample(delta_y: f64, delta_mode: u32, timestamp_ms: f64) -> WheelSample {
         WheelSample {
@@ -176,14 +177,6 @@ mod tests {
             delta_mode,
             timestamp_ms,
         }
-    }
-
-    fn assert_close(actual: f64, expected: f64) {
-        let diff = (actual - expected).abs();
-        assert!(
-            diff < 1e-9,
-            "expected {expected}, got {actual} (diff: {diff})"
-        );
     }
 
     #[test]

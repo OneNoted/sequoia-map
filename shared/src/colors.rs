@@ -105,14 +105,7 @@ pub fn interpolate_hsl(from: (f64, f64, f64), to: (f64, f64, f64), t: f64) -> (f
 #[cfg(test)]
 mod tests {
     use super::{guild_color, hsl_to_rgb, interpolate_hsl, rgb_to_hsl};
-
-    fn assert_close(actual: f64, expected: f64) {
-        let diff = (actual - expected).abs();
-        assert!(
-            diff < 1e-9,
-            "expected {expected}, got {actual} (diff: {diff})"
-        );
-    }
+    use crate::test_support::assert_close;
 
     #[test]
     fn roundtrip_rgb_through_hsl_is_identity() {

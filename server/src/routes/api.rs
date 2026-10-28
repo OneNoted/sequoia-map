@@ -205,7 +205,9 @@ pub async fn get_warcontroller(
     };
     let body = match cached {
         Some(json) => (*json).clone(),
-        None => Bytes::from_static(br#"{"timestamp":0,"queues":[],"wars":[],"players":[]}"#),
+        None => Bytes::from_static(
+            br#"{"timestamp":0,"queues":[],"wars":[],"players":[],"unavailable":true}"#,
+        ),
     };
 
     private_json_bytes_response(body)

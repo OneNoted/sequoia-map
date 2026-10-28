@@ -30,6 +30,117 @@ pub enum ConnectionStyle {
     Guild,
 }
 
+/// How headquarters are marked.
+///
+/// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HqCrownStyle {
+    /// A crown with the guild's name under it, at every zoom.
+    #[default]
+    NameBelow,
+    /// A small crown above the territory's usual labels, at every zoom.
+    Compact,
+    /// The crown fills the territory when zoomed out, in place of its labels, and turns
+    /// compact up close. The original look.
+    Fill,
+}
+
+/// How a queued or entered territory's outline is drawn.
+///
+/// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
+/// A confirmed war keeps its solid red outline whatever this says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WarOutlineStyle {
+    /// Dashes over the guild's own border, so a pending war never reads as a fight.
+    #[default]
+    Dashed,
+    Solid,
+}
+
+/// What colours a queued or entered territory's outline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WarOutlineColor {
+    /// The stage's own colour throughout.
+    #[default]
+    Stage,
+    /// Warms from the stage colour over the last [`WAR_OUTLINE_URGENCY_SECS`] before the
+    /// war's expected start, and settles back once that has passed without a confirmed war.
+    Urgency,
+}
+
+/// Seconds before the expected start over which the urgency colour warms.
+pub const WAR_OUTLINE_URGENCY_SECS: f32 = 180.0;
+pub const WAR_OUTLINE_WIDTH_MIN: f32 = 0.5;
+pub const WAR_OUTLINE_WIDTH_MAX: f32 = 2.0;
+pub const WAR_OUTLINE_OPACITY_MIN: f32 = 0.3;
+pub const WAR_OUTLINE_OPACITY_MAX: f32 = 1.0;
+const DEFAULT_WAR_OUTLINE_OPACITY: f32 = 0.88;
+
+/// The outline of territories at a war stage. Persisted as one object; every field falls
+/// back to its default on its own.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WarOutline {
+    pub style: WarOutlineStyle,
+    pub color: WarOutlineColor,
+    /// Lights the share of a queued territory's outline its queue timer has left, when the
+    /// backend knows when the timer started.
+    pub progress: bool,
+    /// Multiplies the outline's width.
+    pub width: f32,
+    pub opacity: f32,
+}
+
+impl Default for WarOutline {
+    fn default() -> Self {
+        Self {
+            style: WarOutlineStyle::Dashed,
+            color: WarOutlineColor::Stage,
+            progress: false,
+            width: 1.0,
+            opacity: DEFAULT_WAR_OUTLINE_OPACITY,
+        }
+    }
+}
+
+impl WarOutline {
+    /// With width and opacity inside the ranges the controls offer.
+    pub fn clamped(self) -> Self {
+        let default = Self::default();
+        let clamp = |value: f32, min: f32, max: f32, fallback: f32| {
+            if value.is_finite() {
+                value.clamp(min, max)
+            } else {
+                fallback
+            }
+        };
+        Self {
+            width: clamp(
+                self.width,
+                WAR_OUTLINE_WIDTH_MIN,
+                WAR_OUTLINE_WIDTH_MAX,
+                default.width,
+            ),
+            opacity: clamp(
+                self.opacity,
+                WAR_OUTLINE_OPACITY_MIN,
+                WAR_OUTLINE_OPACITY_MAX,
+                default.opacity,
+            ),
+            ..self
+        }
+    }
+
+    /// Whether the outline changes as time passes, so the map has to keep redrawing.
+    pub fn moves(self) -> bool {
+        self.progress || self.color == WarOutlineColor::Urgency
+    }
+}
+
+/// Smallest and largest crown size multiplier the setting allows.
+pub const HQ_CROWN_SCALE_MIN: f32 = 0.6;
+pub const HQ_CROWN_SCALE_MAX: f32 = 1.6;
+
 /// How the map is drawn: every display option a host can set. Hosts rebuild this whenever
 /// one of their settings changes; [`RenderSettings::invalidates`] decides what that costs.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +185,13 @@ pub struct RenderSettings {
     pub compound_map_time: bool,
     pub show_resource_icons: bool,
     pub show_territory_ornaments: bool,
+
+    // Headquarters.
+    pub hq_crown_style: HqCrownStyle,
+    /// Multiplies the crown's preferred size; it still never outgrows its territory.
+    pub hq_crown_scale: f32,
+
+    pub war_outline: WarOutline,
 
     pub label_scales: LabelScales,
 }
@@ -148,7 +266,8 @@ impl RenderSettings {
             || self.resource_highlight != previous.resource_highlight
             || self.resource_highlight_opacity != previous.resource_highlight_opacity
             || self.defense_highlight != previous.defense_highlight
-            || self.fill_alpha_boost != previous.fill_alpha_boost;
+            || self.fill_alpha_boost != previous.fill_alpha_boost
+            || self.war_outline != previous.war_outline;
         let connection_style = self.show_connections != previous.show_connections
             || self.connection_style != previous.connection_style
             || self.bold_connections != previous.bold_connections
@@ -171,6 +290,9 @@ impl RenderSettings {
         // Resource icons lift every label above them.
         let resource_icons = self.show_resource_icons != previous.show_resource_icons;
         let ornaments = self.show_territory_ornaments != previous.show_territory_ornaments;
+        // The crown moves every label of its territory.
+        let hq = self.hq_crown_style != previous.hq_crown_style
+            || self.hq_crown_scale != previous.hq_crown_scale;
         let (scales, previous_scales) = (&self.label_scales, &previous.label_scales);
         let static_scale = scales.master != previous_scales.master
             || scales.static_tag != previous_scales.static_tag
@@ -181,20 +303,22 @@ impl RenderSettings {
         Rebuild {
             territories: territory_style,
             connections: connection_style,
-            static_labels: tag_style || names || font || resource_icons || static_scale,
+            static_labels: tag_style || names || font || resource_icons || static_scale || hq,
             dynamic_labels: names
                 || font
                 || timers
                 || resource_icons
                 || static_scale
-                || dynamic_scale,
+                || dynamic_scale
+                || hq,
             icons: names
                 || timers
                 || resource_icons
                 || ornaments
                 || static_scale
                 || dynamic_scale
-                || icon_scale,
+                || icon_scale
+                || hq,
         }
     }
 }
@@ -234,6 +358,9 @@ pub(crate) mod tests {
             compound_map_time: true,
             show_resource_icons: true,
             show_territory_ornaments: false,
+            hq_crown_style: super::HqCrownStyle::NameBelow,
+            hq_crown_scale: 1.0,
+            war_outline: super::WarOutline::default(),
             label_scales: LabelScales {
                 master: 1.0,
                 static_tag: 1.0,
@@ -266,6 +393,13 @@ pub(crate) mod tests {
         );
         assert_eq!(
             after(|s| s.resource_highlight_opacity = 0.8),
+            Rebuild {
+                territories: true,
+                ..Rebuild::NONE
+            }
+        );
+        assert_eq!(
+            after(|s| s.war_outline.progress = true),
             Rebuild {
                 territories: true,
                 ..Rebuild::NONE
@@ -316,11 +450,13 @@ pub(crate) mod tests {
                 ..Rebuild::NONE
             }
         );
-        // Names, resource icons and static scales shift every label layer.
+        // Names, resource icons, static scales and the HQ crown shift every label layer.
         for change in [
             (|s: &mut RenderSettings| s.show_names = true) as fn(&mut RenderSettings),
             |s| s.show_resource_icons = false,
             |s| s.label_scales.master = 1.5,
+            |s| s.hq_crown_style = super::HqCrownStyle::Fill,
+            |s| s.hq_crown_scale = 1.3,
         ] {
             assert_eq!(
                 after(change),
@@ -383,6 +519,68 @@ pub(crate) mod tests {
         assert_eq!(scales.static_name(), 2.0);
         assert_eq!(scales.dynamic(), 0.5);
         assert_eq!(scales.icons(), 2.0);
+    }
+
+    #[test]
+    fn hq_crown_style_is_persisted_as_pascal_case_and_defaults_to_name_below() {
+        use super::HqCrownStyle;
+        assert_eq!(HqCrownStyle::default(), HqCrownStyle::NameBelow);
+        for (value, expected) in [
+            (HqCrownStyle::NameBelow, "\"NameBelow\""),
+            (HqCrownStyle::Compact, "\"Compact\""),
+            (HqCrownStyle::Fill, "\"Fill\""),
+        ] {
+            assert_eq!(serde_json::to_string(&value).expect("serialize"), expected);
+            let decoded: HqCrownStyle = serde_json::from_str(expected).expect("deserialize");
+            assert_eq!(decoded, value);
+        }
+    }
+
+    #[test]
+    fn war_outline_defaults_to_restrained_dashes_and_survives_partial_or_bad_saves() {
+        use super::{WarOutline, WarOutlineColor, WarOutlineStyle};
+        let default = WarOutline::default();
+        assert_eq!(
+            (
+                default.style,
+                default.color,
+                default.progress,
+                default.width
+            ),
+            (WarOutlineStyle::Dashed, WarOutlineColor::Stage, false, 1.0)
+        );
+        assert!(!default.moves());
+
+        let saved = serde_json::to_string(&WarOutline {
+            style: WarOutlineStyle::Solid,
+            color: WarOutlineColor::Urgency,
+            progress: true,
+            width: 1.5,
+            opacity: 0.6,
+        })
+        .expect("serialize");
+        assert_eq!(
+            saved,
+            r#"{"style":"Solid","color":"Urgency","progress":true,"width":1.5,"opacity":0.6}"#
+        );
+
+        let partial: WarOutline = serde_json::from_str(r#"{"progress":true}"#).expect("partial");
+        assert_eq!(
+            partial,
+            WarOutline {
+                progress: true,
+                ..default
+            }
+        );
+        assert!(partial.moves());
+
+        let wild = WarOutline {
+            width: 9.0,
+            opacity: f32::NAN,
+            ..default
+        }
+        .clamped();
+        assert_eq!((wild.width, wild.opacity), (2.0, default.opacity));
     }
 
     /// The persisted form is PascalCase; users have settings saved against it.

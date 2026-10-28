@@ -23,7 +23,7 @@ env:
 jobs:
   changes:
     if: github.repository == 'SequoiaWynncraft/sequoia-map' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: apollo-sequoia-demeter
     timeout-minutes: 5
     permissions:
       contents: read
@@ -156,8 +156,8 @@ jobs:
                 ingest=true ;;
               ops/caddy/*)
                 edge=true ;;
-              ''|README.md|AGENTS.md|LICENSE|docs/*|.gitignore|.cargo/audit.toml|mise.toml|mods/wynn-iris/*|\
-              .github/workflows/ci.yml|.github/workflows/iris-release.yml|docker-compose.yml|docker-compose.coolify.dev.yml|\
+              ''|README.md|AGENTS.md|LICENSE|docs/*|.gitignore|.cargo/audit.toml|mise.toml|\
+              .github/workflows/ci.yml|docker-compose.yml|docker-compose.coolify.dev.yml|\
               scripts/postgres.sh|scripts/check-wasm-size.py|scripts/smoke-browser.py|ops/postgres/*|ops/backup/*|ops/prometheus/*)
                 ;; # Known inputs outside these Docker build/deployment closures.
               *)
@@ -193,7 +193,7 @@ jobs:
     name: Validate Deployment Credentials
     needs: changes
     if: needs.changes.outputs.deploy == 'true'
-    runs-on: ubuntu-latest
+    runs-on: apollo-sequoia-demeter
     timeout-minutes: 2
     steps:
       - name: Validate Coolify Deploy Credentials
@@ -213,6 +213,7 @@ jobs:
           COOLIFY_API_BASE="${COOLIFY_WEBHOOK%%/api/v1/deploy*}"
           PROBE_URL="${COOLIFY_API_BASE}/api/v1/deploy?uuid=auth-probe-missing-resource"
           PROBE_STATUS="$(curl --proto '=https' --tlsv1.2 --silent --show-error --connect-timeout 10 --max-time 30 --output /tmp/coolify-probe.json --write-out '%{http_code}' \
+            --request POST \
             -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
             "${PROBE_URL}")"
 
@@ -227,8 +228,7 @@ jobs:
     name: Build ${{ matrix.image }} Image
     needs: [changes, credentials]
     if: needs.changes.outputs.deploy == 'true'
-    # Independent hosted runners avoid serial image compilation and runner scarcity.
-    runs-on: ubuntu-latest
+    runs-on: apollo-sequoia-demeter
     timeout-minutes: 45
     permissions:
       contents: read
@@ -303,8 +303,9 @@ jobs:
             server)
               image="${SERVER_IMAGE}"
               dockerfile=./Dockerfile
-              # BuildKit runs native and WASM stages together; share this runner's CPU budget.
-              cargo_jobs="$((($(nproc) + 1) / 2))"
+              # Native and WASM stages share the declared pod budget, not the node's CPU count.
+              : "${CARGO_BUILD_JOBS:?The runner must declare its CPU budget}"
+              cargo_jobs="$(((CARGO_BUILD_JOBS + 1) / 2))"
               build_args+=(--build-arg "SOURCE_COMMIT=${GITHUB_SHA}" --build-arg "CARGO_BUILD_JOBS=${cargo_jobs}") ;;
             ingest)
               image="${INGEST_IMAGE}"
@@ -331,7 +332,7 @@ jobs:
     needs: [changes, credentials, build-images]
     # Missing selections or failed prerequisites must produce a failed promotion gate.
     if: always() && !cancelled() && github.repository == 'SequoiaWynncraft/sequoia-map' && github.ref == 'refs/heads/main' && (needs.changes.result != 'success' || needs.changes.outputs.deploy != 'false')
-    runs-on: ubuntu-latest
+    runs-on: apollo-sequoia-demeter
     timeout-minutes: 10
     permissions:
       contents: read
@@ -437,5 +438,6 @@ jobs:
           current_head="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main)" || exit 1
           [ "${current_head}" = "${GITHUB_SHA}"$'\trefs/heads/main' ] || { echo "Refusing trigger: candidate is superseded or main is unknown." >&2; exit 1; }
           curl --proto '=https' --tlsv1.2 --fail-with-body --silent --show-error --connect-timeout 10 --max-time 60 \
+            --request POST \
             -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
             "${COOLIFY_WEBHOOK}"

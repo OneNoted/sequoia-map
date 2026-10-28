@@ -8,8 +8,7 @@ before running database tasks. On Linux, `podman info` should work without sudo.
 Rust crates also need a C compiler, linker, `pkg-config` and OpenSSL headers.
 On Debian/Ubuntu these are `build-essential pkg-config libssl-dev`; on Arch,
 `base-devel openssl`. Mise manages Rust (including rustfmt, Clippy and the WASM
-target), Trunk, Tailwind, Binaryen, watchexec, Python and uv. Iris tasks install
-the pinned JDK on demand; the committed Gradle wrapper selects Gradle.
+target), Trunk, Tailwind, Binaryen, watchexec, Python and uv.
 
 From the repository root:
 
@@ -54,7 +53,7 @@ client in `client/dist`. Without a client build, run the API with
 territory data still works, but sign-in and the war-controller feed do not.
 Do not add production credentials to `mise.toml`. Use exported variables or the
 gitignored `mise.local.toml` for local configuration. Avoid real credentials
-when running the Fabric development client or untrusted reporter builds.
+when running untrusted reporter builds against a local gateway.
 
 ## Local data
 
@@ -83,8 +82,6 @@ directory into the new container.
 mise run fmt
 mise run verify
 mise run lint
-mise run iris:test
-mise run iris:build 1.21.11
 ```
 
 `mise run verify` checks formatting, all native Rust targets and both WASM clients;
@@ -111,11 +108,6 @@ some database integration coverage and is not a substitute for `mise run test`.
 Release builds run `wasm-opt -Oz` inside Trunk (`data-wasm-opt` on the Rust link,
 Binaryen pinned in `Trunk.toml`), before Trunk writes the bundles' integrity hashes.
 The map size check measures the shipped WASM's Brotli and gzip sizes.
-
-Iris uses Minecraft-specific dependency profiles and is tested separately; see
-[the reporter guide](../mods/wynn-iris/README.md). `mise run iris:dev` launches the
-Fabric development client. It does not install or overwrite mods in a personal
-Minecraft instance. Java compiler warnings and Gradle deprecations fail the build.
 
 ## Browser smoke test
 

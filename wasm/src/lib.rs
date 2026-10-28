@@ -9,6 +9,7 @@ pub mod connections;
 pub mod defense;
 pub mod gesture;
 pub mod heat;
+pub mod hq_layout;
 pub mod label_layout;
 pub mod map_markers;
 pub mod minimap;
@@ -17,6 +18,8 @@ pub mod scene;
 pub mod settings;
 pub mod spatial;
 pub mod territory;
+#[cfg(test)]
+mod test_support;
 pub mod time_format;
 pub mod viewport;
 pub mod wheel;

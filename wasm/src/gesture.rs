@@ -554,6 +554,7 @@ fn pair_geometry(contacts: &[Pointer], a: i32, b: i32) -> ((f64, f64), f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_close;
     use crate::viewport::{MAX_SCALE, MIN_SCALE};
 
     fn camera() -> Viewport {
@@ -580,13 +581,6 @@ mod tests {
             x,
             y,
         }
-    }
-
-    fn assert_close(actual: f64, expected: f64) {
-        assert!(
-            (actual - expected).abs() < 1e-9,
-            "expected {expected}, got {actual}"
-        );
     }
 
     fn assert_world_under(camera: &Viewport, world: (f64, f64), screen: (f64, f64)) {
@@ -811,9 +805,8 @@ mod tests {
         let mut a = (150.0, 400.0);
         let mut b = (250.0, 400.0);
         gestures.press(touch(1, a.0, a.1), Press::Pan, 0.0);
-        let mut next_id = 2;
         let mut t = 0.0;
-        for cycle in 0..4 {
+        for (next_id, cycle) in (2..).zip(0..4) {
             // Second finger joins, pinch and drag.
             gestures.press(touch(next_id, b.0, b.1), Press::Pan, t);
             let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
@@ -840,7 +833,6 @@ mod tests {
                 assert_close(cam.scale, before_lift.scale);
             }
             b = (a.0 + 90.0, a.1 + 5.0);
-            next_id += 1;
         }
     }
 

@@ -33,8 +33,6 @@ see [configuration](docs/configuration.md).
 mise tasks       # available commands
 mise run fmt         # format both Rust workspaces
 mise run verify      # checks, tests with PostgreSQL, release browser builds and size budget
-mise run iris:test   # Fabric reporter tests; installs the pinned JDK on first use
-mise run iris:build  # default Minecraft profile; pass another profile as an argument
 ```
 
 ## Repository layout
@@ -48,7 +46,6 @@ mise run iris:build  # default Minecraft profile; pass another profile as an arg
 - `wasm/`: UI-independent map engine (camera gestures, scene invalidation,
   layout math) shared by both clients and tested natively.
 - `services/sequoia-ingest/`: separately locked Rust workspace for Iris reports.
-- `mods/wynn-iris/`: Fabric reporter and its Gradle wrapper.
 - `ops/`: deployment edge, monitoring, backups and database maintenance.
 
 ## Documentation
@@ -57,7 +54,6 @@ mise run iris:build  # default Minecraft profile; pass another profile as an arg
 - [Configuration](docs/configuration.md): server settings and backend integration.
 - [Deployment and operations](docs/deployment.md): Compose, Coolify, backups and monitoring.
 - [Iris gateway](services/sequoia-ingest/README.md): enrollment, quorum and ingest settings.
-- [Iris reporter](mods/wynn-iris/README.md): Minecraft profiles and reporter behavior.
 
 ## License
 

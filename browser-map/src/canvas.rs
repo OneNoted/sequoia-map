@@ -239,8 +239,8 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 heat.take_counts.track();
                 heat.scale.track();
             }
-            if let Some(wars) = inputs.wars {
-                wars.track();
+            if let Some(war_marks) = inputs.war_marks {
+                war_marks.track();
             }
             state.borrow_mut().planner.invalidate(SceneChange::Overlay);
             scheduler.mark_dirty();
@@ -274,6 +274,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
             map.markers.track();
             map.site_labels.track();
             map.teammates.track();
+            map.war_plates.track();
             scheduler.mark_dirty();
         }
     });
@@ -512,12 +513,13 @@ fn render_frame(
     let heat_scale = heat.map(|heat| heat.scale.get_untracked());
     let site_labels = map.site_labels.get_untracked();
     let teammates = map.teammates.get_untracked();
+    let war_plates = map.war_plates.get_untracked();
 
     let outcome = inputs.territories.with_untracked(|territories| {
         map.tiles.with_untracked(|tiles| {
             map.markers.with_untracked(|markers| {
                 with_optional(heat.map(|heat| heat.take_counts), |take_counts| {
-                    with_optional(inputs.wars, |wars| {
+                    with_optional(inputs.war_marks, |war_marks| {
                         renderer.render(
                             &Frame {
                                 camera: &camera,
@@ -529,12 +531,13 @@ fn render_frame(
                                 heat: take_counts
                                     .zip(heat_scale.as_deref())
                                     .map(|(take_counts, scale)| HeatColors { take_counts, scale }),
-                                wars,
+                                war_marks,
                                 territory_bounds: *territory_bounds,
                                 tiles,
                                 icons: icons.as_ref(),
                                 markers: markers.as_ref(),
                                 site_labels: site_labels.as_ref(),
+                                war_plates: war_plates.as_ref(),
                                 teammates: teammates.as_ref(),
                                 minimap,
                                 clock_secs,

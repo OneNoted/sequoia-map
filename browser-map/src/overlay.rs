@@ -4,6 +4,7 @@
 //! Intel site names first, then teammates. Hosts publish a new value when the content changes;
 //! panning and zooming only move the camera.
 
+use sequoia_shared::war_board::{Ending, FrontClock, StageKind, format_clock};
 use web_sys::HtmlImageElement;
 
 /// One Map Intel site name, drawn right of and above its site.
@@ -42,6 +43,73 @@ pub struct Teammates {
     pub show_faces: bool,
     /// Draw names under the markers once zoomed in far enough.
     pub show_names: bool,
+}
+
+/// A plate on a war territory's top edge: its countdown or war clock, or a small mark of how
+/// it ended.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WarPlate {
+    /// Top centre of the territory, world units. The plate straddles that edge.
+    pub world: [f32; 2],
+    pub label: PlateLabel,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlateLabel {
+    /// A territory on its way to a war or in one, with what its clock reads.
+    Front {
+        stage: StageKind,
+        clock: FrontClock,
+        /// The tower's remaining health, for a war whose tower was measured.
+        health: Option<f32>,
+    },
+    /// A territory that just left the board: a glyph-only pin, so it never covers the
+    /// guild's tag or a neighbour. The HUD and the tooltip say it in words.
+    Ending(Ending),
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+impl PlateLabel {
+    /// The words a plate can show besides a clock; the renderer prepares exactly these glyphs.
+    pub(crate) const WORDS: [&'static str; 4] = ["Due", "Queued", "Entered", "War"];
+
+    /// What the plate says; an ending says nothing.
+    pub(crate) fn text(self) -> Option<std::borrow::Cow<'static, str>> {
+        let word = match self {
+            Self::Front {
+                clock: FrontClock::StartsIn(seconds) | FrontClock::FightingFor(seconds),
+                ..
+            } => return Some(format_clock(seconds).into()),
+            Self::Front {
+                clock: FrontClock::Due,
+                ..
+            } => "Due",
+            Self::Front {
+                clock: FrontClock::Unscheduled,
+                stage: StageKind::Queued,
+                ..
+            } => "Queued",
+            Self::Front {
+                clock: FrontClock::Unscheduled,
+                stage: StageKind::Entered,
+                ..
+            } => "Entered",
+            Self::Front {
+                clock: FrontClock::Fighting | FrontClock::Unscheduled,
+                ..
+            } => "War",
+            Self::Ending(_) => return None,
+        };
+        Some(word.into())
+    }
+}
+
+/// Every plate on the map, in drawing order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WarPlates {
+    pub plates: Vec<WarPlate>,
+    /// The live feed is reconnecting, so the plates may be out of date: they are dimmed.
+    pub stale: bool,
 }
 
 /// Which host input a renderer layer was last prepared from, and whether it must be prepared
@@ -105,7 +173,71 @@ pub(crate) fn atlas_extent(width: f64, height: f64, max_side: u32) -> Option<(u3
 mod tests {
     use std::sync::Arc;
 
-    use super::{Prepared, atlas_extent};
+    use super::{Ending, FrontClock, PlateLabel, Prepared, StageKind, atlas_extent};
+
+    fn front(stage: StageKind, clock: FrontClock) -> PlateLabel {
+        PlateLabel::Front {
+            stage,
+            clock,
+            health: None,
+        }
+    }
+
+    #[test]
+    fn plate_text_uses_only_prepared_glyphs() {
+        let prepared: String = PlateLabel::WORDS.concat() + "0123456789:";
+        let mut labels = Vec::new();
+        for stage in [StageKind::Queued, StageKind::Entered, StageKind::Fighting] {
+            for clock in [
+                FrontClock::StartsIn(3_725),
+                FrontClock::Due,
+                FrontClock::Unscheduled,
+                FrontClock::FightingFor(47),
+                FrontClock::Fighting,
+            ] {
+                labels.push(front(stage, clock));
+            }
+        }
+        for label in labels {
+            let text = label.text().expect("a front always says something");
+            assert!(text.chars().all(|ch| prepared.contains(ch)), "{text}");
+        }
+        for ending in [Ending::Captured, Ending::Cancelled, Ending::Ended] {
+            assert_eq!(PlateLabel::Ending(ending).text(), None);
+        }
+    }
+
+    #[test]
+    fn a_plate_reads_its_clock_and_never_calls_a_due_start_a_war() {
+        assert_eq!(
+            front(StageKind::Queued, FrontClock::StartsIn(128))
+                .text()
+                .as_deref(),
+            Some("2:08")
+        );
+        assert_eq!(
+            front(StageKind::Fighting, FrontClock::FightingFor(47))
+                .text()
+                .as_deref(),
+            Some("0:47")
+        );
+        assert_eq!(
+            front(StageKind::Fighting, FrontClock::Fighting)
+                .text()
+                .as_deref(),
+            Some("War")
+        );
+        assert_eq!(
+            front(StageKind::Entered, FrontClock::Due).text().as_deref(),
+            Some("Due")
+        );
+        assert_eq!(
+            front(StageKind::Queued, FrontClock::Unscheduled)
+                .text()
+                .as_deref(),
+            Some("Queued")
+        );
+    }
 
     #[test]
     fn an_atlas_within_the_device_limit_keeps_its_size() {

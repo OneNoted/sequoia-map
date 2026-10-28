@@ -5,7 +5,7 @@ use tiny_skia::{Color, FillRule, LineJoin, Paint, Path, PathBuilder, Pixmap, Str
 /// The Minecraft faces draw on a 100-unit grid, ten grid cells per em. Rendering at a whole
 /// number of pixels per cell, from a whole-pixel origin, keeps every stem on the pixel grid.
 const UNITS_PER_CELL: f32 = 100.0;
-/// Cap height in cells; labels are laid out by caps because they rarely have descenders.
+/// Cap height in cells; text baselines are measured from the top of these capitals.
 pub(super) const CAP_CELLS: u32 = 7;
 
 /// Printable ASCII and Latin-1, the range the bundled faces cover.
@@ -22,6 +22,7 @@ struct Glyph {
     outline: Option<Path>,
     advance: f32,
     ink_right: f32,
+    descent: f32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -40,13 +41,14 @@ impl Face {
             .map(|character| {
                 let id = face.glyph_index(character)?;
                 let mut outline = OutlinePath(PathBuilder::new());
-                let ink_right = face
-                    .outline_glyph(id, &mut outline)
-                    .map_or(0.0, |bounds| f32::from(bounds.x_max));
+                let bounds = face.outline_glyph(id, &mut outline);
                 Some(Glyph {
                     outline: outline.0.finish(),
                     advance: f32::from(face.glyph_hor_advance(id)?),
-                    ink_right,
+                    ink_right: bounds.as_ref().map_or(0.0, |b| f32::from(b.x_max)),
+                    descent: bounds
+                        .as_ref()
+                        .map_or(0.0, |b| (-f32::from(b.y_min)).max(0.0)),
                 })
             })
             .collect();
@@ -68,6 +70,15 @@ impl Face {
             last_gap = glyph.advance - glyph.ink_right;
         }
         (advance - last_gap) * cell as f32 / UNITS_PER_CELL
+    }
+
+    /// Pixels below the baseline, including lowercase descenders such as `g`, `p` and `q`.
+    pub(super) fn descent(&self, text: &str, cell: u32) -> f32 {
+        text.chars()
+            .map(|character| self.glyph_or_fallback(character).descent)
+            .fold(0.0, f32::max)
+            * cell as f32
+            / UNITS_PER_CELL
     }
 
     /// Outline of `text` with its left edge at `x` and baseline at `baseline`.
@@ -100,16 +111,13 @@ pub(super) struct TextStyle {
     pub(super) cell: u32,
     pub(super) fill: Color,
     pub(super) halo: Color,
+    /// Distance the outline extends past the glyphs, in pixels.
+    pub(super) halo_width: f32,
 }
 
 impl TextStyle {
     pub(super) fn cap_height(self) -> f32 {
         (CAP_CELLS * self.cell) as f32
-    }
-
-    /// Distance the halo extends past the glyphs: two pixels for small text, three for large.
-    pub(super) fn halo_width(self) -> f32 {
-        (self.cell / 2 + 1).clamp(2, 3) as f32
     }
 }
 
@@ -131,7 +139,7 @@ pub(super) fn draw_text(
     };
     paint.set_color(style.halo);
     let halo = Stroke {
-        width: style.halo_width() * 2.0,
+        width: style.halo_width * 2.0,
         line_join: LineJoin::Miter,
         ..Stroke::default()
     };
