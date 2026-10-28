@@ -19,7 +19,7 @@ checks_step="Run the hosted checks"
 outside_checks() {
   case "$1" in
     README.md|AGENTS.md|LICENSE|docs/*|ops/*|.ci/*|.cargo/audit.toml|\
-    Dockerfile|.dockerignore|services/sequoia-ingest/Dockerfile|docker-compose*.yml|\
+    Dockerfile|.dockerignore|services/sequoia-ingest/Dockerfile|compose.yaml|\
     .github/workflows/deploy-images.yml|client/input.css) return 0 ;;
     *) return 1 ;;
   esac

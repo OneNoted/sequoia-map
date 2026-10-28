@@ -32,7 +32,7 @@ is accepted but has no effect.
 - `INGEST_QUORUM_MIN_REPORTERS` (default: `2`)
 - `INGEST_QUORUM_MIN_DISTINCT_ORIGINS` (default: `1`; capped to `INGEST_QUORUM_MIN_REPORTERS`; set to `2` to require cross-origin corroboration when reporter quorum is at least `2`)
 - `INGEST_DEGRADED_SINGLE_REPORTER_ENABLED` (default: `false`)
-- `INGEST_TRUSTED_PROXY_CIDRS` (default: empty in service; prod/coolify compose defaults to loopback + RFC1918 private ranges)
+- `INGEST_TRUSTED_PROXY_CIDRS` (default: empty in service; `compose.yaml` defaults to loopback + RFC1918 private ranges)
 - `INGEST_RAW_RETENTION_DAYS` (default: `7`)
 - `INGEST_REPORTER_RETENTION_DAYS` (default: `30`)
 - `INGEST_DUP_SUPPRESS_SECS` (default: `300`)

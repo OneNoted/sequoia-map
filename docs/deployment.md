@@ -1,28 +1,18 @@
 # Deployment and operations
 
-The production Compose files are Docker-based; local development uses none of them
-([development](development.md)). Run commands below from the repository root against
-the intended deployment.
+`compose.yaml` is the deployed stack: PostgreSQL 18, the API server, the Iris ingest
+gateway, the edge proxy and scheduled backups, from the published images. Coolify deploys
+it; local development uses none of it ([development](development.md)).
 
-## Standalone Compose
+## Coolify
 
-Set DNS and export `POSTGRES_PASSWORD`, `INTERNAL_INGEST_TOKEN`, `MAP_DOMAIN`,
-`IRIS_DOMAIN` and `ACME_EMAIL`, then:
+The application deploys `compose.yaml`. It requires `POSTGRES_PASSWORD` and
+`INTERNAL_INGEST_TOKEN`. Route the public map domain to `edge:8080`; Coolify
+terminates TLS, and the stack binds no host ports.
 
-```bash
-docker compose up --build -d
-```
-
-`docker-compose.yml` runs Caddy on ports 80/443, the API, the Iris gateway,
-PostgreSQL 18 and automatic backups. API and ingest ports are private to the
-container network. Caddy routes the map domain to `server:3000` and the Iris
-domain to `ingest:3010`.
-
-Normal restarts do not need a rebuild:
-
-```bash
-docker compose up -d --no-build
-```
+The internal edge sends `/v1/*` and `/iris/v1/*` to ingest, stripping `/iris`
+for the latter. Other requests go to the map server. Reporter base URLs can
+therefore be `https://map.example.com` or `https://map.example.com/iris`.
 
 Production images build with Docker or Podman from the repository root:
 
@@ -31,16 +21,6 @@ docker build -t sequoia-map-server .
 docker build -f services/sequoia-ingest/Dockerfile -t sequoia-map-ingest .
 docker build -f ops/caddy/Dockerfile.coolify -t sequoia-map-edge .
 ```
-
-## Coolify
-
-Use `docker-compose.coolify.yml`. It requires `POSTGRES_PASSWORD` and
-`INTERNAL_INGEST_TOKEN`. Route the public map domain to `edge:8080`; Coolify
-terminates TLS. This stack does not bind host ports 80/443.
-
-The internal edge sends `/v1/*` and `/iris/v1/*` to ingest, stripping `/iris`
-for the latter. Other requests go to the map server. Reporter base URLs can
-therefore be `https://map.example.com` or `https://map.example.com/iris`.
 
 GitHub Actions publishes the `server`, `ingest` and `edge` images to GHCR.
 The default image tag is `main`; `SEQUOIA_SERVER_IMAGE`, `SEQUOIA_INGEST_IMAGE`
@@ -100,9 +80,6 @@ The client build fails when the map's compressed WASM is over its budget, so an
 over-budget image is never pushed. After pushing a server candidate, the build job
 checks that the image's `/app/backend-key` equals `cargo xtask release key` for the
 same commit; a mismatched candidate is never promoted.
-
-`docker-compose.coolify.dev.yml` is the separate deployed development stack,
-not the local hot-reload environment.
 
 ## Client releases
 
@@ -236,6 +213,10 @@ The `postgres-backup` service writes compressed logical backups to the
 ./ops/backup/backup_now.sh
 ```
 
+The scripts reach the deployed project through `SEQUOIA_COMPOSE_EXEC`, the same `docker
+compose` prefix as `release:services`; without it they use the project started from
+this checkout's `compose.yaml`.
+
 **Restore replaces dumped objects in the target database.** Dumps use
 `--clean --if-exists`; they do not drop the database itself. Confirm the target
 stack and take a current backup before running either form:
@@ -246,19 +227,8 @@ stack and take a current backup before running either form:
 ```
 
 PostgreSQL 18 mounts `/var/lib/postgresql` with
-`PGDATA=/var/lib/postgresql/18/docker`. Do not attach a PostgreSQL 17 data
-directory directly. Existing 17 installations have a dedicated upgrade runbook:
-
-```bash
-./ops/postgres/precheck_17_to_18.sh
-./ops/postgres/upgrade_17_to_18.sh
-./ops/postgres/verify_18_postcutover.sh
-```
-
-Read these scripts before a cutover. The upgrade takes a logical backup and a
-compressed volume snapshot under `ops/postgres/snapshots/`, attempts
-`pg_upgrade` link mode and falls back to copy mode. It is not part of normal
-application startup or the local mise workflow.
+`PGDATA=/var/lib/postgresql/18/docker`; a new PostgreSQL major version needs its own
+dump-and-restore or `pg_upgrade` plan, not a changed image tag.
 
 ## Monitoring
 

@@ -23,7 +23,7 @@ must remain behind an edge that blocks public access to `/api/internal/ingest/*`
 
 ## Runtime settings
 
-Defaults below are the server's defaults. Compose files may override them.
+Defaults below are the server's defaults. `compose.yaml` may override them.
 See [`server/src/config.rs`](../server/src/config.rs) for parsing, bounds and
 settings not listed here.
 
@@ -50,9 +50,9 @@ settings not listed here.
 | `SEQUOIA_CLIENT_ROOT` | Directory holding the built `client/dist` and `claims-client/dist`; `mise run dev` sets `.data/dev-web` | working directory |
 | `MAP_IMAGE_ASSETS_DIR` | Tiles, fonts and icons for map image exports | `client/dist` under the client root |
 
-Coolify defaults territory-history retention to `36500` days to preserve imported
-history; ordinary production Compose defaults to `365`. Confirm the deployed
-value before importing old history.
+`compose.yaml` defaults territory-history retention to `36500` days, preserving imported
+history; the server's own default is `365`. Confirm the deployed value before importing
+old history.
 
 ## Map image export
 

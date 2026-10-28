@@ -116,7 +116,7 @@ const RULES: &[Rule] = &[
     rule("services/sequoia-ingest/*", None, &["ingest"], false),
     rule("ops/caddy/*", None, &["edge"], false),
     rule(".dockerignore", None, &ALL_SERVICES, false),
-    rule("docker-compose.coolify.yml", None, &ALL_SERVICES, true),
+    rule("compose.yaml", None, &ALL_SERVICES, true),
     rule(
         ".github/workflows/deploy-images.yml",
         None,
@@ -133,9 +133,7 @@ const RULES: &[Rule] = &[
     rule("mise.lock", None, NOTHING, false),
     rule(".github/workflows/ci.yml", None, NOTHING, false),
     rule(".github/actionlint.yaml", None, NOTHING, false),
-    rule("docker-compose.coolify.dev.yml", None, NOTHING, false),
     rule("scripts/*", None, NOTHING, false),
-    rule("ops/postgres/*", None, NOTHING, false),
     rule("ops/backup/*", None, NOTHING, false),
     rule("ops/prometheus/*", None, NOTHING, false),
 ];
@@ -315,6 +313,10 @@ mod tests {
         let unknown = needs(&["new-top-level-file"]);
         assert_eq!(unknown.images, ALL_SERVICES);
         assert!(unknown.config && !unknown.static_release_suffices);
+
+        let manifest = needs(&["compose.yaml"]);
+        assert!(manifest.unknown.is_empty() && manifest.config);
+        assert_eq!(manifest.images, ALL_SERVICES);
 
         let docs = needs(&["README.md", "mise.toml"]);
         assert!(docs.images.is_empty() && docs.client_release.is_none());

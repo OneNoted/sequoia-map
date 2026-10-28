@@ -19,5 +19,4 @@ services/sequoia-fake-backend/*
 scripts/capture-fake-territories.py
 mise.local.toml
 .idea/
-docker-compose.fake.yml
 
