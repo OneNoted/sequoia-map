@@ -174,6 +174,11 @@ RUN cargo build --release --locked --bin sequoia-server \
 COPY shared/ shared/
 COPY wasm/ wasm/
 COPY server/ server/
+# The backend key names the server's source closure. A static client release records the key
+# it was built against and is only activated on a server with the same key;
+# scripts/release.py computes the same value from a commit.
+RUN find Cargo.toml Cargo.lock shared server -type f -print0 | LC_ALL=C sort -z \
+    | xargs -0 sha256sum | sha256sum | cut -c1-16 > /app/backend-key
 
 RUN cargo build --release --locked --bin sequoia-server && \
     install -Dm755 /app/target/release/sequoia-server /app/sequoia-server && \
@@ -194,11 +199,15 @@ RUN groupadd --system --gid 10001 sequoia \
 WORKDIR /app
 
 COPY --from=server-build /app/sequoia-server /app/sequoia-server
+COPY --from=server-build /app/backend-key /app/backend-key
 COPY --from=server-build /app/server/migrations /app/server/migrations
 COPY --from=server-build /app/server/static /app/server/static
 COPY --from=client-build /app/client/dist /app/client/dist
 COPY --from=client-build /app/claims-client/dist /app/claims-client/dist
-RUN chown -R sequoia:sequoia /app
+# A named volume mounted here starts with this directory's ownership.
+RUN mkdir -p /srv/client-releases && chown -R sequoia:sequoia /app /srv/client-releases
+# The commit the embedded clients were built from, whatever SOURCE_COMMIT a platform sets.
+RUN printf '%s\n' "${SOURCE_COMMIT}" > /app/source-commit
 
 ENV RUST_LOG=info
 ENV SOURCE_COMMIT=${SOURCE_COMMIT}

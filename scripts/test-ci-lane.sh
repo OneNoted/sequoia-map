@@ -92,9 +92,13 @@ git rm --quiet server/src/main.rs && git_quiet commit -m delete
 delete_head="$(git rev-parse HEAD)"
 git checkout --quiet -B unknown "${base}"
 unknown_head="$(commit unknown .github/workflows/ci.yml 'name: CI')"
+css_head="$(branch css client/input.css '.sb-row { color: red; }')"
+git checkout --quiet -B css-source "${css_head}"
+css_source_head="$(commit css-source client/src/main.rs 'fn main() {}')"
 
 git push --quiet origin --all
-for head in "${docs_head}" "${src_head}" "${mixed_head}" "${rename_head}" "${delete_head}" "${unknown_head}"; do
+for head in "${docs_head}" "${src_head}" "${mixed_head}" "${rename_head}" "${delete_head}" "${unknown_head}" \
+  "${css_head}" "${css_source_head}"; do
   merge="$(pr_merge "${head}")"
   git push --quiet origin "${merge}:refs/merges/${head}"
 done
@@ -110,6 +114,8 @@ pr "docs and source" "${mixed_head}" full
 pr "source renamed into docs" "${rename_head}" full
 pr "source deleted" "${delete_head}" full
 pr "workflow change" "${unknown_head}" full
+pr "stylesheet only" "${css_head}" docs
+pr "stylesheet and client source" "${css_source_head}" full
 
 # A shallow pull request checkout without the base parent runs everything.
 git clone --quiet --depth 1 "file://${root}/origin.git" "${root}/shallow"

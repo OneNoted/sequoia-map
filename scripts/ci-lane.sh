@@ -14,13 +14,14 @@ checks_job=rust
 checks_step="Run the hosted checks"
 
 # Files the hosted checks never read. Unknown paths, deletions and both sides of
-# renames are judged by name, so anything else selects the checks.
+# renames are judged by name, so anything else selects the checks. No Rust source
+# includes client/input.css: Tailwind compiles it, and only the release builds run that.
 outside_checks() {
   case "$1" in
     README.md|AGENTS.md|LICENSE|docs/*|ops/*|.ci/*|.cargo/audit.toml|\
     Dockerfile|.dockerignore|services/sequoia-ingest/Dockerfile|docker-compose*.yml|\
-    .github/workflows/deploy-images.yml|\
-    scripts/check-wasm-size.py|scripts/smoke-browser.py) return 0 ;;
+    .github/workflows/deploy-images.yml|client/input.css|\
+    scripts/check-wasm-size.py|scripts/smoke-browser.py|scripts/release.py|scripts/test-release.py) return 0 ;;
     *) return 1 ;;
   esac
 }

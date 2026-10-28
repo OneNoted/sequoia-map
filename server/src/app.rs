@@ -1,6 +1,7 @@
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
+use axum::body::Body;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -9,10 +10,14 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
 };
+use tower::ServiceExt;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 
 use crate::asset_version::{asset_content_version, source_commit};
+use crate::client_release::{
+    self, CLAIMS_CLIENT, MAP_CLIENT, ServedClient, ServedRelease, ServedReleases, Snapshot,
+};
 use crate::routes;
 use crate::state::AppState;
 
@@ -32,13 +37,27 @@ struct HtmlResponseOptions {
     robots: Option<&'static str>,
 }
 
+/// The client releases the server serves, when a releases directory is configured and usable.
+static CLIENT_RELEASES: OnceLock<Option<Arc<ServedReleases>>> = OnceLock::new();
+
+fn client_releases() -> Option<&'static Arc<ServedReleases>> {
+    CLIENT_RELEASES
+        .get_or_init(|| client_release::serve_from_environment().map(Arc::new))
+        .as_ref()
+}
+
 pub(crate) fn build_app(state: AppState) -> Router {
     let api_body_limit = crate::config::api_body_limit_bytes();
-    let static_assets = Router::new()
-        .nest("/claims-app", static_assets_router(CLAIMS_DIST_DIR))
-        .merge(static_assets_router(MAP_DIST_DIR));
-    // Hash the versioned assets before serving rather than on the first page request.
-    let _ = public_asset_version();
+    let static_assets = match client_releases() {
+        Some(releases) => release_assets_router(Arc::clone(releases)),
+        None => {
+            // Hash the versioned assets before serving rather than on the first page request.
+            let _ = public_asset_version();
+            Router::new()
+                .nest("/claims-app", static_assets_router(CLAIMS_DIST_DIR))
+                .merge(static_assets_router(MAP_DIST_DIR))
+        }
+    };
 
     let app = Router::new()
         .route("/", axum::routing::get(serve_map_root))
@@ -187,6 +206,88 @@ fn static_assets_router(dist_dir: impl AsRef<Path>) -> Router {
         .layer(middleware::from_fn(set_static_cache_control))
 }
 
+/// Static files from client releases: the current release, an older retained release for a
+/// hashed bundle name the current one lacks, and the release whose asset version a `?v=`
+/// request names. Pages loaded before an activation or rollback keep working.
+fn release_assets_router(releases: Arc<ServedReleases>) -> Router {
+    let claims = Arc::clone(&releases);
+    Router::new()
+        .nest(
+            "/claims-app",
+            Router::new().fallback(move |request: Request| {
+                serve_release_asset(Arc::clone(&claims), CLAIMS_CLIENT, request)
+            }),
+        )
+        .fallback(move |request: Request| {
+            serve_release_asset(Arc::clone(&releases), MAP_CLIENT, request)
+        })
+        .layer(middleware::from_fn(set_static_cache_control))
+}
+
+async fn serve_release_asset(
+    releases: Arc<ServedReleases>,
+    client: ServedClient,
+    request: Request,
+) -> Response {
+    let Some(snapshot) = releases.snapshot() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let (candidates, short_cache) =
+        release_candidates(&snapshot, request.uri().path(), request.uri().query());
+    let (parts, _) = request.into_parts();
+    let mut response = StatusCode::NOT_FOUND.into_response();
+    for release in candidates {
+        let attempt = Request::from_parts(parts.clone(), Body::empty());
+        response = match ServeDir::new(release.dir.join(client.dir))
+            .precompressed_br()
+            .precompressed_gzip()
+            .oneshot(attempt)
+            .await
+        {
+            Ok(response) => response.into_response(),
+            Err(never) => match never {},
+        };
+        if response.status() != StatusCode::NOT_FOUND {
+            break;
+        }
+    }
+    if short_cache && response.status().is_success() {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(SHORT_STATIC_CACHE_CONTROL),
+        );
+    }
+    response
+}
+
+/// The releases to try for `path`, in order, and whether the response must stay short-cached.
+/// A `?v=` asset comes only from the release with that asset version; an unknown version
+/// gets the current bytes without the year-long cache its URL would otherwise earn.
+fn release_candidates<'a>(
+    snapshot: &'a Snapshot,
+    path: &str,
+    query: Option<&str>,
+) -> (Vec<&'a ServedRelease>, bool) {
+    let current = snapshot.current();
+    if is_versioned_asset_path(path) {
+        let Some(version) = asset_version_query(query) else {
+            return (vec![current], false);
+        };
+        return match snapshot
+            .releases
+            .iter()
+            .find(|release| release.asset_version.as_deref() == Some(version))
+        {
+            Some(release) => (vec![release], false),
+            None => (vec![current], true),
+        };
+    }
+    if is_hashed_bundle_asset(path) {
+        return (snapshot.releases.iter().collect(), false);
+    }
+    (vec![current], false)
+}
+
 async fn api_not_found() -> impl IntoResponse {
     (StatusCode::NOT_FOUND, "Not Found")
 }
@@ -199,10 +300,10 @@ async fn set_static_cache_control(request: Request, next: Next) -> Response {
     if response.status().is_success()
         && let Some(cache_control) = cache_control_for_path(&path, versioned)
     {
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static(cache_control),
-        );
+        response
+            .headers_mut()
+            .entry(header::CACHE_CONTROL)
+            .or_insert(HeaderValue::from_static(cache_control));
     }
 
     response
@@ -215,10 +316,7 @@ fn cache_control_for_path(path: &str, versioned: bool) -> Option<&'static str> {
         return Some(IMMUTABLE_STATIC_CACHE_CONTROL);
     }
 
-    if normalized_path.starts_with("/tiles/")
-        || normalized_path.starts_with("/fonts/")
-        || normalized_path.starts_with("/icons/")
-    {
+    if is_versioned_asset_path(normalized_path) {
         return Some(if versioned {
             IMMUTABLE_STATIC_CACHE_CONTROL
         } else {
@@ -229,15 +327,22 @@ fn cache_control_for_path(path: &str, versioned: bool) -> Option<&'static str> {
     None
 }
 
+fn is_versioned_asset_path(path: &str) -> bool {
+    ["/tiles/", "/fonts/", "/icons/"]
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
 fn has_asset_version_query(query: Option<&str>) -> bool {
-    query
-        .map(|query| {
-            query
-                .split('&')
-                .filter_map(|pair| pair.split_once('='))
-                .any(|(key, value)| key == "v" && !value.trim().is_empty())
-        })
-        .unwrap_or(false)
+    asset_version_query(query).is_some()
+}
+
+fn asset_version_query(query: Option<&str>) -> Option<&str> {
+    query?
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, value)| *key == "v" && !value.trim().is_empty())
+        .map(|(_, value)| value)
 }
 
 fn is_hashed_bundle_asset(path: &str) -> bool {
@@ -264,7 +369,7 @@ async fn redirect_index_to_root() -> Redirect {
 
 async fn serve_map_root() -> impl IntoResponse {
     serve_html_file(
-        map_index_path(),
+        client_page(MAP_CLIENT),
         HtmlResponseOptions {
             canonical: Some(map_root_url()),
             robots: None,
@@ -275,7 +380,7 @@ async fn serve_map_root() -> impl IntoResponse {
 
 async fn serve_map_history() -> impl IntoResponse {
     serve_html_file(
-        map_index_path(),
+        client_page(MAP_CLIENT),
         HtmlResponseOptions {
             canonical: Some(map_root_url()),
             robots: Some("noindex, follow"),
@@ -287,9 +392,9 @@ async fn serve_map_history() -> impl IntoResponse {
 async fn serve_claims_route(request: Request) -> impl IntoResponse {
     let path = request.uri().path().to_owned();
     let html_path = if is_claims_editor_path(&path) {
-        claims_editor_index_path()
+        client_page(CLAIMS_CLIENT)
     } else {
-        claims_launcher_path()
+        (PathBuf::from(claims_launcher_path()), html_asset_version())
     };
     serve_html_file(
         html_path,
@@ -301,10 +406,41 @@ async fn serve_claims_route(request: Request) -> impl IntoResponse {
     .await
 }
 
-async fn serve_html_file(path: &str, options: HtmlResponseOptions) -> Response {
-    match tokio::fs::read(path).await {
+/// A client's page and the asset version it is served with: from the current release when
+/// releases are served, otherwise from the image.
+fn client_page(client: ServedClient) -> (PathBuf, Option<String>) {
+    if let Some(snapshot) = client_releases().and_then(|releases| releases.snapshot()) {
+        let current = snapshot.current();
+        return (
+            current.dir.join(client.dir).join("index.html"),
+            current.asset_version.clone(),
+        );
+    }
+    let embedded = if client == CLAIMS_CLIENT {
+        claims_editor_index_path()
+    } else {
+        map_index_path()
+    };
+    (
+        PathBuf::from(embedded),
+        public_asset_version().map(str::to_owned),
+    )
+}
+
+fn html_asset_version() -> Option<String> {
+    match client_releases().and_then(|releases| releases.snapshot()) {
+        Some(snapshot) => snapshot.current().asset_version.clone(),
+        None => public_asset_version().map(str::to_owned),
+    }
+}
+
+async fn serve_html_file(
+    (path, asset_version): (PathBuf, Option<String>),
+    options: HtmlResponseOptions,
+) -> Response {
+    match tokio::fs::read(&path).await {
         Ok(body) => {
-            let body = apply_html_body_substitutions(body, &options, public_asset_version());
+            let body = apply_html_body_substitutions(body, &options, asset_version.as_deref());
             let mut response = (
                 [
                     (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -317,7 +453,7 @@ async fn serve_html_file(path: &str, options: HtmlResponseOptions) -> Response {
             response
         }
         Err(err) => {
-            tracing::error!(path = %path, error = %err, "failed to read HTML file");
+            tracing::error!(path = %path.display(), error = %err, "failed to read HTML file");
             axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -357,8 +493,11 @@ fn public_asset_version() -> Option<&'static str> {
     static VERSION: OnceLock<Option<String>> = OnceLock::new();
     VERSION
         .get_or_init(|| {
-            asset_content_version(&[Path::new(MAP_DIST_DIR), Path::new(CLAIMS_DIST_DIR)])
-                .or_else(source_commit)
+            asset_content_version(
+                Path::new(""),
+                &[Path::new(MAP_DIST_DIR), Path::new(CLAIMS_DIST_DIR)],
+            )
+            .or_else(source_commit)
         })
         .as_deref()
 }
@@ -505,9 +644,127 @@ async fn serve_sitemap_xml() -> impl IntoResponse {
 mod tests {
     use super::*;
     use crate::state::AppState;
-    use axum::body::{self, Body};
+    use axum::body;
     use axum::http::Request;
     use tower::util::ServiceExt;
+
+    use crate::client_release::tests::installed;
+    use crate::client_release::{Expected, ReleaseStore};
+
+    async fn get(app: &Router, uri: &str) -> (StatusCode, Option<String>, Vec<u8>) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let status = response.status();
+        let cache = response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body")
+            .to_vec();
+        (status, cache, bytes)
+    }
+
+    fn stylesheet(store: &ReleaseStore, id: &str) -> String {
+        std::fs::read_dir(store.release_dir(id).join("client/dist"))
+            .expect("list release")
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .find(|name| name.ends_with(".css"))
+            .expect("release stylesheet")
+    }
+
+    #[tokio::test]
+    async fn releases_keep_older_pages_working_across_activation_and_rollback() {
+        let root = tempfile::tempdir().expect("temp root");
+        let store = ReleaseStore::open(root.path()).expect("store");
+        let old = installed(&store, "old{}", "old tile");
+        store
+            .activate(&old, &Expected::Nothing, "backend-a")
+            .expect("old");
+        let new = installed(&store, "new{}", "new tile");
+        store
+            .activate(&new, &Expected::Release(old.clone()), "backend-a")
+            .expect("new");
+        let version = |id: &str| {
+            store
+                .manifest(id)
+                .expect("manifest")
+                .asset_version
+                .expect("v")
+        };
+        let (old_version, new_version) = (version(&old), version(&new));
+        assert_ne!(old_version, new_version);
+        let (old_css, new_css) = (stylesheet(&store, &old), stylesheet(&store, &new));
+        let app = release_assets_router(Arc::new(ServedReleases::new(store.clone())));
+
+        for _ in ["after activation", "after rollback"] {
+            let (status, cache, bytes) = get(&app, &format!("/{old_css}")).await;
+            assert_eq!(
+                (status, cache.as_deref(), bytes.as_slice()),
+                (
+                    StatusCode::OK,
+                    Some(IMMUTABLE_STATIC_CACHE_CONTROL),
+                    &b"old{}"[..]
+                )
+            );
+            let (status, _, bytes) = get(&app, &format!("/{new_css}")).await;
+            assert_eq!((status, bytes.as_slice()), (StatusCode::OK, &b"new{}"[..]));
+            let (_, cache, bytes) = get(&app, &format!("/tiles/main.webp?v={old_version}")).await;
+            assert_eq!(
+                (cache.as_deref(), bytes.as_slice()),
+                (Some(IMMUTABLE_STATIC_CACHE_CONTROL), &b"old tile"[..])
+            );
+            let (_, cache, bytes) = get(&app, &format!("/tiles/main.webp?v={new_version}")).await;
+            assert_eq!(
+                (cache.as_deref(), bytes.as_slice()),
+                (Some(IMMUTABLE_STATIC_CACHE_CONTROL), &b"new tile"[..])
+            );
+            store
+                .rollback(
+                    &Expected::Release(store.current().expect("current").expect("id")),
+                    "backend-a",
+                )
+                .expect("roll back");
+        }
+
+        let current = store.current().expect("current").expect("id");
+        let current_tile: &[u8] = if current == new {
+            b"new tile"
+        } else {
+            b"old tile"
+        };
+        let (_, cache, bytes) = get(&app, "/tiles/main.webp?v=0000000000000000").await;
+        assert_eq!(
+            (cache.as_deref(), bytes.as_slice()),
+            (Some(SHORT_STATIC_CACHE_CONTROL), current_tile),
+            "an unknown version is never cached as immutable"
+        );
+        let (_, cache, _) = get(&app, "/tiles/main.webp").await;
+        assert_eq!(cache.as_deref(), Some(SHORT_STATIC_CACHE_CONTROL));
+        for private in [
+            "/release.json",
+            "/../release.json",
+            "/../../history",
+            "/claims-app/../release.json",
+        ] {
+            assert_eq!(
+                get(&app, private).await.0,
+                StatusCode::NOT_FOUND,
+                "{private}"
+            );
+        }
+        assert_eq!(get(&app, "/claims-app/index.html").await.0, StatusCode::OK);
+    }
 
     #[test]
     fn immutable_cache_for_hashed_bundle_assets() {

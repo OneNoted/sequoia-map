@@ -54,6 +54,10 @@ services:
       WARCONTROLLER_POLL_INTERVAL_SECS: ${WARCONTROLLER_POLL_INTERVAL_SECS:-}
       WARCONTROLLER_MAX_STALENESS_SECS: ${WARCONTROLLER_MAX_STALENESS_SECS:-}
       MAP_DOMAIN: ${MAP_DOMAIN:-map.example.com}
+      # Static client releases (scripts/release.py) switch here without restarting anything.
+      SEQUOIA_CLIENT_RELEASES: /srv/client-releases
+    volumes:
+      - client-releases:/srv/client-releases
     mem_limit: 768m
     mem_reservation: 256m
     expose:
@@ -178,5 +182,6 @@ services:
 
 volumes:
   pgdata:
+  client-releases:
   pgbackups:
   ingest-data:

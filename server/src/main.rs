@@ -1,5 +1,6 @@
 mod app;
 mod asset_version;
+mod client_release;
 mod config;
 mod db_migrations;
 mod db_sqlx;
@@ -22,6 +23,13 @@ use crate::state::AppState;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((command, rest)) = args.split_first()
+        && command == "client-release"
+    {
+        std::process::exit(client_release::run_cli(rest));
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();

@@ -60,13 +60,29 @@ Unchanged images keep their existing revisions; a successful trigger is not
 proof that Coolify has completed the rollout. Verify running image digests and
 the real service health after deployment.
 
+A manual run chooses its `release` input:
+
+- **`promote`, the default.** It behaves like a push to main: build, promote to
+  `main` and trigger Coolify.
+- **`build-only`.** It builds every image for the chosen ref, `main` or any other
+  branch, and pushes them as `sha-<commit>` candidates with the usual registry
+  cache, including the server's size check. It skips the Coolify credential
+  probe, promotes no `main` tag and never triggers Coolify.
+
+Use `build-only` to pull and test the real production image, by its candidate
+tag, before it is promoted. A build-only run is never a promotion baseline: the
+next push still compares against the last run that actually promoted. A failed
+build-only run on main makes the next push rebuild every image, as any failed run
+does.
+
 The published images use Docker Official Images from Amazon ECR Public
 (`public.ecr.aws/docker/library`) for their Rust, Debian, Go and Caddy bases. This
 avoids Docker Hub's shared anonymous pull limit on GitHub-hosted builders while
 retaining the same upstream images and version tags. Each base is pinned to its
 digest, so base-image security updates arrive through a reviewed digest change.
-The CI PostgreSQL service uses the same official mirror for its existing
-`18.3-alpine` tag; database test coverage and service configuration are unchanged.
+The CI PostgreSQL service instead pulls the official `postgres:18.3-alpine` from
+Docker Hub: GitHub-hosted runners hit the ECR mirror's anonymous data limit while
+initializing service containers.
 
 Rust dependency builds are separate manifest/lockfile layers, reused through
 the existing registry build cache even on fresh runners. First-party stub
@@ -80,11 +96,74 @@ fit the 4-vCPU image runner. The value is fixed because it is part of the
 dependency layers' cache key; local builds can override `CARGO_BUILD_JOBS` with
 a Docker build argument.
 After pushing a server candidate, the build job pulls it and checks the map
-client against the compressed size budget; an over-budget candidate is never
-promoted.
+client against the compressed size budget. It also checks that the image's
+`/app/backend-key` equals `scripts/release.py key` for the same commit. An
+over-budget or mismatched candidate is never promoted.
 
 `docker-compose.coolify.dev.yml` is the separate deployed development stack,
 not the local hot-reload environment.
+
+## Client releases
+
+Both browser clients can change without rebuilding or restarting a service. The
+server serves them from immutable releases in the `client-releases` volume
+(`SEQUOIA_CLIENT_RELEASES`), and `scripts/release.py` publishes them:
+
+```bash
+mise run release:plan                         # what a change needs, from its paths
+mise run release:client -- --from-target      # build a release on the live one
+mise run release:activate -- <bundle> --dry-run
+mise run release:activate -- <bundle>         # install, switch, check, or roll back
+mise run release:status
+mise run release:rollback
+```
+
+`SEQUOIA_RELEASE_EXEC` is the command prefix that runs a command in the server
+container, such as `ssh <host> docker exec -i <server container>`.
+`SEQUOIA_RELEASE_URL` is the public URL the activation checks. Every stage
+appends a timed receipt to `.data/releases/receipts.jsonl`.
+
+What each part guarantees:
+
+- **Stylesheet changes reuse the live release.** When a change since the live
+  release's commit is only `client/input.css` (plus paths that need nothing,
+  such as docs), `release:client` reuses every other byte of that release. It
+  compiles the stylesheet with the image's Tailwind version and rewrites only its
+  link, integrity and compressed copies. Any other client change runs each Trunk
+  build once.
+- **Installs are checked before anything changes.** The server installs a bundle
+  only when every file matches its manifest and every page integrity reference
+  matches the release's own bytes. A release's id comes from its contents, so a
+  retry installs to the same place.
+- **Activation is a guarded swap.** It is an atomic link switch under a lock, and
+  it fails if the live release is no longer the one the command read. It refuses
+  a release built for a different backend key: a digest of `Cargo.toml`,
+  `Cargo.lock`, `shared/` and `server/`, which the image build records. Such a
+  change needs a server release. Activating the live release again changes
+  nothing, and a failed check after activation rolls back.
+- **Pages loaded earlier keep working.** The live release and the two previously
+  active ones are kept. A hashed CSS, JS or WASM name the live release lacks is
+  served from a retained one. A `?v=` tile, font or icon comes from the release
+  with that asset version, and an unknown version is not cached as immutable.
+  Manifests and other control files are never served.
+- **Image deploys stay coherent with static releases.** On its first start, a new
+  server image installs and activates its own clients. It also activates them
+  when the live release was built for another backend. A restart of the same
+  image keeps a later static release or rollback.
+
+Deploy Images uses the same selector. A stylesheet-only change with an unchanged
+backend rebuilds, promotes and restarts nothing; its run notes that the change
+is published with `release:client` and `release:activate`. Because nothing is
+promoted, the next image-building change also rebuilds the server with that
+stylesheet. Hosted checks skip stylesheet-only changes, since no Rust source
+reads `client/input.css`. Mixed, shared, configuration and unknown changes
+select images as before.
+
+Compose recreates only the services whose image or configuration changed, so a
+server release leaves PostgreSQL, ingest and edge running. A platform that sets
+a per-deploy variable such as `SOURCE_COMMIT` on every service recreates them
+all, so give such variables a stable value. The server labels releases with the
+commit recorded in the image (`/app/source-commit`), not with that variable.
 
 ## Network and ingest policy
 

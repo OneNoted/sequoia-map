@@ -18,7 +18,7 @@ mod terrain;
 
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -153,7 +153,7 @@ impl MapImages {
                 .as_nanos();
             format!("process-{}-{started}", std::process::id())
         });
-        let assets = asset_content_version(&[root.as_path()]).unwrap_or_default();
+        let assets = asset_content_version(Path::new(""), &[root.as_path()]).unwrap_or_default();
         Self {
             shared: Arc::new(Shared {
                 revision: format!("{code}/{assets}"),

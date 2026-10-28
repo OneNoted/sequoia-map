@@ -155,6 +155,30 @@ description = "Check compressed release WASM against the client size budget"
 depends = ["build:client"]
 run = "uv run --script scripts/check-wasm-size.py"
 
+[tasks."release:plan"]
+description = "Say what delivering a change needs: a CSS or client release, images or config"
+run = "uv run --script scripts/release.py plan"
+
+[tasks."release:client"]
+description = "Build a client release bundle, reusing the base release when only CSS changed"
+run = "uv run --script scripts/release.py client"
+
+[tasks."release:activate"]
+description = "Install, activate and check a client release bundle on SEQUOIA_RELEASE_EXEC"
+run = "uv run --script scripts/release.py activate"
+
+[tasks."release:status"]
+description = "Show the target's client releases"
+run = "uv run --script scripts/release.py status"
+
+[tasks."release:rollback"]
+description = "Activate the target's previous client release"
+run = "uv run --script scripts/release.py rollback"
+
+[tasks."test:release"]
+description = "Test release selection, the backend key and the CSS-only release path"
+run = "uv run --script scripts/test-release.py"
+
 [tasks."lint:ci"]
 description = "Lint the workflows and CI scripts"
 run = [
@@ -180,6 +204,7 @@ description = "Run every check: formatting, Clippy, all tests, CI selection, rel
 run = [
   { task = "lint:ci" },
   { task = "test:ci" },
+  { task = "test:release" },
   { task = "fmt:check" },
   { task = "lint" },
   { task = "test" },

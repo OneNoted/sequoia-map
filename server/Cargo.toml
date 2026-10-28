@@ -26,6 +26,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
 thiserror = "2"
+# Client releases: file digests, page integrity and the tower service used to serve them.
+sha2 = "0.10"
+base64 = "0.22"
+tower = { version = "0.5", features = ["util"] }
 # Command-map image rendering: source tiles decode, resampling, vector drawing, glyph outlines
 # and output codecs. libwebp (through `webp`) is the one native dependency; it is used through
 # its safe encoder API for compact lossy WebP that Discord displays inline.
@@ -38,4 +42,4 @@ webp = { version = "0.3.1", default-features = false }
 
 [dev-dependencies]
 temp-env = "0.3"
-tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

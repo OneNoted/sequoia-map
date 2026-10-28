@@ -4,6 +4,12 @@ on:
   push:
     branches: ["main"]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "promote: build, promote and deploy main. build-only: build and push sha- candidates of the chosen ref; promote nothing and leave Coolify alone."
+        type: choice
+        options: [promote, build-only]
+        default: promote
 
 permissions:
   contents: read
@@ -22,7 +28,8 @@ env:
 
 jobs:
   changes:
-    if: github.repository == 'OneNoted/sequoia-map' && github.ref == 'refs/heads/main'
+    # A build-only run may build any ref's candidates; only main is ever promoted.
+    if: github.repository == 'OneNoted/sequoia-map' && (github.ref == 'refs/heads/main' || inputs.release == 'build-only')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -135,38 +142,32 @@ jobs:
             emit_all
             exit 0
           fi
-          if ! changed_files="$(git diff --name-only --no-renames "${before}" "${AFTER_SHA}")"; then
+          # scripts/release.py owns the input closure; release:plan reports the same plan.
+          if ! plan="$(python3 scripts/release.py plan --base "${before}" --head "${AFTER_SHA}")"; then
             emit_all
             exit 0
           fi
           echo "Selecting image changes since successful workflow head ${before}."
+          jq -c '{paths: (.paths | length), unknown, client_release, images, static_release_suffices}' <<< "${plan}"
+          if [ "$(jq -r '.client_release == "css" and .static_release_suffices' <<< "${plan}")" = true ]; then
+            # The promotion job does not run, so the baseline stays here and the next
+            # image-building change also rebuilds the server with this stylesheet.
+            echo "::notice title=Stylesheet-only change::Nothing is rebuilt or restarted. Publish it with 'mise run release:client -- --from-target' and 'mise run release:activate'."
+            emit_selection false false false
+            exit 0
+          fi
+          selected() { jq -r --arg image "$1" '.images | index($image) != null' <<< "${plan}"; }
+          emit_selection "$(selected server)" "$(selected ingest)" "$(selected edge)"
 
-          server=false
-          ingest=false
-          edge=false
-          while IFS= read -r file; do
-            case "${file}" in
-              .github/workflows/deploy-images.yml|.dockerignore|docker-compose.coolify.yml)
-                server=true; ingest=true; edge=true ;;
-              Cargo.toml|shared/*)
-                server=true; ingest=true ;;
-              Cargo.lock|Dockerfile|.ci/*|wasm/*|browser-map/*|client/*|claims-client/*|server/*|scripts/check-wasm-size.py)
-                server=true ;;
-              services/sequoia-ingest/*)
-                ingest=true ;;
-              ops/caddy/*)
-                edge=true ;;
-              ''|README.md|AGENTS.md|LICENSE|docs/*|.gitignore|.cargo/audit.toml|mise.toml|\
-              .github/workflows/ci.yml|docker-compose.yml|docker-compose.coolify.dev.yml|\
-              scripts/postgres.sh|scripts/ci-lane.sh|scripts/test-ci-lane.sh|scripts/smoke-browser.py|ops/postgres/*|ops/backup/*|ops/prometheus/*)
-                ;; # Known inputs outside these Docker build/deployment closures.
-              *)
-                echo "Unknown deployment input: ${file}"
-                emit_all
-                exit 0 ;;
-            esac
-          done <<< "${changed_files}"
-          emit_selection "${server}" "${ingest}" "${edge}"
+      - name: Describe A Build-Only Run
+        if: inputs.release == 'build-only'
+        shell: bash
+        env:
+          MATRIX_JSON: ${{ steps.filter.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          images="$(jq -r '.image | join(", ")' <<< "${MATRIX_JSON}")"
+          echo "::notice title=Build-only run::Builds and pushes ${images} as sha-${GITHUB_SHA} candidates. No main tag is promoted and Coolify is not called, so this run never becomes a promotion baseline."
 
       - name: Validate Image Selection
         shell: bash
@@ -192,7 +193,7 @@ jobs:
   credentials:
     name: Validate Deployment Credentials
     needs: changes
-    if: needs.changes.outputs.deploy == 'true'
+    if: needs.changes.outputs.deploy == 'true' && inputs.release != 'build-only'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -227,7 +228,10 @@ jobs:
   build-images:
     name: Build ${{ matrix.image }} Image
     needs: [changes, credentials]
-    if: needs.changes.outputs.deploy == 'true'
+    # A build-only run skips the Coolify credential probe; every other run needs it.
+    if: >-
+      always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.deploy == 'true'
+      && (needs.credentials.result == 'success' || (inputs.release == 'build-only' && needs.credentials.result == 'skipped'))
     # The server image compiles the release API and both WASM clients; ingest and edge are small.
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -336,8 +340,9 @@ jobs:
           install_args: python uv
           cache: false
 
-      # A promoted image must hold a map client within its compressed size budget.
-      - name: Check The Published Client Size
+      # A promoted image must hold a map client within its compressed size budget, and the
+      # backend key that static client releases are checked against must be this commit's.
+      - name: Check The Published Server Image
         if: matrix.image == 'server'
         env:
           UV_PYTHON_DOWNLOADS: never
@@ -350,14 +355,23 @@ jobs:
           container="$(docker create "${SERVER_IMAGE}@${digest}")"
           rm -rf client/dist
           docker cp "${container}:/app/client/dist" client/dist
+          docker cp "${container}:/app/backend-key" "${RUNNER_TEMP}/backend-key"
           docker rm "${container}" >/dev/null
+          image_key="$(tr -d '[:space:]' < "${RUNNER_TEMP}/backend-key")"
+          source_key="$(python3 scripts/release.py key --commit "${GITHUB_SHA}")"
+          if [ "${image_key}" != "${source_key}" ]; then
+            echo "::error title=Backend key mismatch::The image records ${image_key}; scripts/release.py computes ${source_key} for ${GITHUB_SHA}." >&2
+            exit 1
+          fi
+          echo "Backend key ${image_key} matches the source."
           uv run --script scripts/check-wasm-size.py
 
   publish-and-deploy:
     name: Promote Images And Trigger Coolify
     needs: [changes, credentials, build-images]
-    # Missing selections or failed prerequisites must produce a failed promotion gate.
-    if: always() && !cancelled() && github.repository == 'OneNoted/sequoia-map' && github.ref == 'refs/heads/main' && (needs.changes.result != 'success' || needs.changes.outputs.deploy != 'false')
+    # Missing selections or failed prerequisites must produce a failed promotion gate. A
+    # build-only run never gets here, so it is never a promotion baseline for later runs.
+    if: always() && !cancelled() && inputs.release != 'build-only' && github.repository == 'OneNoted/sequoia-map' && github.ref == 'refs/heads/main' && (needs.changes.result != 'success' || needs.changes.outputs.deploy != 'false')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

@@ -38,6 +38,8 @@ Both Trunk servers proxy `/api/` to port 3000 and watch their shared Rust source
 The native API and gateway use watchexec to rebuild and restart after changes.
 Release builds are explicit (`mise run build:client`, `mise run build:claims`,
 `mise run build:server`, `mise run build:ingest`).
+Client releases that switch without a restart are the `release:*` tasks; see
+[Client releases](deployment.md#client-releases).
 
 The API still binds to `0.0.0.0:3000` outside the dev task; `mise run server` sets
 `SEQUOIA_SERVER_BIND=127.0.0.1:3000`. Local PostgreSQL, Trunk and the gateway also
@@ -87,7 +89,7 @@ mise run lint
 `mise run verify` is the complete gate. It checks formatting, all native Rust
 targets and both WASM clients; runs both Rust workspaces' tests; builds both
 browser clients in release mode; enforces the map's compressed WASM budget; and
-lints and tests the CI workflows. The separately locked ingest workspace is
+lints and tests the CI workflows and the release selection. The separately locked ingest workspace is
 included, rather than relying on the root Cargo workspace to find it. Clippy
 rejects warnings on native, WASM and ingest targets. Intentional argument-count
 exceptions use function-local `#[expect]` with a reason; Clippy reports
