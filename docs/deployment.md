@@ -75,14 +75,13 @@ next push still compares against the last run that actually promoted. A failed
 build-only run on main makes the next push rebuild every image, as any failed run
 does.
 
-The published images use Docker Official Images from Amazon ECR Public
-(`public.ecr.aws/docker/library`) for their Rust, Debian, Go and Caddy bases. This
-avoids Docker Hub's shared anonymous pull limit on GitHub-hosted builders while
-retaining the same upstream images and version tags. Each base is pinned to its
-digest, so base-image security updates arrive through a reviewed digest change.
-The CI PostgreSQL service instead pulls the official `postgres:18.3-alpine` from
-Docker Hub: GitHub-hosted runners hit the ECR mirror's anonymous data limit while
-initializing service containers.
+The published images use Docker Official Images from Docker Hub
+(`docker.io/library`) for their Rust, Debian, Go and Caddy bases, as the CI
+PostgreSQL service does for `postgres:18.3-alpine`. GitHub-hosted builders hit
+the Amazon ECR Public mirror's anonymous data limit, which served the same
+images. Each base is pinned to its digest, so the bytes do not depend on the
+registry, and base-image security updates arrive through a reviewed digest
+change.
 
 Rust dependency builds are separate manifest/lockfile layers, reused through
 the existing registry build cache even on fresh runners. First-party stub
