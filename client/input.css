@@ -1693,16 +1693,8 @@
 .sb-row:hover { background-color: var(--color-surface-hover); }
 .sb-row-enter { animation: fade-in-up 0.3s ease-out var(--row-delay, 0ms) both; }
 .sb-row-focused { box-shadow: inset 2px 0 0 var(--color-gold); }
-/* The top three carry a softened guild-colour bar inside the row, before the rank. */
-.sb-row-podium::before {
-  content: "";
-  flex-shrink: 0;
-  align-self: stretch;
-  width: 3px;
-  border-radius: 2px;
-  background: rgb(from var(--swatch) r g b / 0.6);
-  pointer-events: none;
-}
+.sb-row-podium,
+.sb-guild-row.sb-row-focused { box-shadow: inset 2px 0 0 var(--swatch); }
 .sb-swatch {
   flex-shrink: 0;
   width: 14px;
