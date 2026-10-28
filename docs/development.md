@@ -84,19 +84,33 @@ mise run verify
 mise run lint
 ```
 
-`mise run verify` checks formatting, all native Rust targets and both WASM clients;
-runs both Rust workspaces' tests; builds both browser clients in release mode;
-and enforces the map's compressed WASM budget. CI runs the same task. The
-separately locked ingest workspace is included, rather than relying on the
-root Cargo workspace to find it. Clippy rejects warnings on native, WASM and ingest
-targets. Intentional argument-count exceptions use function-local `#[expect]`
-with a reason; Clippy reports expectations that are no longer needed. Do not
-add crate-wide warning suppression or change API shapes solely to silence lints.
+`mise run verify` is the complete gate. It checks formatting, all native Rust
+targets and both WASM clients; runs both Rust workspaces' tests; builds both
+browser clients in release mode; enforces the map's compressed WASM budget; and
+lints and tests the CI workflows. The separately locked ingest workspace is
+included, rather than relying on the root Cargo workspace to find it. Clippy
+rejects warnings on native, WASM and ingest targets. Intentional argument-count
+exceptions use function-local `#[expect]` with a reason; Clippy reports
+expectations that are no longer needed. Do not add crate-wide warning
+suppression or change API shapes solely to silence lints.
+
+Hosted CI runs `mise run ci`: formatting, Clippy on every target, and the
+server's tests (`mise run test:db`), which are the ones that use PostgreSQL, against
+a fresh database. The other tests are pure logic or in-memory SQLite and run in
+`mise run test` and `verify`; hosted Clippy still compiles all of them. The
+release browser builds and the size budget run when the server image is built
+for deployment, which fails before promotion if the published map client is over
+budget. Hosted CI installs only Rust.
 
 CI runs for pull requests, main pushes, merge-queue revisions and manual
 dispatches. Feature-branch pushes do not duplicate the pull-request checks;
-new pull-request revisions cancel their superseded runs. Mainline runs populate
-the shared tool/build caches; pull requests and merge-queue runs restore them.
+new pull-request revisions cancel their superseded runs. A change that touches
+only files the checks never read, such as documentation, deployment files or
+Dockerfiles, skips the checks (`scripts/ci-lane.sh` lists them). A main push
+skips them when its merged pull request's head already passed them with the
+same checked content, unless main has no dependency cache for that content
+yet. Main pushes populate the dependency cache; pull requests and merge-queue
+runs restore it.
 
 `mise run test` starts the local container and creates **`sequoia_test`**, separate
 from the development database. Some integration tests truncate tables.

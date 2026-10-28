@@ -11,19 +11,19 @@ permissions:
 # Only eligible production runs may occupy the shared deployment queue.
 # Finish an active deployment; a replaced pending run is covered by the baseline diff.
 concurrency:
-  group: ${{ github.repository == 'SequoiaWynncraft/sequoia-map' && github.ref == 'refs/heads/main' && 'deploy-images-production' || format('deploy-images-nonproduction-{0}', github.run_id) }}
+  group: ${{ github.repository == 'OneNoted/sequoia-map' && github.ref == 'refs/heads/main' && 'deploy-images-production' || format('deploy-images-nonproduction-{0}', github.run_id) }}
   cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
-  SERVER_IMAGE: ghcr.io/sequoiawynncraft/sequoia-map-server
-  INGEST_IMAGE: ghcr.io/sequoiawynncraft/sequoia-map-ingest
-  EDGE_IMAGE: ghcr.io/sequoiawynncraft/sequoia-map-edge
+  SERVER_IMAGE: ghcr.io/onenoted/sequoia-map-server
+  INGEST_IMAGE: ghcr.io/onenoted/sequoia-map-ingest
+  EDGE_IMAGE: ghcr.io/onenoted/sequoia-map-edge
 
 jobs:
   changes:
-    if: github.repository == 'SequoiaWynncraft/sequoia-map' && github.ref == 'refs/heads/main'
-    runs-on: apollo-sequoia-demeter
+    if: github.repository == 'OneNoted/sequoia-map' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
@@ -150,7 +150,7 @@ jobs:
                 server=true; ingest=true; edge=true ;;
               Cargo.toml|shared/*)
                 server=true; ingest=true ;;
-              Cargo.lock|Dockerfile|.ci/*|wasm/*|browser-map/*|client/*|claims-client/*|server/*)
+              Cargo.lock|Dockerfile|.ci/*|wasm/*|browser-map/*|client/*|claims-client/*|server/*|scripts/check-wasm-size.py)
                 server=true ;;
               services/sequoia-ingest/*)
                 ingest=true ;;
@@ -158,7 +158,7 @@ jobs:
                 edge=true ;;
               ''|README.md|AGENTS.md|LICENSE|docs/*|.gitignore|.cargo/audit.toml|mise.toml|\
               .github/workflows/ci.yml|docker-compose.yml|docker-compose.coolify.dev.yml|\
-              scripts/postgres.sh|scripts/check-wasm-size.py|scripts/smoke-browser.py|ops/postgres/*|ops/backup/*|ops/prometheus/*)
+              scripts/postgres.sh|scripts/ci-lane.sh|scripts/test-ci-lane.sh|scripts/smoke-browser.py|ops/postgres/*|ops/backup/*|ops/prometheus/*)
                 ;; # Known inputs outside these Docker build/deployment closures.
               *)
                 echo "Unknown deployment input: ${file}"
@@ -193,7 +193,7 @@ jobs:
     name: Validate Deployment Credentials
     needs: changes
     if: needs.changes.outputs.deploy == 'true'
-    runs-on: apollo-sequoia-demeter
+    runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Validate Coolify Deploy Credentials
@@ -228,7 +228,8 @@ jobs:
     name: Build ${{ matrix.image }} Image
     needs: [changes, credentials]
     if: needs.changes.outputs.deploy == 'true'
-    runs-on: apollo-sequoia-demeter
+    # The server image compiles the release API and both WASM clients; ingest and edge are small.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
@@ -303,10 +304,10 @@ jobs:
             server)
               image="${SERVER_IMAGE}"
               dockerfile=./Dockerfile
-              # Native and WASM stages share the declared pod budget, not the node's CPU count.
-              : "${CARGO_BUILD_JOBS:?The runner must declare its CPU budget}"
-              cargo_jobs="$(((CARGO_BUILD_JOBS + 1) / 2))"
-              build_args+=(--build-arg "SOURCE_COMMIT=${GITHUB_SHA}" --build-arg "CARGO_BUILD_JOBS=${cargo_jobs}") ;;
+              # The Dockerfile's two Cargo jobs per concurrent native and WASM stage fit the
+              # 4-vCPU standard runner. A fixed value keeps the dependency layers' cache key
+              # stable across runner sizes.
+              build_args+=(--build-arg "SOURCE_COMMIT=${GITHUB_SHA}") ;;
             ingest)
               image="${INGEST_IMAGE}"
               dockerfile=./services/sequoia-ingest/Dockerfile ;;
@@ -327,12 +328,37 @@ jobs:
             --push \
             .
 
+      - name: Install The Size Check Tools
+        if: matrix.image == 'server'
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        with:
+          version: 2026.10.17
+          install_args: python uv
+          cache: false
+
+      # A promoted image must hold a map client within its compressed size budget.
+      - name: Check The Published Client Size
+        if: matrix.image == 'server'
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${SERVER_IMAGE}:sha-${GITHUB_SHA}" --format '{{json .Manifest}}' \
+            | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))')"
+          docker pull --quiet "${SERVER_IMAGE}@${digest}" >/dev/null
+          container="$(docker create "${SERVER_IMAGE}@${digest}")"
+          rm -rf client/dist
+          docker cp "${container}:/app/client/dist" client/dist
+          docker rm "${container}" >/dev/null
+          uv run --script scripts/check-wasm-size.py
+
   publish-and-deploy:
     name: Promote Images And Trigger Coolify
     needs: [changes, credentials, build-images]
     # Missing selections or failed prerequisites must produce a failed promotion gate.
-    if: always() && !cancelled() && github.repository == 'SequoiaWynncraft/sequoia-map' && github.ref == 'refs/heads/main' && (needs.changes.result != 'success' || needs.changes.outputs.deploy != 'false')
-    runs-on: apollo-sequoia-demeter
+    if: always() && !cancelled() && github.repository == 'OneNoted/sequoia-map' && github.ref == 'refs/heads/main' && (needs.changes.result != 'success' || needs.changes.outputs.deploy != 'false')
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read

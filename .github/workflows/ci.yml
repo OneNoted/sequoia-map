@@ -15,8 +15,16 @@ permissions:
   contents: read
 
 jobs:
+  # Hosted CI runs formatting, Clippy on every target and the server tests, which
+  # use a fresh PostgreSQL. The other tests, the release browser builds and the
+  # WASM size budget run in `mise run verify`; the image build repeats the last two.
   rust:
-    runs-on: apollo-sequoia-demeter
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     services:
       postgres:
         image: public.ecr.aws/docker/library/postgres:18.3-alpine
@@ -34,18 +42,56 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/sequoia_test
       RUST_BACKTRACE: 1
+      MISE_TASK_RUN_AUTO_INSTALL: "false"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
+
+      - name: Choose the checks
+        id: lane
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before || github.event.merge_group.base_sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-lane.sh
+
+      # The checks need only Rust; the release-build tools stay local and in the images.
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        if: steps.lane.outputs.lane != 'docs'
         with:
           version: 2026.10.17
-          cache_save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+          install_args: rust
+          cache: false
+
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+        id: cache
+        if: steps.lane.outputs.lane != 'docs'
         with:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           workspaces: |
             . -> target
             services/sequoia-ingest -> target
-      - run: mise run verify
+
+      # Reuse still runs the checks when main lacks this exact dependency cache, to save it.
+      - name: Run the hosted checks
+        id: checks
+        if: steps.lane.outputs.lane == 'full' || (steps.lane.outputs.lane == 'reuse' && steps.cache.outputs.cache-hit != 'true')
+        run: mise run ci
+
+      - name: Report reused checks
+        if: steps.lane.outputs.lane != 'full'
+        env:
+          CHECKS: ${{ steps.checks.outcome }}
+          LANE: ${{ steps.lane.outputs.lane }}
+          REASON: ${{ steps.lane.outputs.reason }}
+          EVIDENCE: ${{ steps.lane.outputs.evidence }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "Lane: ${LANE} (${REASON}). Hosted checks: ${CHECKS}."
+            if [ -n "${EVIDENCE}" ]; then echo "Evidence: ${SERVER_URL}/${REPO}/actions/runs/${EVIDENCE}"; fi
+          } >> "${GITHUB_STEP_SUMMARY}"

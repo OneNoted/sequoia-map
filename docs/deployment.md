@@ -48,7 +48,7 @@ and `SEQUOIA_EDGE_IMAGE` override each image. Configure registry credentials
 in Coolify if the packages are private. Trigger deployment only after image
 publication succeeds.
 
-The deployment workflow is restricted to the deployment fork's `main` branch.
+The deployment workflow is restricted to `OneNoted/sequoia-map`'s `main` branch.
 It compares against the last successful image-publication and Coolify-trigger
 run, so failed, cancelled and no-op runs cannot hide outstanding image changes.
 Unknown inputs or unavailable baseline history rebuild every image. Server,
@@ -75,8 +75,13 @@ mistaking old source timestamps for fresh binaries. Keep the stub manifest
 and source lists aligned with workspace members and any future build scripts;
 the separately locked ingest workspace has its own dependency layer. Client
 tooling is independent of these manifests, and Trunk matches the Mise pin.
-The parallel native/WASM stages each receive half the runner's Cargo job budget;
-local builds can override `CARGO_BUILD_JOBS` with a Docker build argument.
+The parallel native/WASM stages each use the Dockerfile's two Cargo jobs, which
+fit the 4-vCPU image runner. The value is fixed because it is part of the
+dependency layers' cache key; local builds can override `CARGO_BUILD_JOBS` with
+a Docker build argument.
+After pushing a server candidate, the build job pulls it and checks the map
+client against the compressed size budget; an over-budget candidate is never
+promoted.
 
 `docker-compose.coolify.dev.yml` is the separate deployed development stack,
 not the local hot-reload environment.

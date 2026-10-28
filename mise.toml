@@ -12,6 +12,9 @@ rust = { version = "1.96.1", profile = "minimal", components = [
 watchexec = "2.7.2"
 python = "3.13.17"
 uv = "0.13.5"
+actionlint = "1.7.12"
+shellcheck = "0.11.0"
+zizmor = "1.31.1"
 
 [env]
 NO_COLOR = "true"
@@ -111,15 +114,23 @@ run = [
   "cargo clippy --locked --manifest-path services/sequoia-ingest/Cargo.toml --all-targets -- -D warnings",
 ]
 
-[tasks.test]
-description = "Run Rust tests with a separate PostgreSQL test database"
+# The server's tests are the ones that use PostgreSQL; hosted CI runs only these.
+[tasks."test:db"]
+description = "Run the server tests with a separate PostgreSQL test database"
 run = '''
 set -eu
 DATABASE_URL="${TEST_DATABASE_URL:-$(bash scripts/postgres.sh test-url)}"
 export DATABASE_URL
-cargo test --locked --workspace
-cargo test --locked --manifest-path services/sequoia-ingest/Cargo.toml
+cargo test --locked -p sequoia-server
 '''
+
+[tasks.test]
+description = "Run every Rust test, the server's with a separate PostgreSQL test database"
+run = [
+  { task = "test:db" },
+  "cargo test --locked --workspace --exclude sequoia-server",
+  "cargo test --locked --manifest-path services/sequoia-ingest/Cargo.toml",
+]
 
 [tasks."build:client"]
 description = "Build the release map client"
@@ -144,9 +155,31 @@ description = "Check compressed release WASM against the client size budget"
 depends = ["build:client"]
 run = "uv run --script scripts/check-wasm-size.py"
 
-[tasks.verify]
-description = "Run the Rust CI checks, tests and browser release builds"
+[tasks."lint:ci"]
+description = "Lint the workflows and CI scripts"
 run = [
+  "actionlint",
+  "shellcheck scripts/ci-lane.sh scripts/test-ci-lane.sh",
+  "zizmor --offline --no-progress .github/workflows",
+]
+
+[tasks."test:ci"]
+description = "Test the hosted CI lane selection"
+run = "bash scripts/test-ci-lane.sh"
+
+[tasks.ci]
+description = "Run the hosted CI checks: formatting, Clippy and the PostgreSQL tests"
+run = [
+  { task = "fmt:check" },
+  { task = "lint" },
+  { task = "test:db" },
+]
+
+[tasks.verify]
+description = "Run every check: formatting, Clippy, all tests, CI selection, release builds and size budget"
+run = [
+  { task = "lint:ci" },
+  { task = "test:ci" },
   { task = "fmt:check" },
   { task = "lint" },
   { task = "test" },

@@ -28,7 +28,7 @@ services:
     logging: *default-logging
 
   server:
-    image: ${SEQUOIA_SERVER_IMAGE:-ghcr.io/sequoiawynncraft/sequoia-map-server:main}
+    image: ${SEQUOIA_SERVER_IMAGE:-ghcr.io/onenoted/sequoia-map-server:main}
     pull_policy: always
     restart: unless-stopped
     init: true
@@ -70,7 +70,7 @@ services:
     logging: *default-logging
 
   ingest:
-    image: ${SEQUOIA_INGEST_IMAGE:-ghcr.io/sequoiawynncraft/sequoia-map-ingest:main}
+    image: ${SEQUOIA_INGEST_IMAGE:-ghcr.io/onenoted/sequoia-map-ingest:main}
     pull_policy: always
     restart: unless-stopped
     init: true
@@ -105,7 +105,7 @@ services:
     logging: *default-logging
 
   edge:
-    image: ${SEQUOIA_EDGE_IMAGE:-ghcr.io/sequoiawynncraft/sequoia-map-edge:main}
+    image: ${SEQUOIA_EDGE_IMAGE:-ghcr.io/onenoted/sequoia-map-edge:main}
     pull_policy: always
     restart: unless-stopped
     init: true

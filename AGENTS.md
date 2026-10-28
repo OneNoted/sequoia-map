@@ -1,7 +1,8 @@
 # Working in this repository
 
-Use `mise tasks` for development commands and `mise run verify` for the Rust CI
-checks. Setup and local ports are in [docs/development.md](docs/development.md).
+Use `mise tasks` for development commands and `mise run verify` for every check.
+Hosted CI runs only its `mise run ci` subset, so run `verify` before merging.
+Setup and local ports are in [docs/development.md](docs/development.md).
 
 The ingest gateway has its own Cargo workspace and lockfile. Root-level Cargo
 commands alone do not check it. Both browser clients and `browser-map` also need
@@ -17,5 +18,5 @@ Some PostgreSQL integration tests truncate tables. `mise run test` chooses a
 separate local test database; `TEST_DATABASE_URL` must point to disposable data.
 Production maintenance scripts under `ops` are not local dev bootstrap commands.
 
-The reporter's default update source is still `OneNoted/sequoia-map`, a separate
-repository. Do not rewrite it to this repository merely to match the clone URL.
+The canonical repository is `OneNoted/sequoia-map`, which is also the reporter's
+default update source. Workflows, image names and that default all use it.

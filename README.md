@@ -32,7 +32,7 @@ see [configuration](docs/configuration.md).
 ```bash
 mise tasks       # available commands
 mise run fmt         # format both Rust workspaces
-mise run verify      # checks, tests with PostgreSQL, release browser builds and size budget
+mise run verify      # every check: tests with PostgreSQL, release builds, size budget, CI lint
 ```
 
 ## Repository layout
