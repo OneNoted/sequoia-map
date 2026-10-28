@@ -6,7 +6,8 @@ it; local development uses none of it ([development](development.md)).
 
 ## Coolify
 
-The application deploys `compose.yaml`. It requires `POSTGRES_PASSWORD` and
+The application deploys `compose.yaml`; its Coolify settings are managed with OpenTofu in
+[`ops/coolify`](../ops/coolify/README.md). It requires `POSTGRES_PASSWORD` and
 `INTERNAL_INGEST_TOKEN`. Route the public map domain to `edge:8080`; Coolify
 terminates TLS, and the stack binds no host ports.
 

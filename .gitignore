@@ -19,4 +19,9 @@ services/sequoia-fake-backend/*
 scripts/capture-fake-territories.py
 mise.local.toml
 .idea/
-
+# OpenTofu working files; the state, plans and tfvars live in the operator's private directory.
+ops/coolify/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars

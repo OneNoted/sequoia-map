@@ -135,6 +135,7 @@ const RULES: &[Rule] = &[
     rule(".github/actionlint.yaml", None, NOTHING, false),
     rule("scripts/*", None, NOTHING, false),
     rule("ops/backup/*", None, NOTHING, false),
+    rule("ops/coolify/*", None, NOTHING, false),
     rule("ops/prometheus/*", None, NOTHING, false),
 ];
 
@@ -318,7 +319,7 @@ mod tests {
         assert!(manifest.unknown.is_empty() && manifest.config);
         assert_eq!(manifest.images, ALL_SERVICES);
 
-        let docs = needs(&["README.md", "mise.toml"]);
+        let docs = needs(&["README.md", "mise.toml", "ops/coolify/main.tf"]);
         assert!(docs.images.is_empty() && docs.client_release.is_none());
     }
 

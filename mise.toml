@@ -21,6 +21,7 @@ rust = { version = "1.96.1", profile = "minimal", components = [
 actionlint = "1.7.12"
 shellcheck = "0.11.0"
 zizmor = "1.31.1"
+opentofu = "1.13.2"
 
 [env]
 NO_COLOR = "true"
@@ -186,6 +187,22 @@ run = "cargo xtask release rollback"
 [tasks."release:services"]
 description = "Pull and update only the named service images through SEQUOIA_COMPOSE_EXEC"
 run = "cargo xtask release services"
+
+[tasks."coolify:init"]
+description = "Initialise ops/coolify against the operator's encrypted state (SEQUOIA_COOLIFY_STATE)"
+run = "bash ops/coolify/tofu.sh init"
+
+[tasks."coolify:import"]
+description = "Import the production Coolify application: <project>:<server>:production:<application>"
+run = "bash ops/coolify/tofu.sh import"
+
+[tasks."coolify:plan"]
+description = "Plan ops/coolify into an encrypted saved plan beside the state"
+run = "bash ops/coolify/tofu.sh plan"
+
+[tasks."coolify:apply"]
+description = "Apply the reviewed saved plan from coolify:plan"
+run = "bash ops/coolify/tofu.sh apply"
 
 [tasks."lint:ci"]
 description = "Lint the workflows and CI scripts"

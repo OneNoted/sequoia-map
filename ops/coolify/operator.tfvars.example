@@ -1,0 +1,3 @@
+# Copy outside the repository (for example next to the state file) and fill in.
+project_uuid = "<project uuid>"
+server_uuid  = "<server uuid>"
