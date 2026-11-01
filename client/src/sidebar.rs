@@ -520,7 +520,21 @@ fn LeaderboardPanel() -> impl IntoView {
                 <ol class="sb-list">
                     <For
                         each=move || { leaderboard.get().into_iter().enumerate().collect::<Vec<_>>() }
-                        key=|(index, row)| (*index, row.name.clone(), row.color)
+                        // A row's content is captured when it is built, so every value it
+                        // shows is part of its identity: a changed count or rating rebuilds it.
+                        key=move |(index, row)| {
+                            (
+                                *index,
+                                row.name.clone(),
+                                row.prefix.clone(),
+                                row.color,
+                                row.territories,
+                                row.season_rating,
+                                row.sr_gain_5m,
+                                row.passive_sr_per_hour.to_bits(),
+                                mode.get_untracked() == MapMode::History,
+                            )
+                        }
                         children=move |(index, row)| {
                             let rank = index + 1;
                             let history = mode.get_untracked() == MapMode::History;
