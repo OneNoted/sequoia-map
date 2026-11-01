@@ -231,6 +231,36 @@ PostgreSQL 18 mounts `/var/lib/postgresql` with
 `PGDATA=/var/lib/postgresql/18/docker`; a new PostgreSQL major version needs its own
 dump-and-restore or `pg_upgrade` plan, not a changed image tag.
 
+## Territory history store
+
+Migration 013 adds the compact history tables beside the legacy `territory_events`,
+`territory_snapshots` and `canonical_territory_updates`, which it leaves untouched. The
+server converts whatever the legacy tables hold above its recorded watermarks at startup,
+before it records anything, so the first start of a new image on a large database can take
+minutes. Run the conversion ahead from the new image while the previous server still runs;
+it is resumable and idempotent, and the startup then converts only the remaining delta:
+
+```bash
+sequoia-server history convert   # ownership events and snapshots
+sequoia-server history archive   # canonical archive; can run after cutover
+sequoia-server history verify    # every event field, sampled states, every archive row
+```
+
+All three need `DATABASE_URL` and run from a directory holding `server/migrations`.
+`verify` prints mismatch lists that must be empty before the legacy tables are retired.
+
+**Rolling back to an image that reads the legacy tables:** stop the new server, then run
+`sequoia-server history rollback` from the new image. It copies facts, checkpoints and
+archive reports recorded after the legacy tables' last rows back into them; rerunning it
+copies nothing twice. Changes of a canonical batch after its first share one stream
+position, which the legacy event table cannot hold; `rollback` reports their count and they
+stay in `history_fact`.
+
+**Retiring the legacy tables** reclaims their space only after `verify` is clean on the
+production database and a backup containing them exists. Keep that backup for as long as a
+rollback to the legacy image must remain possible: after the tables are dropped, restoring
+them from it and running `history rollback` is the way back.
+
 ## Monitoring
 
 - API health: `/api/health`; ingest health: `/health`.

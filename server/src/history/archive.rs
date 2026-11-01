@@ -407,7 +407,7 @@ pub async fn insert(
         "INSERT INTO canonical_report (id, received_at, observed_at, acquired_at, confidence, \
              guild_id, static_id, reporter_count, territory_id, source_id, visibility, \
              idempotency_key, runtime, raw_payload) \
-         SELECT coalesce(r.id, nextval('canonical_territory_updates_id_seq')), r.received_at, \
+         SELECT coalesce(r.id, nextval('canonical_report_id_seq')), r.received_at, \
              r.observed_at, r.acquired_at, r.confidence, r.guild_id, s.id, r.reporter_count, \
              r.territory_id, src.id, r.visibility, r.idempotency_key, r.runtime, r.raw_payload \
          FROM UNNEST($1::int8[], $2::timestamptz[], $3::timestamptz[], $4::timestamptz[], \

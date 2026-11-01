@@ -25,10 +25,7 @@ pub async fn ownership_at(
     pool: &sqlx::PgPool,
     at: DateTime<Utc>,
 ) -> Result<HashMap<String, OwnershipRecord>, ReadError> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        .execute(&mut *tx)
-        .await?;
+    let mut tx = snapshot(pool).await?;
     let base: Option<(DateTime<Utc>, Vec<u8>)> = sqlx::query_as(
         "SELECT taken_at, ownership FROM history_checkpoint WHERE taken_at <= $1 \
          ORDER BY taken_at DESC, id DESC LIMIT 1",
@@ -61,27 +58,9 @@ pub async fn ownership_at(
         owners.insert(territory_id, (guild_id, acquired_at));
     }
 
-    let territory_ids: Vec<i16> = owners.keys().copied().collect();
-    let mut guild_ids: Vec<i32> = owners.values().map(|(guild_id, _)| *guild_id).collect();
-    guild_ids.sort_unstable();
-    guild_ids.dedup();
-    let names: HashMap<i16, String> =
-        sqlx::query_as("SELECT id, name FROM history_territory WHERE id = ANY($1)")
-            .bind(&territory_ids)
-            .fetch_all(&mut *tx)
-            .await?
-            .into_iter()
-            .collect();
-    let guilds: HashMap<i32, (String, String, String, Option<i32>)> =
-        sqlx::query_as::<_, (i32, String, String, String, Option<i32>)>(
-            "SELECT id, uuid, name, prefix, color FROM history_guild WHERE id = ANY($1)",
-        )
-        .bind(&guild_ids)
-        .fetch_all(&mut *tx)
-        .await?
-        .into_iter()
-        .map(|(id, uuid, name, prefix, color)| (id, (uuid, name, prefix, color)))
-        .collect();
+    let territory_ids = sorted_unique(owners.keys().copied());
+    let guild_ids = sorted_unique(owners.values().map(|(guild_id, _)| *guild_id));
+    let (names, guilds) = resolve(&mut tx, &territory_ids, &guild_ids).await?;
     tx.commit().await?;
 
     Ok(owners
@@ -124,19 +103,58 @@ type FactTuple = (
     i16,
     DateTime<Utc>,
     DateTime<Utc>,
-    String,
-    String,
-    String,
-    String,
-    Option<i32>,
-    Option<String>,
-    Option<String>,
+    i16,
+    i32,
     Option<i32>,
 );
+type Guild = (String, String, String, Option<i32>);
 
 pub struct FactPage {
     pub facts: Vec<FactRow>,
     pub has_more: bool,
+}
+
+/// One consistent read-only snapshot for a multi-statement read.
+async fn snapshot(
+    pool: &sqlx::PgPool,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
+/// Names and guild identities for the given dictionary ids, by primary key: a page or a
+/// seek touches a few hundred of them, far fewer than the dictionaries hold.
+async fn resolve(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    territory_ids: &[i16],
+    guild_ids: &[i32],
+) -> Result<(HashMap<i16, String>, HashMap<i32, Guild>), sqlx::Error> {
+    let names = sqlx::query_as("SELECT id, name FROM history_territory WHERE id = ANY($1)")
+        .bind(territory_ids)
+        .fetch_all(&mut **tx)
+        .await?
+        .into_iter()
+        .collect();
+    let guilds = sqlx::query_as::<_, (i32, String, String, String, Option<i32>)>(
+        "SELECT id, uuid, name, prefix, color FROM history_guild WHERE id = ANY($1)",
+    )
+    .bind(guild_ids)
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .map(|(id, uuid, name, prefix, color)| (id, (uuid, name, prefix, color)))
+    .collect();
+    Ok((names, guilds))
+}
+
+fn sorted_unique<T: Ord + Copy>(values: impl Iterator<Item = T>) -> Vec<T> {
+    let mut values: Vec<T> = values.collect();
+    values.sort_unstable();
+    values.dedup();
+    values
 }
 
 /// Facts recorded in `(from, to]` after the cursor, in stream order. A page never ends inside
@@ -149,37 +167,34 @@ pub async fn fact_page(
     after: (i64, i16),
     limit: i64,
 ) -> Result<FactPage, sqlx::Error> {
-    const SELECT: &str = "SELECT f.stream_seq, f.ordinal, f.recorded_at, f.acquired_at, \
-            t.name, g.uuid, g.name, g.prefix, g.color, p.name, p.prefix, p.color \
-         FROM history_fact f \
-         JOIN history_territory t ON t.id = f.territory_id \
-         JOIN history_guild g ON g.id = f.guild_id \
-         LEFT JOIN history_guild p ON p.id = f.prev_guild_id";
+    const SELECT: &str = "SELECT stream_seq, ordinal, recorded_at, acquired_at, territory_id, \
+            guild_id, prev_guild_id FROM history_fact";
+    let mut tx = snapshot(pool).await?;
     let mut rows: Vec<FactTuple> = sqlx::query_as(&format!(
-        "{SELECT} WHERE (f.stream_seq, f.ordinal) > ($1, $2) \
-           AND f.recorded_at > $3 AND f.recorded_at <= $4 \
-         ORDER BY f.stream_seq, f.ordinal LIMIT $5"
+        "{SELECT} WHERE (stream_seq, ordinal) > ($1, $2) \
+           AND recorded_at > $3 AND recorded_at <= $4 \
+         ORDER BY stream_seq, ordinal LIMIT $5"
     ))
     .bind(after.0)
     .bind(after.1)
     .bind(from)
     .bind(to)
     .bind(limit + 1)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     let mut has_more = rows.len() as i64 > limit;
     if has_more {
         rows.truncate(limit as usize);
         if let Some(&(seq, ordinal, ..)) = rows.last() {
             let rest: Vec<FactTuple> = sqlx::query_as(&format!(
-                "{SELECT} WHERE f.stream_seq = $1 AND f.ordinal > $2 \
-                   AND f.recorded_at > $3 AND f.recorded_at <= $4 ORDER BY f.ordinal"
+                "{SELECT} WHERE stream_seq = $1 AND ordinal > $2 \
+                   AND recorded_at > $3 AND recorded_at <= $4 ORDER BY ordinal"
             ))
             .bind(seq)
             .bind(ordinal)
             .bind(from)
             .bind(to)
-            .fetch_all(pool)
+            .fetch_all(&mut *tx)
             .await?;
             rows.extend(rest);
             has_more = sqlx::query_scalar::<_, bool>(
@@ -189,28 +204,25 @@ pub async fn fact_page(
             .bind(seq)
             .bind(from)
             .bind(to)
-            .fetch_one(pool)
+            .fetch_one(&mut *tx)
             .await?;
         }
     }
-    Ok(FactPage {
-        facts: rows
-            .into_iter()
-            .map(
-                |(
-                    stream_seq,
-                    ordinal,
-                    recorded_at,
-                    acquired_at,
-                    territory,
-                    guild_uuid,
-                    guild_name,
-                    guild_prefix,
-                    guild_color,
-                    prev_guild_name,
-                    prev_guild_prefix,
-                    prev_guild_color,
-                )| FactRow {
+    let territory_ids = sorted_unique(rows.iter().map(|row| row.4));
+    let guild_ids = sorted_unique(rows.iter().flat_map(|row| [Some(row.5), row.6]).flatten());
+    let (names, guilds) = resolve(&mut tx, &territory_ids, &guild_ids).await?;
+    tx.commit().await?;
+
+    let facts = rows
+        .into_iter()
+        .map(
+            |(stream_seq, ordinal, recorded_at, acquired_at, territory_id, guild_id, prev_id)| {
+                let missing = || sqlx::Error::RowNotFound;
+                let territory = names.get(&territory_id).ok_or_else(missing)?.clone();
+                let (guild_uuid, guild_name, guild_prefix, guild_color) =
+                    guilds.get(&guild_id).ok_or_else(missing)?.clone();
+                let previous = prev_id.and_then(|id| guilds.get(&id));
+                Ok(FactRow {
                     stream_seq,
                     ordinal,
                     recorded_at,
@@ -220,14 +232,14 @@ pub async fn fact_page(
                     guild_name,
                     guild_prefix,
                     guild_color: unpack_color(guild_color),
-                    prev_guild_name,
-                    prev_guild_prefix,
-                    prev_guild_color: unpack_color(prev_guild_color),
-                },
-            )
-            .collect(),
-        has_more,
-    })
+                    prev_guild_name: previous.map(|guild| guild.1.clone()),
+                    prev_guild_prefix: previous.map(|guild| guild.2.clone()),
+                    prev_guild_color: previous.and_then(|guild| unpack_color(guild.3)),
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    Ok(FactPage { facts, has_more })
 }
 
 pub struct Bounds {

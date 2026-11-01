@@ -34,28 +34,50 @@ pub struct ConvertReport {
 /// checkpoints wherever a checkpoint interval holds more than the replay budget.
 pub async fn convert_history(pool: &sqlx::PgPool) -> Result<ConvertReport, sqlx::Error> {
     let mut report = ConvertReport::default();
-    loop {
-        let (done, through): (i64, Option<i64>) = sqlx::query_as(
-            "SELECT legacy_events_through, (SELECT max(stream_seq) FROM territory_events) \
-             FROM history_meta",
-        )
-        .fetch_one(pool)
-        .await?;
-        let Some(through) = through.filter(|through| *through > done) else {
-            break;
-        };
-        let end = through.min(done.saturating_add(EVENT_CHUNK));
-        report.events += convert_event_chunk(pool, done, end).await?;
-        info!(through = end, "converted legacy history events");
-    }
-    loop {
-        let converted = convert_snapshot_chunk(pool).await?;
-        if converted == 0 {
-            break;
+    let events = super::table_exists(pool, "territory_events").await?;
+    let snapshots = super::table_exists(pool, "territory_snapshots").await?;
+    let archive = super::table_exists(pool, "canonical_territory_updates").await?;
+    if events {
+        loop {
+            let (done, through): (i64, Option<i64>) = sqlx::query_as(
+                "SELECT legacy_events_through, (SELECT max(stream_seq) FROM territory_events) \
+                 FROM history_meta",
+            )
+            .fetch_one(pool)
+            .await?;
+            let Some(through) = through.filter(|through| *through > done) else {
+                break;
+            };
+            let end = through.min(done.saturating_add(EVENT_CHUNK));
+            report.events += convert_event_chunk(pool, done, end).await?;
+            info!(through = end, "converted legacy history events");
         }
-        report.snapshots += converted;
+    }
+    if snapshots {
+        loop {
+            let converted = convert_snapshot_chunk(pool).await?;
+            if converted == 0 {
+                break;
+            }
+            report.snapshots += converted;
+        }
     }
     report.derived_checkpoints = derive_checkpoints(pool).await?;
+    // New archive reports take ids above every legacy one, converted or not yet.
+    let legacy_archive_id: i64 = if archive {
+        sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM canonical_territory_updates")
+            .fetch_one(pool)
+            .await?
+    } else {
+        0
+    };
+    sqlx::query(
+        "SELECT setval('canonical_report_id_seq', \
+             GREATEST((SELECT coalesce(max(id), 0) FROM canonical_report), $1, 1))",
+    )
+    .bind(legacy_archive_id)
+    .execute(pool)
+    .await?;
     Ok(report)
 }
 
@@ -366,6 +388,9 @@ fn split_points(
 
 /// Convert legacy archive rows above the watermark in id order, keeping their ids.
 pub async fn convert_archive(pool: &sqlx::PgPool) -> Result<ConvertReport, sqlx::Error> {
+    if !super::table_exists(pool, "canonical_territory_updates").await? {
+        return Ok(ConvertReport::default());
+    }
     type ArchiveRow = (
         i64,
         DateTime<Utc>,
@@ -881,6 +906,13 @@ pub async fn rollback(pool: &sqlx::PgPool) -> Result<RollbackReport, sqlx::Error
         .execute(&mut *tx)
         .await?;
     }
+    sqlx::query(
+        "SELECT setval(pg_get_serial_sequence('canonical_territory_updates', 'id'), \
+             (SELECT max(id) FROM canonical_territory_updates)) \
+         WHERE EXISTS (SELECT 1 FROM canonical_territory_updates)",
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(RollbackReport {
         events: u64::try_from(events).unwrap_or(0),

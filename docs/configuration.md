@@ -40,9 +40,8 @@ settings not listed here.
 | `SEQ_LIVE_HANDOFF_V1` | Sequence-aware live-state handoff | `true` |
 | `API_BODY_LIMIT_BYTES` | Request body limit | `2097152` |
 | `MAX_INGEST_UPDATES_PER_REQUEST` | Canonical updates per ingest request | `1024` |
-| `MAX_HISTORY_REPLAY_EVENTS` | Events replayed by history reconstruction | `20000` |
 | `MAX_HISTORY_SR_SAMPLE_ROWS` | Raw rows loaded for SR history samples | `20000` |
-| `TERRITORY_HISTORY_RETENTION_DAYS` | Territory event/snapshot retention | `365` |
+| `TERRITORY_HISTORY_RETENTION_DAYS` | Territory history retention; the checkpoint before the cutoff is kept | `365` |
 | `SEASON_HISTORY_RETENTION_DAYS` | Scalar sample/guild observation retention | `365` |
 | `GUILDS_ONLINE_CACHE_TTL_SECS` | Online-guild cache lifetime | `120` |
 | `GUILDS_ONLINE_MAX_CONCURRENCY` | Concurrent upstream guild requests | `8` |

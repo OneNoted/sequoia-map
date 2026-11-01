@@ -88,8 +88,11 @@ CREATE TABLE canonical_source (
     name TEXT NOT NULL UNIQUE
 );
 
+-- Converted reports keep their legacy ids; the server keeps this sequence above them.
+CREATE SEQUENCE canonical_report_id_seq;
+
 CREATE TABLE canonical_report (
-    id BIGINT PRIMARY KEY DEFAULT nextval('canonical_territory_updates_id_seq'),
+    id BIGINT PRIMARY KEY DEFAULT nextval('canonical_report_id_seq'),
     received_at TIMESTAMPTZ NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL,
     acquired_at TIMESTAMPTZ,

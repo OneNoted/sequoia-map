@@ -118,10 +118,13 @@ impl WriterState {
             )
             .fetch_one(pool)
             .await?;
-        let legacy_seq: Option<i64> =
+        let legacy_seq: Option<i64> = if super::table_exists(pool, "territory_events").await? {
             sqlx::query_scalar("SELECT max(stream_seq) FROM territory_events")
                 .fetch_one(pool)
-                .await?;
+                .await?
+        } else {
+            None
+        };
         let checkpoint: Option<(DateTime<Utc>, i64)> = sqlx::query_as(
             "SELECT taken_at, through_seq FROM history_checkpoint \
              ORDER BY taken_at DESC, id DESC LIMIT 1",

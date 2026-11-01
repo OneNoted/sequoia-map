@@ -48,3 +48,11 @@ pub fn beginning() -> DateTime<Utc> {
 pub fn end_of_time() -> DateTime<Utc> {
     DateTime::from_timestamp(253_402_300_799, 0).unwrap_or(DateTime::UNIX_EPOCH)
 }
+
+/// Whether a legacy table still exists; they may be retired after conversion.
+pub async fn table_exists(pool: &sqlx::PgPool, table: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+        .bind(table)
+        .fetch_one(pool)
+        .await
+}
