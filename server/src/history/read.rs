@@ -303,6 +303,9 @@ pub async fn takes_between(
     .bind(to)
     .bind(whole_from)
     .bind(whole_to)
+    // Planned for each request: a cached generic plan cannot see that the raw ranges are
+    // at most two partial days and scans every fact (measured 425 ms against 28 ms).
+    .persistent(false)
     .fetch_all(pool)
     .await
 }
