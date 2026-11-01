@@ -179,6 +179,43 @@ fn is_due(entry: Option<&Fetched>, refresh_after_ms: f64, now: f64) -> bool {
     }
 }
 
+/// A member's progression rank from whichever of their own standing and the roster read was
+/// read last; a tie goes to their own. A closed row refreshes only the roster, so an old standing
+/// (an old missing profile too) must not hide a newer roster read. A refresh that failed keeps
+/// its earlier read time, so the last known rank stands through an outage. A missing profile, or
+/// one without a rank, has none.
+fn progression_in(entries: &HashMap<Ask, Fetched>, username: &str) -> Option<ProgressionRank> {
+    let standing = entries
+        .get(&Ask::Standing(key(username)))
+        .and_then(|fetched| match &fetched.load {
+            Load::Ready(Answer::Standing(MemberStanding { ranks, .. })) => match ranks {
+                RankStanding::Synced { progression, .. } => Some((fetched.at, progression.clone())),
+                RankStanding::NoProfile => Some((fetched.at, None)),
+                RankStanding::Unavailable => None,
+            },
+            _ => None,
+        });
+    let roster = entries
+        .get(&Ask::Roster)
+        .and_then(|fetched| match &fetched.load {
+            Load::Ready(Answer::Roster(roster)) => Some((
+                fetched.at,
+                roster
+                    .progression
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(username))
+                    .map(|(_, rank)| rank.clone()),
+            )),
+            _ => None,
+        });
+    match (standing, roster) {
+        (Some((standing_at, own)), Some((roster_at, _))) if standing_at >= roster_at => own,
+        (_, Some((_, listed))) => listed,
+        (Some((_, own)), None) => own,
+        (None, None) => None,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct MemberWar {
     expanded: RwSignal<HashSet<String>>,
@@ -445,28 +482,10 @@ impl MemberWar {
         self.ensure(Ask::Roster);
     }
 
-    /// The member's progression rank: from their own standing once it has been read, from the
-    /// roster feed until then. A missing profile, or one without a rank, has none.
+    /// The member's progression rank, from [`progression_in`] over everything held.
     pub fn progression(&self, username: &str) -> Option<ProgressionRank> {
-        match self.standing(username) {
-            Some(Load::Ready(MemberStanding {
-                ranks: RankStanding::Synced { progression, .. },
-                ..
-            })) => return progression,
-            Some(Load::Ready(MemberStanding {
-                ranks: RankStanding::NoProfile,
-                ..
-            })) => return None,
-            _ => {}
-        }
-        let Some(Load::Ready(Answer::Roster(roster))) = self.load(&Ask::Roster) else {
-            return None;
-        };
-        roster
-            .progression
-            .into_iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(username))
-            .map(|(_, rank)| rank)
+        self.entries
+            .with(|entries| progression_in(entries, username))
     }
 
     /// The member's in-game guild rank, as their standing last reported it.
@@ -1144,6 +1163,116 @@ mod tests {
         assert_eq!(summary(&totals(0.0, 0, 0)), "no recorded wars");
         assert_eq!(summary(&totals(0.0, 0, 2)), "2 wars without points");
         assert_eq!(summary(&totals(0.0, 1, 0)), "0.0 points, 1 scored war");
+    }
+
+    fn rank(label: &str) -> ProgressionRank {
+        ProgressionRank {
+            key: format!("rank.{}", label.to_ascii_lowercase()),
+            label: label.into(),
+            color: None,
+        }
+    }
+
+    fn read(load: Answer, at: f64) -> Fetched {
+        Fetched {
+            load: Load::Ready(load),
+            at,
+            outdated: false,
+        }
+    }
+
+    fn standing(ranks: RankStanding, at: f64) -> (Ask, Fetched) {
+        let answer = Answer::Standing(MemberStanding {
+            uuid: "66efb975-31b4-499e-9b46-a34980edd8ee".into(),
+            username: "GaztheCat".into(),
+            guild_rank: Some("chief".into()),
+            ranks,
+        });
+        (Ask::Standing(key("GaztheCat")), read(answer, at))
+    }
+
+    fn synced(title: Option<&str>) -> RankStanding {
+        RankStanding::Synced {
+            stale: false,
+            roles: Vec::new(),
+            progression: title.map(rank),
+        }
+    }
+
+    fn roster(title: Option<&str>, at: f64) -> (Ask, Fetched) {
+        let answer = Answer::Roster(MemberRosterRoles {
+            stale: false,
+            roles: Default::default(),
+            progression: title
+                .map(|title| ("GaztheCat".to_string(), rank(title)))
+                .into_iter()
+                .collect(),
+        });
+        (Ask::Roster, read(answer, at))
+    }
+
+    fn shown(entries: impl IntoIterator<Item = (Ask, Fetched)>) -> Option<String> {
+        progression_in(&entries.into_iter().collect(), "GaztheCat").map(|rank| rank.label)
+    }
+
+    #[test]
+    fn the_newer_of_standing_and_roster_names_the_progression_rank() {
+        // A row opened once, then closed: only the roster is read again.
+        assert_eq!(
+            shown([
+                standing(synced(Some("Sapling")), 1.0),
+                roster(Some("Ascended"), 2.0)
+            ]),
+            Some("Ascended".into())
+        );
+        // A missing profile read before the rank was assigned does not hide it.
+        assert_eq!(
+            shown([
+                standing(RankStanding::NoProfile, 1.0),
+                roster(Some("Ascended"), 2.0)
+            ]),
+            Some("Ascended".into())
+        );
+        // A newer roster read without the rank removes it.
+        assert_eq!(
+            shown([standing(synced(Some("Ascended")), 1.0), roster(None, 2.0)]),
+            None
+        );
+        // An open row's own newer read stands over an older roster read, removal included.
+        assert_eq!(
+            shown([
+                standing(synced(Some("Ascended")), 3.0),
+                roster(Some("Sapling"), 2.0)
+            ]),
+            Some("Ascended".into())
+        );
+        assert_eq!(
+            shown([
+                standing(RankStanding::NoProfile, 3.0),
+                roster(Some("Sapling"), 2.0)
+            ]),
+            None
+        );
+        // A standing that could not reach the feed says nothing; the roster still answers.
+        assert_eq!(
+            shown([
+                standing(RankStanding::Unavailable, 3.0),
+                roster(Some("Sapling"), 2.0)
+            ]),
+            Some("Sapling".into())
+        );
+        // A roster refresh that failed keeps its earlier read time and its last known rank.
+        let (ask, mut kept) = roster(Some("Ascended"), 2.0);
+        kept.outdated = true;
+        assert_eq!(
+            shown([standing(synced(Some("Sapling")), 1.0), (ask, kept)]),
+            Some("Ascended".into())
+        );
+        assert_eq!(
+            shown([standing(synced(Some("Sapling")), 1.0)]),
+            Some("Sapling".into())
+        );
+        assert_eq!(shown([]), None);
     }
 
     #[test]
