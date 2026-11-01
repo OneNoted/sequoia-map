@@ -1,8 +1,10 @@
 //! Conversion between the legacy history tables and the compact store, both ways.
 //!
 //! Forward conversion is resumable and idempotent: each chunk commits with its source
-//! watermark in `history_meta`. It can run while the previous server still writes legacy
-//! rows; the new server converts the remaining delta at startup before it records anything.
+//! watermark in `history_meta`. Watermarks follow legacy ids and stream positions, which are
+//! in commit order only once nothing writes the legacy tables, so ownership conversion runs
+//! with the previous server stopped; the new server does it at startup before it records
+//! anything. The legacy archive is frozen from cutover on, so it converts any time after.
 //! `rollback` copies what the new store recorded after the legacy tables stopped back into
 //! them, so the previous image can resume with the interval since cutover.
 
@@ -1012,7 +1014,9 @@ pub async fn run_cli(
         Some("rollback") => serde_json::to_string_pretty(&rollback(pool).await?)?,
         _ => {
             return Err(
-                "usage: sequoia-server history <convert|archive|verify [samples]|rollback>".into(),
+                "usage: sequoia-server history <convert|archive|verify [samples]|rollback> \
+                        (convert and rollback with no other server writing the database)"
+                    .into(),
             );
         }
     };
@@ -1020,12 +1024,23 @@ pub async fn run_cli(
     Ok(())
 }
 
-/// Every checkpoint boundary and the instant before it, plus evenly spread instants over the
-/// retained range and the instants of the latest facts.
+/// Instants at which the reconstruction is compared with the legacy one: every checkpoint
+/// boundary and the microseconds either side, evenly spread instants and the latest converted
+/// legacy facts, all within the period the legacy tables cover. History recorded after
+/// cutover has no legacy counterpart to equal.
 async fn verification_instants(
     pool: &sqlx::PgPool,
     samples: i64,
 ) -> Result<Vec<DateTime<Utc>>, sqlx::Error> {
+    let legacy_until: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT GREATEST((SELECT max(recorded_at) FROM territory_events), \
+                         (SELECT max(created_at) FROM territory_snapshots))",
+    )
+    .fetch_one(pool)
+    .await?;
+    let Some(legacy_until) = legacy_until else {
+        return Ok(Vec::new());
+    };
     let one = chrono::Duration::microseconds(1);
     let mut instants: Vec<DateTime<Utc>> = Vec::new();
     for taken_at in
@@ -1035,20 +1050,24 @@ async fn verification_instants(
     {
         instants.extend([taken_at - one, taken_at, taken_at + one]);
     }
-    let bounds = super::read::bounds(pool).await?;
-    if let (Some(earliest), Some(latest)) = (bounds.earliest, bounds.latest) {
-        let span = (latest - earliest).num_microseconds().unwrap_or(0).max(1);
+    if let Some(earliest) = super::read::bounds(pool).await?.earliest {
+        let span = (legacy_until - earliest)
+            .num_microseconds()
+            .unwrap_or(0)
+            .max(1);
         for k in 0..=samples.max(1) {
             instants.push(earliest + chrono::Duration::microseconds(span / samples.max(1) * k));
         }
     }
     instants.extend(
         sqlx::query_scalar::<_, DateTime<Utc>>(
-            "SELECT recorded_at FROM history_fact ORDER BY stream_seq DESC LIMIT 50",
+            "SELECT recorded_at FROM history_fact WHERE source = 0 \
+             ORDER BY stream_seq DESC LIMIT 50",
         )
         .fetch_all(pool)
         .await?,
     );
+    instants.retain(|at| *at <= legacy_until);
     instants.sort_unstable();
     instants.dedup();
     Ok(instants)
@@ -1368,5 +1387,85 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn verification_after_cutover_accepts_new_history_and_still_rejects_corruption() {
+        let Some((pool, _lock)) = test_database().await else {
+            eprintln!("Skipping post-cutover verification test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let legacy: DateTime<Utc> = "2026-10-01T12:00:00Z".parse().expect("time");
+        for (seq, territory, offset) in [(1_i64, "Alpha", 0_i64), (2, "Beta", 60)] {
+            let at = legacy + chrono::Duration::seconds(offset);
+            sqlx::query(
+                "INSERT INTO territory_events (stream_seq, recorded_at, acquired_at, territory, \
+                     guild_uuid, guild_name, guild_prefix) VALUES ($1, $2, $2, $3, 'g', 'Guild', 'G')",
+            )
+            .bind(seq)
+            .bind(at)
+            .bind(territory)
+            .execute(&pool)
+            .await
+            .expect("legacy event");
+        }
+        convert_history(&pool).await.expect("conversion");
+
+        // After cutover the new server records a territory the legacy tables never saw.
+        let held: sequoia_shared::Territory = serde_json::from_value(serde_json::json!({
+            "guild": {"uuid": "g", "name": "Guild", "prefix": "G"},
+            "acquired": "2026-11-01T00:00:00Z",
+            "location": {"start": [0, 0], "end": [1, 1]}
+        }))
+        .expect("territory");
+        let change = sequoia_shared::TerritoryChange {
+            territory: "Gamma".to_string(),
+            guild: held.guild.clone(),
+            previous_guild: None,
+            acquired: held.acquired.to_rfc3339(),
+            location: held.location.clone(),
+            resources: held.resources.clone(),
+            connections: Vec::new(),
+            runtime: None,
+        };
+        let live = sequoia_shared::TerritoryMap::from([
+            ("Alpha".to_string(), held.clone()),
+            ("Beta".to_string(), held.clone()),
+            ("Gamma".to_string(), held),
+        ]);
+        let mut writer = super::super::writer::WriterState::default();
+        let last = writer.recover(&pool).await.expect("recover");
+        assert!(writer.reserve(Some(&pool), last, 1).await);
+        let base = writer.allocate(true, last, 1).expect("position");
+        let outcome = writer
+            .commit(
+                Some(&pool),
+                super::super::writer::Commit {
+                    source: super::super::FactSource::Poller,
+                    changes: vec![(base + 1, 0, &change)],
+                    reports: Vec::new(),
+                    live: &live,
+                    needs_checkpoint: false,
+                },
+            )
+            .await;
+        assert_eq!(
+            outcome,
+            super::super::writer::CommitOutcome::Durable { facts: 1 }
+        );
+
+        let instants = verification_instants(&pool, 10).await.expect("instants");
+        let report = verify(&pool, &instants).await.expect("verify");
+        assert!(report.is_clean(), "{report:?}");
+        assert!(report.sampled_instants > 0);
+
+        sqlx::query(
+            "UPDATE history_fact SET acquired_at = acquired_at + interval '1 second' \
+                     WHERE stream_seq = 1",
+        )
+        .execute(&pool)
+        .await
+        .expect("corrupt a converted fact");
+        assert!(!verify(&pool, &instants).await.expect("verify").is_clean());
     }
 }

@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Duration, Utc};
 use sequoia_shared::{GuildRef, TerritoryChange, TerritoryMap};
+use sqlx_core::connection::Connection;
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::warn;
 
@@ -15,6 +16,9 @@ use super::{CHECKPOINT_FACT_BUDGET, CHECKPOINT_MAX_AGE_SECS, FactSource, micros,
 
 /// Stream positions reserved durably ahead of use, so a restart never reuses one.
 const SEQ_RESERVATION: u64 = 4_096;
+/// How long the writer waits for a database connection while it holds the writer lock; the
+/// pool's own default (30 s) would stall live publication and ingest for that long.
+const CONNECTION_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Work kept for retry while the database is unavailable, counted as facts plus archive
 /// reports with every batch counting at least once; the oldest batches are dropped beyond it.
 const MAX_PENDING_ITEMS: usize = 50_000;
@@ -220,13 +224,17 @@ impl WriterState {
             return true;
         }
         let through = last.saturating_add(SEQ_RESERVATION);
-        match sqlx::query(
-            "UPDATE history_meta SET seq_reserved_through = GREATEST(seq_reserved_through, $1)",
-        )
-        .bind(i64::try_from(through).unwrap_or(i64::MAX))
-        .execute(pool)
-        .await
-        {
+        let reserved = async {
+            let mut connection = acquire(pool).await?;
+            sqlx::query(
+                "UPDATE history_meta \
+                 SET seq_reserved_through = GREATEST(seq_reserved_through, $1)",
+            )
+            .bind(i64::try_from(through).unwrap_or(i64::MAX))
+            .execute(&mut *connection)
+            .await
+        };
+        match reserved.await {
             Ok(_) => {
                 self.reserved_through = through;
                 true
@@ -419,7 +427,8 @@ impl WriterState {
             .filter(|key| !self.guilds.contains_key(key))
             .collect();
 
-        let mut tx = pool.begin().await?;
+        let mut connection = acquire(pool).await?;
+        let mut tx = Connection::begin(&mut *connection).await?;
         let new_territories = insert_territories(&mut tx, &missing_territories).await?;
         let new_guilds = insert_guilds(&mut tx, &missing_guilds).await?;
         let territory_id = |name: &str| {
@@ -508,6 +517,16 @@ impl WriterState {
         self.guilds.extend(new_guilds);
         Ok(())
     }
+}
+
+/// A pooled connection within [`CONNECTION_WAIT`]. Only the wait is bounded: nothing has
+/// been written when it gives up, so the pending work is retried unchanged.
+async fn acquire(
+    pool: &sqlx::PgPool,
+) -> Result<sqlx_core::pool::PoolConnection<sqlx::Postgres>, sqlx::Error> {
+    tokio::time::timeout(CONNECTION_WAIT, pool.acquire())
+        .await
+        .map_err(|_| sqlx::Error::PoolTimedOut)?
 }
 
 fn parse_acquired(change: &TerritoryChange, fallback: DateTime<Utc>) -> DateTime<Utc> {
@@ -833,6 +852,80 @@ mod tests {
         assert_eq!(outcome, CommitOutcome::Durable { facts: 0 });
         assert!(!writer.has_pending());
         assert_eq!(owners(Utc::now()).await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn an_occupied_pool_defers_promptly_and_the_work_commits_once_it_frees() {
+        let Some((setup, _lock)) = reset_test_database().await else {
+            eprintln!("Skipping occupied pool test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let url = std::env::var("TEST_DATABASE_URL").expect("database url");
+        // The pool's own acquire timeout stays at its 30 s default; only the writer bounds it.
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect server pool");
+        let mut writer = WriterState::default();
+        writer.recover(&pool).await.expect("recover");
+        let held = pool.acquire().await.expect("occupy the only connection");
+
+        let territory: sequoia_shared::Territory = serde_json::from_value(serde_json::json!({
+            "guild": {"uuid": "g", "name": "Guild", "prefix": "G"},
+            "acquired": "2026-01-01T00:00:00Z",
+            "location": {"start": [0, 0], "end": [1, 1]}
+        }))
+        .expect("territory");
+        let change = TerritoryChange {
+            territory: "Alpha".to_string(),
+            guild: territory.guild.clone(),
+            previous_guild: None,
+            acquired: territory.acquired.to_rfc3339(),
+            location: territory.location.clone(),
+            resources: territory.resources.clone(),
+            connections: Vec::new(),
+            runtime: None,
+        };
+        let live = TerritoryMap::from([("Alpha".to_string(), territory)]);
+        let started = std::time::Instant::now();
+        let outcome = writer
+            .commit(
+                Some(&pool),
+                Commit {
+                    source: FactSource::Poller,
+                    changes: vec![(1, 0, &change)],
+                    reports: Vec::new(),
+                    live: &live,
+                    needs_checkpoint: false,
+                },
+            )
+            .await;
+        assert!(
+            started.elapsed() < StdDuration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(matches!(
+            outcome,
+            CommitOutcome::Deferred {
+                pending_facts: 1,
+                dropped_facts: 0,
+                ..
+            }
+        ));
+        assert!(writer.has_pending());
+
+        drop(held);
+        assert_eq!(
+            writer.retry(&pool).await,
+            CommitOutcome::Durable { facts: 1 }
+        );
+        let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM history_fact")
+            .fetch_one(&setup)
+            .await
+            .expect("count facts");
+        assert_eq!(stored, 1);
     }
 
     #[tokio::test]

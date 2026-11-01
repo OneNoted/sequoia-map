@@ -11,6 +11,7 @@ use crate::app::{BufferedUpdate, GuildColorMap, MapMode, TerritoryGeometryMap};
 use crate::territory::{ClientTerritory, ClientTerritoryMap, apply_changes, from_snapshot};
 
 const REKINDLED_WORLD_RELEASE_SECS: i64 = 1_723_248_000; // 2024-08-10T00:00:00Z
+const SEEK_RETRY_MS: u32 = 2_000;
 
 thread_local! {
     static ACTIVE_HISTORY_FETCH: RefCell<Option<(u64, web_sys::AbortController)>> = const { RefCell::new(None) };
@@ -289,10 +290,23 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
                 if is_abort_error(&e) {
                     return;
                 }
-                if fetch_nonce.get_untracked() != request_nonce {
+                let current = move || {
+                    fetch_nonce.get_untracked() == request_nonce
+                        && current_session() == session
+                        && mode.get_untracked() == MapMode::History
+                };
+                if !current() {
                     return;
                 }
                 web_sys::console::warn_1(&format!("History fetch failed: {e}").into());
+                // Playback waits for this seek, so retry it unless a newer seek, an exit or
+                // another visit has replaced it by then.
+                gloo_timers::callback::Timeout::new(SEEK_RETRY_MS, move || {
+                    if current() {
+                        fetch_and_apply_with(timestamp_secs, ctx);
+                    }
+                })
+                .forget();
             }
         }
     });
