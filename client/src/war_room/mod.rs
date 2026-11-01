@@ -33,7 +33,7 @@ use crate::app::{
 use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
 
 pub(crate) use activity::ActivityDisclosure;
-pub(crate) use hud::WarRoomHud;
+pub(crate) use hud::{ClassIcon, WarRoomHud};
 
 const WARCONTROLLER_ENDPOINT: &str = "/api/warcontroller";
 /// How long a cancelled queue or an ended war stays on the map and in the panel.
@@ -408,6 +408,21 @@ impl MapFocus {
             self.sidebar_transient.set(true);
         }
         self.selected.set(Some(name.to_string()));
+    }
+
+    /// Brings a territory into view without changing what the sidebar shows, so a list being
+    /// read stays where it is. A phone's sheet steps aside for the map.
+    pub fn look_at_territory(&self, name: &str) {
+        if let Some(region) = self
+            .territories
+            .with_untracked(|map| map.get(name).map(|ct| ct.territory.location.clone()))
+        {
+            self.map.camera().focus(&region);
+        }
+        if self.is_mobile.get_untracked() {
+            self.sidebar_transient.set(false);
+            self.sidebar_open.set(false);
+        }
     }
 
     /// Centres the map on a world position with some surroundings.

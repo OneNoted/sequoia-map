@@ -444,7 +444,7 @@ fn member_label(member: &RosterMember) -> String {
 }
 
 #[component]
-pub(super) fn ClassIcon(class: Option<PlayerClass>) -> impl IntoView {
+pub(crate) fn ClassIcon(class: Option<PlayerClass>) -> impl IntoView {
     match class.and_then(|class| class_icon_url(class.label()).map(|url| (url, class.label()))) {
         Some((url, label)) => view! {
             <img class="war-class-icon" src=url alt="" title=label width="14" height="14" />

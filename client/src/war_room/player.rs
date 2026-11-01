@@ -21,7 +21,9 @@ use super::hud::{ClassIcon, MemberChip, member_key};
 use super::modal::{focus_next_frame, focused_element, restore_focus, trap_tab};
 use super::{Anchor, MapFocus, WarRoom, clock_text, whereabouts};
 use crate::app::IsMobile;
+use crate::member_war::MemberGlance;
 use crate::territory::ClientTerritoryMap;
+use crate::ui::CrosshairIcon;
 
 const FACE_PX: u32 = 64;
 /// Space between the popover and the name it belongs to, and kept clear of the window edge.
@@ -361,6 +363,9 @@ fn PlayerDialogContent(
                 </div>
             </Show>
         </dl>
+        <section class="player-dialog-war" aria-label="War standing">
+            <MemberGlance username=username.clone() />
+        </section>
         <Show when=move || !companions.with(Vec::is_empty)>
             <section class="player-dialog-section" aria-labelledby="player-dialog-with">
                 <h3 class="war-group-title" id="player-dialog-with">"Also here"</h3>
@@ -375,10 +380,14 @@ fn PlayerDialogContent(
             </section>
         </Show>
         <div class="player-dialog-actions">
-            <button type="button" class="war-action" disabled=move || !can_show.get() on:click=show>
-                "Show on map"
+            <button type="button" class="ui-text-action ui-text-action-primary" disabled=move || !can_show.get() on:click=show>
+                <CrosshairIcon />
+                "Locate"
             </button>
-            <a class="war-action war-action-quiet" href=card target="_blank" rel="noopener noreferrer">"Player card"</a>
+            <a class="ui-text-action" href=card target="_blank" rel="noopener noreferrer">
+                "Seqwawa profile"
+                <span class="ui-external" aria-hidden="true" />
+            </a>
         </div>
     }
 }

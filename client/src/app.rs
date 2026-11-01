@@ -1374,6 +1374,7 @@ pub fn MapPage() -> impl IntoView {
     // Sequoia membership, so a failure here leaves the bar reading "Sign in" and the war
     // overview hidden - which is the safe way round for internal data.
     provide_context(CurrentViewer(viewer));
+    provide_context(crate::member_war::MemberWar::new());
     // The retry loop below never terminates on its own, so a second caller - `pageshow` after
     // a back-forward restore, while the first is still backing off - would leave two loops
     // probing forever. One at a time.
