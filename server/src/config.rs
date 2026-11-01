@@ -63,7 +63,6 @@ pub const DEFAULT_SERVER_BIND: &str = "0.0.0.0:3000";
 pub const DEFAULT_CANONICAL_OVERRIDE_TTL_SECS: u64 = 180;
 pub const DEFAULT_API_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 pub const DEFAULT_MAX_INGEST_UPDATES_PER_REQUEST: usize = 1024;
-pub const DEFAULT_MAX_HISTORY_REPLAY_EVENTS: i64 = 20_000;
 pub const DEFAULT_MAX_HISTORY_SR_SAMPLE_ROWS: i64 = 20_000;
 pub const DEFAULT_SEASON_RACE_TOP_GUILDS: usize = 10;
 pub const DEFAULT_SEASON_RACE_LOOKBACK_HOURS: i64 = 24;
@@ -73,7 +72,6 @@ pub const MIN_INTERNAL_INGEST_TOKEN_LEN: usize = 24;
 pub const MIN_INTERNAL_API_TOKEN_LEN: usize = 24;
 
 // History feature
-pub const SNAPSHOT_INTERVAL_SECS: u64 = 21600; // every 6 hours
 pub const DEFAULT_TERRITORY_HISTORY_RETENTION_DAYS: i64 = 365;
 pub const DEFAULT_SEASON_HISTORY_RETENTION_DAYS: i64 = 365;
 pub const RETENTION_CHECK_SECS: u64 = 86400; // daily
@@ -421,14 +419,6 @@ pub fn max_ingest_updates_per_request() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_MAX_INGEST_UPDATES_PER_REQUEST)
-}
-
-pub fn max_history_replay_events() -> i64 {
-    std::env::var("MAX_HISTORY_REPLAY_EVENTS")
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_MAX_HISTORY_REPLAY_EVENTS)
 }
 
 pub fn max_history_sr_sample_rows() -> i64 {

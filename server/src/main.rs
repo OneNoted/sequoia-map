@@ -4,6 +4,7 @@ mod client_release;
 mod config;
 mod db_migrations;
 mod db_sqlx;
+mod history;
 mod map_image;
 mod routes;
 mod services;
@@ -12,7 +13,9 @@ mod state;
 mod test_support;
 
 extern crate self as sqlx;
-pub use crate::db_sqlx::{PgPool, Postgres, QueryBuilder, postgres, query, query_as, query_scalar};
+pub use crate::db_sqlx::{
+    Error, PgPool, Postgres, QueryBuilder, Transaction, postgres, query, query_as, query_scalar,
+};
 
 use sqlx::postgres::PgPoolOptions;
 use std::sync::atomic::Ordering;
@@ -45,28 +48,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db_migrations::run(&db).await?;
     tracing::info!("Database connected and migrations applied");
 
+    if let Some((command, rest)) = args.split_first()
+        && command == "history"
+    {
+        return history::convert::run_cli(&db, rest).await;
+    }
+
+    // Converts whatever the legacy tables gained since a pre-run conversion, before anything
+    // new is recorded.
+    let converted = history::convert::convert_history(&db).await?;
+    tracing::info!(
+        ?converted,
+        "history store is current with the legacy tables"
+    );
+
     let state = AppState::new(Some(db));
     if !state.seq_live_handoff_v1 {
         tracing::warn!("seq_live_handoff_v1 feature flag is disabled");
     }
-
     if let Some(pool) = state.db.as_ref() {
-        match sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(stream_seq) FROM territory_events")
-            .fetch_one(pool)
-            .await
-        {
-            Ok(Some(seq)) if seq > 0 => {
-                state.next_seq.store(seq as u64, Ordering::Relaxed);
-                state.next_seq_reserved.store(seq as u64, Ordering::Relaxed);
-                tracing::info!("Initialized stream sequence counter from DB at {seq}");
-            }
-            Ok(_) => {
-                tracing::info!("Initialized stream sequence counter at 0");
-            }
-            Err(e) => {
-                tracing::warn!("Failed to initialize stream sequence counter: {e}");
-            }
-        }
+        let seq = state.history.lock().await.recover(pool).await?;
+        state.next_seq.store(seq, Ordering::Relaxed);
+        tracing::info!("Stream sequence continues above {seq}");
     }
 
     services::season_scalar_estimator::warm_cache(&state).await;
@@ -78,7 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(services::guild_color_loader::run(state.clone()));
     tokio::spawn(services::season_scalar_estimator::run(state.clone()));
 
-    tokio::spawn(services::snapshot_service::run(state.clone()));
     tokio::spawn(services::retention_cleaner::run(state.clone()));
 
     let app = app::build_app(state);

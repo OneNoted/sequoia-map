@@ -29,6 +29,8 @@ bytes = "1"
 thiserror = "2"
 # Client releases: file digests, page integrity and the tower service used to serve them.
 sha2 = "0.10"
+# Typed compact runtime payloads in the canonical archive.
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 base64 = "0.22"
 tower = { version = "0.5", features = ["util"] }
 # Command-map image rendering: source tiles decode, resampling, vector drawing, glyph outlines

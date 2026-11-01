@@ -15,6 +15,10 @@ use sequoia_shared::{
 };
 use tracing::{info, warn};
 
+use crate::history::FactSource;
+use crate::history::archive::Report;
+use crate::history::writer::Commit;
+use crate::services::territory_poller::record_commit_outcome;
 use crate::state::{
     AppState, IngestTerritoryOverride, PreSerializedEvent, build_guild_color_lookup,
     lookup_guild_color, normalize_guild_color_key,
@@ -51,7 +55,11 @@ pub async fn ingest_territory(
     let cached_colors = state.guild_colors.read().await.clone();
     let cached_colors_normalized = build_guild_color_lookup(&cached_colors);
     let mut needs_snapshot_event = false;
+    let received_at = Utc::now();
 
+    // The writer lock orders this mutation, its durable facts and its publication against
+    // the poller.
+    let mut writer = state.history.lock().await;
     {
         let mut snapshot = state.live_snapshot.write().await;
         latest_seq = snapshot.seq;
@@ -206,14 +214,23 @@ pub async fn ingest_territory(
             + u64::from(!runtime_updates.is_empty())
             + u64::from(needs_snapshot_event);
         let mut reserved_seq = if event_count > 0 {
-            reserve_next_seq_block(&state, event_count)?
+            writer
+                .allocate(
+                    state.db.as_ref(),
+                    state.next_seq.load(Ordering::Relaxed),
+                    event_count,
+                )
+                .await
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         } else {
             latest_seq
         };
+        let mut ownership_seq = None;
 
         if !ownership_updates.is_empty() {
             reserved_seq = next_seq(reserved_seq)?;
             latest_seq = reserved_seq;
+            ownership_seq = Some(latest_seq);
             let payload = TerritoryEvent::Update {
                 seq: latest_seq,
                 changes: ownership_updates.clone(),
@@ -264,6 +281,35 @@ pub async fn ingest_territory(
             snapshot.live_state_json = live_state_json;
             snapshot.ownership_json = ownership_json;
         }
+
+        if !accepted_payloads.is_empty() {
+            let outcome = writer
+                .commit(
+                    state.db.as_ref(),
+                    Commit {
+                        source: FactSource::Canonical,
+                        changes: ownership_seq
+                            .map(|seq| {
+                                ownership_updates
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(ordinal, change)| {
+                                        (seq, i16::try_from(ordinal).unwrap_or(i16::MAX), change)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        reports: accepted_payloads
+                            .iter()
+                            .map(|update| Report::from_update(update, received_at))
+                            .collect(),
+                        live: &snapshot.territories,
+                        territory_set_changed: false,
+                    },
+                )
+                .await;
+            record_commit_outcome(&state, outcome, ownership_updates.len());
+        }
     }
 
     if !override_updates.is_empty() {
@@ -279,11 +325,6 @@ pub async fn ingest_territory(
         state.next_seq.store(latest_seq, Ordering::Relaxed);
     }
 
-    if let Some(pool) = state.db.as_ref()
-        && let Err(e) = persist_canonical_territory_updates(pool, &accepted_payloads).await
-    {
-        warn!("failed to persist canonical territory updates: {e}");
-    }
     if let Err(e) = persist_authoritative_scalar_sample(&state, &accepted_payloads).await {
         warn!("failed to persist authoritative scalar sample: {e}");
     }
@@ -295,6 +336,7 @@ pub async fn ingest_territory(
     for event in outgoing {
         let _ = state.event_tx.send(event);
     }
+    drop(writer);
 
     if rejected > 0 {
         state.observability.record_ingest_reports_rejected(rejected);
@@ -419,33 +461,6 @@ fn next_seq(current: u64) -> Result<u64, StatusCode> {
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-fn reserve_next_seq_block(state: &AppState, count: u64) -> Result<u64, StatusCode> {
-    if count == 0 {
-        return Ok(state
-            .next_seq_reserved
-            .load(Ordering::Relaxed)
-            .max(state.next_seq.load(Ordering::Relaxed)));
-    }
-
-    loop {
-        let reserved = state.next_seq_reserved.load(Ordering::Relaxed);
-        let committed = state.next_seq.load(Ordering::Relaxed);
-        let base = reserved.max(committed);
-        let next = base
-            .checked_add(count)
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        match state.next_seq_reserved.compare_exchange_weak(
-            reserved,
-            next,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return Ok(base),
-            Err(_) => continue,
-        }
-    }
-}
-
 fn serialize_event(event: TerritoryEvent) -> Result<Arc<Bytes>, StatusCode> {
     serde_json::to_vec(&event)
         .map(|json| Arc::new(Bytes::from(json)))
@@ -518,57 +533,6 @@ fn serialize_all_formats(
         Arc::new(Bytes::from(live_state_buf)),
         Arc::new(Bytes::from(ownership_vec)),
     ))
-}
-
-async fn persist_canonical_territory_updates(
-    pool: &sqlx::PgPool,
-    updates: &[CanonicalTerritoryUpdate],
-) -> Result<(), String> {
-    for update in updates {
-        let payload = serde_json::to_value(update)
-            .map_err(|e| format!("serialize canonical territory payload: {e}"))?;
-        let provenance = update
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.provenance.as_ref());
-        let confidence = provenance.map(|value| value.confidence).unwrap_or(1.0);
-        let source = provenance
-            .map(|value| value.source.clone())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "unknown".to_string());
-        let visibility = provenance
-            .map(|value| match value.visibility {
-                sequoia_shared::VisibilityClass::Public => "public",
-                sequoia_shared::VisibilityClass::GuildOptIn => "guild_opt_in",
-            })
-            .unwrap_or("public");
-        let reporter_count = provenance
-            .map(|value| i32::from(value.reporter_count))
-            .unwrap_or(0);
-        let observed_at = provenance
-            .and_then(|value| DateTime::parse_from_rfc3339(&value.observed_at).ok())
-            .map(|value| value.with_timezone(&Utc))
-            .unwrap_or_else(Utc::now);
-
-        sqlx::query(
-            "INSERT INTO canonical_territory_updates \
-             (territory, observed_at, confidence, visibility, source, reporter_count, idempotency_key, payload) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) \
-             ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
-        )
-        .bind(&update.territory)
-        .bind(observed_at)
-        .bind(confidence)
-        .bind(visibility)
-        .bind(source)
-        .bind(reporter_count)
-        .bind(update.idempotency_key.as_deref())
-        .bind(payload)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("insert canonical_territory_updates row: {e}"))?;
-    }
-    Ok(())
 }
 
 async fn persist_authoritative_scalar_sample(

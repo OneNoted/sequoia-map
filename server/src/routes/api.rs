@@ -1299,12 +1299,7 @@ mod tests {
         crate::db_migrations::run(&pool)
             .await
             .expect("run migrations");
-        sqlx::query(
-            "TRUNCATE TABLE territory_events, territory_snapshots, season_scalar_samples, season_guild_observations, guild_color_cache RESTART IDENTITY",
-        )
-        .execute(&pool)
-        .await
-        .expect("truncate tables");
+        crate::test_support::reset_history(&pool).await;
 
         let older = Utc::now() - chrono::TimeDelta::minutes(10);
         let newer = Utc::now() - chrono::TimeDelta::minutes(1);

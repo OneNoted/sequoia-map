@@ -7,8 +7,6 @@ use crate::config::{
 };
 use crate::state::AppState;
 
-const BATCH_SIZE: i64 = 10_000;
-
 /// Daily cleanup of old history data beyond the retention period.
 pub async fn run(state: AppState) {
     let Some(pool) = state.db.as_ref().cloned() else {
@@ -43,57 +41,14 @@ async fn run_cleanup_once(
     let territory_cutoff = chrono::Utc::now() - chrono::Duration::days(territory_retention_days);
     let season_cutoff = chrono::Utc::now() - chrono::Duration::days(season_retention_days);
 
-    // Delete old events in batches to avoid long locks
-    let mut total_events = 0i64;
-    loop {
-        match sqlx::query(
-            "DELETE FROM territory_events WHERE id IN \
-             (SELECT id FROM territory_events WHERE recorded_at < $1 LIMIT $2)",
-        )
-        .bind(territory_cutoff)
-        .bind(BATCH_SIZE)
-        .execute(pool)
-        .await
-        {
-            Ok(result) => {
-                let deleted = result.rows_affected() as i64;
-                total_events += deleted;
-                if deleted < BATCH_SIZE {
-                    break;
-                }
-            }
+    let (total_events, total_snapshots) =
+        match crate::history::read::expire_before(pool, territory_cutoff).await {
+            Ok(removed) => removed,
             Err(e) => {
-                warn!("Failed to delete old events: {e}");
-                break;
+                warn!("Failed to expire old territory history: {e}");
+                (0, 0)
             }
-        }
-    }
-
-    // Delete old snapshots in batches
-    let mut total_snapshots = 0i64;
-    loop {
-        match sqlx::query(
-            "DELETE FROM territory_snapshots WHERE id IN \
-             (SELECT id FROM territory_snapshots WHERE created_at < $1 LIMIT $2)",
-        )
-        .bind(territory_cutoff)
-        .bind(BATCH_SIZE)
-        .execute(pool)
-        .await
-        {
-            Ok(result) => {
-                let deleted = result.rows_affected() as i64;
-                total_snapshots += deleted;
-                if deleted < BATCH_SIZE {
-                    break;
-                }
-            }
-            Err(e) => {
-                warn!("Failed to delete old snapshots: {e}");
-                break;
-            }
-        }
-    }
+        };
 
     let total_scalar_samples =
         match sqlx::query("DELETE FROM season_scalar_samples WHERE sampled_at < $1")
@@ -163,7 +118,7 @@ mod tests {
             .await
             .expect("run migrations");
         sqlx::query(
-            "TRUNCATE TABLE territory_events, territory_snapshots, season_scalar_samples, season_guild_observations, guild_color_cache RESTART IDENTITY",
+            "TRUNCATE TABLE season_scalar_samples, season_guild_observations, guild_color_cache RESTART IDENTITY",
         )
         .execute(&pool)
         .await
