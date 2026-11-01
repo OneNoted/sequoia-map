@@ -213,6 +213,15 @@ pub fn wynncraft_territory_url() -> String {
         .unwrap_or_else(|| WYNNCRAFT_TERRITORY_URL.to_string())
 }
 
+/// Upstream guild details, as [`wynncraft_territory_url`] is for territories.
+pub fn wynncraft_guild_url() -> String {
+    std::env::var("WYNNCRAFT_GUILD_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| WYNNCRAFT_GUILD_URL.to_string())
+}
+
 /// Full URL of the Sequoia backend war controller feed.
 /// `None` when `SEQUOIA_BACKEND_BASE_URL` is unset, which keeps the poller dormant.
 pub fn warcontroller_url() -> Option<String> {
