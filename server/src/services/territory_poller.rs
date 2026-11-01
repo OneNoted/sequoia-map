@@ -124,6 +124,7 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
         runtime_updates,
         has_static_field_changes,
         has_removals,
+        has_recolours,
         mut live_seq,
         mut live_timestamp,
     ) = {
@@ -140,6 +141,7 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
             runtime_updates,
             has_static_field_changes(&current.territories, &new_map),
             has_removed_territories(&current.territories, &new_map),
+            has_recoloured_owners(&current.territories, &new_map),
             current.seq,
             current.timestamp.clone(),
         )
@@ -275,7 +277,7 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
         live_timestamp = timestamp.clone();
     }
 
-    if !sequenced_updates.is_empty() || has_removals {
+    if !sequenced_updates.is_empty() || has_removals || has_recolours {
         let outcome = writer
             .commit(
                 state.db.as_ref(),
@@ -287,7 +289,7 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
                         .collect(),
                     reports: Vec::new(),
                     live: &new_map,
-                    territory_set_changed: has_removals,
+                    needs_checkpoint: has_removals || has_recolours,
                 },
             )
             .await;
@@ -894,6 +896,21 @@ fn has_static_field_changes(old: &TerritoryMap, new: &TerritoryMap) -> bool {
     })
 }
 
+/// A holding whose owner, acquisition and identity are unchanged but whose guild now has a
+/// different known colour. No ownership fact records this, so history needs a checkpoint.
+fn has_recoloured_owners(old: &TerritoryMap, new: &TerritoryMap) -> bool {
+    new.iter().any(|(name, new_territory)| {
+        old.get(name).is_some_and(|old_territory| {
+            new_territory.guild.color.is_some()
+                && old_territory.guild.color != new_territory.guild.color
+                && old_territory.guild.uuid == new_territory.guild.uuid
+                && old_territory.guild.name == new_territory.guild.name
+                && old_territory.guild.prefix == new_territory.guild.prefix
+                && old_territory.acquired == new_territory.acquired
+        })
+    })
+}
+
 fn has_removed_territories(old: &TerritoryMap, new: &TerritoryMap) -> bool {
     old.keys().any(|name| !new.contains_key(name))
 }
@@ -1405,6 +1422,67 @@ mod tests {
                 .color,
             Some((16, 16, 254))
         );
+    }
+
+    #[tokio::test]
+    async fn a_colour_change_without_a_new_owner_reaches_history_as_a_checkpoint() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping recolour history test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&url)
+            .await
+            .expect("connect test database");
+        let mut lock = pool.acquire().await.expect("lock connection");
+        sqlx::query("SELECT pg_advisory_lock(73019001)")
+            .execute(&mut *lock)
+            .await
+            .expect("take test lock");
+        crate::db_migrations::run(&pool).await.expect("migrate");
+        crate::test_support::reset_history(&pool).await;
+        let state = AppState::new(Some(pool.clone()));
+        let coloured = |color| {
+            let mut map = single_territory_map("g1", "GuildOne", "G1");
+            map.get_mut("Alpha").expect("territory").guild.color = Some(color);
+            map
+        };
+        let counts = || async {
+            sqlx::query_as::<_, (i64, i64, i64)>(
+                "SELECT (SELECT count(*) FROM history_fact), \
+                        (SELECT coalesce(sum(takes), 0) FROM history_heat_day), \
+                        (SELECT count(*) FROM history_checkpoint)",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("counts")
+        };
+
+        process_polled_map(&state, coloured((10, 20, 30)), false).await;
+        let before = counts().await;
+        let between = Utc::now();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // Athena recolours the guild: same owner, name, prefix and acquisition.
+        process_polled_map(&state, coloured((40, 50, 60)), false).await;
+        let after = counts().await;
+
+        let colour_at = |at| {
+            let pool = pool.clone();
+            async move {
+                crate::history::read::ownership_at(&pool, at)
+                    .await
+                    .expect("seek")["Alpha"]
+                    .guild_color
+            }
+        };
+        assert_eq!(colour_at(between).await, Some((10, 20, 30)));
+        assert_eq!(colour_at(Utc::now()).await, Some((40, 50, 60)));
+        // No ownership fact and no takeover: only a checkpoint records the new colour.
+        assert_eq!((after.0, after.1), (before.0, before.1));
+        assert_eq!(after.2, before.2 + 1);
+        drop(lock);
     }
 
     #[tokio::test]

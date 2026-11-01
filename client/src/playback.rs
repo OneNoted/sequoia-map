@@ -305,6 +305,30 @@ fn request_samples(span_secs: i64, latest_secs: i64) {
     });
 }
 
+/// Remove and return, in stream order, every buffered event recorded by `until`. Stream
+/// order and recorded time can disagree in converted history, so any buffered event may be
+/// due; a seek applies the latest stream position per territory, so an event that becomes
+/// due also supersedes earlier-positioned events for its territory still waiting.
+fn take_due(events: &mut VecDeque<Pending>, until: i64) -> Vec<Pending> {
+    if !events.iter().any(|event| event.at_micros <= until) {
+        return Vec::new();
+    }
+    let mut due = Vec::new();
+    let mut waiting = VecDeque::with_capacity(events.len());
+    for event in events.drain(..) {
+        if event.at_micros > until {
+            waiting.push_back(event);
+            continue;
+        }
+        if !waiting.is_empty() {
+            waiting.retain(|earlier: &Pending| earlier.territory != event.territory);
+        }
+        due.push(event);
+    }
+    *events = waiting;
+    due
+}
+
 /// Returns an animation duration (ms) scaled to the current playback speed.
 /// Faster playback = shorter or no transition to avoid animation pile-up.
 fn playback_animation_duration(speed: f64) -> f64 {
@@ -389,14 +413,7 @@ pub fn start_playback_engine() {
                 .min(latest)
                 .min(covered_secs.max(current));
             let until = next.saturating_mul(MICROS);
-            let mut due = Vec::new();
-            while buffer
-                .events
-                .front()
-                .is_some_and(|event| event.at_micros <= until)
-            {
-                due.extend(buffer.events.pop_front());
-            }
+            let due = take_due(&mut buffer.events, until);
             let mut sample = None;
             while buffer
                 .samples
@@ -463,4 +480,60 @@ pub fn start_playback_engine() {
             _callback: cb,
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(territory: &str, at_micros: i64, guild: &str) -> Pending {
+        Pending {
+            at_micros,
+            territory: territory.to_string(),
+            guild: GuildRef {
+                uuid: guild.to_string(),
+                name: guild.to_string(),
+                prefix: guild.to_string(),
+                color: None,
+            },
+            previous: None,
+            acquired: String::new(),
+        }
+    }
+
+    fn applied(events: &[Pending]) -> Vec<(&str, &str)> {
+        events
+            .iter()
+            .map(|event| (event.territory.as_str(), event.guild.name.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn events_recorded_out_of_stream_order_apply_when_a_seek_would_show_them() {
+        // Two territories in stream order recorded at 20 and 10: each applies at its time.
+        let mut pair = VecDeque::from([event("Alpha", 20, "First"), event("Beta", 10, "Second")]);
+        assert_eq!(applied(&take_due(&mut pair, 10)), vec![("Beta", "Second")]);
+        assert_eq!(applied(&take_due(&mut pair, 20)), vec![("Alpha", "First")]);
+
+        // Stream order: Alpha recorded at 20, then Beta at 10, then Alpha again at 15.
+        let mut buffer = VecDeque::from([
+            event("Alpha", 20, "First"),
+            event("Beta", 10, "Second"),
+            event("Alpha", 15, "Third"),
+        ]);
+
+        // At 10 a seek shows Beta's change only.
+        assert_eq!(
+            applied(&take_due(&mut buffer, 10)),
+            vec![("Beta", "Second")]
+        );
+        // At 15 the later stream position for Alpha applies and supersedes the one at 20.
+        assert_eq!(
+            applied(&take_due(&mut buffer, 15)),
+            vec![("Alpha", "Third")]
+        );
+        // At 20 nothing else applies: a seek to 20 shows Third for Alpha, not First.
+        assert!(take_due(&mut buffer, 20).is_empty());
+        assert!(buffer.is_empty());
+    }
 }

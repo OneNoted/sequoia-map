@@ -79,7 +79,9 @@ pub struct Commit<'a> {
     pub reports: Vec<Report>,
     /// The live map after this change, for a checkpoint when one is due.
     pub live: &'a TerritoryMap,
-    pub territory_set_changed: bool,
+    /// Ownership state changed without a fact (a territory removed, a guild recoloured):
+    /// only a checkpoint records it.
+    pub needs_checkpoint: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -278,8 +280,16 @@ impl WriterState {
         let Some(pool) = pool else {
             return CommitOutcome::NoDatabase;
         };
-        if commit.changes.is_empty() && commit.reports.is_empty() && !commit.territory_set_changed {
-            return self.retry(pool).await;
+        self.stage(commit);
+        self.retry(pool).await
+    }
+
+    /// Queue a change for the next [`retry`](Self::retry), capturing a checkpoint of the live
+    /// map now if one is due, so the caller can release the live map before any database
+    /// work.
+    pub fn stage(&mut self, commit: Commit<'_>) {
+        if commit.changes.is_empty() && commit.reports.is_empty() && !commit.needs_checkpoint {
+            return;
         }
 
         let recorded_at = self.next_recorded_at();
@@ -297,7 +307,7 @@ impl WriterState {
             })
             .collect();
         let added = u32::try_from(facts.len()).unwrap_or(u32::MAX);
-        let checkpoint_due = commit.territory_set_changed
+        let checkpoint_due = commit.needs_checkpoint
             || self.last_capture_at.is_none()
             || self.facts_since_capture.saturating_add(added) >= CHECKPOINT_FACT_BUDGET
             || (added > 0
@@ -338,7 +348,6 @@ impl WriterState {
         self.pending_reports += batch.reports.len();
         self.pending_items += batch.items();
         self.pending.push_back(batch);
-        self.retry(pool).await
     }
 
     /// Commit whatever is pending, oldest first; on failure keep it, within its bound.
@@ -760,12 +769,12 @@ mod tests {
             connections: Vec::new(),
             runtime: None,
         };
-        let commit = |changes, live, territory_set_changed| Commit {
+        let commit = |changes, live, needs_checkpoint| Commit {
             source: FactSource::Poller,
             changes,
             reports: Vec::new(),
             live,
-            territory_set_changed,
+            needs_checkpoint,
         };
         let mut writer = WriterState::default();
         writer.recover(&pool).await.expect("recover");
@@ -872,7 +881,7 @@ mod tests {
                         changes: Vec::new(),
                         reports: runtime_reports(per_batch),
                         live: &live,
-                        territory_set_changed: false,
+                        needs_checkpoint: false,
                     },
                 )
                 .await;
@@ -902,7 +911,7 @@ mod tests {
                     changes: Vec::new(),
                     reports: Vec::new(),
                     live: &live,
-                    territory_set_changed: true,
+                    needs_checkpoint: true,
                 },
             )
             .await;

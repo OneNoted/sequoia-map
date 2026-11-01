@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::history::FactSource;
 use crate::history::archive::Report;
-use crate::history::writer::Commit;
+use crate::history::writer::{Commit, CommitOutcome};
 use crate::services::territory_poller::record_commit_outcome;
 use crate::state::{
     AppState, IngestTerritoryOverride, PreSerializedEvent, build_guild_color_lookup,
@@ -289,34 +289,38 @@ pub async fn ingest_territory(
             snapshot.ownership_json = ownership_json;
         }
 
-        if !accepted_payloads.is_empty() {
-            let outcome = writer
-                .commit(
-                    state.db.as_ref(),
-                    Commit {
-                        source: FactSource::Canonical,
-                        changes: ownership_seq
-                            .map(|seq| {
-                                ownership_updates
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(ordinal, change)| {
-                                        (seq, i16::try_from(ordinal).unwrap_or(i16::MAX), change)
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        reports: accepted_payloads
+        // Staged under the live map so a due checkpoint sees exactly this state; committed
+        // below, after the live map is released, so database latency never blocks its readers.
+        if !accepted_payloads.is_empty() && state.db.is_some() {
+            writer.stage(Commit {
+                source: FactSource::Canonical,
+                changes: ownership_seq
+                    .map(|seq| {
+                        ownership_updates
                             .iter()
-                            .map(|update| Report::from_update(update, received_at))
-                            .collect(),
-                        live: &snapshot.territories,
-                        territory_set_changed: false,
-                    },
-                )
-                .await;
-            record_commit_outcome(&state, outcome, ownership_updates.len());
+                            .enumerate()
+                            .map(|(ordinal, change)| {
+                                (seq, i16::try_from(ordinal).unwrap_or(i16::MAX), change)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                reports: accepted_payloads
+                    .iter()
+                    .map(|update| Report::from_update(update, received_at))
+                    .collect(),
+                live: &snapshot.territories,
+                needs_checkpoint: false,
+            });
         }
+    }
+
+    if !accepted_payloads.is_empty() {
+        let outcome = match state.db.as_ref() {
+            Some(pool) => writer.retry(pool).await,
+            None => CommitOutcome::NoDatabase,
+        };
+        record_commit_outcome(&state, outcome, ownership_updates.len());
     }
 
     if !override_updates.is_empty() {
@@ -712,6 +716,117 @@ mod tests {
         sanitize_override_observed_at, scalar_sample_quality, should_replace_ingest_override,
     };
     use crate::state::{AppState, IngestTerritoryOverride, PreSerializedEvent};
+
+    #[tokio::test]
+    async fn live_map_reads_are_not_held_up_while_history_waits_for_the_database() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping ingest persistence test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let setup = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test database");
+        let mut lock = setup.acquire().await.expect("lock connection");
+        sqlx::query("SELECT pg_advisory_lock(73019001)")
+            .execute(&mut *lock)
+            .await
+            .expect("take test lock");
+        crate::db_migrations::run(&setup).await.expect("migrate");
+        crate::test_support::reset_history(&setup).await;
+
+        // The server's pool has one connection, held here: persistence has to wait for it.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect server pool");
+        let held = pool.acquire().await.expect("occupy the only connection");
+        let mut state = AppState::new(Some(pool.clone()));
+        state.internal_ingest_token = Some("test-token".to_string());
+        state.history.lock().await.assume_reserved(1_000);
+        let acquired = Utc::now();
+        state.live_snapshot.write().await.territories.insert(
+            "Molten Reach".to_string(),
+            Territory {
+                guild: GuildRef {
+                    uuid: "old-uuid".to_string(),
+                    name: "Aequitas".to_string(),
+                    prefix: "Aeq".to_string(),
+                    color: Some((255, 215, 0)),
+                },
+                acquired,
+                location: Region {
+                    start: [0, 0],
+                    end: [1, 1],
+                },
+                resources: Default::default(),
+                connections: Vec::new(),
+                runtime: None,
+            },
+        );
+        let batch = CanonicalTerritoryBatch {
+            generated_at: Utc::now().to_rfc3339(),
+            updates: vec![CanonicalTerritoryUpdate {
+                territory: "Molten Reach".to_string(),
+                guild: Some(GuildRef {
+                    uuid: "new-uuid".to_string(),
+                    name: "Paladins United".to_string(),
+                    prefix: "PUN".to_string(),
+                    color: Some((199, 179, 240)),
+                }),
+                acquired: Some((acquired + Duration::seconds(1)).to_rfc3339()),
+                location: None,
+                resources: None,
+                connections: None,
+                runtime: None,
+                idempotency_key: Some("slow-db".to_string()),
+            }],
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-internal-ingest-token",
+            HeaderValue::from_static("test-token"),
+        );
+        let ingest = tokio::spawn({
+            let state = state.clone();
+            async move { ingest_territory(State(state), headers, Json(batch)).await }
+        });
+
+        // Once the change is applied, an in-memory read completes while history still waits.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let read = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                state.live_snapshot.read(),
+            )
+            .await
+            .expect("a live map read completes while history waits for the database");
+            if read.territories["Molten Reach"].guild.uuid == "new-uuid" {
+                break;
+            }
+            drop(read);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the change was never applied"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            !ingest.is_finished(),
+            "history is still waiting for the database"
+        );
+
+        drop(held);
+        let response = ingest.await.expect("ingest task").expect("ingest accepted");
+        assert_eq!(response.0["applied"], 1);
+        let facts: i64 = sqlx::query_scalar("SELECT count(*) FROM history_fact")
+            .fetch_one(&setup)
+            .await
+            .expect("count facts");
+        assert_eq!(facts, 1);
+    }
 
     #[tokio::test]
     async fn ingest_ownership_change_rehydrates_cached_guild_color() {

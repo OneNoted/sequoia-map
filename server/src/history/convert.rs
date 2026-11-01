@@ -28,6 +28,9 @@ pub struct ConvertReport {
     pub derived_checkpoints: u64,
     pub archive_rows: u64,
     pub archive_raw_rows: u64,
+    /// Reports accepted again after cutover under a legacy row's idempotency key, replaced
+    /// by that legacy row.
+    pub archive_reconciled: u64,
 }
 
 /// Convert every legacy event and snapshot above the stored watermarks, then add derived
@@ -476,6 +479,21 @@ pub async fn convert_archive(pool: &sqlx::PgPool) -> Result<ConvertReport, sqlx:
                 guild_id: report.guild().map(|key| guilds[key]),
             })
             .collect();
+        // A report retried after cutover may already be stored under a new id with the key of
+        // one of these legacy rows; the legacy row is the original acceptance and replaces it.
+        let keys: Vec<&str> = reports
+            .iter()
+            .filter_map(|report| report.idempotency_key.as_deref())
+            .collect();
+        let ids: Vec<i64> = reports.iter().filter_map(|report| report.id).collect();
+        report.archive_reconciled += sqlx::query(
+            "DELETE FROM canonical_report WHERE idempotency_key = ANY($1) AND id <> ALL($2)",
+        )
+        .bind(&keys)
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         archive::insert(&mut tx, &resolved).await?;
         sqlx::query("UPDATE history_meta SET legacy_archive_through = $1")
             .bind(last_id)
@@ -1276,5 +1294,79 @@ mod tests {
         .expect("stored report");
         assert_eq!(raw, Some(payload));
         assert!(verify(&pool, &[]).await.expect("verify").is_clean());
+    }
+
+    #[tokio::test]
+    async fn a_legacy_report_replaces_its_copy_accepted_again_after_cutover() {
+        let Some((pool, _lock)) = test_database().await else {
+            eprintln!("Skipping archive conflict test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let payload = serde_json::json!({
+            "territory": "Alpha",
+            "acquired": "2026-07-20T16:48:22.328+00:00",
+            "idempotency_key": "retried"
+        });
+        let original: DateTime<Utc> = "2026-07-20T17:00:00Z".parse().expect("time");
+        sqlx::query(
+            "INSERT INTO canonical_territory_updates (id, received_at, territory, observed_at, \
+                 confidence, visibility, source, reporter_count, idempotency_key, payload) \
+             VALUES (500, $1, 'Alpha', $1, 0.5, 'public', 'fabric_reporter', 1, 'retried', $2)",
+        )
+        .bind(original)
+        .bind(&payload)
+        .execute(&pool)
+        .await
+        .expect("legacy report");
+
+        // The same report, retried after its first response was lost, already accepted by the
+        // new server under a new id and a later received time.
+        let retried = Report::from_payload(
+            payload.clone(),
+            Columns {
+                id: Some(9_000),
+                territory: "Alpha".to_string(),
+                received_at: original + chrono::Duration::minutes(5),
+                observed_at: original,
+                confidence: 0.5,
+                visibility: "public",
+                source: "fabric_reporter".to_string(),
+                reporter_count: 1,
+                idempotency_key: Some("retried".to_string()),
+            },
+        );
+        let mut tx = pool.begin().await.expect("tx");
+        let territories = insert_territories(&mut tx, &["Alpha".to_string()])
+            .await
+            .expect("territory");
+        archive::insert(
+            &mut tx,
+            &[archive::Resolved {
+                report: &retried,
+                territory_id: territories["Alpha"],
+                guild_id: None,
+            }],
+        )
+        .await
+        .expect("accepted copy");
+        tx.commit().await.expect("commit");
+
+        let converted = convert_archive(&pool).await.expect("conversion");
+        assert_eq!(converted.archive_reconciled, 1);
+        let stored: Vec<(i64, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT id, received_at FROM canonical_report WHERE idempotency_key = 'retried'",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("stored reports");
+        assert_eq!(stored, vec![(500, original)]);
+        assert!(verify(&pool, &[]).await.expect("verify").is_clean());
+
+        convert_archive(&pool).await.expect("rerun");
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM canonical_report")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(count, 1);
     }
 }
