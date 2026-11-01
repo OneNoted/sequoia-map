@@ -60,6 +60,14 @@ pub async fn ingest_territory(
     // The writer lock orders this mutation, its durable facts and its publication against
     // the poller.
     let mut writer = state.history.lock().await;
+    // At most one ownership, one runtime and one snapshot position per request; reserved
+    // before the live map changes, so a failure leaves nothing half-applied.
+    if !writer
+        .reserve(state.db.as_ref(), state.next_seq.load(Ordering::Relaxed), 3)
+        .await
+    {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     {
         let mut snapshot = state.live_snapshot.write().await;
         latest_seq = snapshot.seq;
@@ -216,11 +224,10 @@ pub async fn ingest_territory(
         let mut reserved_seq = if event_count > 0 {
             writer
                 .allocate(
-                    state.db.as_ref(),
+                    state.db.is_some(),
                     state.next_seq.load(Ordering::Relaxed),
                     event_count,
                 )
-                .await
                 .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         } else {
             latest_seq

@@ -175,13 +175,16 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
             }
         };
     }
-    let Some(mut seq_cursor) = writer
-        .allocate(
-            state.db.as_ref(),
-            state.next_seq.load(Ordering::Relaxed),
-            reserved_count,
-        )
+    let published = state.next_seq.load(Ordering::Relaxed);
+    if !writer
+        .reserve(state.db.as_ref(), published, reserved_count)
         .await
+    {
+        // The live map is untouched, so the next poll finds the same changes again.
+        warn!("could not reserve stream positions; retrying with the next poll");
+        return;
+    }
+    let Some(mut seq_cursor) = writer.allocate(state.db.is_some(), published, reserved_count)
     else {
         warn!("sequence counter overflow while reserving sequence range");
         return;
@@ -460,15 +463,23 @@ pub(crate) fn record_commit_outcome(state: &AppState, outcome: CommitOutcome, fa
             .record_persisted_update_events(facts as u64),
         CommitOutcome::Deferred {
             pending_facts,
+            pending_reports,
             dropped_facts,
+            dropped_reports,
         } => {
             state.observability.record_persist_failure();
             state
                 .observability
                 .record_dropped_update_events(dropped_facts as u64);
+            state
+                .observability
+                .record_dropped_archive_reports(dropped_reports as u64);
             warn!(
                 pending_facts,
-                dropped_facts, "history facts are waiting for the database"
+                pending_reports,
+                dropped_facts,
+                dropped_reports,
+                "history is waiting for the database"
             );
         }
         CommitOutcome::NoDatabase => {
@@ -1258,7 +1269,7 @@ mod tests {
 
     #[tokio::test]
     async fn supplemental_only_tick_updates_snapshot_with_fresh_sequence() {
-        let state = AppState::new(Some(lazy_test_pool()));
+        let state = AppState::new(None);
         {
             let mut current = state.live_snapshot.write().await;
             current.territories = single_territory_map("g1", "GuildOne", "G1");
@@ -1310,7 +1321,7 @@ mod tests {
 
     #[tokio::test]
     async fn ownership_change_keeps_cached_guild_colors_when_supplemental_is_not_dirty() {
-        let state = AppState::new(Some(lazy_test_pool()));
+        let state = AppState::new(None);
         {
             let mut current = state.live_snapshot.write().await;
             current.territories = single_territory_map("g1", "GuildOne", "G1");
@@ -1500,6 +1511,8 @@ mod tests {
             .next_seq
             .store(21, std::sync::atomic::Ordering::Relaxed);
 
+        // Positions reserved before the outage may still be published.
+        state.history.lock().await.assume_reserved(1_000);
         let mut rx = state.event_tx.subscribe();
         let new_map = single_territory_map("g2", "GuildTwo", "G2");
 

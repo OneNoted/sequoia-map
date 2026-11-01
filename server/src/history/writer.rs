@@ -15,8 +15,9 @@ use super::{CHECKPOINT_FACT_BUDGET, CHECKPOINT_MAX_AGE_SECS, FactSource, micros,
 
 /// Stream positions reserved durably ahead of use, so a restart never reuses one.
 const SEQ_RESERVATION: u64 = 4_096;
-/// Facts kept for retry while the database is unavailable; older ones are dropped beyond it.
-const MAX_PENDING_FACTS: usize = 100_000;
+/// Work kept for retry while the database is unavailable, counted as facts plus archive
+/// reports with every batch counting at least once; the oldest batches are dropped beyond it.
+const MAX_PENDING_ITEMS: usize = 50_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct GuildKey {
@@ -53,6 +54,12 @@ struct PendingBatch {
     reports: Vec<Report>,
 }
 
+impl PendingBatch {
+    fn items(&self) -> usize {
+        (self.facts.len() + self.reports.len()).max(1)
+    }
+}
+
 /// One accepted change of the live map, ready to be made durable.
 pub struct Commit<'a> {
     pub source: FactSource,
@@ -69,10 +76,13 @@ pub enum CommitOutcome {
     Durable {
         facts: usize,
     },
-    /// Kept in memory and retried, in order, before the next commit.
+    /// Kept in memory and retried, in order, before the next commit. The oldest batches are
+    /// dropped, and counted, when the retained work exceeds its bound.
     Deferred {
         pending_facts: usize,
+        pending_reports: usize,
         dropped_facts: usize,
+        dropped_reports: usize,
     },
     NoDatabase,
 }
@@ -106,6 +116,8 @@ pub struct WriterState {
     guilds: HashMap<GuildKey, i32>,
     pending: VecDeque<PendingBatch>,
     pending_facts: usize,
+    pending_reports: usize,
+    pending_items: usize,
 }
 
 impl WriterState {
@@ -175,32 +187,57 @@ impl WriterState {
         Ok(self.last_seq)
     }
 
-    /// Hand out `count` stream positions above both this writer's last one and `published`,
-    /// returning the one before the first. Positions are reserved durably in blocks before
-    /// they can be published.
-    pub async fn allocate(
+    /// Make sure the next `count` positions above both this writer's last one and `published`
+    /// are reserved durably, so they may be published. Without a database there is nothing
+    /// to reserve; with one that cannot be reached, nothing may be published.
+    pub async fn reserve(
         &mut self,
         pool: Option<&sqlx::PgPool>,
         published: u64,
         count: u64,
-    ) -> Option<u64> {
+    ) -> bool {
+        let Some(pool) = pool else {
+            return true;
+        };
+        let Some(last) = self.last_seq.max(published).checked_add(count) else {
+            return false;
+        };
+        if last <= self.reserved_through {
+            return true;
+        }
+        let through = last.saturating_add(SEQ_RESERVATION);
+        match sqlx::query(
+            "UPDATE history_meta SET seq_reserved_through = GREATEST(seq_reserved_through, $1)",
+        )
+        .bind(i64::try_from(through).unwrap_or(i64::MAX))
+        .execute(pool)
+        .await
+        {
+            Ok(_) => {
+                self.reserved_through = through;
+                true
+            }
+            Err(error) => {
+                warn!(%error, "could not reserve stream positions durably");
+                false
+            }
+        }
+    }
+
+    /// Treat positions up to `through` as already reserved, as an earlier run would have.
+    #[cfg(test)]
+    pub fn assume_reserved(&mut self, through: u64) {
+        self.reserved_through = through;
+    }
+
+    /// Hand out `count` reserved stream positions above both this writer's last one and
+    /// `published`, returning the one before the first. With a database, positions beyond
+    /// the durable reservation are refused: a restart could hand them out again.
+    pub fn allocate(&mut self, with_database: bool, published: u64, count: u64) -> Option<u64> {
         let base = self.last_seq.max(published);
         let last = base.checked_add(count)?;
-        if last > self.reserved_through
-            && let Some(pool) = pool
-        {
-            let through = last.saturating_add(SEQ_RESERVATION);
-            match sqlx::query(
-                "UPDATE history_meta \
-                 SET seq_reserved_through = GREATEST(seq_reserved_through, $1)",
-            )
-            .bind(i64::try_from(through).unwrap_or(i64::MAX))
-            .execute(pool)
-            .await
-            {
-                Ok(_) => self.reserved_through = through,
-                Err(error) => warn!(%error, "could not reserve stream positions durably"),
-            }
+        if with_database && last > self.reserved_through {
+            return None;
         }
         self.last_seq = last;
         Some(base)
@@ -243,12 +280,15 @@ impl WriterState {
                 source: commit.source,
             })
             .collect();
-        self.pending_facts += facts.len();
-        self.pending.push_back(PendingBatch {
+        let batch = PendingBatch {
             recorded_at,
             facts,
             reports: commit.reports,
-        });
+        };
+        self.pending_facts += batch.facts.len();
+        self.pending_reports += batch.reports.len();
+        self.pending_items += batch.items();
+        self.pending.push_back(batch);
 
         let pending_facts = self.pending_facts;
         let checkpoint_due = commit.territory_set_changed
@@ -274,22 +314,29 @@ impl WriterState {
                 };
                 self.pending.clear();
                 self.pending_facts = 0;
+                self.pending_reports = 0;
+                self.pending_items = 0;
                 CommitOutcome::Durable {
                     facts: pending_facts,
                 }
             }
             Err(error) => {
-                warn!(%error, pending_facts, "history commit failed; keeping facts for retry");
-                let mut dropped_facts = 0;
-                while self.pending_facts > MAX_PENDING_FACTS
+                warn!(%error, pending_facts, "history commit failed; keeping it for retry");
+                let (mut dropped_facts, mut dropped_reports) = (0, 0);
+                while self.pending_items > MAX_PENDING_ITEMS
                     && let Some(oldest) = self.pending.pop_front()
                 {
+                    self.pending_items -= oldest.items();
                     self.pending_facts -= oldest.facts.len();
+                    self.pending_reports -= oldest.reports.len();
                     dropped_facts += oldest.facts.len();
+                    dropped_reports += oldest.reports.len();
                 }
                 CommitOutcome::Deferred {
                     pending_facts: self.pending_facts,
+                    pending_reports: self.pending_reports,
                     dropped_facts,
+                    dropped_reports,
                 }
             }
         }
@@ -431,6 +478,12 @@ fn parse_acquired(change: &TerritoryChange, fallback: DateTime<Utc>) -> DateTime
         })
 }
 
+/// Dictionary ids for `names`, adding only the names not yet present: an insert that hits an
+/// existing entry would still draw a new identity value, and the ids are only 16 bits wide.
+///
+/// The ids are read by a second statement. Under read committed it sees an entry another
+/// session committed while this insert waited on it, which the inserting statement's own
+/// snapshot cannot.
 pub(crate) async fn insert_territories(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     names: &[String],
@@ -438,9 +491,17 @@ pub(crate) async fn insert_territories(
     if names.is_empty() {
         return Ok(HashMap::new());
     }
+    sqlx::query(
+        "INSERT INTO history_territory (name) \
+         SELECT DISTINCT w.name FROM UNNEST($1::text[]) AS w(name) WHERE NOT EXISTS \
+             (SELECT 1 FROM history_territory t WHERE t.name = w.name) \
+         ORDER BY w.name ON CONFLICT (name) DO NOTHING",
+    )
+    .bind(names)
+    .execute(&mut **tx)
+    .await?;
     Ok(sqlx::query_as::<_, (String, i16)>(
-        "INSERT INTO history_territory (name) SELECT * FROM UNNEST($1::text[]) \
-         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING name, id",
+        "SELECT name, id FROM history_territory WHERE name = ANY($1)",
     )
     .bind(names)
     .fetch_all(&mut **tx)
@@ -449,6 +510,8 @@ pub(crate) async fn insert_territories(
     .collect())
 }
 
+/// Guild dictionary ids for `keys`, with the same allocation and read semantics as
+/// [`insert_territories`].
 pub(crate) async fn insert_guilds(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     keys: &[GuildKey],
@@ -460,17 +523,31 @@ pub(crate) async fn insert_guilds(
     let names: Vec<&str> = keys.iter().map(|key| key.name.as_str()).collect();
     let prefixes: Vec<&str> = keys.iter().map(|key| key.prefix.as_str()).collect();
     let colors: Vec<Option<i32>> = keys.iter().map(|key| key.color).collect();
+    const WANTED: &str = "UNNEST($1::text[], $2::text[], $3::text[], $4::int4[]) \
+                          AS w(uuid, name, prefix, color)";
+    const SAME: &str = "g.uuid = w.uuid AND g.name = w.name AND g.prefix = w.prefix \
+                        AND g.color IS NOT DISTINCT FROM w.color";
+    sqlx::query(&format!(
+        "INSERT INTO history_guild (uuid, name, prefix, color) \
+         SELECT DISTINCT * FROM {WANTED} \
+         WHERE NOT EXISTS (SELECT 1 FROM history_guild g WHERE {SAME}) \
+         ON CONFLICT (uuid, name, prefix, color) DO NOTHING"
+    ))
+    .bind(&uuids)
+    .bind(&names)
+    .bind(&prefixes)
+    .bind(&colors)
+    .execute(&mut **tx)
+    .await?;
     Ok(
-        sqlx::query_as::<_, (String, String, String, Option<i32>, i32)>(
-            "INSERT INTO history_guild (uuid, name, prefix, color) \
-             SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::int4[]) \
-             ON CONFLICT (uuid, name, prefix, color) DO UPDATE SET uuid = EXCLUDED.uuid \
-             RETURNING uuid, name, prefix, color, id",
-        )
-        .bind(uuids)
-        .bind(names)
-        .bind(prefixes)
-        .bind(colors)
+        sqlx::query_as::<_, (String, String, String, Option<i32>, i32)>(&format!(
+            "SELECT DISTINCT g.uuid, g.name, g.prefix, g.color, g.id \
+             FROM history_guild g JOIN {WANTED} ON {SAME}"
+        ))
+        .bind(&uuids)
+        .bind(&names)
+        .bind(&prefixes)
+        .bind(&colors)
         .fetch_all(&mut **tx)
         .await?
         .into_iter()
@@ -569,5 +646,140 @@ impl FactColumns {
         .execute(&mut **tx)
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration as StdDuration;
+
+    use sequoia_shared::CanonicalTerritoryUpdate;
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+
+    fn unreachable_pool() -> sqlx::PgPool {
+        PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(StdDuration::from_millis(200))
+            .connect_lazy("postgres://sequoia@127.0.0.1:9/sequoia")
+            .expect("lazy pool parses")
+    }
+
+    fn runtime_reports(count: usize) -> Vec<Report> {
+        (0..count)
+            .map(|index| {
+                Report::from_update(
+                    &CanonicalTerritoryUpdate {
+                        territory: format!("Territory {index}"),
+                        guild: None,
+                        acquired: None,
+                        location: None,
+                        resources: None,
+                        connections: None,
+                        runtime: None,
+                        idempotency_key: Some(format!("key-{index}")),
+                    },
+                    Utc::now(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn positions_a_database_could_not_reserve_are_never_handed_out_or_reused() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping reservation test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test database");
+        let mut lock = pool.acquire().await.expect("lock connection");
+        sqlx::query("SELECT pg_advisory_lock(73019001)")
+            .execute(&mut *lock)
+            .await
+            .expect("take test lock");
+        crate::db_migrations::run(&pool).await.expect("migrate");
+        crate::test_support::reset_history(&pool).await;
+
+        let mut writer = WriterState::default();
+        let start = writer.recover(&pool).await.expect("recover");
+        // The database is configured but unreachable: nothing may be handed out.
+        assert!(!writer.reserve(Some(&unreachable_pool()), start, 5).await);
+        assert_eq!(writer.allocate(true, start, 5), None);
+        // Without a database the stream runs in memory only, by design.
+        assert_eq!(
+            WriterState::default().allocate(false, start, 5),
+            Some(start)
+        );
+
+        assert!(writer.reserve(Some(&pool), start, 5).await);
+        let base = writer.allocate(true, start, 5).expect("reserved positions");
+        let published = base + 5;
+
+        // A restart before anything else is written continues above every published position.
+        let mut restarted = WriterState::default();
+        assert!(restarted.recover(&pool).await.expect("recover") >= published);
+        drop(lock);
+    }
+
+    #[tokio::test]
+    async fn an_outage_bounds_queued_reports_and_counts_what_it_drops() {
+        let pool = unreachable_pool();
+        let live = TerritoryMap::new();
+        let mut writer = WriterState::default();
+        let (batches, per_batch) = (60, 1_000);
+        let mut dropped = 0;
+        let mut last = None;
+        for _ in 0..batches {
+            // Runtime-only accepted reports: no ownership fact accompanies them.
+            let outcome = writer
+                .commit(
+                    Some(&pool),
+                    Commit {
+                        source: FactSource::Canonical,
+                        changes: Vec::new(),
+                        reports: runtime_reports(per_batch),
+                        live: &live,
+                        territory_set_changed: false,
+                    },
+                )
+                .await;
+            let CommitOutcome::Deferred {
+                pending_reports,
+                dropped_reports,
+                ..
+            } = outcome
+            else {
+                panic!("an unreachable database defers the commit, got {outcome:?}");
+            };
+            dropped += dropped_reports;
+            last = Some(pending_reports);
+        }
+        let pending = last.expect("commits ran");
+        assert!(writer.pending_items <= MAX_PENDING_ITEMS);
+        assert!(pending <= MAX_PENDING_ITEMS);
+        assert_eq!(pending + dropped, batches * per_batch);
+
+        // A checkpoint-only batch after a removal still counts against the bound.
+        let before = writer.pending_items;
+        let outcome = writer
+            .commit(
+                Some(&pool),
+                Commit {
+                    source: FactSource::Poller,
+                    changes: Vec::new(),
+                    reports: Vec::new(),
+                    live: &live,
+                    territory_set_changed: true,
+                },
+            )
+            .await;
+        assert!(matches!(outcome, CommitOutcome::Deferred { .. }));
+        assert!(writer.pending_items <= MAX_PENDING_ITEMS);
+        assert!(writer.pending_items > before.saturating_sub(per_batch));
     }
 }

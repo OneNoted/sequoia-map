@@ -338,6 +338,19 @@ pub fn payload(report: &Report) -> Option<Value> {
     }
 }
 
+fn compact_parts(report: &Report) -> (Option<DateTime<Utc>>, Option<&[u8]>) {
+    match &report.body {
+        Body::Compact {
+            acquired_at,
+            runtime,
+            ..
+        } => (*acquired_at, runtime.as_deref()),
+        Body::Raw(_) => (None, None),
+    }
+}
+
+/// Store reports. Dictionary rows are added only when missing, so repeated sources and
+/// static versions draw no new identity values.
 pub async fn insert(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     reports: &[Resolved<'_>],
@@ -349,7 +362,8 @@ pub async fn insert(
     sources.sort_unstable();
     sources.dedup();
     sqlx::query(
-        "INSERT INTO canonical_source (name) SELECT * FROM UNNEST($1::text[]) \
+        "INSERT INTO canonical_source (name) SELECT n FROM UNNEST($1::text[]) AS n \
+         WHERE NOT EXISTS (SELECT 1 FROM canonical_source s WHERE s.name = n) \
          ON CONFLICT (name) DO NOTHING",
     )
     .bind(&sources)
@@ -378,31 +392,25 @@ pub async fn insert(
     }
     sqlx::query(
         "INSERT INTO canonical_static (digest, fields) \
-         SELECT * FROM UNNEST($1::bytea[], $2::jsonb[]) ON CONFLICT (digest) DO NOTHING",
+         SELECT * FROM UNNEST($1::bytea[], $2::jsonb[]) AS x(digest, fields) \
+         WHERE NOT EXISTS (SELECT 1 FROM canonical_static s WHERE s.digest = x.digest) \
+         ON CONFLICT (digest) DO NOTHING",
     )
     .bind(&digests)
     .bind(&statics)
     .execute(&mut **tx)
     .await?;
 
-    let column = |f: fn(&Report) -> Option<Value>| -> Vec<Option<Value>> {
-        reports.iter().map(|r| f(r.report)).collect()
-    };
-    let raw = column(|report| match &report.body {
-        Body::Raw(value) => Some(value.clone()),
-        Body::Compact { .. } => None,
-    });
-    let (acquired, runtime): (Vec<Option<DateTime<Utc>>>, Vec<Option<Vec<u8>>>) = reports
+    let acquired: Vec<Option<DateTime<Utc>>> =
+        reports.iter().map(|r| compact_parts(r.report).0).collect();
+    let runtime: Vec<Option<&[u8]>> = reports.iter().map(|r| compact_parts(r.report).1).collect();
+    let raw: Vec<Option<&Value>> = reports
         .iter()
         .map(|r| match &r.report.body {
-            Body::Compact {
-                acquired_at,
-                runtime,
-                ..
-            } => (*acquired_at, runtime.clone()),
-            Body::Raw(_) => (None, None),
+            Body::Raw(value) => Some(value),
+            Body::Compact { .. } => None,
         })
-        .unzip();
+        .collect();
     sqlx::query(
         "INSERT INTO canonical_report (id, received_at, observed_at, acquired_at, confidence, \
              guild_id, static_id, reporter_count, territory_id, source_id, visibility, \

@@ -92,8 +92,10 @@ async fn convert_event_chunk(
                               | (e.prev_guild_color_g::int << 8) | e.prev_guild_color_b::int";
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO history_territory (name) SELECT DISTINCT territory FROM territory_events \
-         WHERE stream_seq > $1 AND stream_seq <= $2 ORDER BY 1 ON CONFLICT DO NOTHING",
+        "INSERT INTO history_territory (name) SELECT DISTINCT e.territory FROM territory_events e \
+         WHERE e.stream_seq > $1 AND e.stream_seq <= $2 AND NOT EXISTS \
+             (SELECT 1 FROM history_territory t WHERE t.name = e.territory) \
+         ORDER BY 1 ON CONFLICT DO NOTHING",
     )
     .bind(after)
     .bind(end)
@@ -108,7 +110,10 @@ async fn convert_event_chunk(
              SELECT e.prev_guild_uuid, e.prev_guild_name, e.prev_guild_prefix, {PREV_COLOR} \
              FROM territory_events e \
              WHERE e.stream_seq > $1 AND e.stream_seq <= $2 AND e.prev_guild_uuid IS NOT NULL \
-         ) s ON CONFLICT DO NOTHING"
+         ) s(uuid, name, prefix, color) WHERE NOT EXISTS (SELECT 1 FROM history_guild g \
+             WHERE g.uuid = s.uuid AND g.name = s.name AND g.prefix = s.prefix \
+               AND g.color IS NOT DISTINCT FROM s.color) \
+         ON CONFLICT DO NOTHING"
     ))
     .bind(after)
     .bind(end)
@@ -491,11 +496,31 @@ pub async fn convert_archive(pool: &sqlx::PgPool) -> Result<ConvertReport, sqlx:
 pub struct VerifyReport {
     pub legacy_events: i64,
     pub events_without_exact_fact: i64,
+    pub legacy_snapshots: i64,
+    pub snapshots_without_checkpoint: i64,
     pub sampled_instants: usize,
     pub mismatched_instants: Vec<String>,
-    pub archive_rows: i64,
-    pub archive_mismatches: Vec<i64>,
+    pub legacy_archive_rows: i64,
+    /// Legacy archive rows with no converted report: never converted, or lost since.
+    pub archive_missing: i64,
+    /// Converted reports whose columns or rebuilt payload differ from their source.
+    pub archive_mismatched: i64,
+    /// The first of each kind, by id.
+    pub archive_missing_ids: Vec<i64>,
+    pub archive_mismatched_ids: Vec<i64>,
 }
+
+impl VerifyReport {
+    pub fn is_clean(&self) -> bool {
+        self.events_without_exact_fact == 0
+            && self.snapshots_without_checkpoint == 0
+            && self.mismatched_instants.is_empty()
+            && self.archive_missing == 0
+            && self.archive_mismatched == 0
+    }
+}
+
+const LISTED_IDS: usize = 100;
 
 /// Compare every converted legacy event field, the reconstructed ownership at `instants`
 /// against the legacy reconstruction, and every converted archive row against its source.
@@ -551,41 +576,60 @@ pub async fn verify(
         }
     }
 
-    let mut archive_mismatches = Vec::new();
-    let mut archive_rows = 0;
+    let (legacy_snapshots, snapshots_without_checkpoint): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE NOT EXISTS ( \
+             SELECT 1 FROM history_checkpoint c WHERE c.legacy_snapshot_id = s.id \
+               AND c.taken_at = s.created_at)) \
+         FROM territory_snapshots s",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let mut report = VerifyReport {
+        legacy_events,
+        events_without_exact_fact,
+        legacy_snapshots,
+        snapshots_without_checkpoint,
+        sampled_instants: instants.len(),
+        mismatched_instants,
+        ..VerifyReport::default()
+    };
     let mut after = 0_i64;
     loop {
+        // Every legacy row, with its converted report when there is one.
         type Pair = (
             i64,
-            String,
+            Option<String>,
             Option<String>,
             Option<DateTime<Utc>>,
             Option<Vec<u8>>,
             Option<Value>,
             Option<Value>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<i32>,
+            Option<Value>,
             Value,
+            Option<bool>,
             bool,
         );
         let rows: Vec<Pair> = sqlx::query_as(
-            "SELECT r.id, t.name, r.idempotency_key, r.acquired_at, r.runtime, r.raw_payload, \
-                 s.fields, g.uuid, g.name, g.prefix, g.color, l.payload, \
+            "SELECT l.id, t.name, r.idempotency_key, r.acquired_at, r.runtime, r.raw_payload, \
+                 s.fields, \
+                 CASE WHEN g.id IS NOT NULL \
+                     THEN jsonb_build_array(g.uuid, g.name, g.prefix, g.color) END, \
+                 l.payload, \
                  (l.received_at, l.observed_at, l.confidence, l.reporter_count, l.territory, \
                   l.idempotency_key, l.source) \
                  IS NOT DISTINCT FROM (r.received_at, r.observed_at, r.confidence, \
                   r.reporter_count, t.name, r.idempotency_key, src.name) \
-                 AND l.visibility = CASE r.visibility WHEN 0 THEN 'public' \
-                     WHEN 1 THEN 'guild_opt_in' ELSE l.visibility END \
-             FROM canonical_report r \
-             JOIN canonical_territory_updates l ON l.id = r.id \
-             JOIN history_territory t ON t.id = r.territory_id \
-             JOIN canonical_source src ON src.id = r.source_id \
+                 AND l.visibility IS NOT DISTINCT FROM CASE r.visibility \
+                     WHEN 0 THEN 'public' WHEN 1 THEN 'guild_opt_in' END, \
+                 r.id IS NOT NULL \
+             FROM canonical_territory_updates l \
+             LEFT JOIN canonical_report r ON r.id = l.id \
+             LEFT JOIN history_territory t ON t.id = r.territory_id \
+             LEFT JOIN canonical_source src ON src.id = r.source_id \
              LEFT JOIN canonical_static s ON s.id = r.static_id \
              LEFT JOIN history_guild g ON g.id = r.guild_id \
-             WHERE r.id > $1 ORDER BY r.id LIMIT 20000",
+             WHERE l.id > $1 ORDER BY l.id LIMIT 20000",
         )
         .bind(after)
         .fetch_all(pool)
@@ -602,52 +646,65 @@ pub async fn verify(
             runtime,
             raw,
             statics,
-            uuid,
-            name,
-            prefix,
-            color,
+            guild,
             legacy,
             columns_equal,
+            converted,
         ) in rows
         {
-            archive_rows += 1;
-            let body = match raw {
-                Some(raw) => archive::Body::Raw(raw),
-                None => archive::Body::Compact {
-                    guild: match (uuid, name, prefix) {
-                        (Some(uuid), Some(name), Some(prefix)) => Some(GuildKey {
-                            uuid,
-                            name,
-                            prefix,
-                            color,
-                        }),
-                        _ => None,
+            report.legacy_archive_rows += 1;
+            if !converted {
+                report.archive_missing += 1;
+                if report.archive_missing_ids.len() < LISTED_IDS {
+                    report.archive_missing_ids.push(id);
+                }
+                continue;
+            }
+            let guild = guild
+                .and_then(|value| {
+                    serde_json::from_value::<(String, String, String, Option<i32>)>(value).ok()
+                })
+                .map(|(uuid, name, prefix, color)| GuildKey {
+                    uuid,
+                    name,
+                    prefix,
+                    color,
+                });
+            let rebuilt = match raw {
+                Some(raw) => Some(raw),
+                None => archive::rebuild(
+                    territory.as_deref().unwrap_or_default(),
+                    key.as_deref(),
+                    &archive::Body::Compact {
+                        guild,
+                        acquired_at,
+                        statics,
+                        runtime,
                     },
-                    acquired_at,
-                    statics,
-                    runtime,
-                },
+                )
+                .and_then(|update| serde_json::to_value(update).ok()),
             };
-            let rebuilt = match &body {
-                archive::Body::Raw(raw) => Some(raw.clone()),
-                body => archive::rebuild(&territory, key.as_deref(), body)
-                    .and_then(|update| serde_json::to_value(update).ok()),
-            };
-            if !columns_equal || rebuilt.as_ref() != Some(&legacy) {
-                archive_mismatches.push(id);
+            if columns_equal != Some(true) || rebuilt.as_ref() != Some(&legacy) {
+                report.archive_mismatched += 1;
+                if report.archive_mismatched_ids.len() < LISTED_IDS {
+                    report.archive_mismatched_ids.push(id);
+                }
             }
         }
     }
-
-    Ok(VerifyReport {
-        legacy_events,
-        events_without_exact_fact,
-        sampled_instants: instants.len(),
-        mismatched_instants,
-        archive_rows,
-        archive_mismatches,
-    })
+    Ok(report)
 }
+
+type LegacyEventRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<i16>,
+    Option<i16>,
+    Option<i16>,
+    DateTime<Utc>,
+);
 
 /// The legacy reconstruction without presentation colour fallbacks: latest snapshot at or
 /// before `at`, then events recorded after it in stream order.
@@ -684,16 +741,7 @@ async fn legacy_ownership_at(
         }
         None => super::beginning(),
     };
-    let events: Vec<(
-        String,
-        String,
-        String,
-        String,
-        Option<i16>,
-        Option<i16>,
-        Option<i16>,
-        DateTime<Utc>,
-    )> = sqlx::query_as(
+    let events: Vec<LegacyEventRow> = sqlx::query_as(
         "SELECT territory, guild_uuid, guild_name, guild_prefix, guild_color_r, guild_color_g, \
              guild_color_b, acquired_at FROM territory_events \
          WHERE recorded_at > $1 AND recorded_at <= $2 ORDER BY stream_seq",
@@ -936,7 +984,12 @@ pub async fn run_cli(
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(2_000);
             let instants = verification_instants(pool, samples).await?;
-            serde_json::to_string_pretty(&verify(pool, &instants).await?)?
+            let report = verify(pool, &instants).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if !report.is_clean() {
+                return Err("history verification found missing or mismatched rows".into());
+            }
+            return Ok(());
         }
         Some("rollback") => serde_json::to_string_pretty(&rollback(pool).await?)?,
         _ => {
@@ -1014,5 +1067,181 @@ mod tests {
             cuts(&[(1, 10), (2, 20), (3, 45), (4, 40), (5, 50), (6, 60)], 3),
             vec![(45, 4)]
         );
+    }
+
+    async fn test_database() -> Option<(
+        sqlx::PgPool,
+        sqlx_core::pool::PoolConnection<sqlx::Postgres>,
+    )> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&url)
+            .await
+            .expect("connect test database");
+        let mut lock = pool.acquire().await.expect("lock connection");
+        sqlx::query("SELECT pg_advisory_lock(73019001)")
+            .execute(&mut *lock)
+            .await
+            .expect("take test lock");
+        crate::db_migrations::run(&pool).await.expect("migrate");
+        crate::test_support::reset_history(&pool).await;
+        Some((pool, lock))
+    }
+
+    async fn identities_drawn(pool: &sqlx::PgPool, table: &str) -> i64 {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT pg_sequence_last_value(pg_get_serial_sequence($1, 'id')::regclass)",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await
+        .expect("sequence position")
+        .unwrap_or(0)
+    }
+
+    async fn add_legacy_reports(pool: &sqlx::PgPool, territories: &[&str]) {
+        for (index, territory) in territories.iter().enumerate() {
+            let update = sequoia_shared::CanonicalTerritoryUpdate {
+                territory: (*territory).to_string(),
+                guild: Some(sequoia_shared::GuildRef {
+                    uuid: "u".into(),
+                    name: "Guild".into(),
+                    prefix: "G".into(),
+                    color: Some((1, 2, 3)),
+                }),
+                acquired: Some("2026-07-20T16:48:22.328+00:00".into()),
+                location: None,
+                resources: None,
+                connections: None,
+                runtime: None,
+                idempotency_key: Some(format!(
+                    "{territory}-{index}-{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                )),
+            };
+            sqlx::query(
+                "INSERT INTO canonical_territory_updates (territory, observed_at, confidence, \
+                     visibility, source, reporter_count, idempotency_key, payload) \
+                 VALUES ($1, now(), 0.5, 'public', 'fabric_reporter', 1, $2, $3)",
+            )
+            .bind(*territory)
+            .bind(update.idempotency_key.clone())
+            .bind(serde_json::to_value(&update).expect("payload"))
+            .execute(pool)
+            .await
+            .expect("insert legacy report");
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_conversion_and_dictionary_inserts_draw_identities_only_for_new_entries() {
+        let Some((pool, _lock)) = test_database().await else {
+            eprintln!("Skipping dictionary identity test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        add_legacy_reports(&pool, &["Alpha", "Beta", "Alpha"]).await;
+        convert_archive(&pool).await.expect("first conversion");
+        assert_eq!(identities_drawn(&pool, "history_territory").await, 2);
+        assert_eq!(identities_drawn(&pool, "canonical_source").await, 1);
+        assert_eq!(identities_drawn(&pool, "history_guild").await, 1);
+
+        // Later chunks and the writer's batches name the same entries again.
+        for _ in 0..5 {
+            add_legacy_reports(&pool, &["Alpha", "Beta"]).await;
+            convert_archive(&pool).await.expect("repeat conversion");
+            let mut tx = pool.begin().await.expect("tx");
+            let names = vec!["Alpha".to_string(), "Beta".to_string()];
+            let ids = super::super::writer::insert_territories(&mut tx, &names)
+                .await
+                .expect("territories");
+            assert_eq!(ids.len(), 2);
+            tx.commit().await.expect("commit");
+        }
+        assert_eq!(identities_drawn(&pool, "history_territory").await, 2);
+        assert_eq!(identities_drawn(&pool, "canonical_source").await, 1);
+        assert_eq!(identities_drawn(&pool, "history_guild").await, 1);
+
+        add_legacy_reports(&pool, &["Gamma"]).await;
+        convert_archive(&pool).await.expect("new territory");
+        assert_eq!(identities_drawn(&pool, "history_territory").await, 3);
+    }
+
+    #[tokio::test]
+    async fn verification_rejects_an_omitted_and_a_corrupted_archive_row() {
+        let Some((pool, _lock)) = test_database().await else {
+            eprintln!("Skipping archive verification test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        add_legacy_reports(&pool, &["Alpha", "Beta", "Gamma"]).await;
+        convert_archive(&pool).await.expect("conversion");
+        assert!(verify(&pool, &[]).await.expect("verify").is_clean());
+
+        let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM canonical_report ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("report ids");
+        sqlx::query("DELETE FROM canonical_report WHERE id = $1")
+            .bind(ids[0])
+            .execute(&pool)
+            .await
+            .expect("omit one report");
+        sqlx::query("UPDATE canonical_report SET confidence = confidence + 0.25 WHERE id = $1")
+            .bind(ids[1])
+            .execute(&pool)
+            .await
+            .expect("corrupt one report");
+
+        let report = verify(&pool, &[]).await.expect("verify");
+        assert_eq!(report.archive_missing_ids, vec![ids[0]]);
+        assert_eq!(report.archive_mismatched_ids, vec![ids[1]]);
+        assert!(!report.is_clean());
+        assert!(
+            run_cli(&pool, &["verify".to_string(), "1".to_string()])
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_another_session_commits_while_this_insert_waits_is_returned() {
+        let Some((pool, _lock)) = test_database().await else {
+            eprintln!("Skipping dictionary race test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let names = vec!["Race".to_string()];
+        let key = GuildKey {
+            uuid: "r".into(),
+            name: "Racer".into(),
+            prefix: "R".into(),
+            color: None,
+        };
+
+        let mut first = pool.begin().await.expect("first session");
+        let first_territories = insert_territories(&mut first, &names).await.expect("first");
+        let first_guilds = insert_guilds(&mut first, std::slice::from_ref(&key))
+            .await
+            .expect("first guild");
+
+        let second = tokio::spawn({
+            let (pool, names, key) = (pool.clone(), names.clone(), key.clone());
+            async move {
+                let mut tx = pool.begin().await.expect("second session");
+                let territories = insert_territories(&mut tx, &names).await.expect("second");
+                let guilds = insert_guilds(&mut tx, &[key]).await.expect("second guild");
+                tx.commit().await.expect("second commit");
+                (territories, guilds)
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !second.is_finished(),
+            "the second insert waits for the first session"
+        );
+        first.commit().await.expect("first commit");
+
+        let (territories, guilds) = second.await.expect("second session completes");
+        assert_eq!(territories, first_territories);
+        assert_eq!(guilds, first_guilds);
     }
 }
