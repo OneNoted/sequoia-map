@@ -124,6 +124,27 @@ pub(super) fn PlayerDetail() -> impl IntoView {
         current
     });
 
+    // Measures the frame and places it beside its name, inside the window.
+    let place = move || {
+        let Some(anchor) = room.player_anchor.get_untracked() else {
+            return;
+        };
+        if !popover.get_untracked() || username.with_untracked(Option::is_none) {
+            return;
+        }
+        let (Some(dialog), Some(window)) = (dialog_ref.get_untracked(), web_sys::window()) else {
+            return;
+        };
+        let extent = |value: Result<wasm_bindgen::JsValue, _>| {
+            value.ok().and_then(|v| v.as_f64()).unwrap_or(0.0)
+        };
+        let viewport = (extent(window.inner_width()), extent(window.inner_height()));
+        let size = (
+            f64::from(dialog.offset_width()),
+            f64::from(dialog.offset_height()),
+        );
+        origin.set(Some(popover_origin(anchor, size, viewport)));
+    };
     // Placed beside its name once it has a size, and again whenever its content changes.
     Effect::new(move || {
         shown.track();
@@ -140,29 +161,36 @@ pub(super) fn PlayerDetail() -> impl IntoView {
             // A first guess for the frame before it can be measured.
             origin.set(Some((anchor.right + POPOVER_GAP, anchor.top)));
         }
-        request_animation_frame(move || {
-            let (Some(dialog), Some(window)) = (dialog_ref.get_untracked(), web_sys::window())
-            else {
-                return;
-            };
-            let viewport = (
-                window
-                    .inner_width()
-                    .ok()
-                    .and_then(|w| w.as_f64())
-                    .unwrap_or(0.0),
-                window
-                    .inner_height()
-                    .ok()
-                    .and_then(|h| h.as_f64())
-                    .unwrap_or(0.0),
-            );
-            let size = (
-                f64::from(dialog.offset_width()),
-                f64::from(dialog.offset_height()),
-            );
-            origin.set(Some(popover_origin(anchor, size, viewport)));
-        });
+        request_animation_frame(place);
+    });
+    // Content that arrives later (ranks, a record) changes the frame's height; placing it again
+    // keeps its controls inside the window.
+    let resize_watch = StoredValue::new_local(
+        None::<(
+            web_sys::ResizeObserver,
+            wasm_bindgen::closure::Closure<dyn Fn()>,
+        )>,
+    );
+    Effect::new(move || {
+        let Some(dialog) = dialog_ref.get() else {
+            return;
+        };
+        if resize_watch.with_value(Option::is_some) {
+            return;
+        }
+        let resized = wasm_bindgen::closure::Closure::<dyn Fn()>::new(place);
+        let Ok(observer) =
+            web_sys::ResizeObserver::new(wasm_bindgen::JsCast::unchecked_ref(resized.as_ref()))
+        else {
+            return;
+        };
+        observer.observe(&dialog);
+        resize_watch.set_value(Some((observer, resized)));
+    });
+    on_cleanup(move || {
+        if let Some((observer, _resized)) = resize_watch.try_update_value(Option::take).flatten() {
+            observer.disconnect();
+        }
     });
 
     let close = Callback::new(move |()| {

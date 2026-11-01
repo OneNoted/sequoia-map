@@ -3710,11 +3710,20 @@ a.tcard-guild:focus-visible {
   list-style: none;
   font-size: 0.76rem;
 }
+/* Labels stay readable; the Discord role colour is only a mark beside them. */
 .mwar-role {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  color: var(--role-color, var(--color-text-primary));
+  gap: 5px;
+  color: var(--color-text-primary);
+}
+.mwar-role:not(:has(img))::before {
+  content: "";
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--role-color, var(--color-text-dim));
 }
 .mwar-quiet {
   font-size: 0.74rem;
@@ -3757,7 +3766,12 @@ a.tcard-guild:focus-visible {
   color: #d8b4fe;
 }
 @media (pointer: coarse) {
-  .mwar-period span { padding: 9px 9px; }
+  .mwar-period span {
+    display: flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 0 10px;
+  }
 }
 .mwar-custom {
   display: flex;

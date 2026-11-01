@@ -103,6 +103,14 @@ enum Answer {
 }
 
 impl Ask {
+    /// The member this is about, for answers that concern one member only.
+    fn member(&self) -> Option<&str> {
+        match self {
+            Self::Roster => None,
+            Self::Standing(user) | Self::Record(user, _) => Some(user),
+        }
+    }
+
     fn refresh_after_ms(&self) -> f64 {
         match self {
             Self::Roster | Self::Standing(_) => CURRENT_REFRESH_MS,
@@ -175,8 +183,10 @@ pub(crate) struct MemberWar {
     entries: RwSignal<HashMap<Ask, Fetched>>,
     /// Requests on their way; at most one per [`Ask`], whoever asks.
     in_flight: StoredValue<HashSet<Ask>>,
-    /// Bumped when the viewer changes, so answers asked for the previous one are dropped.
+    /// Bumped when the viewer changes or is refused, so answers asked before are dropped.
     generation: StoredValue<u64>,
+    /// Bumped per member when they leave the roster, so their late answers are dropped.
+    member_epochs: StoredValue<HashMap<String, u64>>,
 }
 
 fn key(username: &str) -> String {
@@ -212,6 +222,7 @@ impl MemberWar {
             entries: RwSignal::new(HashMap::new()),
             in_flight: StoredValue::new(HashSet::new()),
             generation: StoredValue::new(0),
+            member_epochs: StoredValue::new(HashMap::new()),
         };
         let CurrentViewer(viewer) = expect_context();
         Effect::new(move |previous: Option<Option<crate::auth::Viewer>>| {
@@ -278,6 +289,7 @@ impl MemberWar {
             });
         }
         let generation = self.generation.get_value();
+        let epoch = self.member_epoch(ask.member());
         let this = *self;
         wasm_bindgen_futures::spawn_local(async move {
             let load = ask.fetch().await;
@@ -287,6 +299,18 @@ impl MemberWar {
             this.in_flight.update_value(|set| {
                 set.remove(&ask);
             });
+            if this.member_epoch(ask.member()) != epoch {
+                return;
+            }
+            match load {
+                Load::Failed(failure @ Failure::Denied) => return this.answer_everything(failure),
+                Load::Failed(failure @ Failure::NotOnRoster) => {
+                    if let Some(member) = ask.member() {
+                        return this.answer_member(member, failure);
+                    }
+                }
+                _ => {}
+            }
             this.entries.update(|entries| {
                 // An outage keeps what was shown, marked as not current. A refusal, a name gone
                 // from the roster or a season that ended is an answer and replaces it.
@@ -312,6 +336,50 @@ impl MemberWar {
     fn outdated(&self, ask: &Ask) -> bool {
         self.entries
             .with(|entries| entries.get(ask).is_some_and(|fetched| fetched.outdated))
+    }
+
+    fn member_epoch(&self, member: Option<&str>) -> u64 {
+        member.map_or(0, |member| {
+            self.member_epochs
+                .with_value(|epochs| epochs.get(member).copied().unwrap_or(0))
+        })
+    }
+
+    /// A refusal is about the viewer, not one request: every answer held for them, any member,
+    /// any period, becomes that refusal, and answers still on their way are dropped.
+    fn answer_everything(&self, failure: Failure) {
+        self.generation.update_value(|generation| *generation += 1);
+        self.in_flight.update_value(HashSet::clear);
+        self.entries.update(|entries| {
+            for fetched in entries.values_mut() {
+                *fetched = Fetched {
+                    load: Load::Failed(failure),
+                    at: now_ms(),
+                    outdated: false,
+                };
+            }
+        });
+    }
+
+    /// A member gone from the roster: every answer about them, any period, becomes that, and
+    /// their answers still on their way are dropped.
+    fn answer_member(&self, member: &str, failure: Failure) {
+        self.member_epochs.update_value(|epochs| {
+            *epochs.entry(member.to_string()).or_default() += 1;
+        });
+        self.in_flight
+            .update_value(|set| set.retain(|ask| ask.member() != Some(member)));
+        self.entries.update(|entries| {
+            for (ask, fetched) in entries.iter_mut() {
+                if ask.member() == Some(member) {
+                    *fetched = Fetched {
+                        load: Load::Failed(failure),
+                        at: now_ms(),
+                        outdated: false,
+                    };
+                }
+            }
+        });
     }
 
     fn retry(&self, ask: Ask) {
@@ -387,7 +455,7 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
     let war = expect_context::<MemberWar>();
     let room = expect_context::<WarRoom>();
     let focus_map = MapFocus::from_context();
-    let detail_ref = NodeRef::<leptos::html::Div>::new();
+    let row_ref = NodeRef::<leptos::html::Li>::new();
     let toggle_ref = NodeRef::<leptos::html::Button>::new();
     let open = {
         let username = username.clone();
@@ -403,7 +471,7 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
     };
     let minute = minute_clock();
     Effect::new(move || {
-        minute.track();
+        let _minute = minute.get();
         war.ensure_roster();
     });
     let detail_id = format!("member-war-{}", key(&username));
@@ -413,9 +481,10 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
             let opening = !war.is_expanded(&username);
             war.set_expanded(&username, opening);
             if opening {
+                // The whole row, so the member's own line stays in view above a long record.
                 request_animation_frame(move || {
-                    if let Some(detail) = detail_ref.get_untracked() {
-                        crate::ui::reveal(&detail);
+                    if let Some(row) = row_ref.get_untracked() {
+                        crate::ui::reveal(&row);
                     }
                 });
             }
@@ -439,7 +508,7 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
     let accessible = format!("{username}, {rank_label}");
 
     view! {
-        <li class="mrow" class:mrow-open=move || open.get() on:keydown=collapse_on_escape>
+        <li class="mrow" class:mrow-open=move || open.get() node_ref=row_ref on:keydown=collapse_on_escape>
             <div class="mrow-line">
                 <button
                     type="button"
@@ -460,7 +529,7 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
                 <MemberPlace member=reporting server focus_map />
             </div>
             <Show when=move || open.get()>
-                <div class="mrow-detail" id=detail_id.clone() node_ref=detail_ref>
+                <div class="mrow-detail" id=detail_id.clone() >
                     <MemberDetail username=username.clone() />
                 </div>
             </Show>
@@ -602,7 +671,8 @@ fn RoleChip(role: WarRole) -> impl IntoView {
 }
 
 /// The map's clock in whole minutes: mounted views look again each minute, and the store's
-/// freshness rules decide whether that looks costs a request.
+/// freshness rules decide whether that look costs a request. Read it with `get`: tracking a
+/// memo without evaluating it never subscribes the memo to the clock.
 fn minute_clock() -> Memo<i64> {
     let tick: RwSignal<i64> = expect_context();
     Memo::new(move |_| tick.get() / 60)
@@ -616,7 +686,7 @@ fn MemberDetail(username: String) -> impl IntoView {
         let username = username.clone();
         let minute = minute_clock();
         Effect::new(move || {
-            minute.track();
+            let _minute = minute.get();
             let period = war.period.get();
             war.ensure_standing(&username);
             war.ensure_roster();
@@ -910,7 +980,7 @@ pub(crate) fn MemberGlance(username: String) -> impl IntoView {
         let username = username.clone();
         let minute = minute_clock();
         Effect::new(move || {
-            minute.track();
+            let _minute = minute.get();
             war.ensure_standing(&username);
             war.ensure_record(&username, &Period::Week);
         });
