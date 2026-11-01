@@ -1,9 +1,9 @@
 //! A Sequoia member's war standing and record, as the map server serves them to members.
 //!
-//! [`MemberStanding`] is what is true now: the in-game rank on the live roster and the war roles
-//! the rank-profile feed reports. [`MemberWarRecord`] is history over a window, read from the
-//! backend's stored points. The two are fetched separately so a period change cannot alter the
-//! current rank.
+//! [`MemberStanding`] is what is true now: the in-game rank on the live roster, and the
+//! progression rank and war roles the rank-profile feed reports. [`MemberWarRecord`] is history
+//! over a window, read from the backend's stored points. The two are fetched separately so a
+//! period change cannot alter the current rank.
 //!
 //! `war_count` counts wars whose points were stored; `unavailable_war_count` counts wars whose
 //! points could not be calculated. Neither is a win, and an unavailable war is not a zero.
@@ -62,12 +62,15 @@ pub struct MemberStanding {
     pub ranks: RankStanding,
 }
 
-/// War roles for everyone on the current roster who holds any, for compact roster rows.
-/// A name missing here holds none in the linked feed, which is not proof of anything else.
+/// War roles and progression ranks for everyone on the current roster who holds any, for
+/// compact roster rows. A name missing here holds none in the linked feed, which is not proof
+/// of anything else.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemberRosterRoles {
     pub stale: bool,
     pub roles: std::collections::BTreeMap<String, Vec<WarRole>>,
+    #[serde(default)]
+    pub progression: std::collections::BTreeMap<String, ProgressionRank>,
 }
 
 /// What the rank-profile feed says about this player.
@@ -75,11 +78,27 @@ pub struct MemberRosterRoles {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum RankStanding {
     /// The feed has a profile; `stale` when its Discord sync is older than the feed allows.
-    Synced { stale: bool, roles: Vec<WarRole> },
+    Synced {
+        stale: bool,
+        roles: Vec<WarRole>,
+        #[serde(default)]
+        progression: Option<ProgressionRank>,
+    },
     /// The feed has no profile for this UUID. Says nothing about whether the account is linked.
     NoProfile,
     /// The feed could not be asked.
     Unavailable,
+}
+
+/// The community title a profile holds (`Ascended`, `Sapling`), from the feed's own catalog.
+/// Presentation only: it grants nothing, and the in-game rank is a separate fact.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProgressionRank {
+    pub key: String,
+    pub label: String,
+    /// `#RRGGBB`, from the Discord role.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -21,9 +21,9 @@ use super::hud::{ClassIcon, MemberChip, member_key};
 use super::modal::{focus_next_frame, focused_element, restore_focus, trap_tab};
 use super::{Anchor, MapFocus, WarRoom, clock_text, whereabouts};
 use crate::app::IsMobile;
-use crate::member_war::MemberGlance;
+use crate::member_war::{MemberGlance, MemberWar, PlayercardLink, RankTitle};
 use crate::territory::ClientTerritoryMap;
-use crate::ui::CrosshairIcon;
+use crate::ui::MapPinIcon;
 
 const FACE_PX: u32 = 64;
 /// Space between the popover and the name it belongs to, and kept clear of the window edge.
@@ -348,13 +348,29 @@ fn PlayerDialogContent(
         on_close.run(());
     };
     let face = crate::auth::nmsr_face(&username, FACE_PX);
-    let card = crate::player_card_url(&username);
+    // Titled by the progression rank, the in-game rank on hover; the name itself stays the IGN.
+    let member_war = expect_context::<MemberWar>();
+    let progression = {
+        let username = username.clone();
+        Memo::new(move |_| member_war.progression(&username))
+    };
+    let in_game_rank = {
+        let username = username.clone();
+        Memo::new(move |_| member_war.in_game_rank(&username))
+    };
 
     view! {
         <div class="player-dialog-header">
             <img class="player-dialog-face" src=face alt="" width="48" height="48" />
             <div class="player-dialog-heading">
-                <h2 class="player-dialog-name" id="player-dialog-name">{username.clone()}</h2>
+                <h2
+                    class="player-dialog-name"
+                    id="player-dialog-name"
+                    title=move || in_game_rank.get().map(|rank| format!("In-game rank: {rank}"))
+                >
+                    {move || progression.get().map(|rank| view! { <RankTitle rank class="player-dialog-title" />" " })}
+                    <span class="player-dialog-ign">{username.clone()}</span>
+                </h2>
                 <p class="player-dialog-status" data-state=move || status.get().1>{move || status.get().0}</p>
             </div>
             <button type="button" class="ui-button ui-icon-button war-icon-button" aria-label="Close" on:click=move |_| on_close.run(())>
@@ -408,14 +424,11 @@ fn PlayerDialogContent(
             </section>
         </Show>
         <div class="player-dialog-actions">
-            <button type="button" class="ui-text-action ui-text-action-primary" disabled=move || !can_show.get() on:click=show>
-                <CrosshairIcon />
+            <button type="button" class="ui-text-action ui-text-action-primary mc-action" disabled=move || !can_show.get() on:click=show>
+                <MapPinIcon />
                 "Locate"
             </button>
-            <a class="ui-text-action" href=card target="_blank" rel="noopener noreferrer">
-                "Seqwawa profile"
-                <span class="ui-external" aria-hidden="true" />
-            </a>
+            <PlayercardLink username=username.clone() />
         </div>
     }
 }
