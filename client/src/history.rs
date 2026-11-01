@@ -491,6 +491,9 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
         handoff_count = *count;
     });
     web_sys::console::info_1(&format!("live_handoff_resync_count={handoff_count}").into());
+    // The live state fetched below supersedes every event dropped so far; one dropped while
+    // it is in flight may be newer than it and must still force a resync.
+    needs_live_resync.set(false);
 
     spawn_local(async move {
         let live_state = fetch_live_state().await;
@@ -525,7 +528,6 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
 
                 history_buffered_updates.set(Vec::new());
                 history_buffer_mode_active.set(false);
-                needs_live_resync.set(false);
                 history_timestamp.set(None);
                 history_legacy_geometry_active.set(false);
                 history_sr_leaderboard.set(None);

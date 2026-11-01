@@ -121,13 +121,13 @@ fn buffer_history_update(feed: LiveFeed, update: BufferedUpdate) {
     let mut new_len = 0;
 
     feed.buffered_updates.update(|buffer| {
-        if buffer.iter().any(|existing| existing.seq == update.seq) {
-            new_len = buffer.len();
-            return;
+        match buffer.binary_search_by_key(&update.seq, |item| item.seq) {
+            Ok(_) => {
+                new_len = buffer.len();
+                return;
+            }
+            Err(index) => buffer.insert(index, update),
         }
-
-        buffer.push(update);
-        buffer.sort_by_key(|item| item.seq);
 
         if buffer.len() > MAX_BUFFERED_UPDATES {
             let overflow = buffer.len() - MAX_BUFFERED_UPDATES;
