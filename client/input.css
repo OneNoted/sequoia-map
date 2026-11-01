@@ -1089,7 +1089,7 @@
   min-width: 0;
 }
 
-/* Title and IGN each stay whole; a long pair wraps between them rather than cutting the name. */
+/* A long title and IGN wrap between words; a name wider than the heading breaks, never hides. */
 .player-dialog-name {
   overflow-wrap: anywhere;
   font-family: var(--font-display);
@@ -3627,9 +3627,11 @@ a.tcard-guild:focus-visible {
   height: 14px;
   image-rendering: pixelated;
 }
+/* A long title gives way first by wrapping between its words, so the IGN keeps its room. */
 .mrow-rank {
-  flex-shrink: 0;
+  flex: 0 3 auto;
   font-size: 0.8rem;
+  line-height: 1.1;
   color: var(--color-text-secondary);
 }
 .mrow-chevron {
@@ -3905,5 +3907,3 @@ a.tcard-guild:focus-visible {
 .mrank[data-colored] {
   color: color-mix(in oklab, var(--rank-color) 50%, #f0eee6);
 }
-.player-dialog-title,
-.player-dialog-ign { white-space: nowrap; }
