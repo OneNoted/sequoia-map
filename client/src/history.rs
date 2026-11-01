@@ -8,12 +8,26 @@ use sequoia_shared::history::{HistoryBounds, HistoryGuildSrEntry, HistorySnapsho
 use sequoia_shared::{GuildRef, SeasonScalarSample, Territory, TerritoryMap};
 
 use crate::app::{BufferedUpdate, GuildColorMap, MapMode, TerritoryGeometryMap};
-use crate::territory::{ClientTerritoryMap, apply_changes, from_snapshot};
+use crate::territory::{ClientTerritory, ClientTerritoryMap, apply_changes, from_snapshot};
 
 const REKINDLED_WORLD_RELEASE_SECS: i64 = 1_723_248_000; // 2024-08-10T00:00:00Z
 
 thread_local! {
     static ACTIVE_HISTORY_FETCH: RefCell<Option<(u64, web_sys::AbortController)>> = const { RefCell::new(None) };
+    /// Changes on every entry to and exit from history, so a reply that belongs to an
+    /// earlier visit can never change the map.
+    static HISTORY_SESSION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub fn current_session() -> u64 {
+    HISTORY_SESSION.with(std::cell::Cell::get)
+}
+
+fn begin_session() -> u64 {
+    HISTORY_SESSION.with(|session| {
+        session.set(session.get().wrapping_add(1));
+        session.get()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -196,6 +210,37 @@ pub fn merge_with_static(
     map
 }
 
+/// Replace the map with `merged`, touching only territories whose owner or acquisition
+/// changed, and leaving the signal untouched when nothing did: scrubbing through a quiet
+/// interval then costs no map rebuild.
+fn apply_ownership(territories: RwSignal<ClientTerritoryMap>, mut merged: TerritoryMap) {
+    let changed = territories.with_untracked(|current| {
+        current.len() != merged.len()
+            || merged.iter().any(|(name, territory)| {
+                current.get(name).is_none_or(|existing| {
+                    existing.territory.guild != territory.guild
+                        || existing.territory.acquired != territory.acquired
+                })
+            })
+    });
+    if !changed {
+        return;
+    }
+    territories.update(|current| {
+        current.retain(|name, _| merged.contains_key(name));
+        for (name, territory) in merged.drain() {
+            let unchanged = current.get(&name).is_some_and(|existing| {
+                existing.territory.guild == territory.guild
+                    && existing.territory.acquired == territory.acquired
+            });
+            if !unchanged {
+                let client = ClientTerritory::from_territory(&name, territory);
+                current.insert(name, client);
+            }
+        }
+    });
+}
+
 /// Fetch historical data and update the territories signal.
 /// Reads geometry from `TerritoryGeometryStore` context.
 pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
@@ -212,6 +257,8 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
 
     let request_nonce = fetch_nonce.get_untracked().wrapping_add(1);
     fetch_nonce.set(request_nonce);
+    let session = current_session();
+    crate::playback::restart_at(timestamp_secs, request_nonce);
     history_legacy_geometry_active.set(timestamp_uses_legacy_geometry(timestamp_secs));
     let abort_controller = web_sys::AbortController::new().ok();
     let abort_signal = abort_controller
@@ -223,18 +270,20 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
         match fetch_history_at_with_abort(timestamp_secs, abort_signal.as_ref()).await {
             Ok(snapshot) => {
                 clear_active_history_fetch(request_nonce);
-                // Only apply the latest in-flight history fetch, and only while still in history mode.
+                // Only the latest seek of this history visit may change the map.
                 if fetch_nonce.get_untracked() != request_nonce
+                    || current_session() != session
                     || mode.get_untracked() != MapMode::History
                 {
                     return;
                 }
-                history_scalar_sample.set(snapshot.season_scalar.clone());
-                history_sr_leaderboard.set(snapshot.season_leaderboard.clone());
-                let geo = geo_store.get_value();
-                let guild_colors = guild_color_store.get_value();
-                let merged = merge_with_static(&snapshot, &geo, &guild_colors);
-                territories.set(from_snapshot(merged));
+                let merged = geo_store.with_value(|geo| {
+                    guild_color_store.with_value(|colors| merge_with_static(&snapshot, geo, colors))
+                });
+                history_scalar_sample.set(snapshot.season_scalar);
+                history_sr_leaderboard.set(snapshot.season_leaderboard);
+                apply_ownership(territories, merged);
+                crate::playback::seek_applied(request_nonce);
             }
             Err(e) => {
                 clear_active_history_fetch(request_nonce);
@@ -309,6 +358,7 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
     } = input;
 
     abort_active_history_fetch();
+    let session = begin_session();
     history_fetch_nonce.update(|n| *n = n.wrapping_add(1));
     history_buffer_mode_active.set(true);
     history_buffered_updates.set(Vec::new());
@@ -351,7 +401,11 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
 
     // Fetch bounds — exit history mode on failure
     spawn_local(async move {
-        match fetch_bounds().await {
+        let bounds = fetch_bounds().await;
+        if current_session() != session || mode.get_untracked() != MapMode::History {
+            return;
+        }
+        match bounds {
             Ok(bounds) => {
                 let earliest = bounds
                     .earliest
@@ -427,6 +481,8 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
     let request_nonce = history_fetch_nonce.get_untracked().wrapping_add(1);
     history_fetch_nonce.set(request_nonce);
     abort_active_history_fetch();
+    let session = begin_session();
+    crate::playback::stop();
     playback_active.set(false);
 
     let mut handoff_count = 0;
@@ -439,8 +495,9 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
     spawn_local(async move {
         let live_state = fetch_live_state().await;
 
-        // Still in this exact history session?
+        // Still leaving this exact history visit?
         if history_fetch_nonce.get_untracked() != request_nonce
+            || current_session() != session
             || mode.get_untracked() != MapMode::History
         {
             return;

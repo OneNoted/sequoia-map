@@ -34,7 +34,9 @@ CREATE TABLE history_fact (
 
 CREATE INDEX history_fact_recorded ON history_fact (recorded_at);
 
--- Complete ownership at `taken_at`: replay continues with facts recorded after it. `source`:
+-- Complete ownership at `taken_at`: replay continues with facts recorded after it, in stream
+-- order. `through_seq` is the stream position of the latest fact at or before `taken_at`.
+-- `source`:
 -- 0 converted legacy snapshot, 1 derived from a legacy snapshot and the legacy events after
 -- it, 2 written by the history writer in the transaction of the fact at `through_seq`.
 CREATE TABLE history_checkpoint (

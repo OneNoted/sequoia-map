@@ -212,8 +212,8 @@ async fn convert_snapshot_chunk(pool: &sqlx::PgPool) -> Result<u64, sqlx::Error>
         sqlx::query(
             "INSERT INTO history_checkpoint (taken_at, through_seq, source, legacy_snapshot_id, \
                  ownership) \
-             SELECT $1, coalesce((SELECT max(stream_seq) FROM history_fact \
-                 WHERE recorded_at <= $1), 0), 0, $2, $3 \
+             SELECT $1, coalesce((SELECT stream_seq FROM history_fact WHERE recorded_at <= $1 \
+                 ORDER BY recorded_at DESC, stream_seq DESC LIMIT 1), 0), 0, $2, $3 \
              ON CONFLICT (legacy_snapshot_id) DO NOTHING",
         )
         .bind(created_at)

@@ -1,10 +1,12 @@
 use std::cell::RefCell;
+use std::collections::VecDeque;
 
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
-use sequoia_shared::history::{HistoryEvents, HistorySrSamples, HistorySrSnapshot};
+use sequoia_shared::history::{HistoryEvent, HistoryEvents, HistoryGuildSrEntry, HistorySrSamples};
+use sequoia_shared::{GuildRef, TerritoryChange};
 
 use crate::app::{
     CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryFetchNonce,
@@ -13,79 +15,294 @@ use crate::app::{
 };
 use crate::territory::{ClientTerritoryMap, apply_changes};
 
+const TICK_MS: i32 = 100;
+const PAGE_LIMIT: u32 = 1000;
+/// Events held ahead of the clock at most; fetching pauses until playback consumes them.
+const MAX_BUFFERED_EVENTS: usize = 5_000;
+const MICROS: i64 = 1_000_000;
+
 struct PlaybackIntervalBinding {
     window: web_sys::Window,
     interval_id: i32,
     _callback: Closure<dyn Fn()>,
 }
 
+/// One upcoming ownership change, decoded once when its page arrives.
+struct Pending {
+    at_micros: i64,
+    territory: String,
+    guild: GuildRef,
+    previous: Option<GuildRef>,
+    acquired: String,
+}
+
+/// Events after the clock that playback will apply, and how far that knowledge reaches.
+///
+/// `covered_micros` is the instant up to which every recorded event is either applied or in
+/// `events`; the clock never moves past it, so a slow or partial fetch pauses playback
+/// instead of skipping changes. Everything here belongs to one `epoch`: a seek, an exit or a
+/// new visit starts another, and replies of an older epoch are dropped.
+struct Buffer {
+    epoch: u64,
+    /// The seek this epoch starts from; nothing is applied until its state is on the map.
+    seek_nonce: u64,
+    ready: bool,
+    events: VecDeque<Pending>,
+    covered_micros: i64,
+    /// The window being paged, with the last event received, when a page said there was more.
+    window: Option<(i64, i64)>,
+    cursor: Option<(u64, u16)>,
+    fetch: Option<web_sys::AbortController>,
+    retry_after_ms: f64,
+    samples: VecDeque<(i64, Vec<HistoryGuildSrEntry>)>,
+    samples_covered_micros: i64,
+    samples_fetch: Option<web_sys::AbortController>,
+    fractional_secs: f64,
+}
+
+impl Buffer {
+    const fn new() -> Self {
+        Self {
+            epoch: 0,
+            seek_nonce: 0,
+            ready: false,
+            events: VecDeque::new(),
+            covered_micros: i64::MIN,
+            window: None,
+            cursor: None,
+            fetch: None,
+            retry_after_ms: 0.0,
+            samples: VecDeque::new(),
+            samples_covered_micros: i64::MIN,
+            samples_fetch: None,
+            fractional_secs: 0.0,
+        }
+    }
+
+    fn restart(&mut self, at_secs: i64, seek_nonce: u64) {
+        for controller in [self.fetch.take(), self.samples_fetch.take()]
+            .into_iter()
+            .flatten()
+        {
+            controller.abort();
+        }
+        let epoch = self.epoch.wrapping_add(1);
+        *self = Self::new();
+        self.epoch = epoch;
+        self.seek_nonce = seek_nonce;
+        self.covered_micros = at_secs.saturating_mul(MICROS);
+        self.samples_covered_micros = self.covered_micros;
+    }
+}
+
 thread_local! {
     static PLAYBACK_INTERVAL_BINDING: RefCell<Option<PlaybackIntervalBinding>> = const { RefCell::new(None) };
+    static BUFFER: RefCell<Buffer> = const { RefCell::new(Buffer::new()) };
 }
 
-fn parse_rfc3339_secs(raw: &str) -> Option<i64> {
+/// A seek to `at_secs` is in flight: forget buffered events and wait for its state.
+pub fn restart_at(at_secs: i64, seek_nonce: u64) {
+    BUFFER.with(|buffer| buffer.borrow_mut().restart(at_secs, seek_nonce));
+}
+
+/// The state of seek `seek_nonce` is on the map; playback may continue from it.
+pub fn seek_applied(seek_nonce: u64) {
+    BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        if buffer.seek_nonce == seek_nonce {
+            buffer.ready = true;
+        }
+    });
+}
+
+/// Leaving history: drop buffered events and abort their requests.
+pub fn stop() {
+    BUFFER.with(|buffer| buffer.borrow_mut().restart(0, 0));
+}
+
+fn rfc3339_secs(secs: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(secs, 0)
+        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+fn rfc3339_micros(raw: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .ok()
-        .map(|dt| dt.timestamp())
+        .map(|at| at.timestamp_micros())
 }
 
-/// Fetch upcoming events from the history API.
-async fn fetch_events(
-    from_secs: i64,
-    to_secs: i64,
-    after_seq: Option<u64>,
-    limit: i64,
-) -> Result<HistoryEvents, String> {
-    let from_dt = chrono::DateTime::from_timestamp(from_secs, 0).ok_or("invalid from timestamp")?;
-    let to_dt = chrono::DateTime::from_timestamp(to_secs, 0).ok_or("invalid to timestamp")?;
-
-    let mut url = format!(
-        "/api/history/events?from={}&to={}&limit={}",
-        from_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        to_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        limit
-    );
-    if let Some(after_seq) = after_seq {
-        url.push_str(&format!("&after_seq={after_seq}"));
-    }
-
-    let resp = gloo_net::http::Request::get(&url)
+async fn get_json<T: serde::de::DeserializeOwned>(
+    url: &str,
+    signal: Option<&web_sys::AbortSignal>,
+) -> Result<T, String> {
+    let response = gloo_net::http::Request::get(url)
+        .abort_signal(signal)
         .send()
         .await
         .map_err(|e| format!("fetch error: {e}"))?;
-
-    if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
+    if !response.ok() {
+        return Err(format!("HTTP {}", response.status()));
     }
-
-    resp.json::<HistoryEvents>()
+    response
+        .json::<T>()
         .await
         .map_err(|e| format!("parse error: {e}"))
 }
 
-/// Fetch season rating snapshots for the given window.
-async fn fetch_sr_samples(from_secs: i64, to_secs: i64) -> Result<Vec<HistorySrSnapshot>, String> {
-    let from_dt = chrono::DateTime::from_timestamp(from_secs, 0).ok_or("invalid from timestamp")?;
-    let to_dt = chrono::DateTime::from_timestamp(to_secs, 0).ok_or("invalid to timestamp")?;
-    let url = format!(
-        "/api/history/sr-samples?from={}&to={}",
-        from_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        to_dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    );
+fn pending_from(event: HistoryEvent) -> Option<Pending> {
+    let at_micros = rfc3339_micros(&event.timestamp)?;
+    let previous = match (event.prev_guild_name, event.prev_guild_prefix) {
+        (Some(name), Some(prefix)) => Some(GuildRef {
+            uuid: String::new(),
+            name,
+            prefix,
+            color: event.prev_guild_color,
+        }),
+        _ => None,
+    };
+    Some(Pending {
+        at_micros,
+        acquired: event.acquired_at.unwrap_or(event.timestamp),
+        territory: event.territory,
+        guild: GuildRef {
+            uuid: event.guild_uuid,
+            name: event.guild_name,
+            prefix: event.guild_prefix,
+            color: event.guild_color,
+        },
+        previous,
+    })
+}
 
-    let resp = gloo_net::http::Request::get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("fetch error: {e}"))?;
+/// Request the next page of events after the covered instant, unless one is in flight,
+/// the buffer is full or the last attempt failed recently.
+fn request_events(span_secs: i64, latest_secs: i64) {
+    let request = BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        if !buffer.ready
+            || buffer.fetch.is_some()
+            || buffer.events.len() >= MAX_BUFFERED_EVENTS
+            || js_sys::Date::now() < buffer.retry_after_ms
+            || buffer.covered_micros >= latest_secs.saturating_mul(MICROS)
+        {
+            return None;
+        }
+        let (from, to) = buffer.window.unwrap_or_else(|| {
+            let from = buffer.covered_micros.div_euclid(MICROS);
+            (from, from.saturating_add(span_secs).min(latest_secs))
+        });
+        let mut url = format!(
+            "/api/history/events?from={}&to={}&limit={PAGE_LIMIT}",
+            rfc3339_secs(from)?,
+            rfc3339_secs(to)?,
+        );
+        if let Some((seq, ordinal)) = buffer.cursor {
+            url.push_str(&format!("&after_seq={seq}&after_ordinal={ordinal}"));
+        }
+        let controller = web_sys::AbortController::new().ok()?;
+        let signal = controller.signal();
+        buffer.fetch = Some(controller);
+        Some((buffer.epoch, from, to, url, signal))
+    });
+    let Some((epoch, from, to, url, signal)) = request else {
+        return;
+    };
+    spawn_local(async move {
+        let page = get_json::<HistoryEvents>(&url, Some(&signal)).await;
+        BUFFER.with(|buffer| {
+            let mut buffer = buffer.borrow_mut();
+            if buffer.epoch != epoch {
+                return;
+            }
+            buffer.fetch = None;
+            let page = match page {
+                Ok(page) => page,
+                Err(error) => {
+                    web_sys::console::warn_1(&format!("Playback fetch error: {error}").into());
+                    buffer.retry_after_ms = js_sys::Date::now() + 5000.0;
+                    return;
+                }
+            };
+            let last = page.events.last().map(|event| {
+                (
+                    event.stream_seq,
+                    event.ordinal,
+                    rfc3339_micros(&event.timestamp),
+                )
+            });
+            buffer
+                .events
+                .extend(page.events.into_iter().filter_map(pending_from));
+            match (page.has_more, last) {
+                (true, Some((seq, ordinal, Some(last_micros)))) => {
+                    // Later pages hold events recorded at or after the last one received.
+                    buffer.covered_micros = buffer.covered_micros.max(last_micros - 1);
+                    buffer.window = Some((from, to));
+                    buffer.cursor = Some((seq, ordinal));
+                }
+                _ => {
+                    buffer.covered_micros = to.saturating_mul(MICROS);
+                    buffer.window = None;
+                    buffer.cursor = None;
+                }
+            }
+        });
+    });
+}
 
-    if !resp.ok() {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    resp.json::<HistorySrSamples>()
-        .await
-        .map(|payload| payload.samples)
-        .map_err(|e| format!("parse error: {e}"))
+/// Season rating samples ahead of the clock; they never hold the clock back.
+fn request_samples(span_secs: i64, latest_secs: i64) {
+    let request = BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        if !buffer.ready
+            || buffer.samples_fetch.is_some()
+            || buffer.samples.len() > 64
+            || js_sys::Date::now() < buffer.retry_after_ms
+            || buffer.samples_covered_micros >= latest_secs.saturating_mul(MICROS)
+        {
+            return None;
+        }
+        let from = buffer.samples_covered_micros.div_euclid(MICROS);
+        let to = from.saturating_add(span_secs).min(latest_secs);
+        let url = format!(
+            "/api/history/sr-samples?from={}&to={}",
+            rfc3339_secs(from)?,
+            rfc3339_secs(to)?
+        );
+        let controller = web_sys::AbortController::new().ok()?;
+        let signal = controller.signal();
+        buffer.samples_fetch = Some(controller);
+        Some((buffer.epoch, to, url, signal))
+    });
+    let Some((epoch, to, url, signal)) = request else {
+        return;
+    };
+    spawn_local(async move {
+        let samples = get_json::<HistorySrSamples>(&url, Some(&signal)).await;
+        BUFFER.with(|buffer| {
+            let mut buffer = buffer.borrow_mut();
+            if buffer.epoch != epoch {
+                return;
+            }
+            buffer.samples_fetch = None;
+            match samples {
+                Ok(payload) => {
+                    buffer
+                        .samples
+                        .extend(payload.samples.into_iter().filter_map(|sample| {
+                            Some((rfc3339_micros(&sample.sampled_at)?, sample.entries))
+                        }));
+                    buffer.samples_covered_micros = to.saturating_mul(MICROS);
+                }
+                Err(error) => {
+                    web_sys::console::warn_1(
+                        &format!("Playback SR sample fetch error: {error}").into(),
+                    );
+                    buffer.retry_after_ms = js_sys::Date::now() + 5000.0;
+                }
+            }
+        });
+    });
 }
 
 /// Returns an animation duration (ms) scaled to the current playback speed.
@@ -103,7 +320,7 @@ fn playback_animation_duration(speed: f64) -> f64 {
 }
 
 /// Starts the playback engine. Call this once from an Effect.
-/// The interval runs at 100ms but only advances time when in history mode and playing.
+/// The interval runs every 100ms but only advances time when in history mode and playing.
 pub fn start_playback_engine() {
     PLAYBACK_INTERVAL_BINDING.with(|slot| {
         if let Some(old) = slot.borrow_mut().take() {
@@ -123,24 +340,17 @@ pub fn start_playback_engine() {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let TerritoryGeometryStore(geo_store) = expect_context();
     let GuildColorStore(guild_color_store) = expect_context();
+    let fetch_ctx = crate::history::HistoryFetchContext {
+        mode,
+        history_fetch_nonce: fetch_nonce,
+        history_legacy_geometry_active,
+        history_scalar_sample,
+        history_sr_leaderboard,
+        geo_store,
+        guild_color_store,
+        territories,
+    };
 
-    // Event buffer
-    let event_buffer: StoredValue<Vec<sequoia_shared::history::HistoryEvent>> =
-        StoredValue::new(Vec::new());
-    let buffer_end: StoredValue<i64> = StoredValue::new(0);
-    let fetching: StoredValue<bool> = StoredValue::new(false);
-    // Backoff: don't retry fetches until this timestamp (ms) passes
-    let retry_after: StoredValue<f64> = StoredValue::new(0.0);
-    // Fractional second accumulator — handles sub-second advancement at low speeds
-    let frac_acc: StoredValue<f64> = StoredValue::new(0.0);
-    // Track last known timestamp to detect user scrubbing (invalidates event buffer)
-    let last_ts: StoredValue<i64> = StoredValue::new(0);
-    // Sequence cursor for deterministic pagination across history events.
-    let next_after_seq: StoredValue<u64> = StoredValue::new(0);
-    // Season SR snapshots buffered from /api/history/sr-samples.
-    let sr_buffer: StoredValue<Vec<HistorySrSnapshot>> = StoredValue::new(Vec::new());
-
-    // Playback tick interval (100ms)
     let Some(window) = web_sys::window() else {
         return;
     };
@@ -148,258 +358,102 @@ pub fn start_playback_engine() {
         if mode.get_untracked() != MapMode::History || !playing.get_untracked() {
             return;
         }
-
-        let spd = speed.get_untracked();
-        let advance = spd * 0.1 + frac_acc.get_value();
-        let advance_whole = advance.floor() as i64;
-        frac_acc.set_value(advance - advance_whole as f64);
-
-        if advance_whole > 0 {
-            // Clamp to latest bound and auto-pause at end
-            if let Some((_, latest)) = bounds.get_untracked() {
-                let current = timestamp.get_untracked().unwrap_or(0);
-                if current >= latest {
-                    // At end of bounds — wrap to earliest and load snapshot
-                    if let Some((earliest, _)) = bounds.get_untracked() {
-                        timestamp.set(Some(earliest));
-                        event_buffer.set_value(Vec::new());
-                        sr_buffer.set_value(Vec::new());
-                        buffer_end.set_value(0);
-                        next_after_seq.set_value(0);
-                        frac_acc.set_value(0.0);
-                        crate::history::fetch_and_apply_with(
-                            earliest,
-                            crate::history::HistoryFetchContext {
-                                mode,
-                                history_fetch_nonce: fetch_nonce,
-                                history_legacy_geometry_active,
-                                history_scalar_sample,
-                                history_sr_leaderboard,
-                                geo_store,
-                                guild_color_store,
-                                territories,
-                            },
-                        );
-                    }
-                    return;
-                }
-                let new_ts = (current + advance_whole).min(latest);
-                timestamp.set(Some(new_ts));
-            } else {
-                timestamp.update(|ts| {
-                    if let Some(t) = ts {
-                        *t += advance_whole;
-                    }
-                });
-            }
-        }
-
-        let Some(current_ts) = timestamp.get_untracked() else {
+        let (Some((earliest, latest)), Some(current)) =
+            (bounds.get_untracked(), timestamp.get_untracked())
+        else {
             return;
         };
-
-        // Detect user scrub: if timestamp jumped, invalidate event buffer
-        let prev_ts = last_ts.get_value();
-        if prev_ts != 0 && (current_ts - prev_ts).abs() > advance_whole.max(2) {
-            event_buffer.set_value(Vec::new());
-            sr_buffer.set_value(Vec::new());
-            buffer_end.set_value(0);
-            next_after_seq.set_value(0);
-            frac_acc.set_value(0.0);
+        if current >= latest {
+            // At the end of the retained range: start over from the beginning.
+            timestamp.set(Some(earliest));
+            crate::history::fetch_and_apply_with(earliest, fetch_ctx);
+            return;
         }
-        last_ts.set_value(current_ts);
 
-        let mut samples = sr_buffer.get_value();
-        let mut latest_sample_entries: Option<Vec<sequoia_shared::history::HistoryGuildSrEntry>> =
-            None;
-        let mut remaining_samples = Vec::new();
-        for sample in samples.drain(..) {
-            let sample_ts = parse_rfc3339_secs(&sample.sampled_at).unwrap_or(i64::MAX);
-            if sample_ts <= current_ts {
-                latest_sample_entries = Some(sample.entries);
-            } else {
-                remaining_samples.push(sample);
+        let speed_now = speed.get_untracked();
+        // Look further ahead at higher speeds so fetching stays ahead of the clock.
+        let span_secs = (speed_now * 600.0).clamp(3600.0, 6.0 * 3600.0) as i64;
+        request_events(span_secs, latest);
+        request_samples(span_secs, latest);
+
+        let (next, due, sample) = BUFFER.with(|buffer| {
+            let mut buffer = buffer.borrow_mut();
+            if !buffer.ready {
+                return (current, Vec::new(), None);
             }
+            let advance = speed_now * f64::from(TICK_MS) / 1000.0 + buffer.fractional_secs;
+            let whole = advance.floor();
+            buffer.fractional_secs = advance - whole;
+            let covered_secs = buffer.covered_micros.div_euclid(MICROS);
+            let next = (current + whole as i64)
+                .min(latest)
+                .min(covered_secs.max(current));
+            let until = next.saturating_mul(MICROS);
+            let mut due = Vec::new();
+            while buffer
+                .events
+                .front()
+                .is_some_and(|event| event.at_micros <= until)
+            {
+                due.extend(buffer.events.pop_front());
+            }
+            let mut sample = None;
+            while buffer
+                .samples
+                .front()
+                .is_some_and(|(at_micros, _)| *at_micros <= until)
+            {
+                sample = buffer.samples.pop_front().map(|(_, entries)| entries);
+            }
+            (next, due, sample)
+        });
+
+        if next != current {
+            timestamp.set(Some(next));
         }
-        if let Some(entries) = latest_sample_entries {
+        if let Some(entries) = sample {
             history_sr_leaderboard.set(Some(entries));
         }
-        sr_buffer.set_value(remaining_samples);
-
-        // Process events that have been passed
-        let mut events = event_buffer.get_value();
-        let mut applied = Vec::new();
-        let mut remaining = Vec::new();
-
-        for event in events.drain(..) {
-            let event_ts = chrono::DateTime::parse_from_rfc3339(&event.timestamp)
-                .map(|dt| dt.timestamp())
-                .unwrap_or(0);
-
-            if event_ts <= current_ts {
-                applied.push(event);
-            } else {
-                remaining.push(event);
-            }
+        if due.is_empty() {
+            return;
         }
-
-        // Apply passed events as territory changes
-        if !applied.is_empty() {
-            let geo = geo_store.get_value();
-            let guild_colors = guild_color_store.get_value();
-            let changes: Vec<sequoia_shared::TerritoryChange> = applied
-                .iter()
-                .filter_map(|e| {
-                    let (location, resources, connections) = geo.get(&e.territory)?;
-
-                    let previous_guild = match (&e.prev_guild_name, &e.prev_guild_prefix) {
-                        (Some(name), Some(prefix)) => Some(sequoia_shared::GuildRef {
-                            uuid: String::new(),
-                            name: name.clone(),
-                            prefix: prefix.clone(),
-                            color: e
-                                .prev_guild_color
-                                .or_else(|| guild_colors.get(name).copied()),
-                        }),
-                        _ => None,
-                    };
-
-                    Some(sequoia_shared::TerritoryChange {
-                        territory: e.territory.clone(),
-                        guild: sequoia_shared::GuildRef {
-                            uuid: e.guild_uuid.clone(),
-                            name: e.guild_name.clone(),
-                            prefix: e.guild_prefix.clone(),
-                            color: e
-                                .guild_color
-                                .or_else(|| guild_colors.get(&e.guild_name).copied()),
-                        },
-                        previous_guild,
-                        acquired: e.acquired_at.clone().unwrap_or_else(|| e.timestamp.clone()),
-                        location: location.clone(),
-                        resources: resources.clone(),
-                        connections: connections.clone(),
-                        runtime: None,
+        let changes: Vec<TerritoryChange> = geo_store.with_value(|geo| {
+            guild_color_store.with_value(|guild_colors| {
+                due.into_iter()
+                    .filter_map(|event| {
+                        let (location, resources, connections) = geo.get(&event.territory)?;
+                        let color_of = |guild: GuildRef| GuildRef {
+                            color: guild
+                                .color
+                                .or_else(|| guild_colors.get(&guild.name).copied()),
+                            ..guild
+                        };
+                        Some(TerritoryChange {
+                            territory: event.territory,
+                            guild: color_of(event.guild),
+                            previous_guild: event.previous.map(color_of),
+                            acquired: event.acquired,
+                            location: location.clone(),
+                            resources: resources.clone(),
+                            connections: connections.clone(),
+                            runtime: None,
+                        })
                     })
-                })
-                .collect();
-
-            let now = js_sys::Date::now();
-            let duration_ms = playback_animation_duration(spd);
-            territories.update(|map| {
-                apply_changes(map, &changes, now, duration_ms);
-            });
+                    .collect()
+            })
+        });
+        if changes.is_empty() {
+            return;
         }
-
-        event_buffer.set_value(remaining);
-
-        // Pre-fetch more events when buffer is running low (with backoff on failure)
-        let now_ms = js_sys::Date::now();
-        let buf_len = event_buffer.get_value().len();
-        let buf_end = buffer_end.get_value();
-        if buf_len < 50
-            && !fetching.get_value()
-            && now_ms >= retry_after.get_value()
-            && (buf_end == 0 || current_ts + 1800 > buf_end)
-        {
-            fetching.set_value(true);
-            let fetch_from = if buf_end > current_ts {
-                buf_end
-            } else {
-                current_ts
-            };
-            let to = fetch_from + 3600;
-            spawn_local(async move {
-                let mut cursor_time = fetch_from;
-                let mut cursor_seq = next_after_seq.get_value();
-                let mut all_events = Vec::new();
-                let mut errored = false;
-
-                // Paginate: up to 10 pages (5000 events max per prefetch cycle)
-                for _ in 0..10 {
-                    match fetch_events(cursor_time, to, Some(cursor_seq), 500).await {
-                        Ok(result) => {
-                            let has_more = result.has_more;
-                            let page = result.events;
-
-                            if page.is_empty() {
-                                break;
-                            }
-
-                            // Primary cursor: stream sequence (deterministic, gap-safe).
-                            // Fallback: timestamp (legacy server compatibility).
-                            if has_more {
-                                let max_seq = page.iter().map(|e| e.stream_seq).max().unwrap_or(0);
-                                if max_seq > cursor_seq {
-                                    cursor_seq = max_seq;
-                                } else if let Some(last) = page.last() {
-                                    if let Ok(dt) =
-                                        chrono::DateTime::parse_from_rfc3339(&last.timestamp)
-                                    {
-                                        cursor_time = dt.timestamp();
-                                    } else {
-                                        all_events.extend(page);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            all_events.extend(page);
-
-                            if !has_more {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            web_sys::console::warn_1(&format!("Playback fetch error: {e}").into());
-                            retry_after.set_value(js_sys::Date::now() + 5000.0);
-                            errored = true;
-                            break;
-                        }
-                    }
-                }
-
-                if !errored {
-                    let mut sr_fetch_failed = false;
-                    let all_sr_samples = match fetch_sr_samples(fetch_from, to).await {
-                        Ok(samples) => samples,
-                        Err(e) => {
-                            web_sys::console::warn_1(
-                                &format!("Playback SR sample fetch error: {e}").into(),
-                            );
-                            retry_after.set_value(js_sys::Date::now() + 5000.0);
-                            sr_fetch_failed = true;
-                            Vec::new()
-                        }
-                    };
-
-                    let mut buf = event_buffer.get_value();
-                    buf.extend(all_events);
-                    event_buffer.set_value(buf);
-
-                    let mut sr_buf = sr_buffer.get_value();
-                    sr_buf.extend(all_sr_samples);
-                    sr_buf.sort_by(|a, b| {
-                        parse_rfc3339_secs(&a.sampled_at)
-                            .unwrap_or(i64::MAX)
-                            .cmp(&parse_rfc3339_secs(&b.sampled_at).unwrap_or(i64::MAX))
-                    });
-                    sr_buf.dedup_by(|a, b| a.sampled_at == b.sampled_at);
-                    sr_buffer.set_value(sr_buf);
-
-                    if !sr_fetch_failed {
-                        buffer_end.set_value(to);
-                    }
-                    next_after_seq.set_value(cursor_seq);
-                }
-                fetching.set_value(false);
-            });
-        }
+        let now = js_sys::Date::now();
+        let duration_ms = playback_animation_duration(speed_now);
+        territories.update(|map| apply_changes(map, &changes, now, duration_ms));
     });
 
-    let Ok(interval_id) = window
-        .set_interval_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 100)
-    else {
+    let Ok(interval_id) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        cb.as_ref().unchecked_ref(),
+        TICK_MS,
+    ) else {
         return;
     };
     PLAYBACK_INTERVAL_BINDING.with(|slot| {
