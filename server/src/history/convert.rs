@@ -8,7 +8,7 @@
 //! `rollback` copies what the new store recorded after the legacy tables stopped back into
 //! them, so the previous image can resume with the interval since cutover.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -431,8 +431,18 @@ pub async fn convert_archive(pool: &sqlx::PgPool) -> Result<ConvertReport, sqlx:
         let Some(&(last_id, ..)) = rows.last() else {
             break;
         };
+        // A legacy row whose id is already stored is that compact report itself, copied back
+        // by `rollback`: there is nothing to convert.
+        let stored: HashSet<i64> =
+            sqlx::query_scalar::<_, i64>("SELECT id FROM canonical_report WHERE id = ANY($1)")
+                .bind(rows.iter().map(|row| row.0).collect::<Vec<_>>())
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .collect();
         let reports: Vec<Report> = rows
             .into_iter()
+            .filter(|row| !stored.contains(&row.0))
             .map(
                 |(
                     id,
@@ -1560,6 +1570,73 @@ mod tests {
             .expect("late commit");
         convert_archive(&pool).await.expect("rerun");
         assert_eq!(stored().await, vec![(500, original)]);
+        assert!(verify(&pool, &[]).await.expect("verify").is_clean());
+    }
+
+    #[tokio::test]
+    async fn conversion_resumes_past_reports_rollback_copied_back_without_a_key() {
+        let Some((pool, _lock)) = test_database().await else {
+            eprintln!("Skipping rollback-forward archive test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let payload = serde_json::json!({
+            "territory": "Alpha",
+            "acquired": "2026-07-20T16:48:22.328+00:00"
+        });
+        let received: DateTime<Utc> = "2026-11-01T12:00:00Z".parse().expect("time");
+        // The new server stored a report without an idempotency key.
+        let keyless = Report::from_payload(
+            payload.clone(),
+            Columns {
+                id: Some(700),
+                territory: "Alpha".to_string(),
+                received_at: received,
+                observed_at: received,
+                confidence: 1.0,
+                visibility: "public",
+                source: "unknown".to_string(),
+                reporter_count: 0,
+                idempotency_key: None,
+            },
+        );
+        let mut tx = pool.begin().await.expect("tx");
+        let territories = insert_territories(&mut tx, &["Alpha".to_string()])
+            .await
+            .expect("territory");
+        archive::insert(
+            &mut tx,
+            &[archive::Resolved {
+                report: &keyless,
+                territory_id: territories["Alpha"],
+                guild_id: None,
+            }],
+            archive::OnSameKey::Keep,
+        )
+        .await
+        .expect("compact report");
+        tx.commit().await.expect("commit");
+
+        // Rollback copies it to the legacy archive; the previous image then records another.
+        assert_eq!(rollback(&pool).await.expect("rollback").archive_rows, 1);
+        sqlx::query(
+            "INSERT INTO canonical_territory_updates (id, received_at, territory, observed_at, \
+                 confidence, visibility, source, reporter_count, payload) \
+             VALUES (701, $1, 'Alpha', $1, 1.0, 'public', 'unknown', 0, $2)",
+        )
+        .bind(received + chrono::Duration::minutes(1))
+        .bind(&payload)
+        .execute(&pool)
+        .await
+        .expect("previous image report");
+
+        // Forward again: conversion reads both legacy rows, one already stored under its id.
+        convert_archive(&pool).await.expect("conversion");
+        let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM canonical_report ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("ids");
+        assert_eq!(ids, vec![700, 701]);
+        convert_archive(&pool).await.expect("rerun");
         assert!(verify(&pool, &[]).await.expect("verify").is_clean());
     }
 }
