@@ -36,6 +36,11 @@ pub const DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS: u64 = 60;
 /// the `/internal/` prefix. Default to that prefix so the configured token is actually used.
 pub const DEFAULT_WARCONTROLLER_PATH: &str = "/internal/warcontroller";
 pub const WAR_ACTIVITY_PATH: &str = "/internal/war-activity";
+pub const WAR_POINTS_PLAYER_PATH: &str = "/internal/war-points/players";
+/// The public community API that publishes rank profiles and their role catalog.
+pub const DEFAULT_RANK_PROFILES_BASE_URL: &str = "https://api.seqwawa.com";
+/// The in-game guild whose members can inspect each other's war records.
+pub const SEQUOIA_GUILD_NAME: &str = "Sequoia";
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const SEASON_LEADERBOARD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const MAP_INTEL_CACHE_TTL_SECS: i64 = 60; // shortest public map endpoint cache
@@ -229,6 +234,24 @@ pub fn war_activity_url() -> Option<String> {
         "{}{WAR_ACTIVITY_PATH}",
         sequoia_backend_base_url()?
     ))
+}
+
+/// Full URL of the backend's stored war points for one player; `None` without a backend.
+pub fn war_points_player_url(player_uuid: &str) -> Option<String> {
+    Some(format!(
+        "{}{WAR_POINTS_PLAYER_PATH}/{player_uuid}",
+        sequoia_backend_base_url()?
+    ))
+}
+
+/// Full URL of one player's public rank profile.
+pub fn rank_profile_url(player_uuid: &str) -> String {
+    let base = std::env::var("SEQUOIA_RANK_PROFILES_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_RANK_PROFILES_BASE_URL.to_string());
+    format!("{base}/v1/rank-profiles/minecraft/{player_uuid}")
 }
 
 pub fn territory_extra_url() -> Option<String> {

@@ -472,22 +472,25 @@ pub async fn get_guild(
     Path(raw_name): Path<String>,
 ) -> Result<Response, StatusCode> {
     let name = normalize_guild_name(&raw_name)?.to_owned();
+    let data = guild_payload(&state, name).await?;
+    Ok(json_bytes_response(
+        Bytes::from(data),
+        "public, max-age=300",
+        None,
+    ))
+}
 
-    // Check cache
+/// Wynncraft's guild payload, from the guild cache while it is fresh.
+pub(crate) async fn guild_payload(state: &AppState, name: String) -> Result<String, StatusCode> {
     if let Some(cached) = state.guild_cache.get(&name) {
         let age = Utc::now()
             .signed_duration_since(cached.fetched_at)
             .num_seconds();
         if age < GUILD_CACHE_TTL_SECS {
-            return Ok(json_bytes_response(
-                Bytes::from(cached.data.clone()),
-                "public, max-age=300",
-                None,
-            ));
+            return Ok(cached.data.clone());
         }
     }
 
-    // Fetch from Wynncraft API
     let url = guild_details_url(&name)?;
     let resp = state
         .http_client
@@ -501,14 +504,8 @@ pub async fn get_guild(
     }
 
     let data = resp.text().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
-
-    cache_guild_payload(&state, name, data.clone());
-
-    Ok(json_bytes_response(
-        Bytes::from(data),
-        "public, max-age=300",
-        None,
-    ))
+    cache_guild_payload(state, name, data.clone());
+    Ok(data)
 }
 
 const MAX_GUILDS_ONLINE_BATCH: usize = 25;

@@ -38,6 +38,20 @@ pub fn private_json_bytes_response(body: Bytes) -> Response {
     response
 }
 
+/// Marks any response, refusals and errors included, as belonging to one session only.
+///
+/// For routes whose every answer depends on who asks: a `404` or `403` is as personal as the
+/// data, so a shared cache must not store it either.
+pub async fn mark_private(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    headers.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    response
+}
+
 pub fn not_modified_response(cache_control: &'static str, etag: Option<&str>) -> Response {
     let mut response = StatusCode::NOT_MODIFIED.into_response();
     let headers = response.headers_mut();
