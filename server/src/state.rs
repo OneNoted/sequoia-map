@@ -237,6 +237,7 @@ pub struct CachedRankRoles {
     /// The feed's own Discord-sync staleness flag.
     pub stale: bool,
     pub roles: HashMap<String, Vec<sequoia_shared::member_war::WarRole>>,
+    pub progression: HashMap<String, sequoia_shared::member_war::ProgressionRank>,
     pub fetched_at: DateTime<Utc>,
 }
 

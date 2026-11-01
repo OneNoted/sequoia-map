@@ -7,6 +7,7 @@
 //! to the asking session only ([`router`]). Only the public feed is kept here, for a minute,
 //! and nothing member-only is stored on this side.
 
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use axum::Router;
@@ -16,8 +17,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use sequoia_shared::member_war::{
-    MemberRosterRoles, MemberStanding, MemberWarPeriod, MemberWarRecord, PeriodKind, RECENT_WARS,
-    RankStanding, WarRole, WarRoleKind, check_custom_days,
+    MemberRosterRoles, MemberStanding, MemberWarPeriod, MemberWarRecord, PeriodKind,
+    ProgressionRank, RECENT_WARS, RankStanding, WarRole, WarRoleKind, check_custom_days,
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -54,7 +55,8 @@ pub fn router() -> Router<AppState> {
         .layer(axum::middleware::map_response(mark_private))
 }
 
-/// `GET /api/members`: war roles for the current roster, from one shared read of the feed.
+/// `GET /api/members`: war roles and progression ranks for the current roster, from one shared
+/// read of the feed.
 async fn get_roster_roles(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let roster = match sequoia_roster(&state, &headers).await {
         Ok(roster) => roster,
@@ -63,17 +65,22 @@ async fn get_roster_roles(State(state): State<AppState>, headers: HeaderMap) -> 
     let Some(feed) = rank_roles(&state).await else {
         return StatusCode::BAD_GATEWAY.into_response();
     };
-    let roles = roster_entries(&roster)
-        .filter_map(|entry| {
-            let roles = feed.roles.get(&entry.uuid)?;
-            Some((entry.username, roles.clone()))
-        })
-        .collect();
+    let mut roles = BTreeMap::new();
+    let mut progression = BTreeMap::new();
+    for entry in roster_entries(&roster) {
+        if let Some(held) = feed.roles.get(&entry.uuid) {
+            roles.insert(entry.username.clone(), held.clone());
+        }
+        if let Some(rank) = feed.progression.get(&entry.uuid) {
+            progression.insert(entry.username, rank.clone());
+        }
+    }
     json(&MemberRosterRoles {
         // Past its freshness window, the last good read is served only because no newer one
         // could be had; that is stale whatever the feed said at the time.
         stale: feed.stale || !is_fresh(&feed, Utc::now()),
         roles,
+        progression,
     })
 }
 
@@ -220,7 +227,7 @@ fn is_fresh(cached: &CachedRankRoles, now: DateTime<Utc>) -> bool {
     (now - cached.fetched_at).num_seconds() < config::RANK_ROLES_CACHE_TTL_SECS
 }
 
-/// The linked feed's war roles by UUID, read at most once a minute for every viewer, one read at
+/// The linked feed's war roles and progression ranks by UUID, read at most once a minute for every viewer, one read at
 /// a time. A failed read keeps serving the last good one, untouched, and the next read waits
 /// out a short backoff, so an outage costs one upstream attempt per backoff, not one per viewer.
 async fn rank_roles(state: &AppState) -> Option<CachedRankRoles> {
@@ -256,20 +263,7 @@ async fn rank_roles(state: &AppState) -> Option<CachedRankRoles> {
     let mut cache = state.rank_roles_cache.write().await;
     match fetched {
         Some(body) => {
-            let roles = body
-                .profiles
-                .iter()
-                .filter_map(|profile| {
-                    let uuid = profile.minecraft.as_ref()?.uuid.clone();
-                    let roles = profile_war_roles(&body.catalog, profile);
-                    (!roles.is_empty()).then_some((uuid, roles))
-                })
-                .collect();
-            *cache = Some(CachedRankRoles {
-                stale: body.source.stale,
-                roles,
-                fetched_at: Utc::now(),
-            });
+            *cache = Some(by_uuid(&body, Utc::now()));
             *last_failure = None;
         }
         None => {
@@ -380,6 +374,30 @@ fn custom_window(
     })
 }
 
+/// What the roster rows need from one read of the whole feed, by Minecraft UUID: war roles and
+/// progression ranks for the profiles that hold any.
+fn by_uuid(body: &ProfilesBody, fetched_at: DateTime<Utc>) -> CachedRankRoles {
+    let (mut roles, mut progression) = (HashMap::new(), HashMap::new());
+    for profile in &body.profiles {
+        let Some(minecraft) = profile.minecraft.as_ref() else {
+            continue;
+        };
+        let held = profile_war_roles(&body.catalog, profile);
+        if !held.is_empty() {
+            roles.insert(minecraft.uuid.clone(), held);
+        }
+        if let Some(rank) = progression_rank(&body.catalog, profile) {
+            progression.insert(minecraft.uuid.clone(), rank);
+        }
+    }
+    CachedRankRoles {
+        stale: body.source.stale,
+        roles,
+        progression,
+        fetched_at,
+    }
+}
+
 fn rfc3339(time: DateTime<Utc>) -> String {
     time.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
@@ -414,7 +432,7 @@ async fn rank_standing(state: &AppState, uuid: &str) -> RankStanding {
     }
 }
 
-/// The published rank-profile shape, as far as war roles need it.
+/// The published rank-profile shape, as far as war roles and progression ranks need it.
 #[derive(Debug, Deserialize)]
 struct ProfilesBody {
     source: ProfileSource,
@@ -473,20 +491,40 @@ struct ProfileMinecraft {
 #[derive(Debug, Deserialize)]
 struct ProfileSummary {
     #[serde(default)]
+    progression_rank: Option<String>,
+    #[serde(default)]
     insignia: Option<String>,
     #[serde(default)]
     war_honour: Option<String>,
 }
 
-/// One profile's standing: synced with its war roles, or no profile at all.
+/// One profile's standing: synced with its war roles and progression rank, or no profile at all.
 fn war_roles(body: ProfilesBody) -> RankStanding {
     match body.profiles.first() {
         Some(profile) => RankStanding::Synced {
             stale: body.source.stale,
             roles: profile_war_roles(&body.catalog, profile),
+            progression: progression_rank(&body.catalog, profile),
         },
         None => RankStanding::NoProfile,
     }
+}
+
+/// The progression rank the profile's summary names, when the catalog lists that key as one.
+fn progression_rank(catalog: &ProfileCatalog, profile: &Profile) -> Option<ProgressionRank> {
+    let key = profile.summary.progression_rank.as_deref()?;
+    let role = catalog
+        .roles
+        .iter()
+        .find(|role| role.key == key && role.category == "progression_rank")?;
+    Some(ProgressionRank {
+        key: role.key.clone(),
+        label: role.label.clone(),
+        color: role
+            .colors
+            .as_ref()
+            .and_then(|colors| colors.primary.clone()),
+    })
 }
 
 /// The war roles a profile holds, classified by the feed's own catalog: the highest insignia and
@@ -634,6 +672,7 @@ mod tests {
                     let last_good = CachedRankRoles {
                         stale: false,
                         roles: [("uuid".to_string(), Vec::new())].into(),
+                        progression: HashMap::new(),
                         fetched_at: read_at,
                     };
                     *state.rank_roles_cache.write().await = Some(last_good);
@@ -837,10 +876,16 @@ mod tests {
             }]
         }))
         .expect("published shape");
-        let RankStanding::Synced { stale, roles } = war_roles(body) else {
+        let RankStanding::Synced {
+            stale,
+            roles,
+            progression,
+        } = war_roles(body)
+        else {
             panic!("a profile is synced");
         };
         assert!(stale);
+        assert_eq!(progression, None, "no progression rank is made up");
         let shown: Vec<(&str, WarRoleKind)> = roles
             .iter()
             .map(|role| (role.key.as_str(), role.kind))
@@ -859,5 +904,60 @@ mod tests {
             Some("https://assets.example/v1/abc/insignia.gold.png")
         );
         assert_eq!(roles[1].art_url, None);
+    }
+
+    #[test]
+    fn progression_ranks_are_the_summary_key_joined_to_the_catalog_and_nothing_else() {
+        let body: ProfilesBody = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "source": {"stale": false, "guilds": []},
+            "catalog": {
+                "roles": [
+                    {"key": "rank.ascended", "label": "Ascended", "category": "progression_rank",
+                     "colors": {"primary": "#520695", "secondary": "#9A012F"}},
+                    {"key": "rank.upper_strategist", "label": "Upper Strategist",
+                     "category": "progression_rank", "colors": {"primary": null}},
+                    {"key": "in_game.chief", "label": "Chief", "category": "in_game_rank"}
+                ],
+                "assets": []
+            },
+            "profiles": [
+                {"minecraft": {"uuid": "66efb975-31b4-499e-9b46-a34980edd8ee", "username": "GaztheCat"},
+                 "discord": {"display_name": "Ascended GaztheCat"},
+                 "role_keys": ["rank.ascended", "in_game.chief"],
+                 "summary": {"progression_rank": "rank.ascended", "in_game_rank": "in_game.chief"}},
+                {"minecraft": {"uuid": "uncoloured"}, "role_keys": [],
+                 "summary": {"progression_rank": "rank.upper_strategist"}},
+                {"minecraft": {"uuid": "nick-only"}, "discord": {"display_name": "Yggdrasil Someone"},
+                 "role_keys": [], "summary": {}},
+                {"minecraft": {"uuid": "not-a-title"}, "role_keys": [],
+                 "summary": {"progression_rank": "in_game.chief"}},
+                {"minecraft": {"uuid": "unknown-key"}, "role_keys": [],
+                 "summary": {"progression_rank": "rank.retired"}},
+                {"role_keys": [], "summary": {"progression_rank": "rank.ascended"}}
+            ]
+        }))
+        .expect("published shape");
+        let read = by_uuid(&body, at("2026-11-01T12:00:00Z"));
+        assert_eq!(
+            read.progression.get("66efb975-31b4-499e-9b46-a34980edd8ee"),
+            Some(&ProgressionRank {
+                key: "rank.ascended".into(),
+                label: "Ascended".into(),
+                color: Some("#520695".into()),
+            }),
+            "held even with no war roles"
+        );
+        assert_eq!(read.progression["uncoloured"].color, None);
+        assert_eq!(read.progression.len(), 2, "{:?}", read.progression);
+        assert!(read.roles.is_empty());
+
+        let RankStanding::Synced { progression, .. } = war_roles(body) else {
+            panic!("a profile is synced");
+        };
+        assert_eq!(
+            progression.map(|rank| rank.label).as_deref(),
+            Some("Ascended")
+        );
     }
 }

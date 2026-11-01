@@ -5,15 +5,18 @@
 //! it was asked for, so a late answer can only ever fill its own slot. Expanded rows and the
 //! chosen period live here too, so they survive a panel closing and reopening.
 //!
-//! Standing (rank, roles) and records (history) are separate requests. Changing the period asks
+//! Standing (ranks, roles) and records (history) are separate requests. Changing the period asks
 //! only for a record, so it cannot change what is shown as current.
+//!
+//! A member's progression rank (`Ascended`) is their shown title; their in-game rank (`Chief`)
+//! stays as secondary detail. Neither changes the username used for lookups and links.
 
 use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use sequoia_shared::member_war::{
-    MemberRosterRoles, MemberStanding, MemberWarPeriod, PeriodKind, PointsStatus, RankStanding,
-    WarRole, WarRoleKind, WarTotals,
+    MemberRosterRoles, MemberStanding, MemberWarPeriod, PeriodKind, PointsStatus, ProgressionRank,
+    RankStanding, WarRole, WarRoleKind, WarTotals,
 };
 use sequoia_shared::war_board::RosterMember;
 
@@ -442,6 +445,39 @@ impl MemberWar {
         self.ensure(Ask::Roster);
     }
 
+    /// The member's progression rank: from their own standing once it has been read, from the
+    /// roster feed until then. A missing profile, or one without a rank, has none.
+    pub fn progression(&self, username: &str) -> Option<ProgressionRank> {
+        match self.standing(username) {
+            Some(Load::Ready(MemberStanding {
+                ranks: RankStanding::Synced { progression, .. },
+                ..
+            })) => return progression,
+            Some(Load::Ready(MemberStanding {
+                ranks: RankStanding::NoProfile,
+                ..
+            })) => return None,
+            _ => {}
+        }
+        let Some(Load::Ready(Answer::Roster(roster))) = self.load(&Ask::Roster) else {
+            return None;
+        };
+        roster
+            .progression
+            .into_iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(username))
+            .map(|(_, rank)| rank)
+    }
+
+    /// The member's in-game guild rank, as their standing last reported it.
+    pub fn in_game_rank(&self, username: &str) -> Option<&'static str> {
+        let Some(Load::Ready(standing)) = self.standing(username) else {
+            return None;
+        };
+        let (label, _) = crate::sidebar::rank_label_and_priority(standing.guild_rank.as_deref()?)?;
+        Some(label)
+    }
+
     /// The highest insignia on the roster feed, for a compact row.
     pub fn roster_insignia(&self, username: &str) -> Option<WarRole> {
         let Some(Load::Ready(Answer::Roster(roster))) = self.load(&Ask::Roster) else {
@@ -477,6 +513,10 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
     let insignia = {
         let username = username.clone();
         Memo::new(move |_| war.roster_insignia(&username))
+    };
+    let progression = {
+        let username = username.clone();
+        Memo::new(move |_| war.progression(&username))
     };
     let minute = minute_clock();
     Effect::new(move || {
@@ -514,7 +554,19 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
     };
     let face = nmsr_face(&username, 32);
     let name = username.clone();
-    let accessible = format!("{username}, {rank_label}");
+    // The rank slot holds the progression rank once the feed names one, the in-game rank
+    // otherwise; the in-game rank stays in the accessible name and the tooltip.
+    let (accessible, tooltip) = {
+        let (username, rank_label) = (username.clone(), rank_label.clone());
+        let in_game = format!("In-game rank: {rank_label}");
+        let accessible = Memo::new(move |_| match progression.get() {
+            Some(rank) => format!("{username}, {}, in-game {rank_label}", rank.label),
+            None => format!("{username}, {rank_label}"),
+        });
+        let tooltip =
+            Memo::new(move |_| progression.with(Option::is_some).then(|| in_game.clone()));
+        (accessible, tooltip)
+    };
 
     view! {
         <li class="mrow" class:mrow-open=move || open.get() node_ref=row_ref on:keydown=collapse_on_escape>
@@ -524,14 +576,18 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
                     class="mrow-toggle"
                     aria-expanded=move || open.get().to_string()
                     aria-controls=detail_id.clone()
-                    aria-label=accessible
+                    aria-label=move || accessible.get()
+                    title=move || tooltip.get()
                     node_ref=toggle_ref
                     on:click=toggle
                 >
                     <img class="mrow-face" src=face alt="" width="16" height="16" loading="lazy" />
                     <span class="mrow-name">{name}</span>
                     {move || insignia.get().map(|role| view! { <RoleArt role /> })}
-                    <span class="mrow-rank">{rank_label}</span>
+                    {move || match progression.get() {
+                        Some(rank) => view! { <RankTitle rank class="mrow-rank" /> }.into_any(),
+                        None => view! { <span class="mrow-rank">{rank_label.clone()}</span> }.into_any(),
+                    }}
                     {move || reporting.get().map(|member| view! { <ClassIcon class=member.class /> })}
                     <span class="mrow-chevron" aria-hidden="true" />
                 </button>
@@ -594,6 +650,18 @@ enum LookAt {
     Position((f64, f64)),
 }
 
+/// A progression rank's label in a lifted shade of its Discord colour, so dark roles stay
+/// readable on the map's panels.
+#[component]
+pub(crate) fn RankTitle(rank: ProgressionRank, class: &'static str) -> impl IntoView {
+    let colored = rank.color.is_some();
+    view! {
+        <span class=format!("mrank {class}") data-colored=colored.then_some("") style:--rank-color=rank.color>
+            {rank.label}
+        </span>
+    }
+}
+
 #[component]
 fn RoleArt(role: WarRole) -> impl IntoView {
     role.art_url.map(|url| {
@@ -645,7 +713,7 @@ fn WarRoles(username: String) -> impl IntoView {
             ..
         })) => Some(unavailable(username.clone())),
         Some(Load::Ready(MemberStanding {
-            ranks: RankStanding::Synced { stale, roles },
+            ranks: RankStanding::Synced { stale, roles, .. },
             ..
         })) if stale || !roles.is_empty() => Some(
             view! {
@@ -687,7 +755,7 @@ fn minute_clock() -> Memo<i64> {
     Memo::new(move |_| tick.get() / 60)
 }
 
-/// The expanded row: roles, the period, the record and the external profile.
+/// The expanded row: roles, the period, the record and the playercard.
 #[component]
 fn MemberDetail(username: String) -> impl IntoView {
     let war = expect_context::<MemberWar>();
@@ -702,14 +770,30 @@ fn MemberDetail(username: String) -> impl IntoView {
             war.ensure_record(&username, &period);
         });
     }
-    let card = crate::player_card_url(&username);
     view! {
         <WarRoles username=username.clone() />
         <PeriodPicker />
         <RecordView username=username.clone() />
-        <a class="ui-text-action mwar-profile" href=card target="_blank" rel="noopener noreferrer">
-            "Seqwawa profile"
-            <span class="ui-external" aria-hidden="true" />
+        <PlayercardLink username class="mwar-profile" />
+    }
+}
+
+/// The member's Sequoia playercard, opened in a new tab.
+#[component]
+pub(crate) fn PlayercardLink(
+    username: String,
+    #[prop(optional)] class: &'static str,
+) -> impl IntoView {
+    let card = crate::player_card_url(&username);
+    view! {
+        <a
+            class=format!("ui-text-action mc-action {class}")
+            href=card
+            target="_blank"
+            rel="noopener noreferrer"
+            title=format!("Open {username}'s Sequoia playercard in a new tab")
+        >
+            "Playercard"
         </a>
     }
 }

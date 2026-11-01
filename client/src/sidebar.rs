@@ -32,7 +32,7 @@ use crate::territory_card::{
     territory_resource_rows, treasury,
 };
 use crate::tower::TowerCalculator;
-use crate::ui::{CrosshairIcon, Disclosure, PanelNav, SCROLLER};
+use crate::ui::{Disclosure, MapPinIcon, PanelNav, SCROLLER};
 use crate::war_room::ActivityDisclosure;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
@@ -603,7 +603,7 @@ struct OnlineMemberRow {
     server: String,
 }
 
-fn rank_label_and_priority(rank_key: &str) -> Option<(&'static str, u8)> {
+pub(crate) fn rank_label_and_priority(rank_key: &str) -> Option<(&'static str, u8)> {
     match rank_key {
         "owner" => Some(("Owner", 0)),
         "chief" => Some(("Chief", 1)),
@@ -1107,7 +1107,7 @@ fn DetailPanel() -> impl IntoView {
         <div class="sb-panel panel-reveal tcard-detail" style:--tcard-guild=move || info.with(|info| info.as_ref().map(|info| guild_css(info.color)))>
             <PanelNav back=("Back to guild", back) close=("Close details", close)>
                 <button type="button" class="ui-button ui-icon-button sb-show-on-map" aria-label="Show on map" title="Show on map" on:click=show_on_map>
-                    <CrosshairIcon />
+                    <MapPinIcon />
                 </button>
             </PanelNav>
             {move || info.get().map(|info| {

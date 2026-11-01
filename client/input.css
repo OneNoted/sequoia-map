@@ -563,8 +563,7 @@
   align-items: baseline;
   gap: 6px;
   margin-bottom: 1px;
-  font-family: var(--font-body);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: var(--war-muted);
 }
@@ -576,7 +575,6 @@
 .war-group[data-stage="online"] > .war-group-title { color: var(--war-online); }
 
 .war-count {
-  font-family: var(--font-mono);
   font-weight: 400;
   color: var(--war-muted);
   font-variant-numeric: tabular-nums;
@@ -1091,10 +1089,9 @@
   min-width: 0;
 }
 
+/* Title and IGN each stay whole; a long pair wraps between them rather than cutting the name. */
 .player-dialog-name {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   font-family: var(--font-display);
   font-size: 1rem;
   font-weight: 400;
@@ -1103,7 +1100,6 @@
 
 .player-dialog-status {
   margin-top: 3px;
-  font-family: var(--font-body);
   font-size: 0.76rem;
   color: var(--war-muted);
 }
@@ -1136,8 +1132,7 @@
 }
 
 .player-dialog-facts dt {
-  font-family: var(--font-body);
-  font-size: 0.72rem;
+  font-size: 0.8rem;
   color: var(--war-muted);
 }
 
@@ -1780,7 +1775,6 @@
   align-items: center;
   gap: 4px;
   margin-left: auto;
-  font-family: var(--font-mono);
   font-size: 0.84rem;
   color: var(--color-emerald);
 }
@@ -1919,7 +1913,6 @@ select.timeline-speed { padding: 4px 6px; outline: none; }
 .settings-subhead {
   margin: 0;
   padding: 14px 10px 4px;
-  font-family: var(--font-mono);
   font-size: 0.719rem;
   font-weight: 400;
   letter-spacing: 0.12em;
@@ -2163,7 +2156,6 @@ button.settings-row:hover {
   background: var(--color-surface-hover);
 }
 .settings-disclosure-title {
-  font-family: var(--font-mono);
   font-size: 0.766rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -2876,7 +2868,6 @@ a.tcard-guild:focus-visible {
 
 .tcard-tag {
   flex-shrink: 0;
-  font-family: var(--font-mono);
   font-size: 0.76rem;
   color: var(--color-text-secondary);
 }
@@ -2964,7 +2955,7 @@ a.tcard-guild:focus-visible {
 .tcard-stats > div { min-width: 0; }
 
 .tcard-stats dt {
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   color: var(--color-text-secondary);
 }
 
@@ -3568,14 +3559,8 @@ a.tcard-guild:focus-visible {
 }
 .ui-text-action-primary { color: var(--color-text-primary); }
 .ui-text-action svg { width: 14px; height: 14px; }
-/* An arrow out of the corner: leaves the map. */
-.ui-external {
-  width: 7px;
-  height: 7px;
-  border-top: 1.5px solid currentColor;
-  border-right: 1.5px solid currentColor;
-  transform: translateY(-1px);
-}
+.ui-text-action svg.ui-pin { width: 10px; height: 14px; }
+.ui-text-action.mc-action { font-size: 0.8rem; }
 @media (pointer: coarse) {
   .ui-text-action { min-height: 36px; }
 }
@@ -3635,7 +3620,6 @@ a.tcard-guild:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-mono);
 }
 .mrow-art {
   flex-shrink: 0;
@@ -3645,7 +3629,7 @@ a.tcard-guild:focus-visible {
 }
 .mrow-rank {
   flex-shrink: 0;
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   color: var(--color-text-secondary);
 }
 .mrow-chevron {
@@ -3732,8 +3716,7 @@ a.tcard-guild:focus-visible {
 .mwar-periods {
   display: flex;
   gap: 2px;
-  font-family: var(--font-body);
-  font-size: 0.74rem;
+  font-size: 0.8rem;
 }
 .mwar-period {
   position: relative;
@@ -3817,7 +3800,7 @@ a.tcard-guild:focus-visible {
   flex-direction: column-reverse;
 }
 .mwar-stats dt {
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   color: var(--color-text-secondary);
 }
 .mwar-stats dd {
@@ -3834,8 +3817,7 @@ a.tcard-guild:focus-visible {
 }
 .mwar-heading {
   margin-top: 2px;
-  font-family: var(--font-body);
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   font-weight: 400;
   color: var(--color-text-secondary);
 }
@@ -3890,3 +3872,38 @@ a.tcard-guild:focus-visible {
 }
 .mwar-field-error:empty { display: none; }
 .mwar-custom input[aria-invalid="true"] { border-color: rgba(255, 138, 138, 0.7); }
+
+/* The Minecraft face, as on seqwawa.com: names, ranks, headings, short labels and the compact
+   map controls. Prose, places and numbers keep Inter and JetBrains Mono for reading. */
+.war-member-name,
+.mrow-name,
+.mrow-rank,
+.sb-member-name,
+.sb-member-rank,
+.player-dialog-status,
+.tcard-section-title,
+.war-group-title,
+.war-count,
+.mwar-heading,
+.settings-section-title,
+.settings-subhead,
+.settings-disclosure-title,
+.tcard-stats dt,
+.mwar-stats dt,
+.player-dialog-facts dt,
+.tcard-tag,
+.sb-online,
+.mwar-periods,
+.mc-action,
+.sb-mode {
+  font-family: var(--font-display);
+  font-weight: 400;
+}
+
+/* A progression rank in a lifted shade of its role colour: the hue stays, dark roles stay
+   readable. */
+.mrank[data-colored] {
+  color: color-mix(in oklab, var(--rank-color) 50%, #f0eee6);
+}
+.player-dialog-title,
+.player-dialog-ign { white-space: nowrap; }

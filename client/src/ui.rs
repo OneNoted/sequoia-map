@@ -74,14 +74,12 @@ pub(crate) fn CloseIcon() -> impl IntoView {
     }
 }
 
-/// A target: what Show on map centres the map on.
+/// A pixel map pin, drawn on whole pixels to sit with the Minecraft type: Locate and Show on map.
 #[component]
-pub(crate) fn CrosshairIcon() -> impl IntoView {
+pub(crate) fn MapPinIcon() -> impl IntoView {
     view! {
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" width="16" height="16" aria-hidden="true">
-            <circle cx="10" cy="10" r="5.5" />
-            <path d="M10 1.75v3M10 15.25v3M1.75 10h3M15.25 10h3" />
-            <circle cx="10" cy="10" r="1.5" fill="currentColor" stroke="none" />
+        <svg class="ui-pin" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 5 7" fill="currentColor" fill-rule="evenodd" shape-rendering="crispEdges" width="10" height="14" aria-hidden="true">
+            <path d="M1 0h3v1h1v3h-1v1h-1v2h-1v-2h-1v-1h-1v-3h1zM2 2h1v1h-1z" />
         </svg>
     }
 }
