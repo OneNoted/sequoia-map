@@ -1244,4 +1244,37 @@ mod tests {
         assert_eq!(territories, first_territories);
         assert_eq!(guilds, first_guilds);
     }
+
+    #[tokio::test]
+    async fn an_acquisition_time_finer_than_a_microsecond_survives_storage_unchanged() {
+        let Some((pool, _lock)) = test_database().await else {
+            eprintln!("Skipping acquisition precision test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let payload = serde_json::json!({
+            "territory": "Nano",
+            "acquired": "2026-01-01T00:00:00.123456789+00:00",
+            "idempotency_key": "nano"
+        });
+        sqlx::query(
+            "INSERT INTO canonical_territory_updates (territory, observed_at, confidence, \
+                 visibility, source, reporter_count, idempotency_key, payload) \
+             VALUES ('Nano', now(), 1.0, 'public', 'unknown', 0, 'nano', $1)",
+        )
+        .bind(&payload)
+        .execute(&pool)
+        .await
+        .expect("legacy report");
+
+        convert_archive(&pool).await.expect("conversion");
+
+        let (raw,): (Option<Value>,) = sqlx::query_as(
+            "SELECT raw_payload FROM canonical_report WHERE idempotency_key = 'nano'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("stored report");
+        assert_eq!(raw, Some(payload));
+        assert!(verify(&pool, &[]).await.expect("verify").is_clean());
+    }
 }

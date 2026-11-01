@@ -136,7 +136,14 @@ pub struct Columns<'a> {
 fn compact(payload: &Value) -> Option<Body> {
     let update: CanonicalTerritoryUpdate = serde_json::from_value(payload.clone()).ok()?;
     let acquired_at = match update.acquired.as_deref() {
-        Some(raw) => Some(DateTime::parse_from_rfc3339(raw).ok()?.with_timezone(&Utc)),
+        Some(raw) => {
+            let at = DateTime::parse_from_rfc3339(raw).ok()?.with_timezone(&Utc);
+            // Stored as a microsecond timestamp: finer input stays in the raw payload.
+            if at.timestamp_subsec_nanos() % 1_000 != 0 {
+                return None;
+            }
+            Some(at)
+        }
         None => None,
     };
     let statics =

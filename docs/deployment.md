@@ -247,7 +247,14 @@ sequoia-server history verify    # every event field, sampled states, every arch
 ```
 
 All three need `DATABASE_URL` and run from a directory holding `server/migrations`.
-`verify` prints mismatch lists that must be empty before the legacy tables are retired.
+`verify` prints what it compared and exits non-zero when any legacy event, snapshot or
+archive row is missing from the new tables or differs from them.
+
+While the database is unreachable the server keeps recent history in a bounded in-memory
+queue and commits it when the database returns; a restart in that time loses the queue,
+and beyond its bound the oldest entries are dropped and counted in
+`sequoia_dropped_update_events_total` and `sequoia_dropped_archive_reports_total`. Live
+updates stop once the stream positions reserved before the outage are used up.
 
 **Rolling back to an image that reads the legacy tables:** stop the new server, then run
 `sequoia-server history rollback` from the new image. It copies facts, checkpoints and

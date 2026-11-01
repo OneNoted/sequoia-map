@@ -147,6 +147,13 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
     let emit_snapshot_event = has_removals || supplemental_changed || has_static_field_changes;
 
     if changes.is_empty() && runtime_updates.is_empty() && !emit_snapshot_event {
+        // A quiet tick still retries history that waited for the database.
+        if writer.has_pending()
+            && let Some(pool) = state.db.as_ref()
+        {
+            let outcome = writer.retry(pool).await;
+            record_commit_outcome(state, outcome, 0);
+        }
         return;
     }
 

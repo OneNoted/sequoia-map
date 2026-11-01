@@ -210,17 +210,17 @@ pub fn merge_with_static(
     map
 }
 
-/// Replace the map with `merged`, touching only territories whose owner or acquisition
-/// changed, and leaving the signal untouched when nothing did: scrubbing through a quiet
-/// interval then costs no map rebuild.
+/// Replace the map with `merged`, rebuilding only territories whose state differs (owner,
+/// acquisition, and the live runtime a historical state does not carry), and leaving the
+/// signal untouched when nothing does: scrubbing through a quiet interval then costs no map
+/// rebuild.
 fn apply_ownership(territories: RwSignal<ClientTerritoryMap>, mut merged: TerritoryMap) {
     let changed = territories.with_untracked(|current| {
         current.len() != merged.len()
             || merged.iter().any(|(name, territory)| {
-                current.get(name).is_none_or(|existing| {
-                    existing.territory.guild != territory.guild
-                        || existing.territory.acquired != territory.acquired
-                })
+                current
+                    .get(name)
+                    .is_none_or(|existing| existing.territory != *territory)
             })
     });
     if !changed {
@@ -229,11 +229,10 @@ fn apply_ownership(territories: RwSignal<ClientTerritoryMap>, mut merged: Territ
     territories.update(|current| {
         current.retain(|name, _| merged.contains_key(name));
         for (name, territory) in merged.drain() {
-            let unchanged = current.get(&name).is_some_and(|existing| {
-                existing.territory.guild == territory.guild
-                    && existing.territory.acquired == territory.acquired
-            });
-            if !unchanged {
+            if current
+                .get(&name)
+                .is_none_or(|existing| existing.territory != territory)
+            {
                 let client = ClientTerritory::from_territory(&name, territory);
                 current.insert(name, client);
             }
@@ -618,6 +617,32 @@ mod tests {
             seq,
             changes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_seek_drops_live_runtime_from_a_territory_whose_owner_is_unchanged() {
+        let owner = Owner::new();
+        owner.set();
+        let live: Territory = serde_json::from_value(serde_json::json!({
+            "guild": {"uuid": "g", "name": "Guild", "prefix": "G", "color": [1, 2, 3]},
+            "acquired": "2026-01-01T00:00:00Z",
+            "location": {"start": [0, 0], "end": [10, 10]},
+            "runtime": {"defense_tier": "Very High", "headquarters": true}
+        }))
+        .expect("territory");
+        let mut historical = live.clone();
+        historical.runtime = None;
+        let territories = RwSignal::new(ClientTerritoryMap::from([(
+            "A".to_string(),
+            ClientTerritory::from_territory("A", live),
+        )]));
+
+        apply_ownership(
+            territories,
+            TerritoryMap::from([("A".to_string(), historical)]),
+        );
+
+        assert_eq!(territories.get_untracked()["A"].territory.runtime, None);
     }
 
     #[test]

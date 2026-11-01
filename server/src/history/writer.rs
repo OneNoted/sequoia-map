@@ -48,15 +48,26 @@ struct PendingFact {
     source: FactSource,
 }
 
+/// Ownership a checkpoint records, taken from the live map when the batch was committed.
+struct Capture {
+    through_seq: i64,
+    holdings: Vec<(String, GuildKey, i64)>,
+}
+
 struct PendingBatch {
     recorded_at: DateTime<Utc>,
     facts: Vec<PendingFact>,
     reports: Vec<Report>,
+    checkpoint: Option<Capture>,
 }
 
 impl PendingBatch {
     fn items(&self) -> usize {
-        (self.facts.len() + self.reports.len()).max(1)
+        let held = self
+            .checkpoint
+            .as_ref()
+            .map_or(0, |capture| capture.holdings.len());
+        (self.facts.len() + self.reports.len() + held).max(1)
     }
 }
 
@@ -110,8 +121,9 @@ pub struct WriterState {
     last_seq: u64,
     reserved_through: u64,
     last_recorded: Option<DateTime<Utc>>,
-    facts_since_checkpoint: u32,
-    last_checkpoint_at: Option<DateTime<Utc>>,
+    /// Facts committed since the last checkpoint capture, stored or still pending.
+    facts_since_capture: u32,
+    last_capture_at: Option<DateTime<Utc>>,
     territories: HashMap<String, i16>,
     guilds: HashMap<GuildKey, i32>,
     pending: VecDeque<PendingBatch>,
@@ -182,8 +194,8 @@ impl WriterState {
         self.last_seq = u64::try_from(highest).unwrap_or(0);
         self.reserved_through = self.last_seq;
         self.last_recorded = latest_at;
-        self.last_checkpoint_at = checkpoint.map(|(taken_at, _)| taken_at);
-        self.facts_since_checkpoint = u32::try_from(since_checkpoint).unwrap_or(u32::MAX);
+        self.last_capture_at = checkpoint.map(|(taken_at, _)| taken_at);
+        self.facts_since_capture = u32::try_from(since_checkpoint).unwrap_or(u32::MAX);
         Ok(self.last_seq)
     }
 
@@ -254,6 +266,10 @@ impl WriterState {
         recorded_at
     }
 
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub async fn commit(
         &mut self,
         pool: Option<&sqlx::PgPool>,
@@ -263,7 +279,7 @@ impl WriterState {
             return CommitOutcome::NoDatabase;
         };
         if commit.changes.is_empty() && commit.reports.is_empty() && !commit.territory_set_changed {
-            return CommitOutcome::Durable { facts: 0 };
+            return self.retry(pool).await;
         }
 
         let recorded_at = self.next_recorded_at();
@@ -280,38 +296,59 @@ impl WriterState {
                 source: commit.source,
             })
             .collect();
+        let added = u32::try_from(facts.len()).unwrap_or(u32::MAX);
+        let checkpoint_due = commit.territory_set_changed
+            || self.last_capture_at.is_none()
+            || self.facts_since_capture.saturating_add(added) >= CHECKPOINT_FACT_BUDGET
+            || (added > 0
+                && self.last_capture_at.is_some_and(|at| {
+                    recorded_at - at >= Duration::seconds(CHECKPOINT_MAX_AGE_SECS)
+                }));
+        let checkpoint = checkpoint_due.then(|| Capture {
+            through_seq: facts
+                .iter()
+                .map(|fact| fact.seq)
+                .max()
+                .unwrap_or_else(|| i64::try_from(self.last_seq).unwrap_or(i64::MAX)),
+            holdings: commit
+                .live
+                .iter()
+                .map(|(name, territory)| {
+                    (
+                        name.clone(),
+                        GuildKey::from(&territory.guild),
+                        micros(territory.acquired),
+                    )
+                })
+                .collect(),
+        });
+        if checkpoint_due {
+            self.facts_since_capture = 0;
+            self.last_capture_at = Some(recorded_at);
+        } else {
+            self.facts_since_capture = self.facts_since_capture.saturating_add(added);
+        }
         let batch = PendingBatch {
             recorded_at,
             facts,
             reports: commit.reports,
+            checkpoint,
         };
         self.pending_facts += batch.facts.len();
         self.pending_reports += batch.reports.len();
         self.pending_items += batch.items();
         self.pending.push_back(batch);
+        self.retry(pool).await
+    }
 
+    /// Commit whatever is pending, oldest first; on failure keep it, within its bound.
+    pub async fn retry(&mut self, pool: &sqlx::PgPool) -> CommitOutcome {
+        if self.pending.is_empty() {
+            return CommitOutcome::Durable { facts: 0 };
+        }
         let pending_facts = self.pending_facts;
-        let checkpoint_due = commit.territory_set_changed
-            || self.last_checkpoint_at.is_none()
-            || self
-                .facts_since_checkpoint
-                .saturating_add(u32::try_from(pending_facts).unwrap_or(u32::MAX))
-                >= CHECKPOINT_FACT_BUDGET
-            || (pending_facts > 0
-                && self.last_checkpoint_at.is_some_and(|at| {
-                    recorded_at - at >= Duration::seconds(CHECKPOINT_MAX_AGE_SECS)
-                }));
-        let checkpoint_live = checkpoint_due.then_some(commit.live);
-
-        match self.flush(pool, checkpoint_live, recorded_at).await {
+        match self.flush(pool).await {
             Ok(()) => {
-                self.facts_since_checkpoint = if checkpoint_due {
-                    self.last_checkpoint_at = Some(recorded_at);
-                    0
-                } else {
-                    self.facts_since_checkpoint
-                        .saturating_add(u32::try_from(pending_facts).unwrap_or(u32::MAX))
-                };
                 self.pending.clear();
                 self.pending_facts = 0;
                 self.pending_reports = 0;
@@ -343,13 +380,9 @@ impl WriterState {
     }
 
     /// Commit every pending batch, oldest first, with dictionary entries, takeover counts,
-    /// metadata, archive reports and a checkpoint of `live` when given, in one transaction.
-    async fn flush(
-        &mut self,
-        pool: &sqlx::PgPool,
-        live: Option<&TerritoryMap>,
-        taken_at: DateTime<Utc>,
-    ) -> Result<(), sqlx::Error> {
+    /// metadata, archive reports and each batch's checkpoint at its own time, in one
+    /// transaction.
+    async fn flush(&mut self, pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         let mut territory_names: HashSet<&str> = HashSet::new();
         let mut guild_keys: HashSet<GuildKey> = HashSet::new();
         for batch in &self.pending {
@@ -362,11 +395,9 @@ impl WriterState {
                 territory_names.insert(&report.territory);
                 guild_keys.extend(report.guild().cloned());
             }
-        }
-        if let Some(live) = live {
-            for (name, territory) in live {
+            for (name, guild, _) in batch.checkpoint.iter().flat_map(|c| &c.holdings) {
                 territory_names.insert(name);
-                guild_keys.insert(GuildKey::from(&territory.guild));
+                guild_keys.insert(guild.clone());
             }
         }
         let missing_territories: Vec<String> = territory_names
@@ -397,7 +428,6 @@ impl WriterState {
 
         let mut columns = FactColumns::default();
         let mut reports = Vec::new();
-        let mut latest_seq = None;
         for batch in &self.pending {
             for fact in &batch.facts {
                 let (Some(territory), Some(guild)) =
@@ -423,7 +453,6 @@ impl WriterState {
                         .as_ref()
                         .is_some_and(|previous| previous.uuid != fact.guild.uuid),
                 });
-                latest_seq = latest_seq.max(Some(fact.seq));
             }
             for report in &batch.reports {
                 reports.push(archive::Resolved {
@@ -438,25 +467,28 @@ impl WriterState {
         }
         archive::insert(&mut tx, &reports).await?;
 
-        if let Some(live) = live {
-            let mut holdings: Vec<Holding> = live
+        for batch in &self.pending {
+            let Some(capture) = &batch.checkpoint else {
+                continue;
+            };
+            let mut holdings: Vec<Holding> = capture
+                .holdings
                 .iter()
-                .filter_map(|(name, territory)| {
+                .filter_map(|(name, guild, acquired_micros)| {
                     Some(Holding {
                         territory_id: territory_id(name)?,
-                        guild_id: guild_id(&GuildKey::from(&territory.guild))?,
-                        acquired_micros: micros(territory.acquired),
+                        guild_id: guild_id(guild)?,
+                        acquired_micros: *acquired_micros,
                     })
                 })
                 .collect();
             holdings.sort_unstable_by_key(|holding| holding.territory_id);
-            let through_seq = latest_seq.unwrap_or(i64::try_from(self.last_seq).unwrap_or(0));
             sqlx::query(
                 "INSERT INTO history_checkpoint (taken_at, through_seq, source, ownership) \
                  VALUES ($1, $2, 2, $3)",
             )
-            .bind(taken_at)
-            .bind(through_seq)
+            .bind(batch.recorded_at)
+            .bind(capture.through_seq)
             .bind(checkpoint::encode(&holdings))
             .execute(&mut *tx)
             .await?;
@@ -686,14 +718,13 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test]
-    async fn positions_a_database_could_not_reserve_are_never_handed_out_or_reused() {
-        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-            eprintln!("Skipping reservation test: TEST_DATABASE_URL is not set");
-            return;
-        };
+    async fn reset_test_database() -> Option<(
+        sqlx::PgPool,
+        sqlx_core::pool::PoolConnection<sqlx::Postgres>,
+    )> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
         let pool = PgPoolOptions::new()
-            .max_connections(2)
+            .max_connections(3)
             .connect(&url)
             .await
             .expect("connect test database");
@@ -704,6 +735,103 @@ mod tests {
             .expect("take test lock");
         crate::db_migrations::run(&pool).await.expect("migrate");
         crate::test_support::reset_history(&pool).await;
+        Some((pool, lock))
+    }
+
+    #[tokio::test]
+    async fn a_removal_during_an_outage_keeps_its_checkpoint_and_a_quiet_commit_retries_it() {
+        let Some((pool, _lock)) = reset_test_database().await else {
+            eprintln!("Skipping outage checkpoint test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let held: sequoia_shared::Territory = serde_json::from_value(serde_json::json!({
+            "guild": {"uuid": "g", "name": "Guild", "prefix": "G", "color": [1, 2, 3]},
+            "acquired": "2026-01-01T00:00:00Z",
+            "location": {"start": [0, 0], "end": [10, 10]}
+        }))
+        .expect("territory");
+        let change = |name: &str| TerritoryChange {
+            territory: name.to_string(),
+            guild: held.guild.clone(),
+            previous_guild: None,
+            acquired: held.acquired.to_rfc3339(),
+            location: held.location.clone(),
+            resources: held.resources.clone(),
+            connections: Vec::new(),
+            runtime: None,
+        };
+        let commit = |changes, live, territory_set_changed| Commit {
+            source: FactSource::Poller,
+            changes,
+            reports: Vec::new(),
+            live,
+            territory_set_changed,
+        };
+        let mut writer = WriterState::default();
+        writer.recover(&pool).await.expect("recover");
+
+        let (fact_a, live_a) = (
+            change("A"),
+            TerritoryMap::from([("A".to_string(), held.clone())]),
+        );
+        let outcome = writer
+            .commit(Some(&pool), commit(vec![(1, 0, &fact_a)], &live_a, false))
+            .await;
+        assert_eq!(outcome, CommitOutcome::Durable { facts: 1 });
+
+        let owners = |at| {
+            let pool = pool.clone();
+            async move {
+                let mut names: Vec<String> = super::super::read::ownership_at(&pool, at)
+                    .await
+                    .expect("seek")
+                    .into_keys()
+                    .collect();
+                names.sort();
+                names
+            }
+        };
+        let empty = TerritoryMap::new();
+
+        // A is removed while the database is unreachable; B arrives once it is back, and both
+        // are committed together.
+        let outcome = writer
+            .commit(Some(&unreachable_pool()), commit(Vec::new(), &empty, true))
+            .await;
+        assert!(matches!(outcome, CommitOutcome::Deferred { .. }));
+        let during_removal = Utc::now();
+        tokio::time::sleep(StdDuration::from_millis(5)).await;
+        let (fact_b, live_b) = (
+            change("B"),
+            TerritoryMap::from([("B".to_string(), held.clone())]),
+        );
+        let outcome = writer
+            .commit(Some(&pool), commit(vec![(2, 0, &fact_b)], &live_b, false))
+            .await;
+        assert_eq!(outcome, CommitOutcome::Durable { facts: 1 });
+        assert_eq!(owners(during_removal).await, Vec::<String>::new());
+        assert_eq!(owners(Utc::now()).await, vec!["B".to_string()]);
+
+        // B is removed during another outage; with the database back and nothing changing,
+        // a quiet commit still writes the removal.
+        let outcome = writer
+            .commit(Some(&unreachable_pool()), commit(Vec::new(), &empty, true))
+            .await;
+        assert!(matches!(outcome, CommitOutcome::Deferred { .. }));
+        let outcome = writer
+            .commit(Some(&pool), commit(Vec::new(), &empty, false))
+            .await;
+        assert_eq!(outcome, CommitOutcome::Durable { facts: 0 });
+        assert!(!writer.has_pending());
+        assert_eq!(owners(Utc::now()).await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn positions_a_database_could_not_reserve_are_never_handed_out_or_reused() {
+        let Some((pool, lock)) = reset_test_database().await else {
+            eprintln!("Skipping reservation test: TEST_DATABASE_URL is not set");
+            return;
+        };
 
         let mut writer = WriterState::default();
         let start = writer.recover(&pool).await.expect("recover");
