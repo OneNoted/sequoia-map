@@ -43,6 +43,7 @@ pub async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
             "live_state_requests_total": observability.live_state_requests_total,
             "persist_failures_total": observability.persist_failures_total,
             "dropped_update_events_total": observability.dropped_update_events_total,
+            "dropped_archive_reports_total": observability.dropped_archive_reports_total,
             "persisted_update_events_total": observability.persisted_update_events_total,
             "guilds_online_requests_total": observability.guilds_online_requests_total,
             "guilds_online_cache_hits_total": observability.guilds_online_cache_hits_total,
@@ -354,6 +355,17 @@ fn render_prometheus_metrics(
         body,
         "sequoia_dropped_update_events_total {}",
         observability.dropped_update_events_total
+    );
+
+    let _ = writeln!(
+        body,
+        "# HELP sequoia_dropped_archive_reports_total Canonical archive reports dropped while the database was unavailable."
+    );
+    let _ = writeln!(body, "# TYPE sequoia_dropped_archive_reports_total counter");
+    let _ = writeln!(
+        body,
+        "sequoia_dropped_archive_reports_total {}",
+        observability.dropped_archive_reports_total
     );
 
     let _ = writeln!(
@@ -1299,12 +1311,7 @@ mod tests {
         crate::db_migrations::run(&pool)
             .await
             .expect("run migrations");
-        sqlx::query(
-            "TRUNCATE TABLE territory_events, territory_snapshots, season_scalar_samples, season_guild_observations, guild_color_cache RESTART IDENTITY",
-        )
-        .execute(&pool)
-        .await
-        .expect("truncate tables");
+        crate::test_support::reset_history(&pool).await;
 
         let older = Utc::now() - chrono::TimeDelta::minutes(10);
         let newer = Utc::now() - chrono::TimeDelta::minutes(1);

@@ -1,6 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -11,17 +9,17 @@ use sequoia_shared::{
     DataProvenance, GuildRef, Resources, Territory, TerritoryChange, TerritoryMap,
     TerritoryRuntimeChange, TerritoryRuntimeData, VisibilityClass,
 };
-use sqlx::{Postgres, QueryBuilder};
 use tracing::{info, warn};
 
 use crate::config::{canonical_override_ttl, territory_poll_interval, wynncraft_territory_url};
+use crate::history::FactSource;
+use crate::history::writer::{Commit, CommitOutcome};
 use crate::state::{
     AppState, ExtraTerrInfo, GuildColorMap, IngestTerritoryOverride, PreSerializedEvent,
     build_guild_color_lookup, lookup_guild_color,
 };
 
 type SequencedUpdates = Vec<(u64, TerritoryChange)>;
-type PersistResultFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 type SerializedSnapshotPayloads = (Arc<Bytes>, Arc<Bytes>, Arc<Bytes>, Arc<Bytes>);
 const UNCLAIMED_GUILD_UUID: &str = "00000000-0000-0000-0000-000000000000";
 const UNCLAIMED_GUILD_NAME: &str = "Unclaimed";
@@ -118,26 +116,15 @@ fn merge_supplemental_data(
 }
 
 async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplemental_changed: bool) {
-    process_polled_map_with(state, new_map, supplemental_changed, |pool, updates| {
-        Box::pin(persist_updates(pool, updates))
-    })
-    .await;
-}
-
-async fn process_polled_map_with<F>(
-    state: &AppState,
-    new_map: TerritoryMap,
-    supplemental_changed: bool,
-    persist_updates_fn: F,
-) where
-    F: for<'a> FnOnce(&'a sqlx::PgPool, SequencedUpdates) -> PersistResultFuture<'a>,
-{
+    // The writer lock orders this whole diff-commit-publish step against canonical ingest.
+    let mut writer = state.history.lock().await;
     // 1. Read lock: compute ownership/runtime/static diffs, then release.
     let (
         changes,
         runtime_updates,
         has_static_field_changes,
         has_removals,
+        has_recolours,
         mut live_seq,
         mut live_timestamp,
     ) = {
@@ -154,6 +141,7 @@ async fn process_polled_map_with<F>(
             runtime_updates,
             has_static_field_changes(&current.territories, &new_map),
             has_removed_territories(&current.territories, &new_map),
+            has_recoloured_owners(&current.territories, &new_map),
             current.seq,
             current.timestamp.clone(),
         )
@@ -161,6 +149,13 @@ async fn process_polled_map_with<F>(
     let emit_snapshot_event = has_removals || supplemental_changed || has_static_field_changes;
 
     if changes.is_empty() && runtime_updates.is_empty() && !emit_snapshot_event {
+        // A quiet tick still retries history that waited for the database.
+        if writer.has_pending()
+            && let Some(pool) = state.db.as_ref()
+        {
+            let outcome = writer.retry(pool).await;
+            record_commit_outcome(state, outcome, 0);
+        }
         return;
     }
 
@@ -189,7 +184,17 @@ async fn process_polled_map_with<F>(
             }
         };
     }
-    let Some(mut seq_cursor) = reserve_next_seq_block(state, reserved_count) else {
+    let published = state.next_seq.load(Ordering::Relaxed);
+    if !writer
+        .reserve(state.db.as_ref(), published, reserved_count)
+        .await
+    {
+        // The live map is untouched, so the next poll finds the same changes again.
+        warn!("could not reserve stream positions; retrying with the next poll");
+        return;
+    }
+    let Some(mut seq_cursor) = writer.allocate(state.db.is_some(), published, reserved_count)
+    else {
         warn!("sequence counter overflow while reserving sequence range");
         return;
     };
@@ -272,36 +277,23 @@ async fn process_polled_map_with<F>(
         live_timestamp = timestamp.clone();
     }
 
-    if !sequenced_updates.is_empty() {
-        let sequenced_update_count = sequenced_updates.len() as u64;
-        match state.db.as_ref() {
-            Some(pool) => {
-                if let Err(e) = persist_updates_fn(pool, sequenced_updates).await {
-                    state.observability.record_persist_failure();
-                    state
-                        .observability
-                        .record_dropped_update_events(sequenced_update_count);
-                    warn!(
-                        dropped_update_events = sequenced_update_count,
-                        error = %e,
-                        "failed to persist updates; continuing with in-memory live update"
-                    );
-                } else {
-                    state
-                        .observability
-                        .record_persisted_update_events(sequenced_update_count);
-                }
-            }
-            None => {
-                state
-                    .observability
-                    .record_dropped_update_events(sequenced_update_count);
-                warn!(
-                    dropped_update_events = sequenced_update_count,
-                    "database unavailable; continuing with in-memory live update only"
-                );
-            }
-        }
+    if !sequenced_updates.is_empty() || has_removals || has_recolours {
+        let outcome = writer
+            .commit(
+                state.db.as_ref(),
+                Commit {
+                    source: FactSource::Poller,
+                    changes: sequenced_updates
+                        .iter()
+                        .map(|(seq, change)| (*seq, 0, change))
+                        .collect(),
+                    reports: Vec::new(),
+                    live: &new_map,
+                    needs_checkpoint: has_removals || has_recolours,
+                },
+            )
+            .await;
+        record_commit_outcome(state, outcome, sequenced_updates.len());
     }
 
     let (snapshot_json, territories_json, live_state_json, ownership_json) =
@@ -390,33 +382,6 @@ fn serialize_runtime_update_event(
     }
 }
 
-fn reserve_next_seq_block(state: &AppState, count: u64) -> Option<u64> {
-    if count == 0 {
-        return Some(
-            state
-                .next_seq_reserved
-                .load(Ordering::Relaxed)
-                .max(state.next_seq.load(Ordering::Relaxed)),
-        );
-    }
-
-    loop {
-        let reserved = state.next_seq_reserved.load(Ordering::Relaxed);
-        let committed = state.next_seq.load(Ordering::Relaxed);
-        let base = reserved.max(committed);
-        let next = base.checked_add(count)?;
-        match state.next_seq_reserved.compare_exchange_weak(
-            reserved,
-            next,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return Some(base),
-            Err(_) => continue,
-        }
-    }
-}
-
 fn serialize_all_formats(
     seq: u64,
     timestamp: &str,
@@ -500,127 +465,41 @@ fn serialize_all_formats(
     ))
 }
 
-async fn persist_updates(
-    pool: &sqlx::PgPool,
-    sequenced_updates: SequencedUpdates,
-) -> Result<(), String> {
-    if sequenced_updates.is_empty() {
-        return Ok(());
-    }
-
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("begin transaction: {e}"))?;
-
-    struct PersistInsertRow {
-        stream_seq: i64,
-        acquired_at: chrono::DateTime<chrono::Utc>,
-        territory: String,
-        guild_uuid: String,
-        guild_name: String,
-        guild_prefix: String,
-        guild_color_r: Option<i16>,
-        guild_color_g: Option<i16>,
-        guild_color_b: Option<i16>,
-        prev_guild_uuid: Option<String>,
-        prev_guild_name: Option<String>,
-        prev_guild_prefix: Option<String>,
-        prev_guild_color_r: Option<i16>,
-        prev_guild_color_g: Option<i16>,
-        prev_guild_color_b: Option<i16>,
-    }
-
-    let mut rows = Vec::with_capacity(sequenced_updates.len());
-    for (seq, change) in sequenced_updates {
-        let stream_seq =
-            i64::try_from(seq).map_err(|_| format!("sequence {seq} is out of i64 range"))?;
-
-        let acquired_at = chrono::DateTime::parse_from_rfc3339(&change.acquired)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|_| {
-                warn!(
-                    "invalid acquired timestamp for territory {} at seq {}; using now()",
-                    change.territory, seq
-                );
-                chrono::Utc::now()
-            });
-
-        let (guild_color_r, guild_color_g, guild_color_b) = split_color(change.guild.color);
-        let (
-            prev_guild_uuid,
-            prev_guild_name,
-            prev_guild_prefix,
-            prev_guild_color_r,
-            prev_guild_color_g,
-            prev_guild_color_b,
-        ) = match change.previous_guild {
-            Some(g) => {
-                let (r, gch, b) = split_color(g.color);
-                (Some(g.uuid), Some(g.name), Some(g.prefix), r, gch, b)
-            }
-            None => (None, None, None, None, None, None),
-        };
-
-        rows.push(PersistInsertRow {
-            stream_seq,
-            acquired_at,
-            territory: change.territory,
-            guild_uuid: change.guild.uuid,
-            guild_name: change.guild.name,
-            guild_prefix: change.guild.prefix,
-            guild_color_r,
-            guild_color_g,
-            guild_color_b,
-            prev_guild_uuid,
-            prev_guild_name,
-            prev_guild_prefix,
-            prev_guild_color_r,
-            prev_guild_color_g,
-            prev_guild_color_b,
-        });
-    }
-
-    let mut query_builder = QueryBuilder::<Postgres>::new(
-        "INSERT INTO territory_events \
-         (stream_seq, acquired_at, territory, guild_uuid, guild_name, guild_prefix, \
-          guild_color_r, guild_color_g, guild_color_b, prev_guild_uuid, prev_guild_name, \
-          prev_guild_prefix, prev_guild_color_r, prev_guild_color_g, prev_guild_color_b) ",
-    );
-    query_builder.push_values(rows, |mut builder, row| {
-        builder
-            .push_bind(row.stream_seq)
-            .push_bind(row.acquired_at)
-            .push_bind(row.territory)
-            .push_bind(row.guild_uuid)
-            .push_bind(row.guild_name)
-            .push_bind(row.guild_prefix)
-            .push_bind(row.guild_color_r)
-            .push_bind(row.guild_color_g)
-            .push_bind(row.guild_color_b)
-            .push_bind(row.prev_guild_uuid)
-            .push_bind(row.prev_guild_name)
-            .push_bind(row.prev_guild_prefix)
-            .push_bind(row.prev_guild_color_r)
-            .push_bind(row.prev_guild_color_g)
-            .push_bind(row.prev_guild_color_b);
-    });
-    query_builder
-        .build()
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("bulk insert territory updates: {e}"))?;
-
-    tx.commit()
-        .await
-        .map_err(|e| format!("commit transaction: {e}"))?;
-    Ok(())
-}
-
-fn split_color(color: Option<(u8, u8, u8)>) -> (Option<i16>, Option<i16>, Option<i16>) {
-    match color {
-        Some((r, g, b)) => (Some(i16::from(r)), Some(i16::from(g)), Some(i16::from(b))),
-        None => (None, None, None),
+pub(crate) fn record_commit_outcome(state: &AppState, outcome: CommitOutcome, facts: usize) {
+    match outcome {
+        CommitOutcome::Durable { facts } => state
+            .observability
+            .record_persisted_update_events(facts as u64),
+        CommitOutcome::Deferred {
+            pending_facts,
+            pending_reports,
+            dropped_facts,
+            dropped_reports,
+        } => {
+            state.observability.record_persist_failure();
+            state
+                .observability
+                .record_dropped_update_events(dropped_facts as u64);
+            state
+                .observability
+                .record_dropped_archive_reports(dropped_reports as u64);
+            warn!(
+                pending_facts,
+                pending_reports,
+                dropped_facts,
+                dropped_reports,
+                "history is waiting for the database"
+            );
+        }
+        CommitOutcome::NoDatabase => {
+            state
+                .observability
+                .record_dropped_update_events(facts as u64);
+            warn!(
+                dropped_update_events = facts,
+                "database unavailable; continuing with in-memory live update only"
+            );
+        }
     }
 }
 
@@ -1017,6 +896,21 @@ fn has_static_field_changes(old: &TerritoryMap, new: &TerritoryMap) -> bool {
     })
 }
 
+/// A holding whose owner, acquisition and identity are unchanged but whose guild now has a
+/// different known colour. No ownership fact records this, so history needs a checkpoint.
+fn has_recoloured_owners(old: &TerritoryMap, new: &TerritoryMap) -> bool {
+    new.iter().any(|(name, new_territory)| {
+        old.get(name).is_some_and(|old_territory| {
+            new_territory.guild.color.is_some()
+                && old_territory.guild.color != new_territory.guild.color
+                && old_territory.guild.uuid == new_territory.guild.uuid
+                && old_territory.guild.name == new_territory.guild.name
+                && old_territory.guild.prefix == new_territory.guild.prefix
+                && old_territory.acquired == new_territory.acquired
+        })
+    })
+}
+
 fn has_removed_territories(old: &TerritoryMap, new: &TerritoryMap) -> bool {
     old.keys().any(|name| !new.contains_key(name))
 }
@@ -1025,14 +919,12 @@ fn has_removed_territories(old: &TerritoryMap, new: &TerritoryMap) -> bool {
 mod tests {
     use std::collections::{HashMap, HashSet};
     use std::net::SocketAddr;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
     use std::time::Duration;
 
     use super::{
         UNCLAIMED_GUILD_NAME, UNCLAIMED_GUILD_PREFIX, UNCLAIMED_GUILD_UUID, compute_diff,
         compute_runtime_updates, has_removed_territories, merge_supplemental_data,
-        parse_wynncraft_territory_payload, process_polled_map_with,
+        parse_wynncraft_territory_payload, process_polled_map,
     };
     use axum::Router;
     use chrono::{DateTime, Utc};
@@ -1041,7 +933,6 @@ mod tests {
         DataProvenance, GuildRef, Region, Territory, TerritoryMap, TerritoryRuntimeData,
     };
     use sqlx::postgres::PgPoolOptions;
-    use tokio::sync::oneshot;
 
     use crate::state::{AppState, PreSerializedEvent};
 
@@ -1083,7 +974,7 @@ mod tests {
     fn lazy_test_pool() -> sqlx::PgPool {
         PgPoolOptions::new()
             .max_connections(1)
-            .connect_lazy("postgres://sequoia:sequoia@localhost/sequoia")
+            .connect_lazy("postgres://sequoia:sequoia@127.0.0.1:9/sequoia")
             .expect("lazy test pool should parse")
     }
 
@@ -1374,10 +1265,7 @@ mod tests {
         let mut rx = state.event_tx.subscribe();
         let unchanged_map = single_territory_map("g1", "GuildOne", "G1");
 
-        process_polled_map_with(&state, unchanged_map, false, |_pool, _updates| {
-            Box::pin(async { Err("persist should not be called on no-op ticks".to_string()) })
-        })
-        .await;
+        process_polled_map(&state, unchanged_map, false).await;
 
         assert!(matches!(
             rx.try_recv(),
@@ -1405,7 +1293,7 @@ mod tests {
 
     #[tokio::test]
     async fn supplemental_only_tick_updates_snapshot_with_fresh_sequence() {
-        let state = AppState::new(Some(lazy_test_pool()));
+        let state = AppState::new(None);
         {
             let mut current = state.live_snapshot.write().await;
             current.territories = single_territory_map("g1", "GuildOne", "G1");
@@ -1424,12 +1312,7 @@ mod tests {
             .guild
             .color = Some((1, 2, 3));
 
-        process_polled_map_with(&state, supplemented_map, true, |_pool, _updates| {
-            Box::pin(async {
-                Err("persist should not be called on supplemental-only ticks".to_string())
-            })
-        })
-        .await;
+        process_polled_map(&state, supplemented_map, true).await;
 
         match rx.try_recv() {
             Ok(PreSerializedEvent::Snapshot { seq, .. }) => assert_eq!(seq, 32),
@@ -1462,7 +1345,7 @@ mod tests {
 
     #[tokio::test]
     async fn ownership_change_keeps_cached_guild_colors_when_supplemental_is_not_dirty() {
-        let state = AppState::new(Some(lazy_test_pool()));
+        let state = AppState::new(None);
         {
             let mut current = state.live_snapshot.write().await;
             current.territories = single_territory_map("g1", "GuildOne", "G1");
@@ -1494,10 +1377,7 @@ mod tests {
             Some((1, 2, 3))
         );
 
-        process_polled_map_with(&state, new_map, false, |_pool, _updates| {
-            Box::pin(async { Ok(()) })
-        })
-        .await;
+        process_polled_map(&state, new_map, false).await;
 
         {
             let current = state.live_snapshot.read().await;
@@ -1545,90 +1425,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn waits_for_persist_before_advancing_live_and_broadcasting() {
-        let state = AppState::new(Some(lazy_test_pool()));
+    async fn a_colour_change_without_a_new_owner_reaches_history_as_a_checkpoint() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping recolour history test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&url)
+            .await
+            .expect("connect test database");
+        let mut lock = pool.acquire().await.expect("lock connection");
+        sqlx::query("SELECT pg_advisory_lock(73019001)")
+            .execute(&mut *lock)
+            .await
+            .expect("take test lock");
+        crate::db_migrations::run(&pool).await.expect("migrate");
+        crate::test_support::reset_history(&pool).await;
+        let state = AppState::new(Some(pool.clone()));
+        let coloured = |color| {
+            let mut map = single_territory_map("g1", "GuildOne", "G1");
+            map.get_mut("Alpha").expect("territory").guild.color = Some(color);
+            map
+        };
+        let counts = || async {
+            sqlx::query_as::<_, (i64, i64, i64)>(
+                "SELECT (SELECT count(*) FROM history_fact), \
+                        (SELECT coalesce(sum(takes), 0) FROM history_heat_day), \
+                        (SELECT count(*) FROM history_checkpoint)",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("counts")
+        };
 
+        process_polled_map(&state, coloured((10, 20, 30)), false).await;
+        let before = counts().await;
+        let between = Utc::now();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // Athena recolours the guild: same owner, name, prefix and acquisition.
+        process_polled_map(&state, coloured((40, 50, 60)), false).await;
+        let after = counts().await;
+
+        let colour_at = |at| {
+            let pool = pool.clone();
+            async move {
+                crate::history::read::ownership_at(&pool, at)
+                    .await
+                    .expect("seek")["Alpha"]
+                    .guild_color
+            }
+        };
+        assert_eq!(colour_at(between).await, Some((10, 20, 30)));
+        assert_eq!(colour_at(Utc::now()).await, Some((40, 50, 60)));
+        // No ownership fact and no takeover: only a checkpoint records the new colour.
+        assert_eq!((after.0, after.1), (before.0, before.1));
+        assert_eq!(after.2, before.2 + 1);
+        drop(lock);
+    }
+
+    #[tokio::test]
+    async fn a_poll_waits_for_the_history_writer_before_diffing_or_publishing() {
+        let state = AppState::new(None);
         {
             let mut current = state.live_snapshot.write().await;
             current.territories = single_territory_map("g1", "GuildOne", "G1");
             current.seq = 7;
-            current.timestamp = "2026-01-01T00:00:00Z".to_string();
         }
         state
             .next_seq
             .store(7, std::sync::atomic::Ordering::Relaxed);
-
         let mut rx = state.event_tx.subscribe();
-        let new_map = single_territory_map("g2", "GuildTwo", "G2");
-        let (release_tx, release_rx) = oneshot::channel::<()>();
-        let persist_started = Arc::new(AtomicBool::new(false));
-        let persist_started_for_task = Arc::clone(&persist_started);
 
-        let worker = tokio::spawn({
+        // Another writer (canonical ingest) holds the history writer.
+        let other_writer = state.history.lock().await;
+        let poll = tokio::spawn({
             let state = state.clone();
             async move {
-                process_polled_map_with(&state, new_map, false, move |_pool, updates| {
-                    Box::pin(async move {
-                        assert_eq!(updates.len(), 1);
-                        assert_eq!(updates[0].0, 8);
-                        persist_started_for_task.store(true, AtomicOrdering::Relaxed);
-                        let _ = release_rx.await;
-                        Ok(())
-                    })
-                })
-                .await;
+                process_polled_map(&state, single_territory_map("g2", "GuildTwo", "G2"), false)
+                    .await;
             }
         });
-
-        while !persist_started.load(AtomicOrdering::Relaxed) {
+        for _ in 0..50 {
             tokio::task::yield_now().await;
         }
-
         assert!(matches!(
             rx.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
         ));
-        {
-            let current = state.live_snapshot.read().await;
-            assert_eq!(current.seq, 7);
-            assert_eq!(
-                current
-                    .territories
-                    .get("Alpha")
-                    .expect("territory should remain")
-                    .guild
-                    .uuid,
-                "g1"
-            );
-        }
-        assert_eq!(state.next_seq.load(std::sync::atomic::Ordering::Relaxed), 7);
+        assert_eq!(
+            state.live_snapshot.read().await.territories["Alpha"]
+                .guild
+                .uuid,
+            "g1"
+        );
 
-        let _ = release_tx.send(());
-        worker.await.expect("worker should complete");
-
+        drop(other_writer);
+        poll.await.expect("poll completes");
         match rx.try_recv() {
             Ok(PreSerializedEvent::Update { seq, .. }) => assert_eq!(seq, 8),
-            Ok(other) => panic!("expected update event, got {other:?}"),
-            Err(e) => panic!("expected update event, got recv error: {e}"),
+            other => panic!("expected the poll's update, got {other:?}"),
         }
-        {
-            let current = state.live_snapshot.read().await;
-            assert_eq!(current.seq, 8);
-            assert_eq!(
-                current
-                    .territories
-                    .get("Alpha")
-                    .expect("territory should exist")
-                    .guild
-                    .uuid,
-                "g2"
-            );
-        }
-        assert_eq!(state.next_seq.load(std::sync::atomic::Ordering::Relaxed), 8);
-        let observability = state.observability.snapshot();
-        assert_eq!(observability.persisted_update_events_total, 1);
-        assert_eq!(observability.dropped_update_events_total, 0);
-        assert_eq!(observability.persist_failures_total, 0);
+        assert_eq!(
+            state.live_snapshot.read().await.territories["Alpha"]
+                .guild
+                .uuid,
+            "g2"
+        );
     }
 
     #[tokio::test]
@@ -1648,10 +1552,7 @@ mod tests {
         let mut rx = state.event_tx.subscribe();
         let new_map = single_territory_map("g2", "GuildTwo", "G2");
 
-        process_polled_map_with(&state, new_map, false, |_pool, _updates| {
-            Box::pin(async { Ok(()) })
-        })
-        .await;
+        process_polled_map(&state, new_map, false).await;
 
         match rx.try_recv() {
             Ok(PreSerializedEvent::Update { seq, .. }) => assert_eq!(seq, 12),
@@ -1682,7 +1583,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continues_live_update_when_persist_fails() {
+    async fn keeps_facts_for_retry_and_continues_live_update_when_persist_fails() {
         let state = AppState::new(Some(lazy_test_pool()));
 
         {
@@ -1695,13 +1596,12 @@ mod tests {
             .next_seq
             .store(21, std::sync::atomic::Ordering::Relaxed);
 
+        // Positions reserved before the outage may still be published.
+        state.history.lock().await.assume_reserved(1_000);
         let mut rx = state.event_tx.subscribe();
         let new_map = single_territory_map("g2", "GuildTwo", "G2");
 
-        process_polled_map_with(&state, new_map, false, |_pool, _updates| {
-            Box::pin(async { Err("forced persist error".to_string()) })
-        })
-        .await;
+        process_polled_map(&state, new_map, false).await;
 
         match rx.try_recv() {
             Ok(PreSerializedEvent::Update { seq, .. }) => assert_eq!(seq, 22),
@@ -1727,7 +1627,7 @@ mod tests {
         );
         let observability = state.observability.snapshot();
         assert_eq!(observability.persisted_update_events_total, 0);
-        assert_eq!(observability.dropped_update_events_total, 1);
+        assert_eq!(observability.dropped_update_events_total, 0);
         assert_eq!(observability.persist_failures_total, 1);
     }
 
@@ -1752,12 +1652,7 @@ mod tests {
         crate::db_migrations::run(&pool)
             .await
             .expect("run migrations");
-        sqlx::query(
-            "TRUNCATE TABLE territory_events, territory_snapshots, guild_color_cache RESTART IDENTITY",
-        )
-            .execute(&pool)
-            .await
-            .expect("truncate history tables");
+        crate::test_support::reset_history(&pool).await;
 
         let state = AppState::new(Some(pool.clone()));
         {
@@ -1783,12 +1678,9 @@ mod tests {
             .guild
             .color = Some((44, 55, 66));
 
-        process_polled_map_with(&state, updated, false, |pool, updates| {
-            Box::pin(async move { super::persist_updates(pool, updates).await })
-        })
-        .await;
+        process_polled_map(&state, updated, false).await;
 
-        let db_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM territory_events")
+        let db_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM history_fact")
             .fetch_one(&pool)
             .await
             .expect("count history rows");

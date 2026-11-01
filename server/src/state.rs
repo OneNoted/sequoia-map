@@ -17,10 +17,10 @@ use tracing::warn;
 
 use crate::config::{
     WYNNCRAFT_GUILD_LIST_URL, internal_ingest_token, map_image_assets_dir,
-    max_history_replay_events, max_history_sr_sample_rows, max_ingest_updates_per_request,
-    seq_live_handoff_v1_enabled, sse_broadcast_buffer, upstream_connect_timeout,
-    upstream_http_timeout,
+    max_history_sr_sample_rows, max_ingest_updates_per_request, seq_live_handoff_v1_enabled,
+    sse_broadcast_buffer, upstream_connect_timeout, upstream_http_timeout,
 };
+use crate::history::writer::HistoryWriter;
 use crate::map_image::MapImages;
 use crate::services::wynncraft_api::GuildSeasonDefinition;
 
@@ -185,7 +185,8 @@ pub struct ExtraTerrInfo {
 pub struct AppState {
     pub live_snapshot: Arc<RwLock<LiveSnapshot>>,
     pub next_seq: Arc<AtomicU64>,
-    pub next_seq_reserved: Arc<AtomicU64>,
+    /// Owns ownership changes to the live map and their durable history.
+    pub history: Arc<HistoryWriter>,
     pub event_tx: broadcast::Sender<PreSerializedEvent>,
     pub guild_cache: Arc<DashMap<String, CachedGuild>>,
     pub guild_catalog_cache: Arc<RwLock<Option<CachedGuildCatalog>>>,
@@ -217,7 +218,6 @@ pub struct AppState {
     pub seq_live_handoff_v1: bool,
     pub internal_ingest_token: Option<String>,
     pub max_ingest_updates_per_request: usize,
-    pub max_history_replay_events: i64,
     pub max_history_sr_sample_rows: i64,
     pub next_claim_id: Arc<AtomicU64>,
     pub guild_catalog_url: Arc<String>,
@@ -310,6 +310,7 @@ pub struct ObservabilityCounters {
     live_state_requests_total: AtomicU64,
     persist_failures_total: AtomicU64,
     dropped_update_events_total: AtomicU64,
+    dropped_archive_reports_total: AtomicU64,
     persisted_update_events_total: AtomicU64,
     guilds_online_requests_total: AtomicU64,
     guilds_online_cache_hits_total: AtomicU64,
@@ -326,6 +327,7 @@ pub struct ObservabilitySnapshot {
     pub live_state_requests_total: u64,
     pub persist_failures_total: u64,
     pub dropped_update_events_total: u64,
+    pub dropped_archive_reports_total: u64,
     pub persisted_update_events_total: u64,
     pub guilds_online_requests_total: u64,
     pub guilds_online_cache_hits_total: u64,
@@ -343,6 +345,9 @@ impl ObservabilityCounters {
             live_state_requests_total: self.live_state_requests_total.load(Ordering::Relaxed),
             persist_failures_total: self.persist_failures_total.load(Ordering::Relaxed),
             dropped_update_events_total: self.dropped_update_events_total.load(Ordering::Relaxed),
+            dropped_archive_reports_total: self
+                .dropped_archive_reports_total
+                .load(Ordering::Relaxed),
             persisted_update_events_total: self
                 .persisted_update_events_total
                 .load(Ordering::Relaxed),
@@ -378,6 +383,11 @@ impl ObservabilityCounters {
 
     pub fn record_dropped_update_events(&self, count: u64) {
         self.dropped_update_events_total
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub fn record_dropped_archive_reports(&self, count: u64) {
+        self.dropped_archive_reports_total
             .fetch_add(count, Ordering::Relaxed);
     }
 
@@ -463,7 +473,7 @@ impl AppState {
         Self {
             live_snapshot: Arc::new(RwLock::new(LiveSnapshot::default())),
             next_seq: Arc::new(AtomicU64::new(0)),
-            next_seq_reserved: Arc::new(AtomicU64::new(0)),
+            history: Arc::new(HistoryWriter::default()),
             event_tx,
             guild_cache: Arc::new(DashMap::new()),
             guild_catalog_cache: Arc::new(RwLock::new(None)),
@@ -487,7 +497,6 @@ impl AppState {
             seq_live_handoff_v1: seq_live_handoff_v1_enabled(),
             internal_ingest_token,
             max_ingest_updates_per_request: max_ingest_updates_per_request(),
-            max_history_replay_events: max_history_replay_events(),
             max_history_sr_sample_rows: max_history_sr_sample_rows(),
             next_claim_id: Arc::new(AtomicU64::new(initial_claim_id_seed())),
             guild_catalog_url: Arc::new(WYNNCRAFT_GUILD_LIST_URL.to_string()),

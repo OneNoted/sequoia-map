@@ -52,6 +52,9 @@ pub struct HistorySnapshot {
 pub struct HistoryEvent {
     #[serde(default)]
     pub stream_seq: u64,
+    /// Order within a stream position; a canonical batch shares one position.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ordinal: u16,
     pub timestamp: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acquired_at: Option<String>,
@@ -136,4 +139,8 @@ pub struct HistoryHeat {
     pub max_take_count: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<HistoryHeatEntry>,
+}
+
+fn is_zero(value: &u16) -> bool {
+    *value == 0
 }

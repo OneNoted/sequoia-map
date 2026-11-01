@@ -15,6 +15,10 @@ use sequoia_shared::{
 };
 use tracing::{info, warn};
 
+use crate::history::FactSource;
+use crate::history::archive::Report;
+use crate::history::writer::{Commit, CommitOutcome};
+use crate::services::territory_poller::record_commit_outcome;
 use crate::state::{
     AppState, IngestTerritoryOverride, PreSerializedEvent, build_guild_color_lookup,
     lookup_guild_color, normalize_guild_color_key,
@@ -51,7 +55,19 @@ pub async fn ingest_territory(
     let cached_colors = state.guild_colors.read().await.clone();
     let cached_colors_normalized = build_guild_color_lookup(&cached_colors);
     let mut needs_snapshot_event = false;
+    let received_at = Utc::now();
 
+    // The writer lock orders this mutation, its durable facts and its publication against
+    // the poller.
+    let mut writer = state.history.lock().await;
+    // At most one ownership, one runtime and one snapshot position per request; reserved
+    // before the live map changes, so a failure leaves nothing half-applied.
+    if !writer
+        .reserve(state.db.as_ref(), state.next_seq.load(Ordering::Relaxed), 3)
+        .await
+    {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
     {
         let mut snapshot = state.live_snapshot.write().await;
         latest_seq = snapshot.seq;
@@ -206,14 +222,22 @@ pub async fn ingest_territory(
             + u64::from(!runtime_updates.is_empty())
             + u64::from(needs_snapshot_event);
         let mut reserved_seq = if event_count > 0 {
-            reserve_next_seq_block(&state, event_count)?
+            writer
+                .allocate(
+                    state.db.is_some(),
+                    state.next_seq.load(Ordering::Relaxed),
+                    event_count,
+                )
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         } else {
             latest_seq
         };
+        let mut ownership_seq = None;
 
         if !ownership_updates.is_empty() {
             reserved_seq = next_seq(reserved_seq)?;
             latest_seq = reserved_seq;
+            ownership_seq = Some(latest_seq);
             let payload = TerritoryEvent::Update {
                 seq: latest_seq,
                 changes: ownership_updates.clone(),
@@ -264,6 +288,39 @@ pub async fn ingest_territory(
             snapshot.live_state_json = live_state_json;
             snapshot.ownership_json = ownership_json;
         }
+
+        // Staged under the live map so a due checkpoint sees exactly this state; committed
+        // below, after the live map is released, so database latency never blocks its readers.
+        if !accepted_payloads.is_empty() && state.db.is_some() {
+            writer.stage(Commit {
+                source: FactSource::Canonical,
+                changes: ownership_seq
+                    .map(|seq| {
+                        ownership_updates
+                            .iter()
+                            .enumerate()
+                            .map(|(ordinal, change)| {
+                                (seq, i16::try_from(ordinal).unwrap_or(i16::MAX), change)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                reports: accepted_payloads
+                    .iter()
+                    .map(|update| Report::from_update(update, received_at))
+                    .collect(),
+                live: &snapshot.territories,
+                needs_checkpoint: false,
+            });
+        }
+    }
+
+    if !accepted_payloads.is_empty() {
+        let outcome = match state.db.as_ref() {
+            Some(pool) => writer.retry(pool).await,
+            None => CommitOutcome::NoDatabase,
+        };
+        record_commit_outcome(&state, outcome, ownership_updates.len());
     }
 
     if !override_updates.is_empty() {
@@ -279,11 +336,6 @@ pub async fn ingest_territory(
         state.next_seq.store(latest_seq, Ordering::Relaxed);
     }
 
-    if let Some(pool) = state.db.as_ref()
-        && let Err(e) = persist_canonical_territory_updates(pool, &accepted_payloads).await
-    {
-        warn!("failed to persist canonical territory updates: {e}");
-    }
     if let Err(e) = persist_authoritative_scalar_sample(&state, &accepted_payloads).await {
         warn!("failed to persist authoritative scalar sample: {e}");
     }
@@ -295,6 +347,7 @@ pub async fn ingest_territory(
     for event in outgoing {
         let _ = state.event_tx.send(event);
     }
+    drop(writer);
 
     if rejected > 0 {
         state.observability.record_ingest_reports_rejected(rejected);
@@ -419,33 +472,6 @@ fn next_seq(current: u64) -> Result<u64, StatusCode> {
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-fn reserve_next_seq_block(state: &AppState, count: u64) -> Result<u64, StatusCode> {
-    if count == 0 {
-        return Ok(state
-            .next_seq_reserved
-            .load(Ordering::Relaxed)
-            .max(state.next_seq.load(Ordering::Relaxed)));
-    }
-
-    loop {
-        let reserved = state.next_seq_reserved.load(Ordering::Relaxed);
-        let committed = state.next_seq.load(Ordering::Relaxed);
-        let base = reserved.max(committed);
-        let next = base
-            .checked_add(count)
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        match state.next_seq_reserved.compare_exchange_weak(
-            reserved,
-            next,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => return Ok(base),
-            Err(_) => continue,
-        }
-    }
-}
-
 fn serialize_event(event: TerritoryEvent) -> Result<Arc<Bytes>, StatusCode> {
     serde_json::to_vec(&event)
         .map(|json| Arc::new(Bytes::from(json)))
@@ -518,57 +544,6 @@ fn serialize_all_formats(
         Arc::new(Bytes::from(live_state_buf)),
         Arc::new(Bytes::from(ownership_vec)),
     ))
-}
-
-async fn persist_canonical_territory_updates(
-    pool: &sqlx::PgPool,
-    updates: &[CanonicalTerritoryUpdate],
-) -> Result<(), String> {
-    for update in updates {
-        let payload = serde_json::to_value(update)
-            .map_err(|e| format!("serialize canonical territory payload: {e}"))?;
-        let provenance = update
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.provenance.as_ref());
-        let confidence = provenance.map(|value| value.confidence).unwrap_or(1.0);
-        let source = provenance
-            .map(|value| value.source.clone())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "unknown".to_string());
-        let visibility = provenance
-            .map(|value| match value.visibility {
-                sequoia_shared::VisibilityClass::Public => "public",
-                sequoia_shared::VisibilityClass::GuildOptIn => "guild_opt_in",
-            })
-            .unwrap_or("public");
-        let reporter_count = provenance
-            .map(|value| i32::from(value.reporter_count))
-            .unwrap_or(0);
-        let observed_at = provenance
-            .and_then(|value| DateTime::parse_from_rfc3339(&value.observed_at).ok())
-            .map(|value| value.with_timezone(&Utc))
-            .unwrap_or_else(Utc::now);
-
-        sqlx::query(
-            "INSERT INTO canonical_territory_updates \
-             (territory, observed_at, confidence, visibility, source, reporter_count, idempotency_key, payload) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) \
-             ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
-        )
-        .bind(&update.territory)
-        .bind(observed_at)
-        .bind(confidence)
-        .bind(visibility)
-        .bind(source)
-        .bind(reporter_count)
-        .bind(update.idempotency_key.as_deref())
-        .bind(payload)
-        .execute(pool)
-        .await
-        .map_err(|e| format!("insert canonical_territory_updates row: {e}"))?;
-    }
-    Ok(())
 }
 
 async fn persist_authoritative_scalar_sample(
@@ -741,6 +716,117 @@ mod tests {
         sanitize_override_observed_at, scalar_sample_quality, should_replace_ingest_override,
     };
     use crate::state::{AppState, IngestTerritoryOverride, PreSerializedEvent};
+
+    #[tokio::test]
+    async fn live_map_reads_are_not_held_up_while_history_waits_for_the_database() {
+        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping ingest persistence test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let setup = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test database");
+        let mut lock = setup.acquire().await.expect("lock connection");
+        sqlx::query("SELECT pg_advisory_lock(73019001)")
+            .execute(&mut *lock)
+            .await
+            .expect("take test lock");
+        crate::db_migrations::run(&setup).await.expect("migrate");
+        crate::test_support::reset_history(&setup).await;
+
+        // The server's pool has one connection, held here: persistence has to wait for it.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect server pool");
+        let held = pool.acquire().await.expect("occupy the only connection");
+        let mut state = AppState::new(Some(pool.clone()));
+        state.internal_ingest_token = Some("test-token".to_string());
+        state.history.lock().await.assume_reserved(1_000);
+        let acquired = Utc::now();
+        state.live_snapshot.write().await.territories.insert(
+            "Molten Reach".to_string(),
+            Territory {
+                guild: GuildRef {
+                    uuid: "old-uuid".to_string(),
+                    name: "Aequitas".to_string(),
+                    prefix: "Aeq".to_string(),
+                    color: Some((255, 215, 0)),
+                },
+                acquired,
+                location: Region {
+                    start: [0, 0],
+                    end: [1, 1],
+                },
+                resources: Default::default(),
+                connections: Vec::new(),
+                runtime: None,
+            },
+        );
+        let batch = CanonicalTerritoryBatch {
+            generated_at: Utc::now().to_rfc3339(),
+            updates: vec![CanonicalTerritoryUpdate {
+                territory: "Molten Reach".to_string(),
+                guild: Some(GuildRef {
+                    uuid: "new-uuid".to_string(),
+                    name: "Paladins United".to_string(),
+                    prefix: "PUN".to_string(),
+                    color: Some((199, 179, 240)),
+                }),
+                acquired: Some((acquired + Duration::seconds(1)).to_rfc3339()),
+                location: None,
+                resources: None,
+                connections: None,
+                runtime: None,
+                idempotency_key: Some("slow-db".to_string()),
+            }],
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-internal-ingest-token",
+            HeaderValue::from_static("test-token"),
+        );
+        let ingest = tokio::spawn({
+            let state = state.clone();
+            async move { ingest_territory(State(state), headers, Json(batch)).await }
+        });
+
+        // Once the change is applied, an in-memory read completes while history still waits.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let read = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                state.live_snapshot.read(),
+            )
+            .await
+            .expect("a live map read completes while history waits for the database");
+            if read.territories["Molten Reach"].guild.uuid == "new-uuid" {
+                break;
+            }
+            drop(read);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the change was never applied"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            !ingest.is_finished(),
+            "history is still waiting for the database"
+        );
+
+        drop(held);
+        let response = ingest.await.expect("ingest task").expect("ingest accepted");
+        assert_eq!(response.0["applied"], 1);
+        let facts: i64 = sqlx::query_scalar("SELECT count(*) FROM history_fact")
+            .fetch_one(&setup)
+            .await
+            .expect("count facts");
+        assert_eq!(facts, 1);
+    }
 
     #[tokio::test]
     async fn ingest_ownership_change_rehydrates_cached_guild_color() {

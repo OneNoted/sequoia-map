@@ -1307,6 +1307,13 @@
   /* Clear of the home indicator where the browser reports one. */
   .mobile-sidebar-fab,
   .mobile-history-toggle { margin-bottom: env(safe-area-inset-bottom, 0px); }
+  /* In History the timeline fills the bottom edge, so the opener moves to the top corner
+     under the navbar (its inline position is the live-mode default). */
+  body:has(.timeline-bar) .mobile-sidebar-fab {
+    top: calc(var(--nav-height) + 16px) !important;
+    bottom: auto !important;
+    margin-bottom: 0;
+  }
   .bottom-sheet-scrim { display: block; }
 }
 

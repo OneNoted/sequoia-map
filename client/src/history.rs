@@ -8,12 +8,27 @@ use sequoia_shared::history::{HistoryBounds, HistoryGuildSrEntry, HistorySnapsho
 use sequoia_shared::{GuildRef, SeasonScalarSample, Territory, TerritoryMap};
 
 use crate::app::{BufferedUpdate, GuildColorMap, MapMode, TerritoryGeometryMap};
-use crate::territory::{ClientTerritoryMap, apply_changes, from_snapshot};
+use crate::territory::{ClientTerritory, ClientTerritoryMap, apply_changes, from_snapshot};
 
 const REKINDLED_WORLD_RELEASE_SECS: i64 = 1_723_248_000; // 2024-08-10T00:00:00Z
+const SEEK_RETRY_MS: u32 = 2_000;
 
 thread_local! {
     static ACTIVE_HISTORY_FETCH: RefCell<Option<(u64, web_sys::AbortController)>> = const { RefCell::new(None) };
+    /// Changes on every entry to and exit from history, so a reply that belongs to an
+    /// earlier visit can never change the map.
+    static HISTORY_SESSION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub fn current_session() -> u64 {
+    HISTORY_SESSION.with(std::cell::Cell::get)
+}
+
+fn begin_session() -> u64 {
+    HISTORY_SESSION.with(|session| {
+        session.set(session.get().wrapping_add(1));
+        session.get()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -196,6 +211,36 @@ pub fn merge_with_static(
     map
 }
 
+/// Replace the map with `merged`, rebuilding only territories whose state differs (owner,
+/// acquisition, and the live runtime a historical state does not carry), and leaving the
+/// signal untouched when nothing does: scrubbing through a quiet interval then costs no map
+/// rebuild.
+fn apply_ownership(territories: RwSignal<ClientTerritoryMap>, mut merged: TerritoryMap) {
+    let changed = territories.with_untracked(|current| {
+        current.len() != merged.len()
+            || merged.iter().any(|(name, territory)| {
+                current
+                    .get(name)
+                    .is_none_or(|existing| existing.territory != *territory)
+            })
+    });
+    if !changed {
+        return;
+    }
+    territories.update(|current| {
+        current.retain(|name, _| merged.contains_key(name));
+        for (name, territory) in merged.drain() {
+            if current
+                .get(&name)
+                .is_none_or(|existing| existing.territory != territory)
+            {
+                let client = ClientTerritory::from_territory(&name, territory);
+                current.insert(name, client);
+            }
+        }
+    });
+}
+
 /// Fetch historical data and update the territories signal.
 /// Reads geometry from `TerritoryGeometryStore` context.
 pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
@@ -212,6 +257,8 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
 
     let request_nonce = fetch_nonce.get_untracked().wrapping_add(1);
     fetch_nonce.set(request_nonce);
+    let session = current_session();
+    crate::playback::restart_at(timestamp_secs, request_nonce);
     history_legacy_geometry_active.set(timestamp_uses_legacy_geometry(timestamp_secs));
     let abort_controller = web_sys::AbortController::new().ok();
     let abort_signal = abort_controller
@@ -223,28 +270,43 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
         match fetch_history_at_with_abort(timestamp_secs, abort_signal.as_ref()).await {
             Ok(snapshot) => {
                 clear_active_history_fetch(request_nonce);
-                // Only apply the latest in-flight history fetch, and only while still in history mode.
+                // Only the latest seek of this history visit may change the map.
                 if fetch_nonce.get_untracked() != request_nonce
+                    || current_session() != session
                     || mode.get_untracked() != MapMode::History
                 {
                     return;
                 }
-                history_scalar_sample.set(snapshot.season_scalar.clone());
-                history_sr_leaderboard.set(snapshot.season_leaderboard.clone());
-                let geo = geo_store.get_value();
-                let guild_colors = guild_color_store.get_value();
-                let merged = merge_with_static(&snapshot, &geo, &guild_colors);
-                territories.set(from_snapshot(merged));
+                let merged = geo_store.with_value(|geo| {
+                    guild_color_store.with_value(|colors| merge_with_static(&snapshot, geo, colors))
+                });
+                history_scalar_sample.set(snapshot.season_scalar);
+                history_sr_leaderboard.set(snapshot.season_leaderboard);
+                apply_ownership(territories, merged);
+                crate::playback::seek_applied(request_nonce);
             }
             Err(e) => {
                 clear_active_history_fetch(request_nonce);
                 if is_abort_error(&e) {
                     return;
                 }
-                if fetch_nonce.get_untracked() != request_nonce {
+                let current = move || {
+                    fetch_nonce.get_untracked() == request_nonce
+                        && current_session() == session
+                        && mode.get_untracked() == MapMode::History
+                };
+                if !current() {
                     return;
                 }
                 web_sys::console::warn_1(&format!("History fetch failed: {e}").into());
+                // Playback waits for this seek, so retry it unless a newer seek, an exit or
+                // another visit has replaced it by then.
+                gloo_timers::callback::Timeout::new(SEEK_RETRY_MS, move || {
+                    if current() {
+                        fetch_and_apply_with(timestamp_secs, ctx);
+                    }
+                })
+                .forget();
             }
         }
     });
@@ -309,6 +371,7 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
     } = input;
 
     abort_active_history_fetch();
+    let session = begin_session();
     history_fetch_nonce.update(|n| *n = n.wrapping_add(1));
     history_buffer_mode_active.set(true);
     history_buffered_updates.set(Vec::new());
@@ -351,7 +414,11 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
 
     // Fetch bounds — exit history mode on failure
     spawn_local(async move {
-        match fetch_bounds().await {
+        let bounds = fetch_bounds().await;
+        if current_session() != session || mode.get_untracked() != MapMode::History {
+            return;
+        }
+        match bounds {
             Ok(bounds) => {
                 let earliest = bounds
                     .earliest
@@ -427,6 +494,8 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
     let request_nonce = history_fetch_nonce.get_untracked().wrapping_add(1);
     history_fetch_nonce.set(request_nonce);
     abort_active_history_fetch();
+    let session = begin_session();
+    crate::playback::stop();
     playback_active.set(false);
 
     let mut handoff_count = 0;
@@ -435,12 +504,16 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
         handoff_count = *count;
     });
     web_sys::console::info_1(&format!("live_handoff_resync_count={handoff_count}").into());
+    // The live state fetched below supersedes every event dropped so far; one dropped while
+    // it is in flight may be newer than it and must still force a resync.
+    needs_live_resync.set(false);
 
     spawn_local(async move {
         let live_state = fetch_live_state().await;
 
-        // Still in this exact history session?
+        // Still leaving this exact history visit?
         if history_fetch_nonce.get_untracked() != request_nonce
+            || current_session() != session
             || mode.get_untracked() != MapMode::History
         {
             return;
@@ -468,7 +541,6 @@ pub fn exit_history_mode(input: ExitHistoryModeInput) {
 
                 history_buffered_updates.set(Vec::new());
                 history_buffer_mode_active.set(false);
-                needs_live_resync.set(false);
                 history_timestamp.set(None);
                 history_legacy_geometry_active.set(false);
                 history_sr_leaderboard.set(None);
@@ -559,6 +631,32 @@ mod tests {
             seq,
             changes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_seek_drops_live_runtime_from_a_territory_whose_owner_is_unchanged() {
+        let owner = Owner::new();
+        owner.set();
+        let live: Territory = serde_json::from_value(serde_json::json!({
+            "guild": {"uuid": "g", "name": "Guild", "prefix": "G", "color": [1, 2, 3]},
+            "acquired": "2026-01-01T00:00:00Z",
+            "location": {"start": [0, 0], "end": [10, 10]},
+            "runtime": {"defense_tier": "Very High", "headquarters": true}
+        }))
+        .expect("territory");
+        let mut historical = live.clone();
+        historical.runtime = None;
+        let territories = RwSignal::new(ClientTerritoryMap::from([(
+            "A".to_string(),
+            ClientTerritory::from_territory("A", live),
+        )]));
+
+        apply_ownership(
+            territories,
+            TerritoryMap::from([("A".to_string(), historical)]),
+        );
+
+        assert_eq!(territories.get_untracked()["A"].territory.runtime, None);
     }
 
     #[test]

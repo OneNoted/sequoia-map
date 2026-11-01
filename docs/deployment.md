@@ -231,6 +231,69 @@ PostgreSQL 18 mounts `/var/lib/postgresql` with
 `PGDATA=/var/lib/postgresql/18/docker`; a new PostgreSQL major version needs its own
 dump-and-restore or `pg_upgrade` plan, not a changed image tag.
 
+## Territory history store
+
+Migration 013 adds the compact history tables beside the legacy `territory_events`,
+`territory_snapshots` and `canonical_territory_updates`, which it leaves untouched.
+
+**Cutover needs the previous server stopped.** Conversion follows the legacy tables by
+their ids and stream positions, which only stay in commit order once nothing writes them.
+Stop the previous server (history and the live map are unavailable until the new one
+starts), then start the new image: before it records anything it converts the legacy
+events and snapshots, about 30 s for the current history on the test machine. Running
+`sequoia-server history convert` from the new image first does the same work.
+
+The canonical archive is converted separately and may run any time after cutover, with
+the new server live: the legacy archive no longer receives rows, and new reports go only to
+the compact archive. A report the gateway retried after cutover under the key of a legacy
+row is replaced by that legacy row.
+
+```bash
+sequoia-server history convert   # ownership events and snapshots (previous server stopped)
+sequoia-server history archive   # canonical archive; any time after cutover
+sequoia-server history verify    # every legacy event, snapshot and archive row
+```
+
+All three need `DATABASE_URL` and run from a directory holding `server/migrations` (the
+image's working directory, `/app`). `verify` compares every legacy event, snapshot and
+archive row with the new tables and the reconstructed ownership at sampled instants of the
+period the legacy tables cover; history recorded after cutover has no legacy counterpart.
+It exits non-zero when anything is missing or differs.
+
+While the database is unreachable the server keeps recent history in a bounded in-memory
+queue, waits at most 2 s for a connection while it holds the history writer, and commits
+the queue when the database returns; a restart in that time loses the queue, and beyond its
+bound the oldest entries are dropped and counted in `sequoia_dropped_update_events_total`
+and `sequoia_dropped_archive_reports_total`. Live updates stop once the stream positions
+reserved before the outage are used up.
+
+**Rolling back to the previous image:**
+
+1. Stop the new server, then run `sequoia-server history rollback` from the new image. It
+   copies facts, checkpoints and archive reports recorded after the legacy tables' last
+   rows back into them; rerunning it copies nothing twice. Changes of a canonical batch
+   after its first share one stream position, which the legacy event table cannot hold;
+   `rollback` reports their count and they stay in `history_fact`.
+2. Start the previous image with the new image's migrations directory in place of its own.
+   The database records migration 013, which the previous image does not ship, and its
+   migration check stops it with `VersionMissing` otherwise:
+
+   ```bash
+   docker create --name history-migrations <new image>
+   docker cp history-migrations:/app/server/migrations ./history-migrations
+   docker rm history-migrations
+   # previous image, with: -v "$PWD/history-migrations:/app/server/migrations:ro"
+   ```
+
+   Do not delete the migration record instead: the next start of the new image would then
+   try to create the history tables again. Starting the new image again later converts what
+   the previous one recorded meanwhile.
+
+**Retiring the legacy tables** reclaims their space only after `verify` is clean on the
+production database and a backup containing them exists. Keep that backup for as long as a
+rollback to the legacy image must remain possible: after the tables are dropped, restoring
+them from it and running `history rollback` is the way back.
+
 ## Monitoring
 
 - API health: `/api/health`; ingest health: `/health`.
