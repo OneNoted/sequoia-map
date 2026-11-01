@@ -488,15 +488,15 @@ pub async fn convert_archive(pool: &sqlx::PgPool) -> Result<ConvertReport, sqlx:
             .filter_map(|report| report.idempotency_key.as_deref())
             .collect();
         let ids: Vec<i64> = reports.iter().filter_map(|report| report.id).collect();
-        report.archive_reconciled += sqlx::query(
-            "DELETE FROM canonical_report WHERE idempotency_key = ANY($1) AND id <> ALL($2)",
+        let replaced: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM canonical_report WHERE idempotency_key = ANY($1) AND id <> ALL($2)",
         )
         .bind(&keys)
         .bind(&ids)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        archive::insert(&mut tx, &resolved).await?;
+        .fetch_one(&mut *tx)
+        .await?;
+        report.archive_reconciled += u64::try_from(replaced).unwrap_or(0);
+        archive::insert(&mut tx, &resolved, archive::OnSameKey::Replace).await?;
         sqlx::query("UPDATE history_meta SET legacy_archive_through = $1")
             .bind(last_id)
             .execute(&mut *tx)
@@ -1365,6 +1365,7 @@ mod tests {
                 territory_id: territories["Alpha"],
                 guild_id: None,
             }],
+            archive::OnSameKey::Keep,
         )
         .await
         .expect("accepted copy");
@@ -1467,5 +1468,98 @@ mod tests {
         .await
         .expect("corrupt a converted fact");
         assert!(!verify(&pool, &instants).await.expect("verify").is_clean());
+    }
+
+    #[tokio::test]
+    async fn a_legacy_report_wins_when_a_live_retry_commits_its_key_during_conversion() {
+        let Some((pool, _lock)) = test_database().await else {
+            eprintln!("Skipping concurrent archive conflict test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let payload = serde_json::json!({
+            "territory": "Alpha",
+            "acquired": "2026-07-20T16:48:22.328+00:00",
+            "idempotency_key": "raced"
+        });
+        let original: DateTime<Utc> = "2026-07-20T17:00:00Z".parse().expect("time");
+        sqlx::query(
+            "INSERT INTO canonical_territory_updates (id, received_at, territory, observed_at, \
+                 confidence, visibility, source, reporter_count, idempotency_key, payload) \
+             VALUES (500, $1, 'Alpha', $1, 0.5, 'public', 'fabric_reporter', 1, 'raced', $2)",
+        )
+        .bind(original)
+        .bind(&payload)
+        .execute(&pool)
+        .await
+        .expect("legacy report");
+        let mut seed = pool.begin().await.expect("seed");
+        let territories = insert_territories(&mut seed, &["Alpha".to_string()])
+            .await
+            .expect("territory");
+        seed.commit().await.expect("seed commit");
+        let retried = Report::from_payload(
+            payload.clone(),
+            Columns {
+                id: Some(9_000),
+                territory: "Alpha".to_string(),
+                received_at: original + chrono::Duration::minutes(5),
+                observed_at: original,
+                confidence: 0.5,
+                visibility: "public",
+                source: "fabric_reporter".to_string(),
+                reporter_count: 1,
+                idempotency_key: Some("raced".to_string()),
+            },
+        );
+        let (report, territory_id) = (&retried, territories["Alpha"]);
+        let live_insert = move |tx| async move {
+            let mut tx: sqlx::Transaction<'static, sqlx::Postgres> = tx;
+            archive::insert(
+                &mut tx,
+                &[archive::Resolved {
+                    report,
+                    territory_id,
+                    guild_id: None,
+                }],
+                archive::OnSameKey::Keep,
+            )
+            .await
+            .expect("live insert");
+            tx
+        };
+
+        // The live server's retry holds the key, uncommitted, while conversion starts.
+        let live = live_insert(pool.begin().await.expect("live tx")).await;
+        let conversion = tokio::spawn({
+            let pool = pool.clone();
+            async move { convert_archive(&pool).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !conversion.is_finished(),
+            "conversion waits for the live key"
+        );
+        live.commit().await.expect("live commit first");
+        conversion.await.expect("task").expect("conversion");
+
+        let stored = || async {
+            sqlx::query_as::<_, (i64, DateTime<Utc>)>(
+                "SELECT id, received_at FROM canonical_report WHERE idempotency_key = 'raced'",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("stored reports")
+        };
+        assert_eq!(stored().await, vec![(500, original)]);
+
+        // A further live retry after conversion keeps the legacy row; a rerun changes nothing.
+        live_insert(pool.begin().await.expect("late tx"))
+            .await
+            .commit()
+            .await
+            .expect("late commit");
+        convert_archive(&pool).await.expect("rerun");
+        assert_eq!(stored().await, vec![(500, original)]);
+        assert!(verify(&pool, &[]).await.expect("verify").is_clean());
     }
 }

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -30,6 +30,8 @@ struct PlaybackIntervalBinding {
 /// One upcoming ownership change, decoded once when its page arrives.
 struct Pending {
     at_micros: i64,
+    /// Stream position and order within it.
+    position: (u64, u16),
     territory: String,
     guild: GuildRef,
     previous: Option<GuildRef>,
@@ -58,6 +60,9 @@ struct Buffer {
     samples_covered_micros: i64,
     samples_fetch: Option<web_sys::AbortController>,
     fractional_secs: f64,
+    /// The latest stream position applied per territory in this epoch: an older one that
+    /// arrives in a later page is superseded, as in a seek.
+    applied: BTreeMap<String, (u64, u16)>,
 }
 
 impl Buffer {
@@ -76,6 +81,7 @@ impl Buffer {
             samples_covered_micros: i64::MIN,
             samples_fetch: None,
             fractional_secs: 0.0,
+            applied: BTreeMap::new(),
         }
     }
 
@@ -162,6 +168,7 @@ fn pending_from(event: HistoryEvent) -> Option<Pending> {
     };
     Some(Pending {
         at_micros,
+        position: (event.stream_seq, event.ordinal),
         acquired: event.acquired_at.unwrap_or(event.timestamp),
         territory: event.territory,
         guild: GuildRef {
@@ -305,11 +312,16 @@ fn request_samples(span_secs: i64, latest_secs: i64) {
     });
 }
 
-/// Remove and return, in stream order, every buffered event recorded by `until`. Stream
-/// order and recorded time can disagree in converted history, so any buffered event may be
-/// due; a seek applies the latest stream position per territory, so an event that becomes
-/// due also supersedes earlier-positioned events for its territory still waiting.
-fn take_due(events: &mut VecDeque<Pending>, until: i64) -> Vec<Pending> {
+/// Remove and return, in stream order, every buffered event recorded by `until` that a seek
+/// would show. Stream order and recorded time can disagree in converted history, so any
+/// buffered event may be due; a seek applies the latest stream position per territory, so an
+/// event that becomes due supersedes earlier positions for its territory, whether still
+/// waiting here or arriving in a later page (`applied` remembers the positions applied).
+fn take_due(
+    events: &mut VecDeque<Pending>,
+    applied: &mut BTreeMap<String, (u64, u16)>,
+    until: i64,
+) -> Vec<Pending> {
     if !events.iter().any(|event| event.at_micros <= until) {
         return Vec::new();
     }
@@ -322,6 +334,13 @@ fn take_due(events: &mut VecDeque<Pending>, until: i64) -> Vec<Pending> {
         }
         if !waiting.is_empty() {
             waiting.retain(|earlier: &Pending| earlier.territory != event.territory);
+        }
+        match applied.get_mut(&event.territory) {
+            Some(position) if *position >= event.position => continue,
+            Some(position) => *position = event.position,
+            None => {
+                applied.insert(event.territory.clone(), event.position);
+            }
         }
         due.push(event);
     }
@@ -413,7 +432,8 @@ pub fn start_playback_engine() {
                 .min(latest)
                 .min(covered_secs.max(current));
             let until = next.saturating_mul(MICROS);
-            let due = take_due(&mut buffer.events, until);
+            let buffer = &mut *buffer;
+            let due = take_due(&mut buffer.events, &mut buffer.applied, until);
             let mut sample = None;
             while buffer
                 .samples
@@ -486,9 +506,10 @@ pub fn start_playback_engine() {
 mod tests {
     use super::*;
 
-    fn event(territory: &str, at_micros: i64, guild: &str) -> Pending {
+    fn event(territory: &str, seq: u64, at_micros: i64, guild: &str) -> Pending {
         Pending {
             at_micros,
+            position: (seq, 0),
             territory: territory.to_string(),
             guild: GuildRef {
                 uuid: guild.to_string(),
@@ -511,29 +532,54 @@ mod tests {
     #[test]
     fn events_recorded_out_of_stream_order_apply_when_a_seek_would_show_them() {
         // Two territories in stream order recorded at 20 and 10: each applies at its time.
-        let mut pair = VecDeque::from([event("Alpha", 20, "First"), event("Beta", 10, "Second")]);
-        assert_eq!(applied(&take_due(&mut pair, 10)), vec![("Beta", "Second")]);
-        assert_eq!(applied(&take_due(&mut pair, 20)), vec![("Alpha", "First")]);
-
-        // Stream order: Alpha recorded at 20, then Beta at 10, then Alpha again at 15.
-        let mut buffer = VecDeque::from([
-            event("Alpha", 20, "First"),
-            event("Beta", 10, "Second"),
-            event("Alpha", 15, "Third"),
+        let mut seen = BTreeMap::new();
+        let mut pair = VecDeque::from([
+            event("Alpha", 1, 20, "First"),
+            event("Beta", 2, 10, "Second"),
         ]);
-
-        // At 10 a seek shows Beta's change only.
         assert_eq!(
-            applied(&take_due(&mut buffer, 10)),
+            applied(&take_due(&mut pair, &mut seen, 10)),
+            vec![("Beta", "Second")]
+        );
+        assert_eq!(
+            applied(&take_due(&mut pair, &mut seen, 20)),
+            vec![("Alpha", "First")]
+        );
+
+        // Alpha recorded at 20, Beta at 10, Alpha again at 15, in that stream order.
+        let mut seen = BTreeMap::new();
+        let mut buffer = VecDeque::from([
+            event("Alpha", 1, 20, "First"),
+            event("Beta", 2, 10, "Second"),
+            event("Alpha", 3, 15, "Third"),
+        ]);
+        assert_eq!(
+            applied(&take_due(&mut buffer, &mut seen, 10)),
             vec![("Beta", "Second")]
         );
         // At 15 the later stream position for Alpha applies and supersedes the one at 20.
         assert_eq!(
-            applied(&take_due(&mut buffer, 15)),
+            applied(&take_due(&mut buffer, &mut seen, 15)),
             vec![("Alpha", "Third")]
         );
         // At 20 nothing else applies: a seek to 20 shows Third for Alpha, not First.
-        assert!(take_due(&mut buffer, 20).is_empty());
+        assert!(take_due(&mut buffer, &mut seen, 20).is_empty());
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn an_older_position_arriving_in_a_later_page_does_not_override_a_newer_one() {
+        // Alpha's position 2 was recorded at 3590 and comes in the page for (0, 3600];
+        // position 1 was recorded at 3610 and comes in the next page, (3600, 7200].
+        let mut seen = BTreeMap::new();
+        let mut buffer = VecDeque::from([event("Alpha", 2, 3_590, "Second")]);
+        assert_eq!(
+            applied(&take_due(&mut buffer, &mut seen, 3_600)),
+            vec![("Alpha", "Second")]
+        );
+        buffer.push_back(event("Alpha", 1, 3_610, "First"));
+        // A seek to 3620 shows Second, the later stream position.
+        assert!(take_due(&mut buffer, &mut seen, 3_620).is_empty());
         assert!(buffer.is_empty());
     }
 }

@@ -483,7 +483,7 @@ impl WriterState {
         if !columns.seq.is_empty() {
             columns.insert(&mut tx).await?;
         }
-        archive::insert(&mut tx, &reports).await?;
+        archive::insert(&mut tx, &reports, archive::OnSameKey::Keep).await?;
 
         for batch in &self.pending {
             let Some(capture) = &batch.checkpoint else {

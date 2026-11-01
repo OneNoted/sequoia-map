@@ -356,11 +356,23 @@ fn compact_parts(report: &Report) -> (Option<DateTime<Utc>>, Option<&[u8]>) {
     }
 }
 
+/// What a stored report does when another already holds its idempotency key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnSameKey {
+    /// Live ingest: the stored report stays, as the gateway's retries are the same report.
+    Keep,
+    /// Legacy conversion: the legacy row is the original acceptance and replaces a copy
+    /// accepted again after cutover, in the same statement, so a concurrent live insert
+    /// cannot slip in between.
+    Replace,
+}
+
 /// Store reports. Dictionary rows are added only when missing, so repeated sources and
 /// static versions draw no new identity values.
 pub async fn insert(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     reports: &[Resolved<'_>],
+    on_same_key: OnSameKey,
 ) -> Result<(), sqlx::Error> {
     if reports.is_empty() {
         return Ok(());
@@ -418,7 +430,20 @@ pub async fn insert(
             Body::Compact { .. } => None,
         })
         .collect();
-    sqlx::query(
+    let conflict = match on_same_key {
+        OnSameKey::Keep => "ON CONFLICT DO NOTHING",
+        OnSameKey::Replace => {
+            "ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE SET \
+                 id = EXCLUDED.id, received_at = EXCLUDED.received_at, \
+                 observed_at = EXCLUDED.observed_at, acquired_at = EXCLUDED.acquired_at, \
+                 confidence = EXCLUDED.confidence, guild_id = EXCLUDED.guild_id, \
+                 static_id = EXCLUDED.static_id, reporter_count = EXCLUDED.reporter_count, \
+                 territory_id = EXCLUDED.territory_id, source_id = EXCLUDED.source_id, \
+                 visibility = EXCLUDED.visibility, runtime = EXCLUDED.runtime, \
+                 raw_payload = EXCLUDED.raw_payload"
+        }
+    };
+    sqlx::query(&format!(
         "INSERT INTO canonical_report (id, received_at, observed_at, acquired_at, confidence, \
              guild_id, static_id, reporter_count, territory_id, source_id, visibility, \
              idempotency_key, runtime, raw_payload) \
@@ -433,8 +458,8 @@ pub async fn insert(
                   raw_payload) \
          JOIN canonical_source src ON src.name = r.source \
          LEFT JOIN canonical_static s ON s.digest = r.digest \
-         ON CONFLICT DO NOTHING",
-    )
+         {conflict}"
+    ))
     .bind(reports.iter().map(|r| r.report.id).collect::<Vec<_>>())
     .bind(
         reports
