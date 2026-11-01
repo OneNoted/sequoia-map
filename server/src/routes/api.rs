@@ -16,8 +16,8 @@ use super::http_util::{
 };
 
 use crate::config::{
-    GUILD_CACHE_TTL_SECS, MAX_GUILD_CACHE_ENTRIES, WYNNCRAFT_GUILD_URL,
-    guilds_online_cache_ttl_secs, guilds_online_max_concurrency,
+    GUILD_CACHE_TTL_SECS, MAX_GUILD_CACHE_ENTRIES, guilds_online_cache_ttl_secs,
+    guilds_online_max_concurrency,
 };
 use crate::services::season_data::{self, SeasonDataError};
 use crate::services::season_race::{self, SeasonRaceError};
@@ -472,22 +472,25 @@ pub async fn get_guild(
     Path(raw_name): Path<String>,
 ) -> Result<Response, StatusCode> {
     let name = normalize_guild_name(&raw_name)?.to_owned();
+    let data = guild_payload(&state, name).await?;
+    Ok(json_bytes_response(
+        Bytes::from(data),
+        "public, max-age=300",
+        None,
+    ))
+}
 
-    // Check cache
+/// Wynncraft's guild payload, from the guild cache while it is fresh.
+pub(crate) async fn guild_payload(state: &AppState, name: String) -> Result<String, StatusCode> {
     if let Some(cached) = state.guild_cache.get(&name) {
         let age = Utc::now()
             .signed_duration_since(cached.fetched_at)
             .num_seconds();
         if age < GUILD_CACHE_TTL_SECS {
-            return Ok(json_bytes_response(
-                Bytes::from(cached.data.clone()),
-                "public, max-age=300",
-                None,
-            ));
+            return Ok(cached.data.clone());
         }
     }
 
-    // Fetch from Wynncraft API
     let url = guild_details_url(&name)?;
     let resp = state
         .http_client
@@ -501,14 +504,8 @@ pub async fn get_guild(
     }
 
     let data = resp.text().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
-
-    cache_guild_payload(&state, name, data.clone());
-
-    Ok(json_bytes_response(
-        Bytes::from(data),
-        "public, max-age=300",
-        None,
-    ))
+    cache_guild_payload(state, name, data.clone());
+    Ok(data)
 }
 
 const MAX_GUILDS_ONLINE_BATCH: usize = 25;
@@ -796,8 +793,8 @@ fn normalize_guild_name(name: &str) -> Result<&str, StatusCode> {
 }
 
 fn guild_details_url(guild_name: &str) -> Result<reqwest::Url, StatusCode> {
-    let mut url =
-        reqwest::Url::parse(WYNNCRAFT_GUILD_URL).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut url = reqwest::Url::parse(&crate::config::wynncraft_guild_url())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let Ok(mut path_segments) = url.path_segments_mut() else {
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };

@@ -723,6 +723,14 @@ fn GuildPanel() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let camera = expect_context::<BrowserMap>().camera();
     let tick: RwSignal<i64> = expect_context();
+    let crate::navbar::CurrentViewer(viewer) = expect_context();
+    let viewer_is_member = Memo::new(move |_| {
+        viewer.with(|viewer| {
+            viewer
+                .as_ref()
+                .is_some_and(crate::auth::Viewer::is_guild_member)
+        })
+    });
 
     // `None` while the guild's details are on their way.
     let facts: RwSignal<Option<GuildFacts>> = RwSignal::new(None);
@@ -833,6 +841,20 @@ fn GuildPanel() -> impl IntoView {
                     // linking out to Wynncraft.
                     let ours = facts.prefix.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX);
                     let members = facts.online_members.clone();
+                    // Members open each other's war records in place; everyone else links out.
+                    if ours && viewer_is_member.get() {
+                        return Some(view! {
+                            <section class="tcard-section" aria-label="Online members">
+                                <h3 class="tcard-section-title">"Online members"</h3>
+                                <ul class="sb-members mrows">
+                                    {members.into_iter().map(|member| view! {
+                                        <crate::member_war::MemberRow username=member.username rank_label=member.rank_label server=member.server />
+                                    }).collect_view()}
+                                </ul>
+                            </section>
+                        }
+                        .into_any());
+                    }
                     Some(view! {
                         <section class="tcard-section" aria-label="Online members">
                             <h3 class="tcard-section-title">"Online members"</h3>
@@ -853,7 +875,8 @@ fn GuildPanel() -> impl IntoView {
                                 }).collect_view()}
                             </ul>
                         </section>
-                    })
+                    }
+                    .into_any())
                 })}
                 <Show when=move || guild_territories.with(|owned| !owned.is_empty())>
                     <section class="tcard-section" aria-label="Territories">

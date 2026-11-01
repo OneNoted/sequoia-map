@@ -1038,38 +1038,6 @@
   .war-sheet.war-sheet-open { transform: translateX(0); }
 }
 
-.war-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 1px solid var(--color-border-accent);
-  border-radius: 6px;
-  background: var(--color-surface);
-  color: var(--color-gold);
-  font-family: var(--font-mono);
-  font-size: 0.76rem;
-  text-decoration: none;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-.war-action:hover,
-.war-action:focus-visible {
-  border-color: rgba(245, 197, 66, 0.55);
-  background: var(--color-surface-hover);
-}
-
-.war-action:disabled {
-  color: var(--color-text-dim);
-  cursor: default;
-}
-
-.war-action-quiet {
-  color: var(--color-text-secondary);
-}
-
 /* Player detail (client/src/player_detail.rs): a centred card, a bottom sheet on phones. */
 /* Modal, so above the navbar too. */
 .player-dialog-scrim {
@@ -1205,8 +1173,18 @@
 .player-dialog-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(40, 44, 62, 0.8);
+}
+
+.player-dialog-war {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
 }
 
 @media (max-width: 767px) {
@@ -1221,7 +1199,6 @@
     border-bottom: 0;
     transform: none;
   }
-  .player-dialog-actions .war-action { flex: 1; }
 }
 
 @media (orientation: landscape) and (max-height: 520px) {
@@ -1816,7 +1793,7 @@
   margin-top: 6px;
   list-style: none;
 }
-.sb-members li {
+.sb-members > li {
   display: grid;
   grid-template-columns: 6.5rem minmax(0, 1fr) auto;
   align-items: baseline;
@@ -3447,9 +3424,88 @@ a.tcard-guild:focus-visible {
   font-family: var(--font-body);
 }
 
+/* Load older: the list trailing back in time, centred under it. Rows fade into the past in
+   enchant purple; offering more turns them gold, a failed page tints them red until retried. */
 .activity-older {
-  margin-top: 6px;
-  font-size: 0.78rem;
+  --older-tone: rgba(168, 85, 247, 0.75);
+  --older-rule: var(--color-border-accent);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 24px;
+  margin-top: 4px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--older-tone);
+  cursor: pointer;
+}
+
+.activity-older::before,
+.activity-older::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--older-rule));
+}
+
+.activity-older::after {
+  background: linear-gradient(to left, transparent, var(--older-rule));
+}
+
+.activity-older-glyph {
+  flex-shrink: 0;
+  fill: currentColor;
+  shape-rendering: crispEdges;
+}
+
+.activity-older-glyph path:nth-child(2) { opacity: 0.6; }
+.activity-older-glyph path:nth-child(3) { opacity: 0.3; }
+
+.activity-older[data-failed="true"] {
+  --older-tone: var(--color-nether);
+}
+
+.activity-older:hover,
+.activity-older:focus-visible {
+  --older-tone: var(--color-gold);
+  --older-rule: rgba(245, 197, 66, 0.55);
+}
+
+.activity-older:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: -2px;
+}
+
+/* Fetching: the rows light up one after another, reaching back. */
+.activity-older[aria-disabled="true"] {
+  --older-tone: var(--color-gold);
+  cursor: progress;
+}
+
+.activity-older[aria-disabled="true"] path {
+  animation: older-reach 0.9s steps(1, end) infinite;
+}
+
+.activity-older[aria-disabled="true"] path:nth-child(2) { animation-delay: 0.3s; }
+.activity-older[aria-disabled="true"] path:nth-child(3) { animation-delay: 0.6s; }
+
+@keyframes older-reach {
+  0% { opacity: 1; }
+  33% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-older[aria-disabled="true"] path {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+.activity-end {
+  text-align: center;
 }
 
 /* Rows from a selection that has since changed, kept in place until the new ones arrive. */
@@ -3471,4 +3527,366 @@ a.tcard-guild:focus-visible {
 
 @media (pointer: coarse) {
   .activity-head { min-height: 32px; }
+  .activity-older { min-height: 32px; }
 }
+
+/* A familiar secondary action: text, or an icon with text, without a box. Gold answers the
+   pointer and focus; the hit area reaches past the painted text. */
+.ui-text-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--color-text-secondary);
+  font-family: var(--font-body);
+  font-size: 0.76rem;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: color 0.15s;
+}
+.ui-text-action::after {
+  content: "";
+  position: absolute;
+  inset: -6px -4px;
+}
+.ui-text-action:hover,
+.ui-text-action:focus-visible { color: var(--color-gold); }
+.ui-text-action:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: 2px;
+}
+.ui-text-action:disabled {
+  color: var(--color-text-dim);
+  cursor: default;
+}
+.ui-text-action-primary { color: var(--color-text-primary); }
+.ui-text-action svg { width: 14px; height: 14px; }
+/* An arrow out of the corner: leaves the map. */
+.ui-external {
+  width: 7px;
+  height: 7px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+  transform: translateY(-1px);
+}
+@media (pointer: coarse) {
+  .ui-text-action { min-height: 36px; }
+}
+
+/* Online Sequoia members, opened in place (client/src/member_war.rs). */
+.sb-members.mrows { gap: 0; }
+.mrows .mrow {
+  display: block;
+  padding: 0;
+  font-family: var(--font-body);
+  font-size: 0.84rem;
+}
+.mrow-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+.mrow-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 30px;
+  margin-left: -4px;
+  padding: 0 4px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 3px 3px 0;
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mrow-toggle:hover { background: var(--color-surface-hover); }
+.mrow-toggle:hover .mrow-name,
+.mrow-toggle:focus-visible .mrow-name { color: var(--color-gold); }
+.mrow-toggle:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: -2px;
+}
+.mrow-toggle[aria-expanded="true"] {
+  border-left-color: var(--color-enchant);
+  background: rgba(168, 85, 247, 0.08);
+}
+.mrow-face {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  image-rendering: pixelated;
+}
+.mrow-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.mrow-art {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  image-rendering: pixelated;
+}
+.mrow-rank {
+  flex-shrink: 0;
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+.mrow-chevron {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin: 0 2px 0 auto;
+  border-right: 1.5px solid var(--color-text-dim);
+  border-bottom: 1.5px solid var(--color-text-dim);
+  transform: translateY(-2px) rotate(45deg);
+}
+.mrow-toggle[aria-expanded="true"] .mrow-chevron {
+  border-color: var(--color-enchant);
+  transform: translateY(1px) rotate(225deg);
+}
+.mrow-place {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+  text-align: right;
+}
+.mrow-place-go {
+  position: relative;
+  min-height: 28px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+.mrow-place-go:hover,
+.mrow-place-go:focus-visible {
+  color: var(--color-gold);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.mrow-place-go:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: 1px;
+}
+.mrow-warring { color: #ff8a8a; }
+@media (pointer: coarse) {
+  .mrow-line, .mrow-toggle { min-height: 40px; }
+  .mrow-place-go { min-height: 40px; }
+}
+
+.mrow-detail {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 8px;
+  padding: 6px 0 8px 12px;
+  border-left: 2px solid rgba(168, 85, 247, 0.35);
+}
+.mwar-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  list-style: none;
+  font-size: 0.76rem;
+}
+/* Labels stay readable; the Discord role colour is only a mark beside them. */
+.mwar-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-text-primary);
+}
+.mwar-role:not(:has(img))::before {
+  content: "";
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--role-color, var(--color-text-dim));
+}
+.mwar-quiet {
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+.mwar-periods {
+  display: flex;
+  gap: 2px;
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+}
+.mwar-period {
+  position: relative;
+  cursor: pointer;
+}
+.mwar-period input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.mwar-period span {
+  display: block;
+  padding: 3px 7px;
+  border-radius: 3px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+}
+.mwar-period:hover span { color: var(--color-gold); }
+.mwar-period input:focus-visible + span {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: 1px;
+}
+.mwar-period input:checked + span {
+  background: rgba(168, 85, 247, 0.16);
+  color: #d8b4fe;
+}
+@media (pointer: coarse) {
+  .mwar-period span {
+    display: flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 0 10px;
+  }
+}
+.mwar-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+.mwar-custom input {
+  padding: 2px 4px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 3px;
+  background: var(--color-deep);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color-scheme: dark;
+}
+.mwar-custom input:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.5);
+  outline-offset: 1px;
+}
+.mwar-record {
+  display: grid;
+  gap: 6px;
+  min-height: 3.2rem;
+  transition: opacity 0.15s;
+}
+.mwar-record[aria-busy="true"] { opacity: 0.6; }
+.mwar-window {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+.mwar-empty { font-size: 0.8rem; color: var(--color-text-primary); }
+.mwar-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+.mwar-stats > div {
+  display: flex;
+  flex-direction: column-reverse;
+}
+.mwar-stats dt {
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+}
+.mwar-stats dd {
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+.mwar-stats dd.mwar-points { color: var(--color-gold); }
+.mwar-previous,
+.mwar-attribution {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+.mwar-heading {
+  margin-top: 2px;
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+.mwar-recent {
+  display: grid;
+  gap: 1px;
+  list-style: none;
+  font-size: 0.76rem;
+}
+.mwar-recent li {
+  display: grid;
+  grid-template-columns: 4.2rem minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+}
+.mwar-when { color: var(--color-text-secondary); font-size: 0.72rem; }
+.mwar-where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mwar-guild { color: var(--color-text-secondary); }
+.mwar-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.mwar-value[data-state="unavailable"],
+.mwar-value[data-state="off-season"] { color: var(--color-text-secondary); }
+.mwar-profile { justify-self: start; }
+.mwar-glance {
+  font-size: 0.76rem;
+  color: var(--color-text-primary);
+}
+
+/* The detail's close: a quiet glyph, gold when it is about to act. */
+.player-dialog .war-icon-button {
+  border-color: transparent;
+  background: none;
+  color: var(--color-text-secondary);
+}
+.player-dialog .war-icon-button:hover,
+.player-dialog .war-icon-button:focus-visible {
+  border-color: transparent;
+  background: var(--color-surface-hover);
+  color: var(--color-gold);
+}
+
+/* Why typed custom days are not applied; empty, it takes no room. */
+.mwar-field-error {
+  font-size: 0.74rem;
+  color: #ff8a8a;
+}
+.mwar-field-error:empty { display: none; }
+.mwar-custom input[aria-invalid="true"] { border-color: rgba(255, 138, 138, 0.7); }

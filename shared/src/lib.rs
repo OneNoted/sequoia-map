@@ -4,6 +4,7 @@ pub mod events;
 pub mod history;
 pub mod ingest;
 pub mod map_intel;
+pub mod member_war;
 pub mod season_rating;
 pub mod territory;
 #[cfg(test)]

@@ -36,6 +36,15 @@ pub const DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS: u64 = 60;
 /// the `/internal/` prefix. Default to that prefix so the configured token is actually used.
 pub const DEFAULT_WARCONTROLLER_PATH: &str = "/internal/warcontroller";
 pub const WAR_ACTIVITY_PATH: &str = "/internal/war-activity";
+pub const WAR_POINTS_PLAYER_PATH: &str = "/internal/war-points/players";
+/// The public community API that publishes rank profiles and their role catalog.
+pub const DEFAULT_RANK_PROFILES_BASE_URL: &str = "https://api.seqwawa.com";
+/// How long the linked rank-profile feed is reused; the feed itself allows 30 seconds.
+pub const RANK_ROLES_CACHE_TTL_SECS: i64 = 60;
+/// How long after a failed feed read the next one waits; meanwhile the last good read serves.
+pub const RANK_ROLES_FAILURE_BACKOFF_SECS: i64 = 15;
+/// The in-game guild whose members can inspect each other's war records.
+pub const SEQUOIA_GUILD_NAME: &str = "Sequoia";
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const SEASON_LEADERBOARD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const MAP_INTEL_CACHE_TTL_SECS: i64 = 60; // shortest public map endpoint cache
@@ -206,6 +215,15 @@ pub fn wynncraft_territory_url() -> String {
         .unwrap_or_else(|| WYNNCRAFT_TERRITORY_URL.to_string())
 }
 
+/// Upstream guild details, as [`wynncraft_territory_url`] is for territories.
+pub fn wynncraft_guild_url() -> String {
+    std::env::var("WYNNCRAFT_GUILD_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| WYNNCRAFT_GUILD_URL.to_string())
+}
+
 /// Full URL of the Sequoia backend war controller feed.
 /// `None` when `SEQUOIA_BACKEND_BASE_URL` is unset, which keeps the poller dormant.
 pub fn warcontroller_url() -> Option<String> {
@@ -229,6 +247,35 @@ pub fn war_activity_url() -> Option<String> {
         "{}{WAR_ACTIVITY_PATH}",
         sequoia_backend_base_url()?
     ))
+}
+
+/// Full URL of the backend's stored war points for one player; `None` without a backend.
+pub fn war_points_player_url(player_uuid: &str) -> Option<String> {
+    Some(format!(
+        "{}{WAR_POINTS_PLAYER_PATH}/{player_uuid}",
+        sequoia_backend_base_url()?
+    ))
+}
+
+fn rank_profiles_base_url() -> String {
+    std::env::var("SEQUOIA_RANK_PROFILES_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_RANK_PROFILES_BASE_URL.to_string())
+}
+
+/// Full URL of one player's public rank profile.
+pub fn rank_profile_url(player_uuid: &str) -> String {
+    format!(
+        "{}/v1/rank-profiles/minecraft/{player_uuid}",
+        rank_profiles_base_url()
+    )
+}
+
+/// Full URL of every linked public rank profile.
+pub fn rank_profiles_feed_url() -> String {
+    format!("{}/v1/rank-profiles?scope=linked", rank_profiles_base_url())
 }
 
 pub fn territory_extra_url() -> Option<String> {

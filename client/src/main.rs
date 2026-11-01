@@ -5,6 +5,7 @@ mod heat;
 mod history;
 mod keybinds;
 mod map_intel;
+mod member_war;
 mod navbar;
 mod playback;
 mod players;

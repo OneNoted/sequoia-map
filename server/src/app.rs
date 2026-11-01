@@ -190,7 +190,8 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route("/api", axum::routing::any(api_not_found))
         .route("/api/{*path}", axum::routing::any(api_not_found))
         .route("/claims", axum::routing::get(serve_claims_route))
-        .route("/claims/{*path}", axum::routing::get(serve_claims_route));
+        .route("/claims/{*path}", axum::routing::get(serve_claims_route))
+        .merge(routes::members::router());
 
     app.layer(CompressionLayer::new())
         .layer(DefaultBodyLimit::max(api_body_limit))

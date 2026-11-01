@@ -21,7 +21,9 @@ use super::hud::{ClassIcon, MemberChip, member_key};
 use super::modal::{focus_next_frame, focused_element, restore_focus, trap_tab};
 use super::{Anchor, MapFocus, WarRoom, clock_text, whereabouts};
 use crate::app::IsMobile;
+use crate::member_war::MemberGlance;
 use crate::territory::ClientTerritoryMap;
+use crate::ui::CrosshairIcon;
 
 const FACE_PX: u32 = 64;
 /// Space between the popover and the name it belongs to, and kept clear of the window edge.
@@ -122,6 +124,27 @@ pub(super) fn PlayerDetail() -> impl IntoView {
         current
     });
 
+    // Measures the frame and places it beside its name, inside the window.
+    let place = move || {
+        let Some(anchor) = room.player_anchor.get_untracked() else {
+            return;
+        };
+        if !popover.get_untracked() || username.with_untracked(Option::is_none) {
+            return;
+        }
+        let (Some(dialog), Some(window)) = (dialog_ref.get_untracked(), web_sys::window()) else {
+            return;
+        };
+        let extent = |value: Result<wasm_bindgen::JsValue, _>| {
+            value.ok().and_then(|v| v.as_f64()).unwrap_or(0.0)
+        };
+        let viewport = (extent(window.inner_width()), extent(window.inner_height()));
+        let size = (
+            f64::from(dialog.offset_width()),
+            f64::from(dialog.offset_height()),
+        );
+        origin.set(Some(popover_origin(anchor, size, viewport)));
+    };
     // Placed beside its name once it has a size, and again whenever its content changes.
     Effect::new(move || {
         shown.track();
@@ -138,29 +161,36 @@ pub(super) fn PlayerDetail() -> impl IntoView {
             // A first guess for the frame before it can be measured.
             origin.set(Some((anchor.right + POPOVER_GAP, anchor.top)));
         }
-        request_animation_frame(move || {
-            let (Some(dialog), Some(window)) = (dialog_ref.get_untracked(), web_sys::window())
-            else {
-                return;
-            };
-            let viewport = (
-                window
-                    .inner_width()
-                    .ok()
-                    .and_then(|w| w.as_f64())
-                    .unwrap_or(0.0),
-                window
-                    .inner_height()
-                    .ok()
-                    .and_then(|h| h.as_f64())
-                    .unwrap_or(0.0),
-            );
-            let size = (
-                f64::from(dialog.offset_width()),
-                f64::from(dialog.offset_height()),
-            );
-            origin.set(Some(popover_origin(anchor, size, viewport)));
-        });
+        request_animation_frame(place);
+    });
+    // Content that arrives later (ranks, a record) changes the frame's height; placing it again
+    // keeps its controls inside the window.
+    let resize_watch = StoredValue::new_local(
+        None::<(
+            web_sys::ResizeObserver,
+            wasm_bindgen::closure::Closure<dyn Fn()>,
+        )>,
+    );
+    Effect::new(move || {
+        let Some(dialog) = dialog_ref.get() else {
+            return;
+        };
+        if resize_watch.with_value(Option::is_some) {
+            return;
+        }
+        let resized = wasm_bindgen::closure::Closure::<dyn Fn()>::new(place);
+        let Ok(observer) =
+            web_sys::ResizeObserver::new(wasm_bindgen::JsCast::unchecked_ref(resized.as_ref()))
+        else {
+            return;
+        };
+        observer.observe(&dialog);
+        resize_watch.set_value(Some((observer, resized)));
+    });
+    on_cleanup(move || {
+        if let Some((observer, _resized)) = resize_watch.try_update_value(Option::take).flatten() {
+            observer.disconnect();
+        }
     });
 
     let close = Callback::new(move |()| {
@@ -361,6 +391,9 @@ fn PlayerDialogContent(
                 </div>
             </Show>
         </dl>
+        <section class="player-dialog-war" aria-label="War standing">
+            <MemberGlance username=username.clone() />
+        </section>
         <Show when=move || !companions.with(Vec::is_empty)>
             <section class="player-dialog-section" aria-labelledby="player-dialog-with">
                 <h3 class="war-group-title" id="player-dialog-with">"Also here"</h3>
@@ -375,10 +408,14 @@ fn PlayerDialogContent(
             </section>
         </Show>
         <div class="player-dialog-actions">
-            <button type="button" class="war-action" disabled=move || !can_show.get() on:click=show>
-                "Show on map"
+            <button type="button" class="ui-text-action ui-text-action-primary" disabled=move || !can_show.get() on:click=show>
+                <CrosshairIcon />
+                "Locate"
             </button>
-            <a class="war-action war-action-quiet" href=card target="_blank" rel="noopener noreferrer">"Player card"</a>
+            <a class="ui-text-action" href=card target="_blank" rel="noopener noreferrer">
+                "Seqwawa profile"
+                <span class="ui-external" aria-hidden="true" />
+            </a>
         </div>
     }
 }
