@@ -16,8 +16,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use sequoia_shared::member_war::{
-    MAX_CUSTOM_DAYS, MemberRosterRoles, MemberStanding, MemberWarPeriod, MemberWarRecord,
-    PeriodKind, RECENT_WARS, RankStanding, WarRole, WarRoleKind,
+    MemberRosterRoles, MemberStanding, MemberWarPeriod, MemberWarRecord, PeriodKind, RECENT_WARS,
+    RankStanding, WarRole, WarRoleKind, check_custom_days,
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -70,7 +70,9 @@ async fn get_roster_roles(State(state): State<AppState>, headers: HeaderMap) -> 
         })
         .collect();
     json(&MemberRosterRoles {
-        stale: feed.stale,
+        // Past its freshness window, the last good read is served only because no newer one
+        // could be had; that is stale whatever the feed said at the time.
+        stale: feed.stale || !is_fresh(&feed, Utc::now()),
         roles,
     })
 }
@@ -213,18 +215,28 @@ fn find_on_roster(roster: &serde_json::Value, username: &str) -> Option<RosterEn
     roster_entries(roster).find(|entry| entry.username.eq_ignore_ascii_case(username))
 }
 
-/// The linked feed's war roles by UUID, read at most once a minute for every viewer. A failed
-/// read keeps serving the last good one.
+/// Whether a read of the feed is still within its freshness window.
+fn is_fresh(cached: &CachedRankRoles, now: DateTime<Utc>) -> bool {
+    (now - cached.fetched_at).num_seconds() < config::RANK_ROLES_CACHE_TTL_SECS
+}
+
+/// The linked feed's war roles by UUID, read at most once a minute for every viewer, one read at
+/// a time. A failed read keeps serving the last good one, untouched, and the next read waits
+/// out a short backoff, so an outage costs one upstream attempt per backoff, not one per viewer.
 async fn rank_roles(state: &AppState) -> Option<CachedRankRoles> {
-    let fresh = |cached: &&CachedRankRoles| {
-        (Utc::now() - cached.fetched_at).num_seconds() < config::RANK_ROLES_CACHE_TTL_SECS
-    };
+    let fresh = |cached: &&CachedRankRoles| is_fresh(cached, Utc::now());
     if let Some(cached) = state.rank_roles_cache.read().await.as_ref().filter(fresh) {
         return Some(cached.clone());
     }
-    let _fetching = state.rank_roles_fetch_lock.lock().await;
+    let mut last_failure = state.rank_roles_fetch_lock.lock().await;
     if let Some(cached) = state.rank_roles_cache.read().await.as_ref().filter(fresh) {
         return Some(cached.clone());
+    }
+    let backing_off = last_failure.is_some_and(|failed_at| {
+        (Utc::now() - failed_at).num_seconds() < config::RANK_ROLES_FAILURE_BACKOFF_SECS
+    });
+    if backing_off {
+        return state.rank_roles_cache.read().await.clone();
     }
     let fetched = async {
         state
@@ -258,8 +270,12 @@ async fn rank_roles(state: &AppState) -> Option<CachedRankRoles> {
                 roles,
                 fetched_at: Utc::now(),
             });
+            *last_failure = None;
         }
-        None => warn!("linked rank-profile feed could not be read"),
+        None => {
+            warn!("linked rank-profile feed could not be read");
+            *last_failure = Some(Utc::now());
+        }
     }
     cache.clone()
 }
@@ -343,9 +359,7 @@ fn custom_window(
     };
     let (first, last) = (day(from)?, day(to)?);
     let today = now.date_naive();
-    if first > last || last > today || (last - first).num_days() >= MAX_CUSTOM_DAYS {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+    check_custom_days(first, last, today).map_err(|_| StatusCode::BAD_REQUEST)?;
     let start = first
         .and_hms_opt(0, 0, 0)
         .ok_or(StatusCode::BAD_REQUEST)?
@@ -573,6 +587,97 @@ mod tests {
     }
 
     #[test]
+    fn a_failing_rank_feed_is_asked_once_per_backoff_and_keeps_its_last_read() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let asked = Arc::new(AtomicUsize::new(0));
+        let up = Arc::new(AtomicBool::new(false));
+        let feed = runtime.block_on({
+            let (asked, up) = (Arc::clone(&asked), Arc::clone(&up));
+            async move {
+                let profiles = get(move || {
+                    let (asked, up) = (Arc::clone(&asked), Arc::clone(&up));
+                    async move {
+                        asked.fetch_add(1, Ordering::SeqCst);
+                        if !up.load(Ordering::SeqCst) {
+                            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                        }
+                        axum::Json(serde_json::json!({
+                            "source": {"stale": false},
+                            "catalog": {"roles": [], "assets": []},
+                            "profiles": []
+                        }))
+                        .into_response()
+                    }
+                });
+                let app = Router::new().route("/v1/rank-profiles", profiles);
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind");
+                let addr = listener.local_addr().expect("address");
+                tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+                addr
+            }
+        });
+        temp_env::with_var(
+            "SEQUOIA_RANK_PROFILES_BASE_URL",
+            Some(format!("http://{feed}")),
+            || {
+                runtime.block_on(async {
+                    let state = AppState::new(None);
+                    let read_at = Utc::now() - chrono::Duration::seconds(120);
+                    let last_good = CachedRankRoles {
+                        stale: false,
+                        roles: [("uuid".to_string(), Vec::new())].into(),
+                        fetched_at: read_at,
+                    };
+                    *state.rank_roles_cache.write().await = Some(last_good);
+
+                    let reads = futures::future::join_all((0..8).map(|_| rank_roles(&state))).await;
+                    assert_eq!(
+                        asked.load(Ordering::SeqCst),
+                        1,
+                        "one attempt for eight viewers"
+                    );
+                    for read in &reads {
+                        let read = read.as_ref().expect("the last good read is served");
+                        assert_eq!(read.fetched_at, read_at, "a failure does not renew its age");
+                        assert!(!read.stale, "the feed's own flag is kept as it was");
+                        assert!(
+                            !is_fresh(read, Utc::now()),
+                            "and it is served as past fresh"
+                        );
+                    }
+                    rank_roles(&state).await;
+                    assert_eq!(
+                        asked.load(Ordering::SeqCst),
+                        1,
+                        "no attempt inside the backoff"
+                    );
+
+                    up.store(true, Ordering::SeqCst);
+                    let backoff =
+                        chrono::Duration::seconds(config::RANK_ROLES_FAILURE_BACKOFF_SECS + 1);
+                    *state.rank_roles_fetch_lock.lock().await = Some(Utc::now() - backoff);
+                    let recovered = rank_roles(&state).await.expect("a fresh read");
+                    assert_eq!(
+                        asked.load(Ordering::SeqCst),
+                        2,
+                        "one attempt once the backoff ends"
+                    );
+                    assert!(recovered.fetched_at > read_at && is_fresh(&recovered, Utc::now()));
+                    assert_eq!(*state.rank_roles_fetch_lock.lock().await, None);
+                });
+            },
+        );
+    }
+
+    #[test]
     fn every_member_route_answer_is_private_to_the_asking_session() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -689,7 +794,11 @@ mod tests {
         );
         let today = custom_window(Some("2026-11-01"), Some("2026-11-01"), now).expect("valid");
         assert_eq!(today.to, now);
+        // 400 days, both ends included, is the longest window; 401 is refused.
+        let longest = custom_window(Some("2025-09-28"), Some("2026-11-01"), now).expect("400 days");
+        assert_eq!(longest.from, at("2025-09-28T00:00:00Z"));
         for (from, to) in [
+            ("2025-09-27", "2026-11-01"),
             ("2026-10-07", "2026-10-01"),
             ("2026-10-01", "2026-11-02"),
             ("2025-01-01", "2026-10-01"),

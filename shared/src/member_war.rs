@@ -13,8 +13,45 @@ use serde::{Deserialize, Serialize};
 /// The most recent wars a record lists.
 pub const RECENT_WARS: u32 = 8;
 
-/// The longest custom window a member can ask for, in days.
+/// The longest custom window a member can ask for, in days, both ends included.
 pub const MAX_CUSTOM_DAYS: i64 = 400;
+
+/// Why chosen custom days cannot be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomDaysError {
+    Reversed,
+    Future,
+    TooLong,
+}
+
+impl CustomDaysError {
+    pub fn message(self) -> String {
+        match self {
+            Self::Reversed => "The first day must be on or before the last".to_string(),
+            Self::Future => "The last day can't be after today".to_string(),
+            Self::TooLong => format!("Choose at most {MAX_CUSTOM_DAYS} days"),
+        }
+    }
+}
+
+/// Whole UTC days, both inclusive: in order, ending no later than `today`, and at most
+/// [`MAX_CUSTOM_DAYS`] of them.
+pub fn check_custom_days(
+    first: chrono::NaiveDate,
+    last: chrono::NaiveDate,
+    today: chrono::NaiveDate,
+) -> Result<(), CustomDaysError> {
+    if first > last {
+        return Err(CustomDaysError::Reversed);
+    }
+    if last > today {
+        return Err(CustomDaysError::Future);
+    }
+    if (last - first).num_days() + 1 > MAX_CUSTOM_DAYS {
+        return Err(CustomDaysError::TooLong);
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemberStanding {
@@ -168,6 +205,28 @@ pub enum PointsStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_days_allow_exactly_the_limit_both_ends_included() {
+        let day = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap();
+        let today = day("2026-11-01");
+        let first = day("2025-09-01");
+        let spanning = |days: i64| first + chrono::Duration::days(days - 1);
+        assert_eq!(check_custom_days(first, spanning(399), today), Ok(()));
+        assert_eq!(check_custom_days(first, spanning(400), today), Ok(()));
+        assert_eq!(
+            check_custom_days(first, spanning(401), today),
+            Err(CustomDaysError::TooLong)
+        );
+        assert_eq!(
+            check_custom_days(today, first, today),
+            Err(CustomDaysError::Reversed)
+        );
+        assert_eq!(
+            check_custom_days(first, day("2026-11-02"), today),
+            Err(CustomDaysError::Future)
+        );
+    }
 
     #[test]
     fn a_backend_record_round_trips_with_unknowns_kept_apart_from_zero() {

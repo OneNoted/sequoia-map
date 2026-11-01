@@ -3882,3 +3882,11 @@ a.tcard-guild:focus-visible {
   background: var(--color-surface-hover);
   color: var(--color-gold);
 }
+
+/* Why typed custom days are not applied; empty, it takes no room. */
+.mwar-field-error {
+  font-size: 0.74rem;
+  color: #ff8a8a;
+}
+.mwar-field-error:empty { display: none; }
+.mwar-custom input[aria-invalid="true"] { border-color: rgba(255, 138, 138, 0.7); }

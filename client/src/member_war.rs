@@ -59,11 +59,14 @@ pub(crate) enum Failure {
     NotOnRoster,
     /// The viewer is not a member.
     Denied,
+    /// The server refused the request as malformed; asking again will not help.
+    Invalid,
 }
 
 impl Failure {
     fn of(status: u16) -> Self {
         match status {
+            400 => Self::Invalid,
             403 => Self::Denied,
             404 => Self::NotOnRoster,
             409 => Self::NoSeason,
@@ -180,6 +183,10 @@ pub(crate) struct MemberWar {
     /// The custom days as typed, shared by every open row so they always show the same window.
     custom_from: RwSignal<String>,
     custom_to: RwSignal<String>,
+    /// Custom is chosen in the pickers; [`Self::period`] changes only once its days are valid.
+    custom_editing: RwSignal<bool>,
+    /// Why the typed custom days are not applied, for every open picker.
+    custom_error: RwSignal<Option<String>>,
     entries: RwSignal<HashMap<Ask, Fetched>>,
     /// Requests on their way; at most one per [`Ask`], whoever asks.
     in_flight: StoredValue<HashSet<Ask>>,
@@ -219,6 +226,8 @@ impl MemberWar {
                 (chrono::Utc::now().date_naive() - chrono::Duration::days(13)).to_string(),
             ),
             custom_to: RwSignal::new(chrono::Utc::now().date_naive().to_string()),
+            custom_editing: RwSignal::new(false),
+            custom_error: RwSignal::new(None),
             entries: RwSignal::new(HashMap::new()),
             in_flight: StoredValue::new(HashSet::new()),
             generation: StoredValue::new(0),
@@ -709,20 +718,30 @@ fn MemberDetail(username: String) -> impl IntoView {
 #[component]
 fn PeriodPicker() -> impl IntoView {
     let war = expect_context::<MemberWar>();
-    let name = format!("mwar-period-{}", next_picker_id());
+    let id = next_picker_id();
+    let name = format!("mwar-period-{id}");
+    let error_id = format!("mwar-custom-error-{id}");
     let today = chrono::Utc::now().date_naive();
     let (custom_from, custom_to) = (war.custom_from, war.custom_to);
+    let (editing, error) = (war.custom_editing, war.custom_error);
+    // Typed days become the period only when they are valid; until then the period already
+    // shown stays, and the reason is given beside the fields.
     let apply_custom = move || {
         let (from, to) = (custom_from.get_untracked(), custom_to.get_untracked());
-        let valid = matches!(
-            (
-                chrono::NaiveDate::parse_from_str(&from, "%Y-%m-%d"),
-                chrono::NaiveDate::parse_from_str(&to, "%Y-%m-%d"),
-            ),
-            (Ok(first), Ok(last)) if first <= last && last <= today
-        );
-        if valid {
-            war.period.set(Period::Custom { from, to });
+        let day = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok();
+        let checked = match (day(&from), day(&to)) {
+            (Some(first), Some(last)) => {
+                sequoia_shared::member_war::check_custom_days(first, last, today)
+                    .map_err(sequoia_shared::member_war::CustomDaysError::message)
+            }
+            _ => Err("Enter both days".to_string()),
+        };
+        match checked {
+            Ok(()) => {
+                error.set(None);
+                war.period.set(Period::Custom { from, to });
+            }
+            Err(message) => error.set(Some(message)),
         }
     };
     let choices = [
@@ -730,38 +749,44 @@ fn PeriodPicker() -> impl IntoView {
         (Period::Month, "30 days"),
         (Period::Season, "Season"),
     ];
-    let custom_selected = Memo::new(move |_| matches!(war.period.get(), Period::Custom { .. }));
+    let invalid = Memo::new(move |_| error.with(Option::is_some));
     view! {
         <div class="mwar-periods" role="radiogroup" aria-label="Period">
             {choices.into_iter().map(|(period, label)| {
                 let checked = {
                     let period = period.clone();
-                    Memo::new(move |_| war.period.get() == period)
+                    Memo::new(move |_| !editing.get() && war.period.get() == period)
+                };
+                let choose = move |_| {
+                    editing.set(false);
+                    error.set(None);
+                    war.period.set(period.clone());
                 };
                 view! {
                     <label class="mwar-period">
-                        <input type="radio" name=name.clone() prop:checked=move || checked.get() on:change=move |_| war.period.set(period.clone()) />
+                        <input type="radio" name=name.clone() prop:checked=move || checked.get() on:change=choose />
                         <span>{label}</span>
                     </label>
                 }
             }).collect_view()}
             <label class="mwar-period">
-                <input type="radio" name=name.clone() prop:checked=move || custom_selected.get() on:change=move |_| apply_custom() />
+                <input type="radio" name=name.clone() prop:checked=move || editing.get() on:change=move |_| { editing.set(true); apply_custom(); } />
                 <span>"Custom"</span>
             </label>
         </div>
-        <Show when=move || custom_selected.get()>
+        <Show when=move || editing.get()>
             <div class="mwar-custom">
                 <label>
                     <span class="sr-only">"From"</span>
-                    <input type="date" max=today.to_string() prop:value=move || custom_from.get() on:change=move |event| { custom_from.set(event_target_value(&event)); apply_custom(); } />
+                    <input type="date" max=today.to_string() aria-invalid=move || invalid.get().to_string() aria-describedby=error_id.clone() prop:value=move || custom_from.get() on:change=move |event| { custom_from.set(event_target_value(&event)); apply_custom(); } />
                 </label>
                 <span aria-hidden="true">"to"</span>
                 <label>
                     <span class="sr-only">"To"</span>
-                    <input type="date" max=today.to_string() prop:value=move || custom_to.get() on:change=move |event| { custom_to.set(event_target_value(&event)); apply_custom(); } />
+                    <input type="date" max=today.to_string() aria-invalid=move || invalid.get().to_string() aria-describedby=error_id.clone() prop:value=move || custom_to.get() on:change=move |event| { custom_to.set(event_target_value(&event)); apply_custom(); } />
                 </label>
             </div>
+            <p class="mwar-field-error" id=error_id.clone() aria-live="polite">{move || error.get()}</p>
         </Show>
     }
 }
@@ -820,6 +845,7 @@ fn RecordView(username: String) -> impl IntoView {
                 Some(Failure::NoSeason) => Some(view! { <p class="mwar-quiet">"No published season is running"</p> }.into_any()),
                 Some(Failure::NotOnRoster) => Some(view! { <p class="mwar-quiet">"No longer on the Sequoia roster"</p> }.into_any()),
                 Some(Failure::Denied) => Some(view! { <p class="mwar-quiet">"Sign in as a Sequoia member to see war records"</p> }.into_any()),
+                Some(Failure::Invalid) => Some(view! { <p class="mwar-quiet">"This period can't be shown"</p> }.into_any()),
                 Some(Failure::Unavailable) => Some(view! {
                     <p class="mwar-quiet">
                         "War record unavailable "

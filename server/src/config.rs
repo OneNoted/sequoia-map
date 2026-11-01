@@ -41,6 +41,8 @@ pub const WAR_POINTS_PLAYER_PATH: &str = "/internal/war-points/players";
 pub const DEFAULT_RANK_PROFILES_BASE_URL: &str = "https://api.seqwawa.com";
 /// How long the linked rank-profile feed is reused; the feed itself allows 30 seconds.
 pub const RANK_ROLES_CACHE_TTL_SECS: i64 = 60;
+/// How long after a failed feed read the next one waits; meanwhile the last good read serves.
+pub const RANK_ROLES_FAILURE_BACKOFF_SECS: i64 = 15;
 /// The in-game guild whose members can inspect each other's war records.
 pub const SEQUOIA_GUILD_NAME: &str = "Sequoia";
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
