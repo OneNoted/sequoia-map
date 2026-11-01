@@ -25,6 +25,14 @@ pub struct MemberStanding {
     pub ranks: RankStanding,
 }
 
+/// War roles for everyone on the current roster who holds any, for compact roster rows.
+/// A name missing here holds none in the linked feed, which is not proof of anything else.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemberRosterRoles {
+    pub stale: bool,
+    pub roles: std::collections::BTreeMap<String, Vec<WarRole>>,
+}
+
 /// What the rank-profile feed says about this player.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]

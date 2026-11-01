@@ -195,6 +195,9 @@ pub struct AppState {
     pub guild_seasons_fetch_lock: Arc<Mutex<()>>,
     pub map_intel_cache: Arc<RwLock<Option<CachedMapIntel>>>,
     pub map_intel_fetch_lock: Arc<Mutex<()>>,
+    /// War roles by Minecraft UUID from the public rank-profile feed. Public data only.
+    pub rank_roles_cache: Arc<RwLock<Option<CachedRankRoles>>>,
+    pub rank_roles_fetch_lock: Arc<Mutex<()>>,
     /// Latest war controller state from the Sequoia backend, with its pre-serialized payload.
     pub warcontroller_cache: Arc<RwLock<Option<CachedWarController>>>,
     /// Extra territory data (resources, connections) from bundled and supplemental sources.
@@ -225,6 +228,14 @@ pub struct AppState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedGuild {
     pub data: String,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedRankRoles {
+    /// The feed's own Discord-sync staleness flag.
+    pub stale: bool,
+    pub roles: HashMap<String, Vec<sequoia_shared::member_war::WarRole>>,
     pub fetched_at: DateTime<Utc>,
 }
 
@@ -460,6 +471,8 @@ impl AppState {
             guild_seasons_fetch_lock: Arc::new(Mutex::new(())),
             map_intel_cache: Arc::new(RwLock::new(None)),
             map_intel_fetch_lock: Arc::new(Mutex::new(())),
+            rank_roles_cache: Arc::new(RwLock::new(None)),
+            rank_roles_fetch_lock: Arc::new(Mutex::new(())),
             warcontroller_cache: Arc::new(RwLock::new(None)),
             extra_terr: Arc::new(RwLock::new(HashMap::new())),
             extra_data_dirty: Arc::new(AtomicBool::new(true)),

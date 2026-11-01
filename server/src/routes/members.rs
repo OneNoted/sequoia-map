@@ -4,7 +4,8 @@
 //! in-game roster; that membership only decides who can be looked up and says nothing about
 //! which guild a past war counted for. The record is the backend's stored points for one UUID,
 //! the roles come from the public rank-profile feed. Every answer, refusals included, belongs
-//! to the asking session only ([`router`]). Nothing is cached or stored on this side.
+//! to the asking session only ([`router`]). Only the public feed is kept here, for a minute,
+//! and nothing member-only is stored on this side.
 
 use std::time::Duration;
 
@@ -15,8 +16,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use sequoia_shared::member_war::{
-    MAX_CUSTOM_DAYS, MemberStanding, MemberWarPeriod, MemberWarRecord, PeriodKind, RECENT_WARS,
-    RankStanding, WarRole, WarRoleKind,
+    MAX_CUSTOM_DAYS, MemberRosterRoles, MemberStanding, MemberWarPeriod, MemberWarRecord,
+    PeriodKind, RECENT_WARS, RankStanding, WarRole, WarRoleKind,
 };
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -24,7 +25,7 @@ use tracing::warn;
 use super::http_util::mark_private;
 use crate::config;
 use crate::services::season_data::{self, SeasonWindowSource};
-use crate::state::AppState;
+use crate::state::{AppState, CachedRankRoles};
 
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
 const ROSTER_RANKS: [&str; 6] = [
@@ -47,9 +48,31 @@ struct RosterEntry {
 /// The member routes, with every response marked private at this one boundary.
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/members", get(get_roster_roles))
         .route("/api/members/{username}", get(get_member_standing))
         .route("/api/members/{username}/war", get(get_member_war))
         .layer(axum::middleware::map_response(mark_private))
+}
+
+/// `GET /api/members`: war roles for the current roster, from one shared read of the feed.
+async fn get_roster_roles(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let roster = match sequoia_roster(&state, &headers).await {
+        Ok(roster) => roster,
+        Err(status) => return status.into_response(),
+    };
+    let Some(feed) = rank_roles(&state).await else {
+        return StatusCode::BAD_GATEWAY.into_response();
+    };
+    let roles = roster_entries(&roster)
+        .filter_map(|entry| {
+            let roles = feed.roles.get(&entry.uuid)?;
+            Some((entry.username, roles.clone()))
+        })
+        .collect();
+    json(&MemberRosterRoles {
+        stale: feed.stale,
+        roles,
+    })
 }
 
 /// `GET /api/members/{username}`: who they are now.
@@ -136,12 +159,11 @@ async fn get_member_war(
     }
 }
 
-/// The gate, then the roster: `403` for anyone but a member, `404` for a name not on it.
-async fn member_on_roster(
+/// The gate, then Sequoia's current roster: `403` for anyone but a member.
+async fn sequoia_roster(
     state: &AppState,
     headers: &HeaderMap,
-    username: &str,
-) -> Result<RosterEntry, StatusCode> {
+) -> Result<serde_json::Value, StatusCode> {
     let probe = super::auth::resolve_viewer(state, headers).await;
     if probe.is_unavailable() {
         return Err(StatusCode::SERVICE_UNAVAILABLE);
@@ -149,12 +171,20 @@ async fn member_on_roster(
     if !super::auth::viewer_is_guild_member(probe.viewer()) {
         return Err(StatusCode::FORBIDDEN);
     }
+    let payload = super::api::guild_payload(state, config::SEQUOIA_GUILD_NAME.to_string()).await?;
+    serde_json::from_str(&payload).map_err(|_| StatusCode::BAD_GATEWAY)
+}
+
+/// [`sequoia_roster`], then the named member on it: `404` for a name not on it.
+async fn member_on_roster(
+    state: &AppState,
+    headers: &HeaderMap,
+    username: &str,
+) -> Result<RosterEntry, StatusCode> {
+    let roster = sequoia_roster(state, headers).await?;
     if !is_minecraft_name(username) {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let payload = super::api::guild_payload(state, config::SEQUOIA_GUILD_NAME.to_string()).await?;
-    let roster: serde_json::Value =
-        serde_json::from_str(&payload).map_err(|_| StatusCode::BAD_GATEWAY)?;
     find_on_roster(&roster, username).ok_or(StatusCode::NOT_FOUND)
 }
 
@@ -162,20 +192,76 @@ fn is_minecraft_name(name: &str) -> bool {
     (1..=16).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-fn find_on_roster(roster: &serde_json::Value, username: &str) -> Option<RosterEntry> {
-    let members = roster.get("members")?.as_object()?;
-    ROSTER_RANKS.iter().find_map(|rank| {
-        let (name, info) = members
-            .get(*rank)?
-            .as_object()?
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(username))?;
-        Some(RosterEntry {
-            uuid: info.get("uuid")?.as_str()?.to_string(),
-            username: name.clone(),
-            rank,
-        })
+fn roster_entries(roster: &serde_json::Value) -> impl Iterator<Item = RosterEntry> + '_ {
+    let members = roster.get("members").and_then(serde_json::Value::as_object);
+    ROSTER_RANKS.iter().flat_map(move |rank| {
+        members
+            .and_then(|members| members.get(*rank)?.as_object())
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, info)| {
+                Some(RosterEntry {
+                    uuid: info.get("uuid")?.as_str()?.to_string(),
+                    username: name.clone(),
+                    rank,
+                })
+            })
     })
+}
+
+fn find_on_roster(roster: &serde_json::Value, username: &str) -> Option<RosterEntry> {
+    roster_entries(roster).find(|entry| entry.username.eq_ignore_ascii_case(username))
+}
+
+/// The linked feed's war roles by UUID, read at most once a minute for every viewer. A failed
+/// read keeps serving the last good one.
+async fn rank_roles(state: &AppState) -> Option<CachedRankRoles> {
+    let fresh = |cached: &&CachedRankRoles| {
+        (Utc::now() - cached.fetched_at).num_seconds() < config::RANK_ROLES_CACHE_TTL_SECS
+    };
+    if let Some(cached) = state.rank_roles_cache.read().await.as_ref().filter(fresh) {
+        return Some(cached.clone());
+    }
+    let _fetching = state.rank_roles_fetch_lock.lock().await;
+    if let Some(cached) = state.rank_roles_cache.read().await.as_ref().filter(fresh) {
+        return Some(cached.clone());
+    }
+    let fetched = async {
+        state
+            .http_client
+            .get(config::rank_profiles_feed_url())
+            .timeout(UPSTREAM_TIMEOUT)
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .json::<ProfilesBody>()
+            .await
+            .ok()
+    }
+    .await;
+    let mut cache = state.rank_roles_cache.write().await;
+    match fetched {
+        Some(body) => {
+            let roles = body
+                .profiles
+                .iter()
+                .filter_map(|profile| {
+                    let uuid = profile.minecraft.as_ref()?.uuid.clone();
+                    let roles = profile_war_roles(&body.catalog, profile);
+                    (!roles.is_empty()).then_some((uuid, roles))
+                })
+                .collect();
+            *cache = Some(CachedRankRoles {
+                stale: body.source.stale,
+                roles,
+                fetched_at: Utc::now(),
+            });
+        }
+        None => warn!("linked rank-profile feed could not be read"),
+    }
+    cache.clone()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,8 +445,15 @@ struct CatalogAsset {
 
 #[derive(Debug, Deserialize)]
 struct Profile {
+    #[serde(default)]
+    minecraft: Option<ProfileMinecraft>,
     role_keys: Vec<String>,
     summary: ProfileSummary,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileMinecraft {
+    uuid: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -371,13 +464,20 @@ struct ProfileSummary {
     war_honour: Option<String>,
 }
 
+/// One profile's standing: synced with its war roles, or no profile at all.
+fn war_roles(body: ProfilesBody) -> RankStanding {
+    match body.profiles.first() {
+        Some(profile) => RankStanding::Synced {
+            stale: body.source.stale,
+            roles: profile_war_roles(&body.catalog, profile),
+        },
+        None => RankStanding::NoProfile,
+    }
+}
+
 /// The war roles a profile holds, classified by the feed's own catalog: the highest insignia and
 /// War Honour the feed summarises, and every military and specialty role.
-fn war_roles(body: ProfilesBody) -> RankStanding {
-    let Some(profile) = body.profiles.into_iter().next() else {
-        return RankStanding::NoProfile;
-    };
-    let catalog = &body.catalog;
+fn profile_war_roles(catalog: &ProfileCatalog, profile: &Profile) -> Vec<WarRole> {
     let role = |key: &str, kind: WarRoleKind| {
         let role = catalog.roles.iter().find(|role| role.key == key)?;
         let art_url = role.asset_key.as_ref().and_then(|asset_key| {
@@ -422,10 +522,7 @@ fn war_roles(body: ProfilesBody) -> RankStanding {
         }
     }));
     roles.sort_by_key(|role| role.kind);
-    RankStanding::Synced {
-        stale: body.source.stale,
-        roles,
-    }
+    roles
 }
 
 fn json(body: &impl Serialize) -> Response {
@@ -502,6 +599,7 @@ mod tests {
                 tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
                 let client = reqwest::Client::new();
                 let cases = [
+                    (None, "/api/members", 403),
                     (None, "/api/members/EpicPuppy613", 403),
                     (Some("outsider"), "/api/members/EpicPuppy613/war", 403),
                     (Some("member"), "/api/members/NotOnTheRoster", 404),

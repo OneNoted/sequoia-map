@@ -39,6 +39,8 @@ pub const WAR_ACTIVITY_PATH: &str = "/internal/war-activity";
 pub const WAR_POINTS_PLAYER_PATH: &str = "/internal/war-points/players";
 /// The public community API that publishes rank profiles and their role catalog.
 pub const DEFAULT_RANK_PROFILES_BASE_URL: &str = "https://api.seqwawa.com";
+/// How long the linked rank-profile feed is reused; the feed itself allows 30 seconds.
+pub const RANK_ROLES_CACHE_TTL_SECS: i64 = 60;
 /// The in-game guild whose members can inspect each other's war records.
 pub const SEQUOIA_GUILD_NAME: &str = "Sequoia";
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
@@ -244,14 +246,25 @@ pub fn war_points_player_url(player_uuid: &str) -> Option<String> {
     ))
 }
 
-/// Full URL of one player's public rank profile.
-pub fn rank_profile_url(player_uuid: &str) -> String {
-    let base = std::env::var("SEQUOIA_RANK_PROFILES_BASE_URL")
+fn rank_profiles_base_url() -> String {
+    std::env::var("SEQUOIA_RANK_PROFILES_BASE_URL")
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_RANK_PROFILES_BASE_URL.to_string());
-    format!("{base}/v1/rank-profiles/minecraft/{player_uuid}")
+        .unwrap_or_else(|| DEFAULT_RANK_PROFILES_BASE_URL.to_string())
+}
+
+/// Full URL of one player's public rank profile.
+pub fn rank_profile_url(player_uuid: &str) -> String {
+    format!(
+        "{}/v1/rank-profiles/minecraft/{player_uuid}",
+        rank_profiles_base_url()
+    )
+}
+
+/// Full URL of every linked public rank profile.
+pub fn rank_profiles_feed_url() -> String {
+    format!("{}/v1/rank-profiles?scope=linked", rank_profiles_base_url())
 }
 
 pub fn territory_extra_url() -> Option<String> {
