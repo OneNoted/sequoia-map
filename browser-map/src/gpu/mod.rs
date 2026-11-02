@@ -2996,7 +2996,7 @@ impl GpuRenderer {
                     };
                     let solid = outline.style == WarOutlineStyle::Solid;
                     let urgency =
-                        outline.color == WarOutlineColor::Urgency && mark.starts_at.is_some();
+                        outline.color == WarOutlineColor::Urgency && mark.due_at.is_some();
                     let progress = outline.progress && mark.timer.is_some();
                     let flag = |on: bool, bit: u32| if on { bit } else { 0 };
                     stage
@@ -3009,7 +3009,7 @@ impl GpuRenderer {
                     let timer = mark.timer.map_or([0.0; 2], |timer| {
                         [relative(timer.queued_at), relative(timer.expires_at)]
                     });
-                    [mark.starts_at.map_or(0.0, relative), timer[0], timer[1]]
+                    [mark.due_at.map_or(0.0, relative), timer[0], timer[1]]
                 });
                 let flags = (is_hovered as u32)
                     + (is_selected as u32) * 2

@@ -77,7 +77,10 @@ impl PlateLabel {
     pub(crate) fn text(self) -> Option<std::borrow::Cow<'static, str>> {
         let word = match self {
             Self::Front {
-                clock: FrontClock::StartsIn(seconds) | FrontClock::FightingFor(seconds),
+                clock:
+                    FrontClock::EntersIn(seconds)
+                    | FrontClock::StartsIn(seconds)
+                    | FrontClock::FightingFor(seconds),
                 ..
             } => return Some(format_clock(seconds).into()),
             Self::Front {
@@ -210,7 +213,7 @@ mod tests {
     #[test]
     fn a_plate_reads_its_clock_and_never_calls_a_due_start_a_war() {
         assert_eq!(
-            front(StageKind::Queued, FrontClock::StartsIn(128))
+            front(StageKind::Queued, FrontClock::EntersIn(128))
                 .text()
                 .as_deref(),
             Some("2:08")
