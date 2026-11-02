@@ -388,6 +388,10 @@ pub(crate) enum HeatHistoryBasis {
 pub(crate) struct CurrentMode(pub RwSignal<MapMode>);
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryTimestamp(pub RwSignal<Option<i64>>);
+/// The instant the drawn territories show in History: the requested time only once its state
+/// is on the map. `None` while the live map is still drawn.
+#[derive(Clone, Copy)]
+pub(crate) struct HistoryMapTime(pub RwSignal<Option<i64>>);
 #[derive(Clone, Copy)]
 pub(crate) struct PlaybackActive(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -1160,6 +1164,11 @@ pub fn MapPage() -> impl IntoView {
     // History mode signals
     let map_mode: RwSignal<MapMode> = RwSignal::new(MapMode::Live);
     let history_timestamp: RwSignal<Option<i64>> = RwSignal::new(None);
+    let history_map_time: RwSignal<Option<i64>> = RwSignal::new(None);
+    Effect::new(move || {
+        map_mode.track();
+        history_map_time.set(None);
+    });
     let playback_active: RwSignal<bool> = RwSignal::new(false);
     let playback_speed: RwSignal<f64> = RwSignal::new(10.0);
     let history_bounds: RwSignal<Option<(i64, i64)>> = RwSignal::new(None);
@@ -1248,9 +1257,9 @@ pub fn MapPage() -> impl IntoView {
             icons: label_scale_icons.get() as f32,
         },
     });
-    // Timers count against the history timestamp while replaying the past.
+    // Timers count against the time of the territories drawn, not a seek still loading.
     let map_clock = Memo::new(move |_| match map_mode.get() {
-        MapMode::History => history_timestamp.get().unwrap_or_else(|| tick.get()),
+        MapMode::History => history_map_time.get().unwrap_or_else(|| tick.get()),
         MapMode::Live => tick.get(),
     });
     let minimap_inset = Memo::new(move |_| {
@@ -1347,6 +1356,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(ShowDebugInfo(show_debug_info));
     provide_context(CurrentMode(map_mode));
     provide_context(HistoryTimestamp(history_timestamp));
+    provide_context(HistoryMapTime(history_map_time));
     provide_context(PlaybackActive(playback_active));
     provide_context(PlaybackSpeed(playback_speed));
     provide_context(HistoryBoundsSignal(history_bounds));
@@ -1642,6 +1652,7 @@ pub fn MapPage() -> impl IntoView {
                     }
                     route_mode_sync_in_flight.set(true);
                     history::enter_history_mode(history::EnterHistoryModeInput {
+                        history_map_time,
                         mode: map_mode,
                         history_timestamp,
                         history_bounds,
@@ -2454,6 +2465,7 @@ pub fn MapPage() -> impl IntoView {
                                 }
                                 if history_available.get_untracked() {
                                     history::enter_history_mode(history::EnterHistoryModeInput {
+                                        history_map_time,
                                         mode: map_mode,
                                         history_timestamp,
                                         history_bounds,
@@ -2500,6 +2512,7 @@ pub fn MapPage() -> impl IntoView {
                                 history_timestamp,
                                 playback_active,
                                 fetch: history::HistoryFetchContext {
+                                    history_map_time,
                                     mode: map_mode,
                                     history_fetch_nonce,
                                     history_legacy_geometry_active,
@@ -2518,6 +2531,7 @@ pub fn MapPage() -> impl IntoView {
                                 history_timestamp,
                                 playback_active,
                                 fetch: history::HistoryFetchContext {
+                                    history_map_time,
                                     mode: map_mode,
                                     history_fetch_nonce,
                                     history_legacy_geometry_active,
@@ -3144,6 +3158,7 @@ fn MobileHistoryToggle() -> impl IntoView {
     let HistoryAvailable(history_available) = expect_context();
     let HistoryLegacyGeometryActive(history_legacy_geometry_active) = expect_context();
     let HistoryTimestamp(history_timestamp) = expect_context();
+    let HistoryMapTime(history_map_time) = expect_context();
     let HistoryBoundsSignal(history_bounds) = expect_context();
     let HistoryFetchNonce(history_fetch_nonce) = expect_context();
     let PlaybackActive(playback_active) = expect_context();
@@ -3201,6 +3216,7 @@ fn MobileHistoryToggle() -> impl IntoView {
                     });
                 } else {
                     history::enter_history_mode(history::EnterHistoryModeInput {
+                        history_map_time,
                         mode: map_mode,
                         history_timestamp,
                         history_bounds,
@@ -3289,13 +3305,13 @@ fn Tooltip() -> impl IntoView {
     let pointer = expect_context::<BrowserMap>().pointer();
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
-    let HistoryTimestamp(history_timestamp) = expect_context();
+    let HistoryMapTime(history_map_time) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
 
     let tooltip_info = Memo::new(move |_| {
         let reference_secs = if mode.get() == MapMode::History {
-            history_timestamp.get().unwrap_or_else(|| tick.get())
+            history_map_time.get().unwrap_or_else(|| tick.get())
         } else {
             tick.get()
         };
@@ -3409,7 +3425,7 @@ fn TerritoryPeekCard() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
-    let HistoryTimestamp(history_timestamp) = expect_context();
+    let HistoryMapTime(history_map_time) = expect_context();
     let Selected(selected) = expect_context();
     let DetailReturnGuild(detail_return_guild) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
@@ -3419,7 +3435,7 @@ fn TerritoryPeekCard() -> impl IntoView {
 
     let peek_info = Memo::new(move |_| {
         let reference_secs = if mode.get() == MapMode::History {
-            history_timestamp.get().unwrap_or_else(|| tick.get())
+            history_map_time.get().unwrap_or_else(|| tick.get())
         } else {
             tick.get()
         };

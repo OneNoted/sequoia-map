@@ -51,6 +51,8 @@ fn begin_session() -> u64 {
 
 #[derive(Clone, Copy)]
 pub struct HistoryFetchContext {
+    /// The instant the drawn territories show; their clocks count against it.
+    pub history_map_time: RwSignal<Option<i64>>,
     pub mode: RwSignal<MapMode>,
     pub history_fetch_nonce: RwSignal<u64>,
     pub history_legacy_geometry_active: RwSignal<bool>,
@@ -360,6 +362,7 @@ fn apply_seek(
     ctx: HistoryFetchContext,
 ) {
     let HistoryFetchContext {
+        history_map_time,
         mode,
         history_fetch_nonce: fetch_nonce,
         history_scalar_sample,
@@ -384,6 +387,7 @@ fn apply_seek(
             history_scalar_sample.set(snapshot.season_scalar);
             history_sr_leaderboard.set(snapshot.season_leaderboard);
             apply_ownership(territories, merged);
+            history_map_time.set(Some(timestamp_secs));
             crate::playback::seek_applied(request_nonce);
         }
         Err(e) => {
@@ -434,6 +438,7 @@ pub fn replay_updates_after_seq(
 
 #[derive(Clone, Copy)]
 pub struct EnterHistoryModeInput {
+    pub history_map_time: RwSignal<Option<i64>>,
     pub mode: RwSignal<MapMode>,
     pub history_timestamp: RwSignal<Option<i64>>,
     pub history_bounds: RwSignal<Option<(i64, i64)>>,
@@ -454,6 +459,7 @@ pub struct EnterHistoryModeInput {
 /// If bounds fetch fails (e.g. 503 — no database), automatically exits history mode.
 pub fn enter_history_mode(input: EnterHistoryModeInput) {
     let EnterHistoryModeInput {
+        history_map_time,
         mode,
         history_timestamp,
         history_bounds,
@@ -534,6 +540,7 @@ pub fn enter_history_mode(input: EnterHistoryModeInput) {
                 fetch_and_apply_with(
                     now,
                     HistoryFetchContext {
+                        history_map_time,
                         mode,
                         history_fetch_nonce,
                         history_legacy_geometry_active,

@@ -13,12 +13,12 @@ use crate::app::{
     AutoSrScalarEnabled, CurrentMode, DetailReturnGuild, GuildColorStore, GuildOnlineData,
     HeatEntriesByTerritory, HeatModeEnabled, HistoryAvailable, HistoryBoundsSignal,
     HistoryBufferModeActive, HistoryBufferedUpdates, HistoryFetchNonce,
-    HistoryLegacyGeometryActive, HistorySeasonLeaderboard, HistorySeasonScalarSample,
-    HistoryTimestamp, IsMobile, LastLiveSeq, LeaderboardSortBySr, LiveHandoffResyncCount,
-    LiveSeasonScalarSample, ManualSrScalar, MapMode, NeedsLiveResync, PlaybackActive, Selected,
-    SelectedGuild, ShowDebugInfo, ShowLeaderboardOnline, ShowLeaderboardSrGain,
-    ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowSettings, SidebarIndex,
-    SidebarItems, SidebarOpen, SidebarTransient, TerritoryGeometryStore,
+    HistoryLegacyGeometryActive, HistoryMapTime, HistorySeasonLeaderboard,
+    HistorySeasonScalarSample, HistoryTimestamp, IsMobile, LastLiveSeq, LeaderboardSortBySr,
+    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapMode, NeedsLiveResync,
+    PlaybackActive, Selected, SelectedGuild, ShowDebugInfo, ShowLeaderboardOnline,
+    ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowSettings,
+    SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient, TerritoryGeometryStore,
 };
 use crate::colors::rgba_css;
 use crate::format::{compact, rate, since};
@@ -991,7 +991,7 @@ fn DetailPanel() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
-    let HistoryTimestamp(history_timestamp) = expect_context();
+    let HistoryMapTime(history_map_time) = expect_context();
     let HeatModeEnabled(heat_mode_enabled) = expect_context();
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
     let ShowDebugInfo(show_debug_info) = expect_context();
@@ -1009,7 +1009,7 @@ fn DetailPanel() -> impl IntoView {
 
     let now = Memo::new(move |_| {
         if mode.get() == MapMode::History {
-            history_timestamp.get().unwrap_or_else(|| tick.get())
+            history_map_time.get().unwrap_or_else(|| tick.get())
         } else {
             tick.get()
         }
@@ -1263,6 +1263,7 @@ fn SidebarToolbar() -> impl IntoView {
     let PlaybackActive(playback_active) = expect_context();
     let HistoryAvailable(history_available) = expect_context();
     let HistoryTimestamp(history_timestamp) = expect_context();
+    let HistoryMapTime(history_map_time) = expect_context();
     let HistoryBoundsSignal(history_bounds) = expect_context();
     let HistoryFetchNonce(history_fetch_nonce) = expect_context();
     let HistoryLegacyGeometryActive(history_legacy_geometry_active) = expect_context();
@@ -1304,6 +1305,7 @@ fn SidebarToolbar() -> impl IntoView {
             });
         } else {
             history::enter_history_mode(history::EnterHistoryModeInput {
+                history_map_time,
                 mode,
                 history_timestamp,
                 history_bounds,

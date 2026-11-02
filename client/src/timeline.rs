@@ -5,7 +5,7 @@ use wasm_bindgen::JsCast;
 
 use crate::app::{
     CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryBufferModeActive,
-    HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive,
+    HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive, HistoryMapTime,
     HistorySeasonLeaderboard, HistorySeasonScalarSample, HistoryTimestamp, IsMobile, LastLiveSeq,
     LiveHandoffResyncCount, MapMode, NeedsLiveResync, PlaybackActive, PlaybackSpeed, SidebarOpen,
     SidebarWidth, TerritoryGeometryStore,
@@ -152,7 +152,9 @@ pub fn Timeline() -> impl IntoView {
     let overview_ref = NodeRef::<leptos::html::Input>::new();
     let slider_ref_sync = slider_ref;
     let overview_ref_sync = overview_ref;
+    let HistoryMapTime(history_map_time) = expect_context();
     let fetch_ctx = history::HistoryFetchContext {
+        history_map_time,
         mode,
         history_fetch_nonce,
         history_legacy_geometry_active,
@@ -381,6 +383,7 @@ pub fn Timeline() -> impl IntoView {
                             history_timestamp: timestamp,
                             playback_active: playing,
                             fetch: history::HistoryFetchContext {
+                                history_map_time,
                                 mode,
                                 history_fetch_nonce,
                                 history_legacy_geometry_active,
@@ -406,6 +409,7 @@ pub fn Timeline() -> impl IntoView {
                             history_timestamp: timestamp,
                             playback_active: playing,
                             fetch: history::HistoryFetchContext {
+                                history_map_time,
                                 mode,
                                 history_fetch_nonce,
                                 history_legacy_geometry_active,
