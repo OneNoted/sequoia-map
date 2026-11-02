@@ -325,9 +325,8 @@ pub(crate) struct HeatWindowLabel(pub RwSignal<String>);
 pub(crate) struct HeatMetaState(pub RwSignal<Option<HistoryHeatMeta>>);
 
 pub(crate) const MOBILE_BREAKPOINT: f64 = 768.0;
-/// Gap below the minimap, raised in history mode to clear the timeline.
+/// Gap below the minimap; in history mode it sits that far above the timeline.
 const MINIMAP_LIVE_INSET: f32 = 16.0;
-const MINIMAP_HISTORY_INSET: f32 = 68.0;
 /// Longest wait between website session probe attempts.
 ///
 /// Doubling from a second, then held here for as long as the probe keeps failing. The loop
@@ -392,6 +391,9 @@ pub(crate) struct HistoryTimestamp(pub RwSignal<Option<i64>>);
 /// is on the map. `None` while the live map is still drawn.
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryMapTime(pub RwSignal<Option<i64>>);
+/// The History bar's measured height in CSS pixels; 0 until it has been laid out.
+#[derive(Clone, Copy)]
+pub(crate) struct HistoryBarHeight(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct PlaybackActive(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -1180,6 +1182,7 @@ pub fn MapPage() -> impl IntoView {
     let map_mode: RwSignal<MapMode> = RwSignal::new(MapMode::Live);
     let history_timestamp: RwSignal<Option<i64>> = RwSignal::new(None);
     let history_map_time: RwSignal<Option<i64>> = RwSignal::new(None);
+    let history_bar_height: RwSignal<f64> = RwSignal::new(0.0);
     Effect::new(move || {
         map_mode.track();
         history_map_time.set(None);
@@ -1279,7 +1282,7 @@ pub fn MapPage() -> impl IntoView {
     });
     let minimap_inset = Memo::new(move |_| {
         (!is_mobile.get() && show_minimap.get()).then_some(match map_mode.get() {
-            MapMode::History => MINIMAP_HISTORY_INSET,
+            MapMode::History => history_bar_height.get() as f32 + MINIMAP_LIVE_INSET,
             MapMode::Live => MINIMAP_LIVE_INSET,
         })
     });
@@ -1372,6 +1375,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(CurrentMode(map_mode));
     provide_context(HistoryTimestamp(history_timestamp));
     provide_context(HistoryMapTime(history_map_time));
+    provide_context(HistoryBarHeight(history_bar_height));
     provide_context(PlaybackActive(playback_active));
     provide_context(PlaybackSpeed(playback_speed));
     provide_context(HistoryBoundsSignal(history_bounds));

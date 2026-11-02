@@ -343,18 +343,9 @@
   box-shadow: none;
 }
 
-.timeline-overview-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-  flex: 1 1 auto;
-  min-width: 88px;
-  height: 18px;
-}
-
 .timeline-focus-band {
   position: absolute;
-  top: 7px;
+  top: calc(50% - 2px);
   height: 4px;
   border-radius: 999px;
   background: rgba(245, 197, 66, 0.28);
@@ -1861,10 +1852,26 @@
   display: inline-flex;
   gap: 2px;
 }
-.sb-mode[data-mode="heat"][aria-pressed="true"] {
-  border-color: rgba(245,140,50,0.45);
-  background: rgba(245,140,50,0.12);
-  color: #f58c32;
+/* A mode reads like the History bar's zoom: an active mode is its word lit and underlined. */
+.sb-bar .sb-mode,
+.sb-bar .sb-mode:hover,
+.sb-bar .sb-mode[aria-pressed="true"] {
+  position: relative;
+  border-color: transparent;
+  background: none;
+}
+.sb-bar .sb-mode:hover { color: var(--color-gold-light); }
+.sb-bar .sb-mode[aria-pressed="true"] { color: var(--color-gold); }
+.sb-bar .sb-mode[data-mode="heat"][aria-pressed="true"] { color: #f58c32; }
+.sb-bar .sb-mode[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 1px;
+  background: currentColor;
 }
 .sb-toolbar-end {
   margin-left: auto;
@@ -1888,15 +1895,238 @@
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
 
-/* History timeline transport (client/src/timeline.rs), on the shared button. */
-.timeline-play { color: var(--color-gold); }
-.timeline-step { margin-left: 4px; }
-.timeline-speed {
-  padding: 4px 8px;
+/* History bar (client/src/timeline.rs). Laid out by its own width, so the sidebar, a resize
+   or a rotation all change it the same way. Controls are glyphs and words on the bar itself;
+   their hit areas are generous but unpainted. */
+.timeline-bar {
+  --tl-hit: 36px;
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 25;
+  container-type: inline-size;
+  padding: 4px 14px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: var(--color-deep);
+  border-top: 1px solid rgba(245, 197, 66, 0.15);
+  transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@media (pointer: coarse) {
+  .timeline-bar { --tl-hit: 44px; }
+}
+.tl-note {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(245, 197, 66, 0.32);
+  border-radius: 8px;
+  background: rgba(19, 22, 31, 0.96);
+  color: var(--color-text-primary);
   font-family: var(--font-mono);
   font-size: 0.68rem;
+  line-height: 1.45;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
 }
-select.timeline-speed { padding: 4px 6px; outline: none; }
+
+.tl-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Wide: every control on the one row. */
+.tl-extras { display: contents; }
+.tl-steps { order: 2; display: flex; }
+.tl-speed { order: 3; }
+.tl-time { order: 4; margin-left: 12px; }
+.tl-zoom { order: 5; margin-left: auto; }
+.tl-exit { order: 6; }
+.tl-head .tl-more { display: none; }
+.tl-time {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  letter-spacing: 0.04em;
+  color: var(--color-gold-light);
+  white-space: nowrap;
+}
+.tl-zoom { display: flex; }
+.tl-time {
+  min-height: var(--tl-hit);
+  min-width: 0;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 1px dashed rgba(245, 197, 66, 0.35);
+  border-radius: 0;
+  background: none;
+  color-scheme: dark;
+  cursor: pointer;
+}
+.tl-time:hover { border-bottom-color: var(--color-gold); }
+.tl-time:focus-visible { outline: 2px solid rgba(245, 197, 66, 0.6); outline-offset: 2px; }
+.tl-time::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.7;
+  filter: invert(80%) sepia(60%) saturate(500%) hue-rotate(5deg);
+}
+
+.tl-icon,
+.tl-speed,
+.tl-zoom-option,
+.tl-exit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tl-hit);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: color 0.15s, background-color 0.15s;
+}
+.tl-icon:hover,
+.tl-speed:hover,
+.tl-zoom-option:hover,
+.tl-exit:hover { color: var(--color-gold-light); }
+.tl-icon:focus-visible,
+.tl-speed:focus-visible,
+.tl-zoom-option:focus-visible,
+.tl-exit:focus-visible {
+  outline: 2px solid rgba(245, 197, 66, 0.6);
+  outline-offset: -3px;
+}
+.tl-icon { width: var(--tl-hit); }
+.tl-icon svg { width: 16px; height: 16px; }
+/* Play leads: gold, ringed, the one control that runs time. */
+.tl-play { position: relative; color: var(--color-gold); }
+.tl-play::before {
+  content: "";
+  position: absolute;
+  inset: calc(50% - 14px);
+  border: 1px solid rgba(245, 197, 66, 0.45);
+  border-radius: 50%;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.tl-play:hover::before { border-color: var(--color-gold); background: rgba(245, 197, 66, 0.08); }
+.tl-speed,
+.tl-zoom-option,
+.tl-exit {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+}
+.tl-speed { min-width: 44px; padding: 0 6px; }
+.tl-zoom-option { position: relative; min-width: 34px; padding: 0 5px; border-radius: 4px; }
+.tl-zoom-option[aria-pressed="true"] { color: var(--color-gold); }
+.tl-zoom-option[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: calc(50% - 12px);
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-gold);
+}
+.tl-exit { gap: 6px; padding: 0 10px; }
+.tl-exit svg { width: 11px; height: 11px; }
+
+/* A phone's sheet covers the History bar; its top keeps the selected time and leads back. */
+.sb-history-when {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  margin: 0;
+  padding: 0 var(--sb-gutter);
+  border: 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: none;
+  color: var(--color-gold-light);
+  font-family: var(--font-display);
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.sb-history-when svg { color: var(--color-text-secondary); }
+.sb-history-when:focus-visible { outline: 2px solid rgba(245, 197, 66, 0.6); outline-offset: -3px; }
+
+/* The rails: the whole history above, the window the zoom chose below, joined by the lens
+   that shows which part of the first the second spans. Ends sit beside each rail, outside the
+   thumb's travel. */
+.tl-rails {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "os ov oe"
+    ". lens ."
+    "fs fi fe";
+  align-items: center;
+  column-gap: 10px;
+}
+.tl-overview-start { grid-area: os; }
+.tl-overview { grid-area: ov; position: relative; display: flex; align-items: center; height: 18px; }
+.tl-overview-end { grid-area: oe; text-align: right; }
+.tl-lens {
+  grid-area: lens;
+  height: 6px;
+  background: linear-gradient(rgba(245, 197, 66, 0.2), rgba(245, 197, 66, 0.05));
+}
+.tl-fine-start { grid-area: fs; }
+.tl-fine { grid-area: fi; height: 24px; }
+.tl-fine-end { grid-area: fe; text-align: right; }
+.tl-edge {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+@media (pointer: coarse) {
+  .tl-overview, .timeline-overview-slider { height: 26px; }
+  .tl-fine { height: 34px; }
+}
+
+/* Compact: play, the time, more and Live on the row; steps, speed and zoom open above the bar;
+   the rails lose their end labels. */
+@container (max-width: 620px) {
+  .tl-head { gap: 2px; }
+  .tl-time { flex: 0 1 auto; margin-left: 6px; }
+  .tl-head .tl-more { display: inline-flex; order: 5; margin-left: auto; }
+  .tl-more[aria-expanded="true"] { color: var(--color-gold); }
+  .tl-extras { display: none; }
+  .tl-extras.tl-extras-open {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 10px);
+    z-index: 2;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 2px 6px;
+    max-width: 100%;
+    padding: 4px 8px;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 10px;
+    background: var(--color-deep);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  }
+  .tl-extras-open .tl-zoom { flex: 1 1 100%; justify-content: space-between; margin-left: 0; }
+  .tl-rails {
+    grid-template-columns: 1fr;
+    grid-template-areas: "ov" "lens" "fi";
+  }
+  .tl-edge { display: none; }
+}
 
 /* Settings menu (client/src/settings_menu.rs) */
 .settings-panel {

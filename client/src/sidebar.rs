@@ -147,6 +147,7 @@ pub fn Sidebar() -> impl IntoView {
 
     view! {
         <div class="sidebar-inner" class:sidebar-animate=move || sidebar_open.get() style:display=move || if sidebar_open.get() { "flex" } else { "none" }>
+            <HistoryWhen />
             <SearchBar />
             <div data-sidebar-scroll="" class="sb-scroll scrollbar-thin">
                 {move || {
@@ -166,6 +167,37 @@ pub fn Sidebar() -> impl IntoView {
             </div>
             <SidebarToolbar />
         </div>
+    }
+}
+
+/// On a phone the sheet covers the History bar, so while History is shown the sheet keeps
+/// its selected time in view; pressing it closes the sheet onto the bar.
+#[component]
+fn HistoryWhen() -> impl IntoView {
+    let IsMobile(is_mobile) = expect_context();
+    let CurrentMode(mode) = expect_context();
+    let SidebarOpen(sidebar_open) = expect_context();
+    let HistoryTimestamp(history_timestamp) = expect_context();
+    let when = move || {
+        history_timestamp
+            .get()
+            .map(crate::timeline::format_history_timestamp)
+            .unwrap_or_default()
+    };
+    view! {
+        <Show when=move || is_mobile.get() && mode.get() == MapMode::History>
+            <button
+                type="button"
+                class="sb-history-when"
+                aria-label=move || format!("History at {}, show the timeline", when())
+                on:click=move |_| sidebar_open.set(false)
+            >
+                <span class="sb-history-when-time">{when}</span>
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" width="14" height="14" aria-hidden="true">
+                    <path d="M4 6l4 4 4-4" />
+                </svg>
+            </button>
+        </Show>
     }
 }
 
