@@ -6,9 +6,10 @@
 //! read the same stage and the same clock.
 //!
 //! Backend semantics this relies on (`sequoia-backend` `WarStatusService`):
-//! - A `QUEUED` row's stamp is the queue expiry, when the party is pulled in. The war starts
-//!   [`QUEUE_ENTRY_TO_START_SECS`] later. Its `queued_at`, `queue_seconds` and `queuer` come
-//!   from the backend's record of the queue itself.
+//! - A `QUEUED` row's stamp is the queue expiry, when the party is pulled in, and its clock
+//!   counts to that entry. The war starts [`QUEUE_ENTRY_TO_START_SECS`] later. Its
+//!   `queued_at`, `queue_seconds` and `queuer` come from the backend's record of the queue
+//!   itself.
 //! - An `ENTERED` row's stamp is the scheduled start. Its war row already exists, with health
 //!   forced to full, so a war row alone does not mean fighting.
 //! - Only a `STARTED` row confirms a war. Its stamp is the estimated win, or null.
@@ -20,7 +21,7 @@ use crate::{ActiveWar, PlayerClass, QueueStatus, WarControllerState, WarQueueEnt
 
 /// Seconds between a queue expiring (the party is pulled in) and its war starting, as the
 /// backend schedules it.
-pub const QUEUE_ENTRY_TO_START_SECS: i64 = 30;
+pub const QUEUE_ENTRY_TO_START_SECS: i64 = 25;
 
 /// A queued front that vanishes at least this long before its queue would have expired was
 /// cancelled rather than entered.
@@ -58,10 +59,10 @@ pub struct QueuedBy {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FrontStage {
-    /// The queue timer is running. `starts_at` is when the war is expected to begin;
+    /// The queue timer is running. `enters_at` is when the party is pulled in;
     /// `timer` is the queue's own timer, when the backend knows when it started.
     Queued {
-        starts_at: Option<i64>,
+        enters_at: Option<i64>,
         timer: Option<QueueTimer>,
     },
     /// The party is inside, waiting for the scheduled start.
@@ -108,8 +109,9 @@ impl QueueTimer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WarMark {
     pub stage: StageKind,
-    /// When a queued or entered war is expected to begin; `None` once fighting.
-    pub starts_at: Option<i64>,
+    /// What the clock counts to: the entry while queued, the start once entered; `None` once
+    /// fighting.
+    pub due_at: Option<i64>,
     pub timer: Option<QueueTimer>,
 }
 
@@ -117,7 +119,7 @@ impl WarMark {
     /// The same mark on a clock `secs` behind the feed's.
     pub fn earlier_by(self, secs: i64) -> Self {
         Self {
-            starts_at: self.starts_at.map(|at| at - secs),
+            due_at: self.due_at.map(|at| at - secs),
             timer: self.timer.map(|timer| QueueTimer {
                 queued_at: timer.queued_at - secs,
                 expires_at: timer.expires_at - secs,
@@ -152,9 +154,11 @@ impl Tower {
 /// What a front's clock reads at a given instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrontClock {
-    /// Seconds until the war is expected to begin.
+    /// Seconds until the queued party is pulled in.
+    EntersIn(i64),
+    /// Seconds until the entered war is expected to begin.
     StartsIn(i64),
-    /// The expected start has passed but no `STARTED` row has confirmed it.
+    /// The expected entry or start has passed but the backend has not confirmed it.
     Due,
     /// Queued or entered without a usable stamp.
     Unscheduled,
@@ -167,13 +171,14 @@ pub enum FrontClock {
 impl WarFront {
     pub fn clock(&self, now: i64) -> FrontClock {
         match self.stage {
-            FrontStage::Queued { starts_at, .. } | FrontStage::Entered { starts_at } => {
-                match starts_at {
-                    Some(starts_at) if starts_at > now => FrontClock::StartsIn(starts_at - now),
-                    Some(_) => FrontClock::Due,
-                    None => FrontClock::Unscheduled,
+            FrontStage::Queued { .. } | FrontStage::Entered { .. } => match self.due_at() {
+                Some(at) if at <= now => FrontClock::Due,
+                Some(at) if self.stage_kind() == StageKind::Queued => {
+                    FrontClock::EntersIn(at - now)
                 }
-            }
+                Some(at) => FrontClock::StartsIn(at - now),
+                None => FrontClock::Unscheduled,
+            },
             FrontStage::Fighting { started_at, .. } => started_at
                 .map_or(FrontClock::Fighting, |at| {
                     FrontClock::FightingFor((now - at).max(0))
@@ -201,14 +206,30 @@ impl WarFront {
         }
     }
 
-    pub fn mark(&self) -> WarMark {
-        let starts_at = match self.stage {
-            FrontStage::Queued { starts_at, .. } | FrontStage::Entered { starts_at } => starts_at,
+    /// When a queued front is pulled in or an entered front starts; `None` once fighting.
+    fn due_at(&self) -> Option<i64> {
+        match self.stage {
+            FrontStage::Queued { enters_at, .. } => enters_at,
+            FrontStage::Entered { starts_at } => starts_at,
             FrontStage::Fighting { .. } => None,
-        };
+        }
+    }
+
+    /// When a queued or entered war is expected to begin; `None` once fighting.
+    pub fn starts_at(&self) -> Option<i64> {
+        match self.stage {
+            FrontStage::Queued { enters_at, .. } => {
+                enters_at.map(|at| at + QUEUE_ENTRY_TO_START_SECS)
+            }
+            FrontStage::Entered { starts_at } => starts_at,
+            FrontStage::Fighting { .. } => None,
+        }
+    }
+
+    pub fn mark(&self) -> WarMark {
         WarMark {
             stage: self.stage_kind(),
-            starts_at,
+            due_at: self.due_at(),
             timer: self.timer(),
         }
     }
@@ -216,8 +237,8 @@ impl WarFront {
     /// When the war began or is expected to begin, for ordering.
     fn start_key(&self) -> Option<i64> {
         match self.stage {
-            FrontStage::Queued { starts_at, .. } | FrontStage::Entered { starts_at } => starts_at,
             FrontStage::Fighting { started_at, .. } => started_at,
+            _ => self.starts_at(),
         }
     }
 }
@@ -383,9 +404,7 @@ fn build_fronts(state: &WarControllerState) -> Vec<WarFront> {
 fn queue_front(entry: &WarQueueEntry, status: QueueStatus, war: Option<&ActiveWar>) -> WarFront {
     let stage = match status {
         QueueStatus::Queued => FrontStage::Queued {
-            starts_at: entry
-                .timestamp
-                .map(|expiry| expiry + QUEUE_ENTRY_TO_START_SECS),
+            enters_at: entry.timestamp,
             timer: QueueTimer::new(entry.queue_seconds, entry.timestamp),
         },
         QueueStatus::Entered => FrontStage::Entered {
@@ -524,11 +543,9 @@ pub fn outcomes(previous: &WarBoard, next: &WarBoard) -> Vec<Outcome> {
             let kind = match front.stage {
                 FrontStage::Fighting { .. } => OutcomeKind::WarEnded,
                 FrontStage::Queued {
-                    starts_at: Some(starts_at),
+                    enters_at: Some(enters_at),
                     ..
-                } if starts_at - QUEUE_ENTRY_TO_START_SECS - CANCEL_LEAD_SECS > now => {
-                    OutcomeKind::Cancelled
-                }
+                } if enters_at - CANCEL_LEAD_SECS > now => OutcomeKind::Cancelled,
                 FrontStage::Queued { .. } | FrontStage::Entered { .. } => return None,
             };
             Some(Outcome {
@@ -626,13 +643,34 @@ mod tests {
     }
 
     #[test]
-    fn a_queued_front_counts_down_to_the_war_starting_not_to_entry() {
-        let board = board(&state(
+    fn a_front_counts_down_to_entry_then_25_seconds_to_the_start() {
+        let queued = board(&state(
             vec![queue("Iron Road", "QUEUED", Some(NOW + 90))],
             vec![],
             vec![],
         ));
-        assert_eq!(board.fronts[0].clock(NOW), FrontClock::StartsIn(120));
+        let front = &queued.fronts[0];
+        assert_eq!(front.clock(NOW), FrontClock::EntersIn(90));
+        assert_eq!(front.starts_at(), Some(NOW + 115));
+        assert_eq!(front.clock(NOW + 90), FrontClock::Due);
+
+        let entered = board(&state(
+            vec![queue("Iron Road", "ENTERED", Some(NOW + 115))],
+            vec![war("Iron Road", NOW + 115, 1.0)],
+            vec![],
+        ));
+        assert_eq!(entered.fronts[0].clock(NOW + 90), FrontClock::StartsIn(25));
+        assert_eq!(entered.fronts[0].clock(NOW + 115), FrontClock::Due);
+
+        let started = board(&state(
+            vec![queue("Iron Road", "STARTED", None)],
+            vec![war("Iron Road", NOW + 115, 1.0)],
+            vec![],
+        ));
+        assert_eq!(
+            started.fronts[0].clock(NOW + 120),
+            FrontClock::FightingFor(5)
+        );
     }
 
     #[test]
@@ -648,13 +686,12 @@ mod tests {
         assert_eq!(timer.duration(), 420);
         assert_eq!(timer.remaining_fraction(NOW), 300.0 / 420.0);
         assert_eq!(timer.remaining_fraction(NOW + 400), 0.0);
-        // The countdown still runs to the war's start, 30 s after the queue runs out.
-        assert_eq!(front.clock(NOW), FrontClock::StartsIn(330));
+        assert_eq!(front.clock(NOW), FrontClock::EntersIn(300));
         assert_eq!(
             front.mark(),
             WarMark {
                 stage: StageKind::Queued,
-                starts_at: Some(NOW + 330),
+                due_at: Some(NOW + 300),
                 timer: Some(timer),
             }
         );
@@ -750,19 +787,19 @@ mod tests {
         assert_eq!(board.front("Ragni").expect("entered").queued, None);
         let entered = board.front("Ragni").expect("entered").mark();
         assert_eq!(
-            (entered.stage, entered.starts_at, entered.timer),
+            (entered.stage, entered.due_at, entered.timer),
             (StageKind::Entered, Some(NOW + 20), None)
         );
         let fighting = board.front("Detlas").expect("fighting").mark();
         assert_eq!(
-            (fighting.stage, fighting.starts_at, fighting.timer),
+            (fighting.stage, fighting.due_at, fighting.timer),
             (StageKind::Fighting, None, None)
         );
     }
 
     #[test]
     fn an_entered_front_with_a_full_health_war_row_is_not_fighting() {
-        // The backend creates the war row on entry, health forced to 1.0, 30 s before it starts.
+        // The backend creates the war row on entry, health forced to 1.0, 25 s before it starts.
         let board = board(&state(
             vec![queue("Iron Road", "ENTERED", Some(NOW + 20))],
             vec![war("Iron Road", NOW + 20, 1.0)],

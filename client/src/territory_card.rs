@@ -3,9 +3,7 @@
 //! and when, the queue's details, and one resource table.
 
 use leptos::prelude::*;
-use sequoia_shared::war_board::{
-    Ending, FrontStage, QUEUE_ENTRY_TO_START_SECS, QueuedBy, WarFront, format_clock,
-};
+use sequoia_shared::war_board::{Ending, FrontStage, QueuedBy, WarFront, format_clock};
 use sequoia_shared::{Resources, TerritoryRuntimeData, TreasuryLevel};
 
 use crate::colors::rgba_css;
@@ -206,12 +204,12 @@ fn QueueOriginLine(origin: QueueOrigin) -> impl IntoView {
 /// out and when the war is expected to start. Nothing once the war is being fought.
 #[component]
 pub(crate) fn QueueDetails(front: WarFront, open: RwSignal<bool>) -> impl IntoView {
-    let (queued, starts_at) = match front.stage {
-        FrontStage::Queued { starts_at, .. } => (true, starts_at),
-        FrontStage::Entered { starts_at } => (false, starts_at),
+    let (queued, ends_at) = match front.stage {
+        FrontStage::Queued { enters_at, .. } => (true, enters_at),
+        FrontStage::Entered { .. } => (false, None),
         FrontStage::Fighting { .. } => return ().into_any(),
     };
-    let ends_at = starts_at.map(|at| at - QUEUE_ENTRY_TO_START_SECS);
+    let starts_at = front.starts_at();
     let time = |at: Option<i64>| at.map_or_else(|| "Unknown".to_string(), local_time_seconds);
     view! {
         <Disclosure open summary="Queue details">

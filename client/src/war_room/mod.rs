@@ -458,11 +458,15 @@ pub(crate) fn difficulty_label(raw: Option<&str>) -> Option<&'static str> {
 /// A front's clock as (visible text, spoken text).
 pub(crate) fn clock_text(clock: FrontClock) -> (String, String) {
     match clock {
+        FrontClock::EntersIn(seconds) => {
+            let time = format_clock(seconds);
+            (time.clone(), format!("enters in {time}"))
+        }
         FrontClock::StartsIn(seconds) => {
             let time = format_clock(seconds);
             (time.clone(), format!("starts in {time}"))
         }
-        FrontClock::Due => ("Due".into(), "start due, not yet confirmed".into()),
+        FrontClock::Due => ("Due".into(), "due, not yet confirmed".into()),
         FrontClock::Unscheduled => ("Time unknown".into(), "start time unknown".into()),
         FrontClock::FightingFor(seconds) => {
             let time = format_clock(seconds);
@@ -561,6 +565,7 @@ mod tests {
     #[test]
     fn a_due_start_is_never_spoken_as_a_war() {
         assert_eq!(clock_text(FrontClock::Due).0, "Due");
+        assert_eq!(clock_text(FrontClock::EntersIn(65)).1, "enters in 1:05");
         assert_eq!(clock_text(FrontClock::StartsIn(65)).1, "starts in 1:05");
         assert_eq!(
             clock_text(FrontClock::FightingFor(65)).1,

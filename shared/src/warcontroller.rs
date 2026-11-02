@@ -86,7 +86,7 @@ pub struct WarQueueEntry {
     /// Queue stage, e.g. `QUEUED`. Parse with [`QueueStatus::from_api_status`].
     pub status: String,
     /// Unix seconds at which this entry next changes: the queue expiry for `QUEUED` (the
-    /// party is pulled in, and the war starts 30 s later), the scheduled start for `ENTERED`,
+    /// party is pulled in, and the war starts 25 s later), the scheduled start for `ENTERED`,
     /// and the estimated win for `STARTED`. [`crate::war_board`] turns it into a clock.
     ///
     /// `None` when the backend sends no stamp, as it does for a `STARTED` war whose tower
@@ -102,7 +102,7 @@ pub struct WarQueueEntry {
     )]
     pub queued_at: Option<i64>,
     /// `QUEUED` only: the queue's original timer in seconds, ending at `timestamp`; it
-    /// excludes the 30 s between entry and the war's start. `None` when the backend's timer
+    /// excludes the 25 s between entry and the war's start. `None` when the backend's timer
     /// is a fallback guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_seconds: Option<i64>,

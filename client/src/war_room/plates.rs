@@ -133,7 +133,7 @@ mod tests {
             front(
                 "Detlas",
                 FrontStage::Queued {
-                    starts_at: Some(1_128),
+                    enters_at: Some(1_128),
                     timer: None,
                 },
             ),
@@ -153,7 +153,7 @@ mod tests {
             plates.plates[0].label,
             PlateLabel::Front {
                 stage: StageKind::Queued,
-                clock: FrontClock::StartsIn(128),
+                clock: FrontClock::EntersIn(128),
                 health: None,
             }
         );

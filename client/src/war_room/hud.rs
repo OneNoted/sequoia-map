@@ -7,8 +7,7 @@ use sequoia_browser_map::BrowserMap;
 use sequoia_shared::PlayerClass;
 use sequoia_shared::tower::format_stat;
 use sequoia_shared::war_board::{
-    Ending, FrontStage, QUEUE_ENTRY_TO_START_SECS, RosterMember, StageKind, Tower, WarFront,
-    format_clock,
+    Ending, FrontStage, RosterMember, StageKind, Tower, WarFront, format_clock,
 };
 use wasm_bindgen::JsCast;
 
@@ -343,11 +342,11 @@ fn FrontDetail(front: WarFront) -> impl IntoView {
         .queued
         .as_ref()
         .and_then(|queued| QueueOrigin::new(queued, room.now.get_untracked(), local_time));
-    let queued = matches!(front.stage, FrontStage::Queued { .. });
-    let starts_at = match front.stage {
-        FrontStage::Queued { starts_at, .. } | FrontStage::Entered { starts_at } => starts_at,
-        FrontStage::Fighting { .. } => None,
+    let enters_at = match front.stage {
+        FrontStage::Queued { enters_at, .. } => Some(enters_at),
+        _ => None,
     };
+    let starts_at = front.starts_at();
     let time = |at: Option<i64>| at.map_or_else(|| "Unknown".to_string(), local_time_seconds);
     view! {
         <dl class="war-front-detail">
@@ -363,9 +362,9 @@ fn FrontDetail(front: WarFront) -> impl IntoView {
                     </dd>
                 </div>
             })}
-            {queued.then(|| view! {
+            {enters_at.map(|enters_at| view! {
                 <div><dt>"Queue timer"</dt><dd>{original_timer(&front)}</dd></div>
-                <div><dt>"Queue ends"</dt><dd>{time(starts_at.map(|at| at - QUEUE_ENTRY_TO_START_SECS))}</dd></div>
+                <div><dt>"Queue ends"</dt><dd>{time(enters_at)}</dd></div>
             })}
             <div><dt>"War starts"</dt><dd>{time(starts_at)}</dd></div>
         </dl>
