@@ -491,6 +491,8 @@ pub fn Timeline() -> impl IntoView {
             class="timeline-bar hud-enter"
             on:keydown=move |event: web_sys::KeyboardEvent| {
                 if event.key() == "Escape" && more_open.get_untracked() {
+                    // Closing the panel is all this Escape does; the map keeps its selection.
+                    event.prevent_default();
                     more_open.set(false);
                 }
             }
