@@ -4,10 +4,14 @@ use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use sequoia_browser_map::live_feed::fetch_live_state;
-use sequoia_shared::history::{HistoryBounds, HistoryGuildSrEntry, HistorySnapshot};
-use sequoia_shared::{GuildRef, SeasonScalarSample, Territory, TerritoryMap};
+use sequoia_shared::history::{
+    HistoryBounds, HistoryGuildSrEntry, HistorySnapshot, HistoryTerritoryState,
+};
+use sequoia_shared::{
+    GuildRef, Region, Resources, SeasonScalarSample, Territory, TerritoryMap, TerritoryRuntimeData,
+};
 
-use crate::app::{BufferedUpdate, GuildColorMap, MapMode, TerritoryGeometryMap};
+use crate::app::{BufferedUpdate, GuildColorMap, MapMode, TerritoryGeometry, TerritoryGeometryMap};
 use crate::territory::{ClientTerritory, ClientTerritoryMap, apply_changes, from_snapshot};
 
 const REKINDLED_WORLD_RELEASE_SECS: i64 = 1_723_248_000; // 2024-08-10T00:00:00Z
@@ -250,8 +254,50 @@ pub async fn fetch_bounds() -> Result<HistoryBounds, String> {
         .map_err(|e| format!("parse error: {e}"))
 }
 
-/// Merge historical ownership data with immutable territory geometry.
-/// Territories not found in the geometry store are skipped (no zero-region fallback).
+/// A territory's map parts at a historical time, for the holding (guild UUID, acquisition in
+/// microseconds) shown then. Its recorded official-API state supplies them, the runtime only
+/// when the API reported that same holding; without one, today's geometry stands in and there
+/// is no runtime, so nothing live leaks into history. `None` when neither knows where the
+/// territory is.
+pub(crate) fn historical_parts(
+    geometry: Option<&TerritoryGeometry>,
+    recorded: Option<&HistoryTerritoryState>,
+    holding: (&str, i64),
+) -> Option<(Region, Resources, Vec<String>, Option<TerritoryRuntimeData>)> {
+    let Some(recorded) = recorded else {
+        let (location, resources, connections) = geometry?;
+        return Some((
+            location.clone(),
+            resources.clone(),
+            connections.clone(),
+            None,
+        ));
+    };
+    let state = &recorded.state;
+    let location = state
+        .location
+        .clone()
+        .or_else(|| geometry.map(|(location, ..)| location.clone()))?;
+    let resources = if state.base_generation.is_some() {
+        state.resources()
+    } else {
+        geometry.map_or_else(Resources::default, |(_, resources, _)| resources.clone())
+    };
+    let connections = state
+        .links
+        .clone()
+        .or_else(|| geometry.map(|(.., connections)| connections.clone()))
+        .unwrap_or_default();
+    let runtime = state
+        .reported_for(holding.0, holding.1)
+        .then(|| state.runtime(recorded.observed_at.clone()))
+        .flatten();
+    Some((location, resources, connections, runtime))
+}
+
+/// Merge historical ownership and recorded state with immutable territory geometry.
+/// Territories neither the state nor the geometry store places are skipped (no zero-region
+/// fallback).
 pub fn merge_with_static(
     snapshot: &HistorySnapshot,
     geometry: &TerritoryGeometryMap,
@@ -260,11 +306,14 @@ pub fn merge_with_static(
     let mut map = TerritoryMap::new();
 
     for (name, record) in &snapshot.ownership {
-        let Some((location, resources, connections)) = geometry.get(name) else {
+        let acquired = parse_history_time(&record.acquired_at).unwrap_or_else(chrono::Utc::now);
+        let Some((location, resources, connections, runtime)) = historical_parts(
+            geometry.get(name),
+            snapshot.states.get(name),
+            (&record.guild_uuid, acquired.timestamp_micros()),
+        ) else {
             continue;
         };
-
-        let acquired = parse_history_time(&record.acquired_at).unwrap_or_else(chrono::Utc::now);
 
         map.insert(
             name.clone(),
@@ -278,10 +327,10 @@ pub fn merge_with_static(
                         .or_else(|| guild_colors.get(&record.guild_name).copied()),
                 },
                 acquired,
-                location: location.clone(),
-                resources: resources.clone(),
-                connections: connections.clone(),
-                runtime: None,
+                location,
+                resources,
+                connections,
+                runtime,
             },
         );
     }
@@ -290,9 +339,9 @@ pub fn merge_with_static(
 }
 
 /// Replace the map with `merged`, rebuilding only territories whose state differs (owner,
-/// acquisition, and the live runtime a historical state does not carry), and leaving the
-/// signal untouched when nothing does: scrubbing through a quiet interval then costs no map
-/// rebuild.
+/// acquisition, recorded state, or a live runtime a historical state does not carry), and
+/// leaving the signal untouched when nothing does: scrubbing through a quiet interval then
+/// costs no map rebuild.
 fn apply_ownership(territories: RwSignal<ClientTerritoryMap>, mut merged: TerritoryMap) {
     let changed = territories.with_untracked(|current| {
         current.len() != merged.len()
@@ -388,7 +437,7 @@ fn apply_seek(
             history_sr_leaderboard.set(snapshot.season_leaderboard);
             apply_ownership(territories, merged);
             history_map_time.set(Some(timestamp_secs));
-            crate::playback::seek_applied(request_nonce);
+            crate::playback::seek_applied(request_nonce, snapshot.states);
         }
         Err(e) => {
             if is_abort_error(&e) {
@@ -777,6 +826,81 @@ mod tests {
         ] {
             assert_eq!(parse_history_time(input), Some(expected));
         }
+    }
+
+    #[test]
+    fn a_seek_shows_recorded_state_only_for_the_holding_it_was_reported_for() {
+        let state: HistoryTerritoryState = serde_json::from_value(serde_json::json!({
+            "observed_at": "2026-11-02T11:17:44+00:00",
+            "state": {
+                "owner": {"guild_uuid": "g", "acquired_micros": 1_767_225_600_000_000_i64},
+                "headquarters": true, "guild_headquarters": "A", "treasury": "LOW",
+                "defences": "VERY_HIGH",
+                "generation": {"emeralds": 9000, "ore": 0, "crops": 0, "fish": 0, "wood": 0},
+                "base_generation": {"emeralds": 9000, "ore": 3600, "crops": 0, "fish": 0, "wood": 0},
+                "stored": {"emeralds": 120, "ore": 0, "crops": 0, "fish": 0, "wood": 0},
+                "capacity": null, "location": {"start": [5, 5], "end": [15, 15]},
+                "links": ["B"]
+            }
+        }))
+        .expect("state");
+        let snapshot = |guild_uuid: &str| HistorySnapshot {
+            timestamp: "2026-11-02T12:00:00Z".to_string(),
+            ownership: std::collections::HashMap::from([(
+                "A".to_string(),
+                sequoia_shared::history::OwnershipRecord {
+                    guild_uuid: guild_uuid.to_string(),
+                    guild_name: "Guild".to_string(),
+                    guild_prefix: "G".to_string(),
+                    guild_color: None,
+                    acquired_at: "2026-01-01T00:00:00Z".to_string(),
+                },
+            )]),
+            season_scalar: None,
+            season_leaderboard: None,
+            states: std::collections::HashMap::from([("A".to_string(), state.clone())]),
+        };
+        let geometry = TerritoryGeometryMap::from([(
+            "A".to_string(),
+            (
+                Region {
+                    start: [0, 0],
+                    end: [10, 10],
+                },
+                Resources::default(),
+                Vec::new(),
+            ),
+        )]);
+
+        let same = merge_with_static(&snapshot("g"), &geometry, &GuildColorMap::new());
+        let runtime = same["A"].runtime.clone().expect("recorded runtime");
+        assert_eq!(runtime.headquarters, Some(true));
+        assert_eq!(runtime.defense_tier.as_deref(), Some("VERY HIGH"));
+        assert_eq!(runtime.held_resources.map(|held| held.emeralds), Some(120));
+        assert_eq!(
+            runtime.provenance.map(|p| p.observed_at),
+            Some(state.observed_at.clone())
+        );
+        assert_eq!(
+            same["A"].location.start,
+            [5, 5],
+            "the recorded location wins"
+        );
+        assert_eq!(same["A"].connections, vec!["B".to_string()]);
+
+        let produced = Resources {
+            emeralds: 9000,
+            ..Resources::default()
+        };
+        assert_eq!(same["A"].resources, produced);
+
+        let other = merge_with_static(&snapshot("h"), &geometry, &GuildColorMap::new());
+        assert_eq!(
+            other["A"].runtime, None,
+            "another guild's holding shows none of it"
+        );
+        assert_eq!(other["A"].resources, produced, "ore is not produced here");
+        assert_eq!(other["A"].location.start, [5, 5]);
     }
 
     #[test]

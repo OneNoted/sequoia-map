@@ -275,8 +275,9 @@ reserved before the outage are used up.
    after its first share one stream position, which the legacy event table cannot hold;
    `rollback` reports their count and they stay in `history_fact`.
 2. Start the previous image with the new image's migrations directory in place of its own.
-   The database records migration 013, which the previous image does not ship, and its
-   migration check stops it with `VersionMissing` otherwise:
+   The database records migrations the previous image does not ship (013, and 014 for
+   official territory state), and its migration check stops it with `VersionMissing`
+   otherwise:
 
    ```bash
    docker create --name history-migrations <new image>
@@ -287,7 +288,9 @@ reserved before the outage are used up.
 
    Do not delete the migration record instead: the next start of the new image would then
    try to create the history tables again. Starting the new image again later converts what
-   the previous one recorded meanwhile.
+   the previous one recorded meanwhile. An image without migration 014 records no official
+   territory state and writes checkpoints without it; that state is unknown for its time,
+   and the first poll after the new image returns records every territory's state again.
 
 **Retiring the legacy tables** reclaims their space only after `verify` is clean on the
 production database and a backup containing them exists. Keep that backup for as long as a

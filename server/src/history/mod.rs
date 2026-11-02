@@ -1,16 +1,20 @@
-//! Territory ownership history: one serialized writer for live ownership changes, compact
-//! storage (migration 013), bounded reads and conversion from the legacy tables.
+//! Territory history: one serialized writer for live ownership and official-API state changes,
+//! compact storage (migrations 013 and 014), bounded reads and conversion from the legacy tables.
 
 pub mod archive;
 pub mod checkpoint;
 pub mod convert;
 pub mod read;
+pub mod state;
 pub mod writer;
 
 use chrono::{DateTime, Utc};
 
 /// Facts stored per checkpoint interval at most; seeks replay no more than this.
 pub const CHECKPOINT_FACT_BUDGET: u32 = 4_000;
+/// Encoded state changes stored per checkpoint interval at most; seeks decode no more than
+/// this beyond the checkpoint.
+pub const CHECKPOINT_STATE_BYTES: usize = 512 * 1024;
 /// A checkpoint is also written once this much time has passed with any change.
 pub const CHECKPOINT_MAX_AGE_SECS: i64 = 6 * 3600;
 

@@ -262,6 +262,10 @@ pub struct EventsQuery {
     after_ordinal: Option<u16>,
     #[serde(default = "default_limit")]
     limit: i64,
+    /// Also page official-API state rows. Clients that read only `events` leave it unset, so
+    /// state rows never fill their pages.
+    #[serde(default)]
+    include_states: bool,
 }
 
 #[derive(Deserialize)]
@@ -360,7 +364,8 @@ async fn season_scalar_at(
     ))
 }
 
-/// `GET /api/history/at?t={rfc3339}` — Reconstruct ownership at a point in time.
+/// `GET /api/history/at?t={rfc3339}` — Reconstruct ownership and official-API territory
+/// state at a point in time.
 pub async fn history_at(
     State(state): State<AppState>,
     Query(query): Query<AtQuery>,
@@ -374,15 +379,19 @@ pub async fn history_at(
         merged_fallback_colors(&state, pool).await?;
 
     let ownership_fut = async {
-        history::read::ownership_at(pool, target)
+        history::read::territories_at(pool, target)
             .await
             .map_err(|error| {
                 tracing::warn!(%error, "history seek failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })
     };
-    let (season_scalar, mut ownership) =
+    let (season_scalar, territories) =
         tokio::try_join!(season_scalar_at(pool, target), ownership_fut)?;
+    let history::read::TerritoriesAt {
+        mut ownership,
+        states,
+    } = territories;
 
     for record in ownership.values_mut() {
         record.guild_color = with_fallback_color(
@@ -406,6 +415,7 @@ pub async fn history_at(
         ownership,
         season_scalar,
         season_leaderboard,
+        states,
     };
 
     // Cache older timestamps aggressively, recent ones briefly
@@ -442,7 +452,7 @@ pub async fn history_events(
     let (fallback_colors, fallback_colors_normalized) =
         merged_fallback_colors(&state, pool).await?;
 
-    let page = history::read::fact_page(pool, from, to, after, limit)
+    let page = history::read::fact_page(pool, from, to, after, limit, query.include_states)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let events = page
@@ -491,6 +501,7 @@ pub async fn history_events(
         headers,
         Json(HistoryEvents {
             events,
+            states: page.states,
             has_more: page.has_more,
         }),
     ))
@@ -806,6 +817,142 @@ mod tests {
 
         server_handle.abort();
         let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn history_events_page_state_rows_only_for_clients_that_ask() {
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping history state paging test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await
+            .expect("connect real postgres");
+        let mut lock_conn = pool.acquire().await.expect("acquire lock connection");
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(REAL_DB_TEST_LOCK)
+            .execute(&mut *lock_conn)
+            .await
+            .expect("acquire history test db lock");
+        crate::db_migrations::run(&pool)
+            .await
+            .expect("run migrations");
+        crate::test_support::reset_history(&pool).await;
+
+        // Alpha's first owner at position 1, two state-only changes at 2 and 3, then a capture
+        // at 4.
+        let now = Utc::now();
+        let minutes_ago = |minutes| now - chrono::TimeDelta::minutes(minutes);
+        for dictionary in [
+            "INSERT INTO history_territory (id, name) VALUES (1, 'Alpha')",
+            "INSERT INTO history_guild (id, uuid, name, prefix) \
+             VALUES (1, 'g1', 'GuildOne', 'G1'), (2, 'g2', 'GuildTwo', 'G2')",
+        ] {
+            sqlx::query(dictionary)
+                .execute(&pool)
+                .await
+                .expect("dictionary");
+        }
+        for (seq, minutes, guild, previous) in [(1_i64, 4, 1, None), (4, 1, 2, Some(1))] {
+            sqlx::query(
+                "INSERT INTO history_fact (stream_seq, recorded_at, acquired_at, guild_id, \
+                     prev_guild_id, ordinal, territory_id, source, take) \
+                 VALUES ($1, $2, $2, $3, $4, 0, 1, 1, $4 IS NOT NULL)",
+            )
+            .bind(seq)
+            .bind(minutes_ago(minutes))
+            .bind(guild)
+            .bind(previous)
+            .execute(&pool)
+            .await
+            .expect("fact");
+        }
+        for (seq, minutes, headquarters) in [(2_i64, 3, true), (3, 2, false)] {
+            let changes = vec![(
+                1,
+                vec![sequoia_shared::TerritoryStateField::Headquarters(Some(
+                    headquarters,
+                ))],
+            )];
+            sqlx::query(
+                "INSERT INTO history_api_state (stream_seq, recorded_at, observed_at, changes) \
+                 VALUES ($1, $2, $2, $3)",
+            )
+            .bind(seq)
+            .bind(minutes_ago(minutes))
+            .bind(crate::history::state::encode(&changes))
+            .execute(&pool)
+            .await
+            .expect("state row");
+        }
+
+        let (addr, server_handle) = spawn_test_server(AppState::new(Some(pool.clone()))).await;
+        let client = reqwest::Client::new();
+        let page = |query: String| {
+            let client = client.clone();
+            async move {
+                let url = format!(
+                    "http://{addr}/api/history/events?from={}&to={}&limit=1{query}",
+                    (now - chrono::TimeDelta::minutes(10)).format("%Y-%m-%dT%H:%M:%SZ"),
+                    (now + chrono::TimeDelta::minutes(1)).format("%Y-%m-%dT%H:%M:%SZ"),
+                );
+                let response = client.get(url).send().await.expect("request");
+                assert_eq!(response.status(), StatusCode::OK);
+                response.json::<HistoryEvents>().await.expect("events")
+            }
+        };
+
+        // A client that reads only events pages ownership exactly as before.
+        let first = page(String::new()).await;
+        assert_eq!(
+            first
+                .events
+                .iter()
+                .map(|e| e.stream_seq)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert!(first.states.is_empty());
+        assert!(first.has_more, "the capture at 4 is still to come");
+        let second = page("&after_seq=1&after_ordinal=0".to_string()).await;
+        assert_eq!(
+            second
+                .events
+                .iter()
+                .map(|e| e.stream_seq)
+                .collect::<Vec<_>>(),
+            vec![4]
+        );
+        assert!(second.states.is_empty());
+        assert!(!second.has_more);
+
+        // A client that asks for state rows gets both kinds, one position per page, in order.
+        let mut seen = Vec::new();
+        let mut cursor = String::new();
+        loop {
+            let page = page(format!("&include_states=true{cursor}")).await;
+            let positions: Vec<(u64, &str)> = page
+                .events
+                .iter()
+                .map(|e| (e.stream_seq, "fact"))
+                .chain(page.states.iter().map(|s| (s.stream_seq, "state")))
+                .collect();
+            let (last, _) = *positions.iter().max().expect("a page holds a position");
+            seen.extend(positions.iter().map(|&(seq, kind)| (seq, kind.to_string())));
+            if !page.has_more {
+                break;
+            }
+            cursor = format!("&after_seq={last}&after_ordinal={}", u16::MAX);
+        }
+        let expected = [(1, "fact"), (2, "state"), (3, "state"), (4, "fact")];
+        assert_eq!(
+            seen,
+            expected.map(|(seq, kind)| (seq, kind.to_string())).to_vec()
+        );
+
+        server_handle.abort();
     }
 
     #[tokio::test]

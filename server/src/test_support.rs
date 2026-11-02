@@ -12,8 +12,8 @@ pub(crate) async fn reset_history(pool: &sqlx::PgPool) {
     sqlx::query(
         "TRUNCATE TABLE territory_events, territory_snapshots, season_scalar_samples, \
          season_guild_observations, guild_color_cache, history_fact, history_checkpoint, \
-         history_heat_day, history_guild, history_territory, canonical_report, canonical_static, \
-         canonical_source, canonical_territory_updates RESTART IDENTITY",
+         history_heat_day, history_guild, history_territory, history_api_state, canonical_report, \
+         canonical_static, canonical_source, canonical_territory_updates RESTART IDENTITY",
     )
     .execute(pool)
     .await

@@ -1,12 +1,15 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
-use sequoia_shared::history::{HistoryEvent, HistoryEvents, HistoryGuildSrEntry, HistorySrSamples};
-use sequoia_shared::{GuildRef, TerritoryChange};
+use sequoia_shared::history::{
+    HistoryEvent, HistoryEvents, HistoryGuildSrEntry, HistorySrSamples, HistoryStateChange,
+    HistoryStateEvent, HistoryTerritoryState,
+};
+use sequoia_shared::{GuildRef, Territory, TerritoryChange, TerritoryState};
 
 use crate::app::{
     CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryFetchNonce,
@@ -14,7 +17,8 @@ use crate::app::{
     HistorySeasonScalarSample, HistoryTimestamp, MapMode, PlaybackActive, PlaybackSpeed,
     TerritoryGeometryStore,
 };
-use crate::territory::{ClientTerritoryMap, apply_changes};
+use crate::history::historical_parts;
+use crate::territory::{ClientTerritory, ClientTerritoryMap, apply_changes};
 
 const TICK_MS: i32 = 100;
 const PAGE_LIMIT: u32 = 1000;
@@ -39,6 +43,23 @@ struct Pending {
     acquired: String,
 }
 
+/// Official-API state changes at one stream position, decoded once when their page arrives.
+struct PendingState {
+    at_micros: i64,
+    observed_at: String,
+    changes: Vec<HistoryStateChange>,
+}
+
+impl PendingState {
+    fn from_event(event: HistoryStateEvent) -> Option<Self> {
+        Some(Self {
+            at_micros: rfc3339_micros(&event.timestamp)?,
+            observed_at: event.observed_at,
+            changes: event.changes,
+        })
+    }
+}
+
 /// Events after the clock that playback will apply, and how far that knowledge reaches.
 ///
 /// `covered_micros` is the instant up to which every recorded event is either applied or in
@@ -51,6 +72,10 @@ struct Buffer {
     seek_nonce: u64,
     ready: bool,
     events: VecDeque<Pending>,
+    /// State changes after the clock, in stream order; their recorded times follow it.
+    states: VecDeque<PendingState>,
+    /// Each territory's recorded state at the clock: the seek's, with due changes applied.
+    territory_states: BTreeMap<String, HistoryTerritoryState>,
     covered_micros: i64,
     /// The window being paged, with the last event received, when a page said there was more.
     window: Option<(i64, i64)>,
@@ -73,6 +98,8 @@ impl Buffer {
             seek_nonce: 0,
             ready: false,
             events: VecDeque::new(),
+            states: VecDeque::new(),
+            territory_states: BTreeMap::new(),
             covered_micros: i64::MIN,
             window: None,
             cursor: None,
@@ -112,14 +139,50 @@ pub fn restart_at(at_secs: i64, seek_nonce: u64) {
     BUFFER.with(|buffer| buffer.borrow_mut().restart(at_secs, seek_nonce));
 }
 
-/// The state of seek `seek_nonce` is on the map; playback may continue from it.
-pub fn seek_applied(seek_nonce: u64) {
+/// The state of seek `seek_nonce`, with its recorded territory `states`, is on the map;
+/// playback may continue from it.
+pub fn seek_applied(seek_nonce: u64, states: HashMap<String, HistoryTerritoryState>) {
     BUFFER.with(|buffer| {
         let mut buffer = buffer.borrow_mut();
         if buffer.seek_nonce == seek_nonce {
             buffer.ready = true;
+            buffer.territory_states = states.into_iter().collect();
         }
     });
+}
+
+/// Apply every buffered state change recorded by `until` and return the territories whose
+/// recorded state changed.
+fn take_due_states(
+    states: &mut VecDeque<PendingState>,
+    territory_states: &mut BTreeMap<String, HistoryTerritoryState>,
+    until: i64,
+) -> Vec<String> {
+    let mut touched = Vec::new();
+    while states
+        .front()
+        .is_some_and(|pending| pending.at_micros <= until)
+    {
+        let Some(pending) = states.pop_front() else {
+            break;
+        };
+        for change in pending.changes {
+            let recorded = territory_states
+                .entry(change.territory.clone())
+                .or_insert_with(|| HistoryTerritoryState {
+                    observed_at: pending.observed_at.clone(),
+                    state: TerritoryState::default(),
+                });
+            recorded.observed_at.clone_from(&pending.observed_at);
+            for field in change.fields {
+                recorded.state.apply(field);
+            }
+            touched.push(change.territory);
+        }
+    }
+    touched.sort_unstable();
+    touched.dedup();
+    touched
 }
 
 /// Leaving history: drop buffered events and abort their requests.
@@ -189,7 +252,7 @@ fn request_events(span_secs: i64, latest_secs: i64) {
         let mut buffer = buffer.borrow_mut();
         if !buffer.ready
             || buffer.fetch.is_some()
-            || buffer.events.len() >= MAX_BUFFERED_EVENTS
+            || buffer.events.len() + buffer.states.len() >= MAX_BUFFERED_EVENTS
             || js_sys::Date::now() < buffer.retry_after_ms
             || buffer.covered_micros >= latest_secs.saturating_mul(MICROS)
         {
@@ -200,7 +263,7 @@ fn request_events(span_secs: i64, latest_secs: i64) {
             (from, from.saturating_add(span_secs).min(latest_secs))
         });
         let mut url = format!(
-            "/api/history/events?from={}&to={}&limit={PAGE_LIMIT}",
+            "/api/history/events?from={}&to={}&limit={PAGE_LIMIT}&include_states=true",
             rfc3339_secs(from)?,
             rfc3339_secs(to)?,
         );
@@ -231,16 +294,23 @@ fn request_events(span_secs: i64, latest_secs: i64) {
                     return;
                 }
             };
-            let last = page.events.last().map(|event| {
-                (
-                    event.stream_seq,
-                    event.ordinal,
-                    rfc3339_micros(&event.timestamp),
+            let last = page
+                .events
+                .iter()
+                .map(|event| (event.stream_seq, event.ordinal, event.timestamp.as_str()))
+                .chain(
+                    page.states
+                        .iter()
+                        .map(|state| (state.stream_seq, 0, state.timestamp.as_str())),
                 )
-            });
+                .max_by_key(|&(seq, ordinal, _)| (seq, ordinal))
+                .map(|(seq, ordinal, timestamp)| (seq, ordinal, rfc3339_micros(timestamp)));
             buffer
                 .events
                 .extend(page.events.into_iter().filter_map(pending_from));
+            buffer
+                .states
+                .extend(page.states.into_iter().filter_map(PendingState::from_event));
             match (page.has_more, last) {
                 (true, Some((seq, ordinal, Some(last_micros)))) => {
                     // Later pages hold events recorded at or after the last one received.
@@ -349,6 +419,49 @@ fn take_due(
     due
 }
 
+/// Show each territory's newly recorded state. A change of runtime alone updates it in
+/// place, as the live feed does; a change of where it is, what it produces or its links
+/// rebuilds the territory, as a seek would.
+fn apply_recorded_states(
+    map: &mut ClientTerritoryMap,
+    geometry: &crate::app::TerritoryGeometryMap,
+    touched: Vec<(HistoryTerritoryState, String)>,
+) {
+    for (recorded, name) in touched {
+        let Some(current) = map.get_mut(&name) else {
+            continue;
+        };
+        let territory = &current.territory;
+        let holding = (
+            territory.guild.uuid.as_str(),
+            territory.acquired.timestamp_micros(),
+        );
+        let Some((location, resources, connections, runtime)) =
+            historical_parts(geometry.get(&name), Some(&recorded), holding)
+        else {
+            continue;
+        };
+        if territory.location == location
+            && territory.resources == resources
+            && territory.connections == connections
+        {
+            current.territory.runtime = runtime;
+        } else {
+            *current = ClientTerritory::from_territory(
+                &name,
+                Territory {
+                    guild: territory.guild.clone(),
+                    acquired: territory.acquired,
+                    location,
+                    resources,
+                    connections,
+                    runtime,
+                },
+            );
+        }
+    }
+}
+
 /// Returns an animation duration (ms) scaled to the current playback speed.
 /// Faster playback = shorter or no transition to avoid animation pile-up.
 fn playback_animation_duration(speed: f64) -> f64 {
@@ -422,10 +535,10 @@ pub fn start_playback_engine() {
         request_events(span_secs, latest);
         request_samples(span_secs, latest);
 
-        let (next, due, sample) = BUFFER.with(|buffer| {
+        let (next, due, touched, sample) = BUFFER.with(|buffer| {
             let mut buffer = buffer.borrow_mut();
             if !buffer.ready {
-                return (current, Vec::new(), None);
+                return (current, Vec::new(), Vec::new(), None);
             }
             let advance = speed_now * f64::from(TICK_MS) / 1000.0 + buffer.fractional_secs;
             let whole = advance.floor();
@@ -437,6 +550,19 @@ pub fn start_playback_engine() {
             let until = next.saturating_mul(MICROS);
             let buffer = &mut *buffer;
             let due = take_due(&mut buffer.events, &mut buffer.applied, until);
+            let touched = take_due_states(&mut buffer.states, &mut buffer.territory_states, until);
+            let recorded = |name: &str| buffer.territory_states.get(name).cloned();
+            let due: Vec<_> = due
+                .into_iter()
+                .map(|event| {
+                    let state = recorded(&event.territory);
+                    (event, state)
+                })
+                .collect();
+            let touched: Vec<_> = touched
+                .into_iter()
+                .filter_map(|name| Some((recorded(&name)?, name)))
+                .collect();
             let mut sample = None;
             while buffer
                 .samples
@@ -445,7 +571,7 @@ pub fn start_playback_engine() {
             {
                 sample = buffer.samples.pop_front().map(|(_, entries)| entries);
             }
-            (next, due, sample)
+            (next, due, touched, sample)
         });
 
         if next != current {
@@ -455,14 +581,24 @@ pub fn start_playback_engine() {
         if let Some(entries) = sample {
             history_sr_leaderboard.set(Some(entries));
         }
+        if !touched.is_empty() {
+            geo_store.with_value(|geo| {
+                territories.update(|map| apply_recorded_states(map, geo, touched));
+            });
+        }
         if due.is_empty() {
             return;
         }
         let changes: Vec<TerritoryChange> = geo_store.with_value(|geo| {
             guild_color_store.with_value(|guild_colors| {
                 due.into_iter()
-                    .filter_map(|event| {
-                        let (location, resources, connections) = geo.get(&event.territory)?;
+                    .filter_map(|(event, recorded)| {
+                        let acquired = rfc3339_micros(&event.acquired).unwrap_or(event.at_micros);
+                        let (location, resources, connections, runtime) = historical_parts(
+                            geo.get(&event.territory),
+                            recorded.as_ref(),
+                            (&event.guild.uuid, acquired),
+                        )?;
                         let color_of = |guild: GuildRef| GuildRef {
                             color: guild
                                 .color
@@ -474,10 +610,10 @@ pub fn start_playback_engine() {
                             guild: color_of(event.guild),
                             previous_guild: event.previous.map(color_of),
                             acquired: event.acquired,
-                            location: location.clone(),
-                            resources: resources.clone(),
-                            connections: connections.clone(),
-                            runtime: None,
+                            location,
+                            resources,
+                            connections,
+                            runtime,
                         })
                     })
                     .collect()
@@ -508,6 +644,8 @@ pub fn start_playback_engine() {
 
 #[cfg(test)]
 mod tests {
+    use sequoia_shared::TerritoryStateField;
+
     use super::*;
 
     fn event(territory: &str, seq: u64, at_micros: i64, guild: &str) -> Pending {
@@ -531,6 +669,155 @@ mod tests {
             .iter()
             .map(|event| (event.territory.as_str(), event.guild.name.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn a_full_row_replaces_what_playback_held_for_a_territory() {
+        let current = TerritoryState {
+            headquarters: Some(true),
+            ..TerritoryState::default()
+        };
+        let mut territory_states = BTreeMap::from([(
+            "A".to_string(),
+            HistoryTerritoryState {
+                observed_at: "seek".to_string(),
+                state: TerritoryState {
+                    treasury: Some("HIGH".to_string()),
+                    ..TerritoryState::default()
+                },
+            },
+        )]);
+        let mut states = VecDeque::from([PendingState {
+            at_micros: 10,
+            observed_at: "repair".to_string(),
+            changes: vec![HistoryStateChange {
+                territory: "A".to_string(),
+                fields: current.fields(),
+            }],
+        }]);
+        take_due_states(&mut states, &mut territory_states, 10);
+        assert_eq!(
+            territory_states["A"].state, current,
+            "treasury HIGH is gone"
+        );
+    }
+
+    #[test]
+    fn playback_shows_a_recorded_state_only_for_its_holding() {
+        let holding = |uuid: &str| Territory {
+            guild: GuildRef {
+                uuid: uuid.to_string(),
+                name: uuid.to_string(),
+                prefix: uuid.to_string(),
+                color: None,
+            },
+            acquired: "2026-01-01T00:00:00Z".parse().expect("acquired"),
+            location: sequoia_shared::Region {
+                start: [0, 0],
+                end: [10, 10],
+            },
+            resources: sequoia_shared::Resources::default(),
+            connections: Vec::new(),
+            runtime: None,
+        };
+        let rates = |emeralds, ore| sequoia_shared::Resources {
+            emeralds,
+            ore,
+            ..sequoia_shared::Resources::default()
+        };
+        let recorded = HistoryTerritoryState {
+            observed_at: "2026-11-02T11:17:44+00:00".to_string(),
+            state: TerritoryState {
+                owner: Some(sequoia_shared::StateOwner {
+                    guild_uuid: "old".to_string(),
+                    acquired_micros: 1_767_225_600_000_000,
+                }),
+                headquarters: Some(true),
+                generation: Some(rates(9000, 0)),
+                base_generation: Some(rates(9000, 3600)),
+                stored: Some(rates(500, 0)),
+                ..TerritoryState::default()
+            },
+        };
+        for (uuid, shows_runtime) in [("old", true), ("new", false)] {
+            let mut map = ClientTerritoryMap::from([(
+                "A".to_string(),
+                ClientTerritory::from_territory("A", holding(uuid)),
+            )]);
+            apply_recorded_states(
+                &mut map,
+                &crate::app::TerritoryGeometryMap::from([(
+                    "A".to_string(),
+                    (
+                        holding(uuid).location,
+                        sequoia_shared::Resources::default(),
+                        Vec::new(),
+                    ),
+                )]),
+                vec![(recorded.clone(), "A".to_string())],
+            );
+            let territory = &map["A"].territory;
+            assert_eq!(
+                territory.resources,
+                rates(9000, 0),
+                "{uuid}: ore is not produced"
+            );
+            assert_eq!(territory.runtime.is_some(), shows_runtime, "{uuid}");
+        }
+    }
+
+    #[test]
+    fn due_state_changes_build_on_the_seek_state_in_order() {
+        let change = |at_micros, territory: &str, fields| PendingState {
+            at_micros,
+            observed_at: format!("observed {at_micros}"),
+            changes: vec![HistoryStateChange {
+                territory: territory.to_string(),
+                fields,
+            }],
+        };
+        let mut territory_states = BTreeMap::from([(
+            "A".to_string(),
+            HistoryTerritoryState {
+                observed_at: "seek".to_string(),
+                state: TerritoryState {
+                    headquarters: Some(false),
+                    treasury: Some("LOW".to_string()),
+                    ..TerritoryState::default()
+                },
+            },
+        )]);
+        let mut states = VecDeque::from([
+            change(10, "A", vec![TerritoryStateField::Headquarters(Some(true))]),
+            change(
+                20,
+                "B",
+                vec![TerritoryStateField::Treasury(Some("MEDIUM".to_string()))],
+            ),
+            change(30, "A", vec![TerritoryStateField::Treasury(None)]),
+        ]);
+
+        assert_eq!(
+            take_due_states(&mut states, &mut territory_states, 20),
+            vec!["A", "B"]
+        );
+        assert_eq!(territory_states["A"].state.headquarters, Some(true));
+        assert_eq!(territory_states["A"].state.treasury.as_deref(), Some("LOW"));
+        assert_eq!(territory_states["A"].observed_at, "observed 10");
+        assert_eq!(
+            territory_states["B"].state.treasury.as_deref(),
+            Some("MEDIUM")
+        );
+
+        assert_eq!(
+            take_due_states(&mut states, &mut territory_states, 30),
+            vec!["A"]
+        );
+        assert_eq!(
+            territory_states["A"].state.treasury, None,
+            "a field can become unknown"
+        );
+        assert!(states.is_empty());
     }
 
     #[test]

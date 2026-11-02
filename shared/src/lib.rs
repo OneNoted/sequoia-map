@@ -7,6 +7,7 @@ pub mod map_intel;
 pub mod member_war;
 pub mod season_rating;
 pub mod territory;
+pub mod territory_state;
 #[cfg(test)]
 mod test_support;
 pub mod tiles;
@@ -23,6 +24,7 @@ pub use ingest::*;
 pub use map_intel::*;
 pub use season_rating::*;
 pub use territory::*;
+pub use territory_state::{StateOwner, TerritoryState, TerritoryStateField};
 pub use tiles::{MAP_TILES, MapTile};
 pub use treasury::TreasuryLevel;
 pub use warcontroller::*;
