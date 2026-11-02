@@ -219,13 +219,16 @@ fn sorted_unique<T: Ord + Copy>(values: impl Iterator<Item = T>) -> Vec<T> {
 /// Facts and state rows recorded in `(from, to]` after the cursor, in stream order, `limit`
 /// of them unless the last stream position holds more. A page never ends inside a stream
 /// position, so a client that resumes after a sequence number alone still sees the rest of a
-/// batch. Facts and state rows never share a position.
+/// batch. Facts and state rows never share a position. Without `include_states` the page holds
+/// facts only and pages exactly as it did before state rows existed, for clients that read no
+/// state rows.
 pub async fn fact_page(
     pool: &sqlx::PgPool,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
     after: (i64, i16),
     limit: i64,
+    include_states: bool,
 ) -> Result<FactPage, ReadError> {
     const SELECT: &str = "SELECT stream_seq, ordinal, recorded_at, acquired_at, territory_id, \
             guild_id, prev_guild_id FROM history_fact";
@@ -243,18 +246,22 @@ pub async fn fact_page(
     .bind(limit + 1)
     .fetch_all(&mut *tx)
     .await?;
-    let mut state_rows: Vec<StateTuple> = sqlx::query_as(
-        "SELECT stream_seq, recorded_at, observed_at, changes FROM history_api_state \
-         WHERE (stream_seq, 0) > ($1, $2) AND recorded_at > $3 AND recorded_at <= $4 \
-         ORDER BY stream_seq LIMIT $5",
-    )
-    .bind(after.0)
-    .bind(after.1)
-    .bind(from)
-    .bind(to)
-    .bind(limit + 1)
-    .fetch_all(&mut *tx)
-    .await?;
+    let mut state_rows: Vec<StateTuple> = if include_states {
+        sqlx::query_as(
+            "SELECT stream_seq, recorded_at, observed_at, changes FROM history_api_state \
+             WHERE (stream_seq, 0) > ($1, $2) AND recorded_at > $3 AND recorded_at <= $4 \
+             ORDER BY stream_seq LIMIT $5",
+        )
+        .bind(after.0)
+        .bind(after.1)
+        .bind(from)
+        .bind(to)
+        .bind(limit + 1)
+        .fetch_all(&mut *tx)
+        .await?
+    } else {
+        Vec::new()
+    };
     let mut positions: Vec<(i64, i16)> = rows
         .iter()
         .map(|row| (row.0, row.1))
@@ -282,12 +289,13 @@ pub async fn fact_page(
         has_more = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM history_fact WHERE stream_seq > $1 \
                    AND recorded_at > $2 AND recorded_at <= $3) \
-                OR EXISTS (SELECT 1 FROM history_api_state WHERE stream_seq > $1 \
-                   AND recorded_at > $2 AND recorded_at <= $3)",
+                OR ($4 AND EXISTS (SELECT 1 FROM history_api_state WHERE stream_seq > $1 \
+                   AND recorded_at > $2 AND recorded_at <= $3))",
         )
         .bind(seq)
         .bind(from)
         .bind(to)
+        .bind(include_states)
         .fetch_one(&mut *tx)
         .await?;
     }

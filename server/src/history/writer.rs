@@ -1338,6 +1338,7 @@ mod tests {
                 Utc::now(),
                 after,
                 2,
+                true,
             )
             .await
             .expect("page");
@@ -1416,6 +1417,7 @@ mod tests {
             latest,
             (1, i16::MAX),
             10,
+            true,
         )
         .await
         .expect("page");
@@ -1538,6 +1540,7 @@ mod tests {
             Utc::now(),
             (2, i16::MAX),
             10,
+            true,
         )
         .await
         .expect("page");

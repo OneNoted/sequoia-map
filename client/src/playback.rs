@@ -263,7 +263,7 @@ fn request_events(span_secs: i64, latest_secs: i64) {
             (from, from.saturating_add(span_secs).min(latest_secs))
         });
         let mut url = format!(
-            "/api/history/events?from={}&to={}&limit={PAGE_LIMIT}",
+            "/api/history/events?from={}&to={}&limit={PAGE_LIMIT}&include_states=true",
             rfc3339_secs(from)?,
             rfc3339_secs(to)?,
         );
