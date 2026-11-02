@@ -289,6 +289,8 @@
 
 /* Custom timeline slider */
 .timeline-slider {
+  /* The thumb's diameter, which History's rails also read (client/src/timeline.rs). */
+  --tl-thumb: 14px;
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
@@ -306,8 +308,8 @@
 
 .timeline-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
+  width: var(--tl-thumb);
+  height: var(--tl-thumb);
   border-radius: 50%;
   background: #f5c542;
   border: none;
@@ -316,7 +318,8 @@
   transition: box-shadow 0.15s ease;
 }
 
-.timeline-slider:hover::-webkit-slider-thumb {
+.timeline-slider:hover::-webkit-slider-thumb,
+.tl-scrub:hover .timeline-slider::-webkit-slider-thumb {
   box-shadow: 0 0 14px rgba(245,197,66,0.5);
 }
 
@@ -329,8 +332,8 @@
 }
 
 .timeline-slider::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
+  width: var(--tl-thumb);
+  height: var(--tl-thumb);
   border-radius: 50%;
   background: #f5c542;
   border: 1px solid rgba(0, 0, 0, 0.2);
@@ -338,7 +341,8 @@
   transition: border-color 0.15s ease;
 }
 
-.timeline-slider:hover::-moz-range-thumb {
+.timeline-slider:hover::-moz-range-thumb,
+.tl-scrub:hover .timeline-slider::-moz-range-thumb {
   border-color: rgba(0, 0, 0, 0.35);
   box-shadow: none;
 }
@@ -355,6 +359,7 @@
 }
 
 .timeline-overview-slider {
+  --tl-thumb: 10px;
   position: relative;
   z-index: 1;
   height: 18px;
@@ -366,8 +371,6 @@
 }
 
 .timeline-overview-slider::-webkit-slider-thumb {
-  width: 10px;
-  height: 10px;
   margin-top: -3.5px;
   background: #ffd966;
 }
@@ -378,8 +381,6 @@
 }
 
 .timeline-overview-slider::-moz-range-thumb {
-  width: 10px;
-  height: 10px;
   background: #ffd966;
 }
 
@@ -2084,8 +2085,71 @@
   background: linear-gradient(rgba(245, 197, 66, 0.2), rgba(245, 197, 66, 0.05));
 }
 .tl-fine-start { grid-area: fs; }
-.tl-fine { grid-area: fi; height: 24px; }
+.tl-fine { grid-area: fi; display: flex; align-items: center; height: 24px; }
+.tl-fine .timeline-slider { height: 100%; }
 .tl-fine-end { grid-area: fe; text-align: right; }
+
+/* A rail's frame takes the pointer and drags the thumb itself (precision scrubbing); the
+   input inside keeps the keyboard. While held, the cue above shows the time to the second
+   and, lifted, how much finer the drag runs, with a guide down to the thumb. */
+.tl-scrub {
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.tl-scrub .timeline-slider { pointer-events: none; }
+.tl-scrub-held { cursor: grabbing; }
+.tl-scrub-fine .timeline-slider::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.5), 0 0 10px rgba(168, 85, 247, 0.35);
+}
+.tl-scrub-fine .timeline-slider::-moz-range-thumb {
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.5), 0 0 10px rgba(168, 85, 247, 0.35);
+}
+.timeline-bar:has(.tl-scrub-cue) { z-index: 91; }
+.tl-scrub-cue {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px;
+  border: 1px solid rgba(245, 197, 66, 0.32);
+  border-radius: 6px;
+  background: rgba(19, 22, 31, 0.94);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  color: var(--color-gold-light);
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.tl-scrub-cue-fine { border-color: rgba(168, 85, 247, 0.55); }
+.tl-scrub-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--color-text-dim);
+}
+.tl-scrub-hint svg { width: 8px; height: 8px; }
+.tl-scrub-level { display: none; gap: 2px; }
+.tl-scrub-cue-fine .tl-scrub-hint { display: none; }
+.tl-scrub-cue-fine .tl-scrub-level { display: inline-flex; }
+.tl-scrub-level i {
+  width: 5px;
+  height: 9px;
+  background: rgba(168, 85, 247, 0.22);
+}
+.tl-scrub-level i.tl-scrub-on { background: var(--color-enchant); }
+.tl-scrub-guide {
+  position: absolute;
+  width: 0;
+  border-left: 1px dashed rgba(168, 85, 247, 0.55);
+  pointer-events: none;
+}
 .tl-edge {
   font-family: var(--font-mono);
   font-size: 0.64rem;
@@ -2565,8 +2629,8 @@ button.settings-row:hover {
 
 /* Mobile timeline — larger slider thumbs */
 @media (max-width: 767px) {
-  .timeline-slider::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -10px; }
-  .timeline-slider::-moz-range-thumb { width: 24px; height: 24px; }
+  .timeline-slider { --tl-thumb: 24px; }
+  .timeline-slider::-webkit-slider-thumb { margin-top: -10px; }
   .timeline-slider::-webkit-slider-runnable-track { height: 6px; }
   .timeline-slider::-moz-range-track { height: 6px; }
 }
