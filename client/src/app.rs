@@ -325,9 +325,10 @@ pub(crate) struct HeatWindowLabel(pub RwSignal<String>);
 pub(crate) struct HeatMetaState(pub RwSignal<Option<HistoryHeatMeta>>);
 
 pub(crate) const MOBILE_BREAKPOINT: f64 = 768.0;
-/// Gap below the minimap, raised in history mode to clear the timeline.
+/// Gap below the minimap; in history mode it sits that far above the timeline.
 const MINIMAP_LIVE_INSET: f32 = 16.0;
-const MINIMAP_HISTORY_INSET: f32 = 68.0;
+/// Gap below the phone's territory peek card: from the screen's edge, or from the History bar.
+const PEEK_GAP_PX: f64 = 16.0;
 /// Longest wait between website session probe attempts.
 ///
 /// Doubling from a second, then held here for as long as the probe keeps failing. The loop
@@ -392,6 +393,9 @@ pub(crate) struct HistoryTimestamp(pub RwSignal<Option<i64>>);
 /// is on the map. `None` while the live map is still drawn.
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryMapTime(pub RwSignal<Option<i64>>);
+/// The History bar's measured height in CSS pixels; 0 until it has been laid out.
+#[derive(Clone, Copy)]
+pub(crate) struct HistoryBarHeight(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
 pub(crate) struct PlaybackActive(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -1180,6 +1184,7 @@ pub fn MapPage() -> impl IntoView {
     let map_mode: RwSignal<MapMode> = RwSignal::new(MapMode::Live);
     let history_timestamp: RwSignal<Option<i64>> = RwSignal::new(None);
     let history_map_time: RwSignal<Option<i64>> = RwSignal::new(None);
+    let history_bar_height: RwSignal<f64> = RwSignal::new(0.0);
     Effect::new(move || {
         map_mode.track();
         history_map_time.set(None);
@@ -1279,7 +1284,7 @@ pub fn MapPage() -> impl IntoView {
     });
     let minimap_inset = Memo::new(move |_| {
         (!is_mobile.get() && show_minimap.get()).then_some(match map_mode.get() {
-            MapMode::History => MINIMAP_HISTORY_INSET,
+            MapMode::History => history_bar_height.get() as f32 + MINIMAP_LIVE_INSET,
             MapMode::Live => MINIMAP_LIVE_INSET,
         })
     });
@@ -1372,6 +1377,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(CurrentMode(map_mode));
     provide_context(HistoryTimestamp(history_timestamp));
     provide_context(HistoryMapTime(history_map_time));
+    provide_context(HistoryBarHeight(history_bar_height));
     provide_context(PlaybackActive(playback_active));
     provide_context(PlaybackSpeed(playback_speed));
     provide_context(HistoryBoundsSignal(history_bounds));
@@ -2715,7 +2721,7 @@ pub fn MapPage() -> impl IntoView {
                 // Minimap backdrop frame (desktop only)
                 <div
                     style:display=move || if is_mobile.get() || !show_minimap.get() { "none" } else { "block" }
-                    style:bottom=move || if map_mode.get() == MapMode::History { "68px" } else { "16px" }
+                    style:bottom=move || format!("{}px", minimap_inset.get().unwrap_or(MINIMAP_LIVE_INSET))
                     style="position: absolute; left: 16px; z-index: 6; width: 200px; height: 280px; pointer-events: none; border: 1px solid rgba(58,63,92,0.6); border-radius: 4px; box-shadow: 0 4px 20px rgba(0,0,0,0.5), 0 0 1px rgba(168,85,247,0.12), inset 0 0 0 1px rgba(255,255,255,0.03);"
                 >
                     // "MAP" label
@@ -3441,6 +3447,7 @@ fn TerritoryPeekCard() -> impl IntoView {
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
     let HistoryMapTime(history_map_time) = expect_context();
+    let HistoryBarHeight(history_bar_height) = expect_context();
     let Selected(selected) = expect_context();
     let DetailReturnGuild(detail_return_guild) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
@@ -3494,9 +3501,15 @@ fn TerritoryPeekCard() -> impl IntoView {
             let treasury = info.5;
             let takes_in_window = info.6;
             let name = info.0.clone();
-            let is_history = mode.get_untracked() == MapMode::History;
-            let bottom_px = if is_history { 96 } else { 16 };
-            let bottom = format!("calc({bottom_px}px + env(safe-area-inset-bottom, 0px))");
+            // In History the card stands clear of the bar, whose height already includes the
+            // safe area.
+            let bottom = move || {
+                if mode.get() == MapMode::History {
+                    format!("{:.0}px", history_bar_height.get() + PEEK_GAP_PX)
+                } else {
+                    format!("calc({PEEK_GAP_PX}px + env(safe-area-inset-bottom, 0px))")
+                }
+            };
             let territory = Signal::stored(name.clone());
             view! {
                 <div

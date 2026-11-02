@@ -4,7 +4,7 @@ use std::rc::Rc;
 use wasm_bindgen::JsCast;
 
 use crate::app::{
-    CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryBufferModeActive,
+    CurrentMode, GuildColorStore, HistoryBarHeight, HistoryBoundsSignal, HistoryBufferModeActive,
     HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive, HistoryMapTime,
     HistorySeasonLeaderboard, HistorySeasonScalarSample, HistoryTimestamp, IsMobile, LastLiveSeq,
     LiveHandoffResyncCount, MapMode, NeedsLiveResync, PlaybackActive, PlaybackSpeed, SidebarOpen,
@@ -15,19 +15,55 @@ use crate::territory::ClientTerritoryMap;
 
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
-const HISTORY_FOCUS_SPANS: &[(Option<i64>, &str, bool)] = &[
-    (Some(HOUR_SECS), "1h", false),
-    (Some(6 * HOUR_SECS), "6h", false),
-    (Some(DAY_SECS), "24h", false),
-    (Some(7 * DAY_SECS), "7d", false),
-    (Some(30 * DAY_SECS), "30d", false),
-    (None, "All", true),
+const HISTORY_FOCUS_SPANS: &[(Option<i64>, &str)] = &[
+    (Some(HOUR_SECS), "1h"),
+    (Some(6 * HOUR_SECS), "6h"),
+    (Some(DAY_SECS), "24h"),
+    (Some(7 * DAY_SECS), "7d"),
+    (Some(30 * DAY_SECS), "30d"),
+    (None, "All"),
 ];
+const SPEEDS: [f64; 4] = [1.0, 10.0, 60.0, 360.0];
+
+const PLAY_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z"/></svg>"#;
+const PAUSE_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="2.5" width="3" height="11" rx="0.5"/><rect x="9.5" y="2.5" width="3" height="11" rx="0.5"/></svg>"#;
+const STEP_BACK_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="2" height="10" rx="0.5"/><path d="M13 3v10L6 8z"/></svg>"#;
+const STEP_FORWARD_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="11" y="3" width="2" height="10" rx="0.5"/><path d="M3 3v10l7-5z"/></svg>"#;
+const MORE_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="12.5" cy="8" r="1.5"/></svg>"#;
+const LIVE_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>"#;
 const DEFAULT_HISTORY_FOCUS_SPAN: Option<i64> = Some(6 * HOUR_SECS);
 
-fn format_history_timestamp(ts: i64) -> String {
+pub(crate) fn format_history_timestamp(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// The value of a `datetime-local` field for `ts`, in the UTC the map shows.
+fn format_time_field(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
+        .unwrap_or_default()
+}
+
+fn parse_time_field(value: &str) -> Option<i64> {
+    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
+        .ok()
+        .map(|dt| dt.and_utc().timestamp())
+}
+
+/// A rail end, as precise as the rail's span needs: minutes within a couple of days, days
+/// within a few months, months beyond.
+fn format_rail_edge(ts: i64, span_secs: i64) -> String {
+    let format = if span_secs < 2 * DAY_SECS {
+        "%m-%d %H:%M"
+    } else if span_secs < 120 * DAY_SECS {
+        "%Y-%m-%d"
+    } else {
+        "%Y-%m"
+    };
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format(format).to_string())
         .unwrap_or_default()
 }
 
@@ -124,6 +160,19 @@ fn focus_band_style(window: Option<(i64, i64)>, bounds: Option<(i64, i64)>) -> S
     format!("left: {left:.4}%; width: {:.4}%;", (right - left).max(0.0))
 }
 
+/// The lens between the overview's focus band and the detail rail beneath it: a trapezoid from
+/// the band's ends down to the rail's.
+fn lens_style(window: Option<(i64, i64)>, bounds: Option<(i64, i64)>) -> String {
+    let (Some((start, end)), Some(bounds)) = (window, bounds) else {
+        return "clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);".to_string();
+    };
+    format!(
+        "clip-path: polygon({:.3}% 0, {:.3}% 0, 100% 100%, 0 100%);",
+        range_percent(start, bounds),
+        range_percent(end, bounds)
+    )
+}
+
 /// Timeline scrubber bar, visible only in history mode.
 #[component]
 pub fn Timeline() -> impl IntoView {
@@ -142,6 +191,7 @@ pub fn Timeline() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarWidth(sidebar_width) = expect_context();
     let IsMobile(is_mobile) = expect_context();
+    let HistoryBarHeight(bar_height) = expect_context();
     let LastLiveSeq(last_live_seq) = expect_context();
     let HistoryBufferedUpdates(history_buffered_updates) = expect_context();
     let HistoryBufferModeActive(history_buffer_mode_active) = expect_context();
@@ -289,59 +339,167 @@ pub fn Timeline() -> impl IntoView {
         history::fetch_and_apply_with(val, fetch_ctx);
     };
 
-    let speed_options: &[f64] = &[1.0, 10.0, 60.0, 360.0];
-
-    // SVG icon constants
-    let play_svg = r#"<svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M1 1.5v11l10-5.5z"/></svg>"#;
-    let pause_svg = r#"<svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="3.5" height="12" rx="0.75"/><rect x="7.5" y="1" width="3.5" height="12" rx="0.75"/></svg>"#;
-    let skip_back_svg = r#"<svg width="14" height="12" viewBox="0 0 14 12" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="2" height="10" rx="0.5"/><path d="M13 1v10L5.5 6z"/></svg>"#;
-    let skip_fwd_svg = r#"<svg width="14" height="12" viewBox="0 0 14 12" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><rect x="11" y="1" width="2" height="10" rx="0.5"/><path d="M1 1v10l7.5-5z"/></svg>"#;
-
-    // Cycle speed on mobile tap
-    let cycle_speed = move |_: web_sys::MouseEvent| {
-        let current = speed.get_untracked();
-        let next = match current as i32 {
-            1 => 10.0,
-            10 => 60.0,
-            60 => 360.0,
-            _ => 1.0,
+    let exit = move |_: web_sys::MouseEvent| {
+        history::exit_history_mode(history::ExitHistoryModeInput {
+            mode,
+            playback_active: playing,
+            history_fetch_nonce,
+            history_timestamp: timestamp,
+            history_legacy_geometry_active,
+            history_buffered_updates,
+            history_buffer_mode_active,
+            last_live_seq,
+            needs_live_resync,
+            live_handoff_resync_count,
+            history_sr_leaderboard,
+            territories,
+        });
+    };
+    let step = move |delta: i64| {
+        let ctx = history::HistoryStepContext {
+            history_timestamp: timestamp,
+            playback_active: playing,
+            fetch: fetch_ctx,
         };
+        if delta < 0 {
+            history::step_backward(ctx);
+        } else {
+            history::step_forward(ctx);
+        }
+    };
+    let cycle_speed = move |_: web_sys::MouseEvent| {
+        let next = SPEEDS
+            .iter()
+            .copied()
+            .find(|&s| s > speed.get_untracked())
+            .unwrap_or(SPEEDS[0]);
         speed.set(next);
+    };
+    // The sidebar footer carries the History toggle wherever it is on screen; elsewhere the
+    // bar offers the way back to Live itself.
+    let shows_exit = move || is_mobile.get() || !sidebar_open.get();
+    // Where the bar is narrow, steps, speed and zoom open above it from one button.
+    let more_open = RwSignal::new(false);
+
+    // The bar's height clears the minimap above it.
+    let bar_ref = NodeRef::<leptos::html::Div>::new();
+    let resize_watch = StoredValue::new_local(
+        None::<(
+            web_sys::ResizeObserver,
+            wasm_bindgen::closure::Closure<dyn Fn()>,
+        )>,
+    );
+    Effect::new(move || {
+        let Some(bar) = bar_ref.get() else {
+            return;
+        };
+        if resize_watch.with_value(Option::is_some) {
+            return;
+        }
+        let measured = bar.clone();
+        let resized = wasm_bindgen::closure::Closure::<dyn Fn()>::new(move || {
+            bar_height.try_set(f64::from(measured.offset_height()));
+        });
+        let Ok(observer) =
+            web_sys::ResizeObserver::new(wasm_bindgen::JsCast::unchecked_ref(resized.as_ref()))
+        else {
+            return;
+        };
+        observer.observe(&bar);
+        resize_watch.set_value(Some((observer, resized)));
+    });
+    on_cleanup(move || {
+        if let Some((observer, _resized)) = resize_watch.try_update_value(Option::take).flatten() {
+            observer.disconnect();
+        }
+    });
+
+    // The time field follows the selected time, except while it is being edited.
+    let time_ref = NodeRef::<leptos::html::Input>::new();
+    let editing = move |input: &web_sys::HtmlInputElement| {
+        web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.active_element())
+            .is_some_and(|active| active == ***input)
+    };
+    let sync_time_field = move || {
+        if let Some(input) = time_ref.get_untracked() {
+            input.set_value(
+                &timestamp
+                    .get_untracked()
+                    .map(format_time_field)
+                    .unwrap_or_default(),
+            );
+        }
+    };
+    Effect::new(move || {
+        timestamp.track();
+        if let Some(input) = time_ref.get()
+            && !editing(&input)
+        {
+            sync_time_field();
+        }
+    });
+    let on_time_change = move |e: web_sys::Event| {
+        let (Some(value), Some(bounds_now)) = (
+            e.target()
+                .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                .map(|input| input.value()),
+            bounds.get_untracked(),
+        ) else {
+            return;
+        };
+        let Some(ts) = parse_time_field(&value) else {
+            return;
+        };
+        let ts = clamp_timestamp_to_bounds(ts, bounds_now);
+        playing.set(false);
+        timestamp.set(Some(ts));
+        focus_window.set(Some(center_focus_window(
+            bounds_now,
+            ts,
+            focus_span.get_untracked(),
+        )));
+        history::fetch_and_apply_with(ts, fetch_ctx);
+    };
+
+    let outside = window_event_listener(leptos::ev::pointerdown, move |event| {
+        if !more_open.get_untracked() {
+            return;
+        }
+        let inside = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::Node>().ok())
+            .zip(bar_ref.get_untracked())
+            .is_some_and(|(target, bar)| bar.contains(Some(&target)));
+        if !inside {
+            more_open.set(false);
+        }
+    });
+    on_cleanup(move || outside.remove());
+
+    let rail_window = move || focus_window.get().or_else(|| bounds.get());
+    let edge = move |window: Option<(i64, i64)>, pick: fn((i64, i64)) -> i64| {
+        window
+            .map(|window| format_rail_edge(pick(window), window.1 - window.0))
+            .unwrap_or_default()
     };
 
     view! {
-        <>
         <div
-            style:display=move || {
-                if !is_visible()
-                    || !history_legacy_geometry_active.get()
-                    || (is_mobile.get() && sidebar_open.get())
-                {
-                    "none"
-                } else {
-                    "flex"
-                }
-            }
-            style:right=move || {
-                if !is_mobile.get() && sidebar_open.get() {
-                    format!("{:.0}px", sidebar_width.get())
-                } else {
-                    "0".to_string()
-                }
-            }
-            style:bottom=move || if is_mobile.get() { "142px" } else { "88px" }
-            style="position: absolute; left: 0; z-index: 26; margin: 0 12px; padding: 8px 12px; border: 1px solid rgba(245,197,66,0.32); border-radius: 8px; background: rgba(19,22,31,0.96); color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.68rem; line-height: 1.45; box-shadow: 0 10px 28px rgba(0,0,0,0.35);"
-        >
-            "Pre-Sequoia scrape data may be inaccurate."
-        </div>
-        <div
+            node_ref=bar_ref
             class="timeline-bar hud-enter"
-            style:display=move || {
-                if !is_visible() || (is_mobile.get() && sidebar_open.get()) {
-                    "none"
-                } else {
-                    "flex"
+            on:keydown=move |event: web_sys::KeyboardEvent| {
+                if event.key() == "Escape" && more_open.get_untracked() {
+                    // Closing the panel is all this Escape does; the map keeps its selection.
+                    event.prevent_default();
+                    more_open.set(false);
                 }
+            }
+            role="group"
+            aria-label="History"
+            style:display=move || {
+                if !is_visible() || (is_mobile.get() && sidebar_open.get()) { "none" } else { "block" }
             }
             style:right=move || {
                 if !is_mobile.get() && sidebar_open.get() {
@@ -350,239 +508,75 @@ pub fn Timeline() -> impl IntoView {
                     "0".to_string()
                 }
             }
-            style:flex-direction=move || if is_mobile.get() { "column" } else { "row" }
-            style:height=move || if is_mobile.get() { "auto" } else { "84px" }
-            style:padding=move || if is_mobile.get() { "8px 12px" } else { "8px 16px" }
-            style:gap=move || if is_mobile.get() { "7px" } else { "10px" }
-            style="position: absolute; bottom: 0; left: 0; z-index: 25; background: var(--color-deep); border-top: 1px solid rgba(245,197,66,0.15); align-items: stretch; font-family: var(--font-mono); font-size: 0.72rem; transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);"
         >
-            // --- Row 1: Transport + Speed controls ---
-            <div
-                style:width=move || if is_mobile.get() { "100%" } else { "auto" }
-                style="display: flex; align-items: center; gap: 0; min-width: 0; flex-shrink: 0;"
-            >
-                // Play/Pause button
+            <Show when=move || history_legacy_geometry_active.get()>
+                <p class="tl-note">"Pre-Sequoia scrape data may be inaccurate."</p>
+            </Show>
+            <div class="tl-head">
                 <button
-                    title=move || if playing.get() { "Pause (Space)" } else { "Play (Space)" }
                     type="button"
-                    class="ui-button ui-icon-button timeline-play"
+                    class="tl-icon tl-play timeline-play"
+                    title=move || if playing.get() { "Pause (Space)" } else { "Play (Space)" }
                     aria-label=move || if playing.get() { "Pause" } else { "Play" }
-                    inner_html=move || if playing.get() { pause_svg } else { play_svg }
+                    inner_html=move || if playing.get() { PAUSE_SVG } else { PLAY_SVG }
                     on:click=move |_| playing.update(|v| *v = !*v)
                 />
-
-                // Step backward
-                <button
-                    title="Step back ([)"
-                    type="button"
-                    class="ui-button ui-icon-button timeline-step"
-                    aria-label="Step back"
-                    inner_html=skip_back_svg
-                    on:click=move |_| {
-                        history::step_backward(history::HistoryStepContext {
-                            history_timestamp: timestamp,
-                            playback_active: playing,
-                            fetch: history::HistoryFetchContext {
-                                history_map_time,
-                                mode,
-                                history_fetch_nonce,
-                                history_legacy_geometry_active,
-                                history_scalar_sample,
-                                history_sr_leaderboard,
-                                geo_store,
-                                guild_color_store,
-                                territories,
-                            },
-                        });
-                    }
+                <input
+                    node_ref=time_ref
+                    type="datetime-local"
+                    class="tl-time"
+                    aria-label="Selected time"
+                    step="60"
+                    min=move || bounds.get().map(|(e, _)| format_time_field(e)).unwrap_or_default()
+                    max=move || bounds.get().map(|(_, l)| format_time_field(l)).unwrap_or_default()
+                    on:change=on_time_change
+                    on:blur=move |_| sync_time_field()
                 />
-
-                // Step forward
                 <button
-                    title="Step forward (])"
                     type="button"
-                    class="ui-button ui-icon-button timeline-step"
-                    aria-label="Step forward"
-                    inner_html=skip_fwd_svg
-                    on:click=move |_| {
-                        history::step_forward(history::HistoryStepContext {
-                            history_timestamp: timestamp,
-                            playback_active: playing,
-                            fetch: history::HistoryFetchContext {
-                                history_map_time,
-                                mode,
-                                history_fetch_nonce,
-                                history_legacy_geometry_active,
-                                history_scalar_sample,
-                                history_sr_leaderboard,
-                                geo_store,
-                                guild_color_store,
-                                territories,
-                            },
-                        });
-                    }
+                    class="tl-icon tl-more"
+                    aria-label="More history controls"
+                    aria-controls="tl-extras"
+                    aria-expanded=move || more_open.get().to_string()
+                    inner_html=MORE_SVG
+                    on:click=move |_| more_open.update(|open| *open = !*open)
                 />
-
-                // Divider: transport | speed
-                <div style="width: 1px; height: 24px; background: var(--color-border-subtle); margin: 0 10px; flex-shrink: 0;" />
-
-                // Speed selector — desktop: <select>, mobile: cycle button
-                {move || {
-                    if is_mobile.get() {
-                        view! {
-                            <button
-                                type="button"
-                                class="ui-button timeline-speed"
-                                aria-label="Playback speed"
-                                on:click=cycle_speed
-                            >
-                                {move || format!("{}x", speed.get() as i32)}
-                            </button>
-                        }.into_any()
-                    } else {
-                        view! {
-                            <select
-                                prop:value=move || speed.get().to_string()
-                                class="ui-button timeline-speed"
-                                aria-label="Playback speed"
-                                on:change=move |e| {
-                                    let Some(target) = e.target() else {
-                                        return;
-                                    };
-                                    let Ok(target) = target.dyn_into::<web_sys::HtmlSelectElement>() else {
-                                        return;
-                                    };
-                                    if let Ok(val) = target.value().parse::<f64>() {
-                                        speed.set(val);
-                                    }
-                                }
-                            >
-                                {speed_options.iter().map(|&s| {
-                                    let label = format!("{}x", s as i32);
-                                    let val = format!("{s}");
-                                    view! {
-                                        <option value=val>{label}</option>
-                                    }
-                                }).collect::<Vec<_>>()}
-                            </select>
-                        }.into_any()
-                    }
-                }}
-
-                // Current time display + history badge / close button — pushed to end
-                <div
-                    style:display=move || if is_mobile.get() { "flex" } else { "none" }
-                    style="margin-left: auto; align-items: center; gap: 8px; flex-shrink: 0;"
-                >
-                    <span style="color: var(--color-text-primary); font-size: 0.7rem; text-align: center; font-variant-numeric: tabular-nums;">
-                        {move || timestamp.get().map(format_history_timestamp).unwrap_or_default()}
-                    </span>
-                    // Desktop: "History" badge
-                    <span
-                        style:display=move || if is_mobile.get() { "none" } else { "inline" }
-                        style="border: 1px solid var(--color-border-accent); border-radius: 4px; padding: 5px 12px; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.05em;"
-                    >
-                        "History"
-                    </span>
-                    // Mobile: close/exit history button
+                <div id="tl-extras" class="tl-extras" class:tl-extras-open=move || more_open.get()>
+                    <div class="tl-steps">
                     <button
-                        style:display=move || if is_mobile.get() { "flex" } else { "none" }
-                        style="min-width: 44px; min-height: 44px; background: var(--color-surface); border: 1px solid var(--color-border-accent); border-radius: 6px; color: var(--color-text-secondary); cursor: pointer; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.15s ease, color 0.15s ease; touch-action: manipulation;"
-                        title="Exit history mode"
-                        on:click=move |_| {
-                            history::exit_history_mode(history::ExitHistoryModeInput {
-                                mode,
-                                playback_active: playing,
-                                history_fetch_nonce,
-                                history_timestamp: timestamp,
-                                history_legacy_geometry_active,
-                                history_buffered_updates,
-                                history_buffer_mode_active,
-                                last_live_seq,
-                                needs_live_resync,
-                                live_handoff_resync_count,
-                                history_sr_leaderboard,
-                                territories,
-                            });
-                        }
-                    >
-                        // X icon
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-                            <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
-                        </svg>
-                    </button>
-                </div>
-            </div>
-
-            // --- Timeline focus + detail rails ---
-            <div
-                style:flex=move || if is_mobile.get() { "0 0 auto" } else { "1 1 auto" }
-                style="display: flex; flex-direction: column; justify-content: center; gap: 5px; width: 100%; min-width: 0;"
-            >
-                <div style="display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0;">
-                    // Divider: speed | timeline (desktop only)
-                    <div
-                        style:display=move || if is_mobile.get() { "none" } else { "block" }
-                        style="width: 1px; height: 24px; background: var(--color-border-subtle); margin-right: 2px; flex-shrink: 0;"
+                        type="button"
+                        class="tl-icon timeline-step"
+                        title="Step back ([)"
+                        aria-label="Step back"
+                        inner_html=STEP_BACK_SVG
+                        on:click=move |_| step(-1)
                     />
-
-                    <span
-                        style:display=move || if is_mobile.get() { "none" } else { "inline" }
-                        style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.61rem;"
-                    >
-                        {move || bounds.get().map(|(earliest, _)| format_history_timestamp(earliest)).unwrap_or_default()}
-                    </span>
-
-                    <div class="timeline-overview-wrap">
-                        <div class="timeline-focus-band" style=move || focus_band_style(focus_window.get(), bounds.get()) />
-                        <input
-                            node_ref=overview_ref
-                            type="range"
-                            class="timeline-slider timeline-overview-slider"
-                            min=move || bounds.get().map(|(e, _)| e.to_string()).unwrap_or_else(|| "0".to_string())
-                            max=move || bounds.get().map(|(_, l)| l.to_string()).unwrap_or_else(|| "0".to_string())
-                            step="1"
-                            value=focus_window
-                                .get_untracked()
-                                .and_then(|window| {
-                                    if focus_span.get_untracked().is_none() {
-                                        None
-                                    } else {
-                                        Some(overview_value_for_window(window))
-                                    }
-                                })
-                                .unwrap_or_else(|| timestamp.get_untracked().unwrap_or(0))
-                                .to_string()
-                            on:input=on_overview_input
-                            on:change=on_overview_change
-                            on:pointerup=overview_release
-                            on:pointercancel=overview_release
-                        />
+                    <button
+                        type="button"
+                        class="tl-icon timeline-step"
+                        title="Step forward (])"
+                        aria-label="Step forward"
+                        inner_html=STEP_FORWARD_SVG
+                        on:click=move |_| step(1)
+                    />
                     </div>
-
-                    <span
-                        style:display=move || if is_mobile.get() { "none" } else { "inline" }
-                        style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.61rem;"
+                    <button
+                        type="button"
+                        class="tl-speed timeline-speed"
+                        aria-label=move || format!("Playback speed {}x", speed.get() as i32)
+                        title="Playback speed"
+                        on:click=cycle_speed
                     >
-                        {move || bounds.get().map(|(_, latest)| format_history_timestamp(latest)).unwrap_or_default()}
-                    </span>
-
-                    <div style="display: inline-flex; background: var(--color-surface); border: 1px solid var(--color-border-subtle); border-radius: 4px; overflow: hidden; flex-shrink: 0;">
-                        {HISTORY_FOCUS_SPANS.iter().enumerate().map(|(idx, &(span, label, is_wide))| {
+                        {move || format!("{}x", speed.get() as i32)}
+                    </button>
+                    <div class="tl-zoom" role="group" aria-label="Timeline zoom">
+                        {HISTORY_FOCUS_SPANS.iter().map(|&(span, label)| {
                             view! {
                                 <button
                                     type="button"
+                                    class="tl-zoom-option"
                                     title=format!("Set timeline zoom to {label}")
-                                    style=move || {
-                                        let active = focus_span.get() == span;
-                                        format!(
-                                            "min-width: {}; height: 22px; padding: 0 7px; border: none; border-left: 1px solid {}; background: {}; color: {}; font-family: var(--font-mono); font-size: 0.61rem; cursor: pointer; touch-action: manipulation;",
-                                            if is_wide { "34px" } else { "30px" },
-                                            if idx == 0 { "transparent" } else { "var(--color-border-subtle)" },
-                                            if active { "rgba(245,197,66,0.14)" } else { "transparent" },
-                                            if active { "var(--color-gold)" } else { "#7c829e" },
-                                        )
-                                    }
+                                    aria-pressed=move || (focus_span.get() == span).to_string()
                                     on:click=move |_| {
                                         focus_span.set(span);
                                         if let Some(bounds_now) = bounds.get_untracked() {
@@ -597,76 +591,72 @@ pub fn Timeline() -> impl IntoView {
                         }).collect::<Vec<_>>()}
                     </div>
                 </div>
-
-                <div style="display: flex; align-items: center; gap: 0; width: 100%; min-width: 0;">
-                    <span style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.65rem;">
-                        {move || {
-                            focus_window
-                                .get()
-                                .or_else(|| bounds.get())
-                                .map(|(start, _)| format_history_timestamp(start))
-                                .unwrap_or_default()
-                        }}
-                    </span>
-
-                    <input
-                        node_ref=slider_ref
-                        type="range"
-                        class="timeline-slider"
-                        style="flex: 1; margin: 0 8px;"
-                        min=move || {
-                            focus_window
-                                .get()
-                                .or_else(|| bounds.get())
-                                .map(|(start, _)| start.to_string())
-                                .unwrap_or_else(|| "0".to_string())
-                        }
-                        max=move || {
-                            focus_window
-                                .get()
-                                .or_else(|| bounds.get())
-                                .map(|(_, end)| end.to_string())
-                                .unwrap_or_else(|| "0".to_string())
-                        }
-                        step="1"
-                        value=timestamp.get_untracked().unwrap_or(0).to_string()
-                        on:input=on_range_input
-                        on:change=on_range_change
-                        on:pointerup=release
-                        on:pointercancel=release
-                    />
-
-                    <span style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.65rem;">
-                        {move || {
-                            focus_window
-                                .get()
-                                .or_else(|| bounds.get())
-                                .map(|(_, end)| format_history_timestamp(end))
-                                .unwrap_or_default()
-                        }}
-                    </span>
-
-                    // Desktop-only: dividers + current time + mode indicator (moved to row 1 on mobile)
-                    <div
-                        style:display=move || if is_mobile.get() { "none" } else { "flex" }
-                        style="align-items: center; gap: 0; flex-shrink: 0;"
+                <Show when=shows_exit>
+                    <button
+                        type="button"
+                        class="tl-exit"
+                        title="Exit history mode (h)"
+                        aria-label="Exit history"
+                        on:click=exit
                     >
-                        <div style="width: 1px; height: 24px; background: var(--color-border-subtle); margin: 0 10px; flex-shrink: 0;" />
-                        <span style="color: var(--color-text-primary); flex-shrink: 0; min-width: 140px; text-align: center; font-size: 0.7rem;">
-                            {move || timestamp.get().map(format_history_timestamp).unwrap_or_default()}
-                        </span>
-                        <div style="width: 1px; height: 24px; background: var(--color-border-subtle); margin: 0 10px; flex-shrink: 0;" />
-                        <span
-                            style="border: 1px solid var(--color-border-accent); border-radius: 4px; padding: 5px 12px; color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; flex-shrink: 0; letter-spacing: 0.05em;"
-                        >
-                            "History"
-                        </span>
-                    </div>
-                </div>
+                        <span aria-hidden="true" inner_html=LIVE_SVG />
+                        "Live"
+                    </button>
+                </Show>
             </div>
 
+            <div class="tl-rails">
+                <span class="tl-edge tl-overview-start">{move || edge(bounds.get(), |w| w.0)}</span>
+                <div class="tl-overview">
+                    <div class="timeline-focus-band" style=move || focus_band_style(focus_window.get(), bounds.get()) />
+                    <input
+                        node_ref=overview_ref
+                        type="range"
+                        class="timeline-slider timeline-overview-slider"
+                        aria-label="Whole history"
+                        min=move || bounds.get().map(|(e, _)| e.to_string()).unwrap_or_else(|| "0".to_string())
+                        max=move || bounds.get().map(|(_, l)| l.to_string()).unwrap_or_else(|| "0".to_string())
+                        step="1"
+                        value=focus_window
+                            .get_untracked()
+                            .and_then(|window| {
+                                if focus_span.get_untracked().is_none() {
+                                    None
+                                } else {
+                                    Some(overview_value_for_window(window))
+                                }
+                            })
+                            .unwrap_or_else(|| timestamp.get_untracked().unwrap_or(0))
+                            .to_string()
+                        on:input=on_overview_input
+                        on:change=on_overview_change
+                        on:pointerup=overview_release
+                        on:pointercancel=overview_release
+                    />
+                </div>
+                <span class="tl-edge tl-overview-end">{move || edge(bounds.get(), |w| w.1)}</span>
+
+                <div class="tl-lens" aria-hidden="true" style=move || lens_style(focus_window.get(), bounds.get()) />
+
+                <span class="tl-edge tl-fine-start">{move || edge(rail_window(), |w| w.0)}</span>
+                <input
+                    node_ref=slider_ref
+                    type="range"
+                    class="timeline-slider tl-fine"
+                    aria-label="Selected time"
+                    aria-valuetext=move || timestamp.get().map(format_history_timestamp).unwrap_or_default()
+                    min=move || rail_window().map(|(start, _)| start.to_string()).unwrap_or_else(|| "0".to_string())
+                    max=move || rail_window().map(|(_, end)| end.to_string()).unwrap_or_else(|| "0".to_string())
+                    step="1"
+                    value=timestamp.get_untracked().unwrap_or(0).to_string()
+                    on:input=on_range_input
+                    on:change=on_range_change
+                    on:pointerup=release
+                    on:pointercancel=release
+                />
+                <span class="tl-edge tl-fine-end">{move || edge(rail_window(), |w| w.1)}</span>
+            </div>
         </div>
-        </>
     }
 }
 
