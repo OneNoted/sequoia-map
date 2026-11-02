@@ -459,6 +459,14 @@ pub(crate) use sequoia_map_engine::settings::{
 use gloo_storage::Storage;
 
 const SETTINGS_DEFAULTS_VERSION: u32 = 3;
+/// The outline every save wrote before defaults version 3 unless the member changed it.
+const PREVIOUS_DEFAULT_WAR_OUTLINE: WarOutline = WarOutline {
+    style: WarOutlineStyle::Dashed,
+    color: WarOutlineColor::Stage,
+    progress: false,
+    width: 1.0,
+    opacity: 0.88,
+};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -845,13 +853,11 @@ impl SettingsV2 {
             self.show_far_zoom_territory_tags = defaults.show_far_zoom_territory_tags;
         }
 
-        // Every save wrote the whole outline, so the old dashed, progress-off defaults are
-        // indistinguishable from a choice; they move to the new defaults once.
-        if self.defaults_version < 3 {
-            if self.war_outline.style == WarOutlineStyle::Dashed {
-                self.war_outline.style = WarOutlineStyle::Solid;
-            }
-            self.war_outline.progress = true;
+        // Every save wrote the whole outline, so an outline still exactly at the old defaults
+        // cannot be told from one chosen to look like them; only that one moves, once. Any
+        // other saved outline is a choice and stays.
+        if self.defaults_version < 3 && self.war_outline == PREVIOUS_DEFAULT_WAR_OUTLINE {
+            self.war_outline = WarOutline::default();
         }
 
         self.defaults_version = SETTINGS_DEFAULTS_VERSION;
@@ -3954,27 +3960,42 @@ mod tests {
     }
 
     #[test]
-    fn the_old_dashed_outline_default_moves_to_solid_progress_once() {
-        use super::{WarOutlineColor, WarOutlineStyle};
-        let old: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "defaults_version": 2,
-            "war_outline": {"style": "Dashed", "color": "Urgency", "progress": false, "width": 1.5, "opacity": 0.6},
-        }))
-        .unwrap();
-        let moved = old.with_current_defaults().war_outline;
+    fn only_the_exact_old_default_outline_moves_to_solid_progress() {
+        use super::{WarOutline, WarOutlineColor, WarOutlineStyle};
+        let migrate = |version: u32, outline: serde_json::Value| {
+            serde_json::from_value::<SettingsV2>(
+                serde_json::json!({"defaults_version": version, "war_outline": outline}),
+            )
+            .unwrap()
+            .with_current_defaults()
+            .war_outline
+        };
+
+        let old_default = serde_json::json!({"style": "Dashed", "color": "Stage", "progress": false, "width": 1.0, "opacity": 0.88});
+        assert_eq!(migrate(2, old_default), WarOutline::default());
+
+        let customized = serde_json::json!({"style": "Dashed", "color": "Urgency", "progress": false, "width": 1.5, "opacity": 0.6});
+        let kept = migrate(2, customized);
         assert_eq!(
-            (moved.style, moved.color, moved.progress, moved.width),
-            (WarOutlineStyle::Solid, WarOutlineColor::Urgency, true, 1.5)
+            (
+                kept.style,
+                kept.color,
+                kept.progress,
+                kept.width,
+                kept.opacity
+            ),
+            (
+                WarOutlineStyle::Dashed,
+                WarOutlineColor::Urgency,
+                false,
+                1.5,
+                0.6
+            )
         );
 
-        let chosen: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "defaults_version": 3,
-            "war_outline": {"style": "Dashed", "progress": false},
-        }))
-        .unwrap();
-        let kept = chosen.with_current_defaults().war_outline;
+        let chosen = migrate(3, serde_json::json!({"style": "Dashed", "progress": false}));
         assert_eq!(
-            (kept.style, kept.progress),
+            (chosen.style, chosen.progress),
             (WarOutlineStyle::Dashed, false)
         );
     }
