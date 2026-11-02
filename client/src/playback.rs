@@ -10,8 +10,9 @@ use sequoia_shared::{GuildRef, TerritoryChange};
 
 use crate::app::{
     CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryFetchNonce,
-    HistoryLegacyGeometryActive, HistorySeasonLeaderboard, HistorySeasonScalarSample,
-    HistoryTimestamp, MapMode, PlaybackActive, PlaybackSpeed, TerritoryGeometryStore,
+    HistoryLegacyGeometryActive, HistoryMapTime, HistorySeasonLeaderboard,
+    HistorySeasonScalarSample, HistoryTimestamp, MapMode, PlaybackActive, PlaybackSpeed,
+    TerritoryGeometryStore,
 };
 use crate::territory::{ClientTerritoryMap, apply_changes};
 
@@ -373,6 +374,7 @@ pub fn start_playback_engine() {
 
     let CurrentMode(mode) = expect_context();
     let HistoryTimestamp(timestamp) = expect_context();
+    let HistoryMapTime(history_map_time) = expect_context();
     let PlaybackActive(playing) = expect_context();
     let PlaybackSpeed(speed) = expect_context();
     let HistoryBoundsSignal(bounds) = expect_context();
@@ -384,6 +386,7 @@ pub fn start_playback_engine() {
     let TerritoryGeometryStore(geo_store) = expect_context();
     let GuildColorStore(guild_color_store) = expect_context();
     let fetch_ctx = crate::history::HistoryFetchContext {
+        history_map_time,
         mode,
         history_fetch_nonce: fetch_nonce,
         history_legacy_geometry_active,
@@ -447,6 +450,7 @@ pub fn start_playback_engine() {
 
         if next != current {
             timestamp.set(Some(next));
+            history_map_time.set(Some(next));
         }
         if let Some(entries) = sample {
             history_sr_leaderboard.set(Some(entries));

@@ -1,18 +1,17 @@
 use leptos::prelude::*;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
 
 use crate::app::{
     CurrentMode, GuildColorStore, HistoryBoundsSignal, HistoryBufferModeActive,
-    HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive,
+    HistoryBufferedUpdates, HistoryFetchNonce, HistoryLegacyGeometryActive, HistoryMapTime,
     HistorySeasonLeaderboard, HistorySeasonScalarSample, HistoryTimestamp, IsMobile, LastLiveSeq,
     LiveHandoffResyncCount, MapMode, NeedsLiveResync, PlaybackActive, PlaybackSpeed, SidebarOpen,
     SidebarWidth, TerritoryGeometryStore,
 };
 use crate::history;
 use crate::territory::ClientTerritoryMap;
-use gloo_timers::callback::Timeout;
 
 const HOUR_SECS: i64 = 60 * 60;
 const DAY_SECS: i64 = 24 * HOUR_SECS;
@@ -153,7 +152,9 @@ pub fn Timeline() -> impl IntoView {
     let overview_ref = NodeRef::<leptos::html::Input>::new();
     let slider_ref_sync = slider_ref;
     let overview_ref_sync = overview_ref;
+    let HistoryMapTime(history_map_time) = expect_context();
     let fetch_ctx = history::HistoryFetchContext {
+        history_map_time,
         mode,
         history_fetch_nonce,
         history_legacy_geometry_active,
@@ -164,17 +165,19 @@ pub fn Timeline() -> impl IntoView {
         territories,
     };
 
-    // Throttle history fetches while scrubbing so updates remain live without flooding requests.
-    let throttle_timeout = Rc::new(RefCell::new(None::<Timeout>));
-    let pending_fetch_val = Rc::new(Cell::new(None::<i64>));
-    let last_fetch_at_ms = Rc::new(Cell::new(0.0));
+    // While a rail is held, its range and value belong to the pointer: the detail rail's
+    // window stays put and the overview's value is not rewritten until release.
     let scrub_active: RwSignal<bool> = RwSignal::new(false);
+    let overview_active: RwSignal<bool> = RwSignal::new(false);
     let focus_span: RwSignal<Option<i64>> = RwSignal::new(DEFAULT_HISTORY_FOCUS_SPAN);
     let focus_window: RwSignal<Option<(i64, i64)>> = RwSignal::new(None);
     let last_focus_span_key = Rc::new(Cell::new(i64::MIN));
     let last_bounds = Rc::new(Cell::new(None::<(i64, i64)>));
 
     Effect::new(move || {
+        if scrub_active.get() {
+            return;
+        }
         let Some(bounds_now) = bounds.get() else {
             focus_window.set(None);
             return;
@@ -203,7 +206,9 @@ pub fn Timeline() -> impl IntoView {
         {
             input.set_value(&ts.to_string());
         }
-        if let Some(input) = overview_ref_sync.get() {
+        if !overview_active.get()
+            && let Some(input) = overview_ref_sync.get()
+        {
             let overview_value = if focus_span.get().is_none() {
                 ts
             } else {
@@ -216,178 +221,72 @@ pub fn Timeline() -> impl IntoView {
         }
     });
 
-    let on_range_input = {
-        let throttle_timeout = Rc::clone(&throttle_timeout);
-        let pending_fetch_val = Rc::clone(&pending_fetch_val);
-        let last_fetch_at_ms = Rc::clone(&last_fetch_at_ms);
-        move |e: web_sys::Event| {
-            let Some(target) = e.target() else {
-                return;
-            };
-            let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
-                return;
-            };
-            let raw = input.value_as_number();
-            if !raw.is_finite() {
-                return;
-            }
-            let val = raw.round() as i64;
-
-            playing.set(false);
-            scrub_active.set(true);
-            timestamp.set(Some(val));
-
-            let now_ms = js_sys::Date::now();
-            let elapsed_ms = now_ms - last_fetch_at_ms.get();
-            if elapsed_ms >= 150.0 && throttle_timeout.borrow().is_none() {
-                last_fetch_at_ms.set(now_ms);
-                history::fetch_and_apply_with(val, fetch_ctx);
-                return;
-            }
-
-            pending_fetch_val.set(Some(val));
-            if throttle_timeout.borrow().is_some() {
-                return;
-            }
-
-            let wait_ms = (150.0 - elapsed_ms).max(0.0).round() as u32;
-            let throttle_timeout_cb = Rc::clone(&throttle_timeout);
-            let pending_fetch_val_cb = Rc::clone(&pending_fetch_val);
-            let last_fetch_at_ms_cb = Rc::clone(&last_fetch_at_ms);
-            let timeout = Timeout::new(wait_ms, move || {
-                let _ = throttle_timeout_cb.borrow_mut().take();
-                if let Some(next_val) = pending_fetch_val_cb.take() {
-                    last_fetch_at_ms_cb.set(js_sys::Date::now());
-                    history::fetch_and_apply_with(next_val, fetch_ctx);
-                }
-            });
-            *throttle_timeout.borrow_mut() = Some(timeout);
+    // The rail's value, and for the overview the detail window centred on it.
+    let rail_value = move |e: &web_sys::Event, overview: bool| -> Option<i64> {
+        let input = e.target()?.dyn_into::<web_sys::HtmlInputElement>().ok()?;
+        let raw = input.value_as_number();
+        if !raw.is_finite() {
+            return None;
         }
+        let mut val = raw.round() as i64;
+        if overview && let Some(bounds_now) = bounds.get_untracked() {
+            val = clamp_timestamp_to_bounds(val, bounds_now);
+            focus_window.set(Some(center_focus_window(
+                bounds_now,
+                val,
+                focus_span.get_untracked(),
+            )));
+        }
+        playing.set(false);
+        Some(val)
+    };
+    // A drag that ends where it began fires no change, so releasing the pointer also ends it.
+    // The overview lets go a task later: the release's change, dispatched in this same task,
+    // must read the released value before the effect rewrites the overview.
+    let release = move |_: web_sys::PointerEvent| scrub_active.set(false);
+    let overview_release = move |_: web_sys::PointerEvent| {
+        gloo_timers::callback::Timeout::new(0, move || {
+            overview_active.try_set(false);
+        })
+        .forget();
     };
 
-    let on_range_change = {
-        let throttle_timeout = Rc::clone(&throttle_timeout);
-        let pending_fetch_val = Rc::clone(&pending_fetch_val);
-        let last_fetch_at_ms = Rc::clone(&last_fetch_at_ms);
-        move |e: web_sys::Event| {
-            let Some(target) = e.target() else {
-                return;
-            };
-            let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
-                return;
-            };
-            let raw = input.value_as_number();
-            if !raw.is_finite() {
-                return;
-            }
-            let val = raw.round() as i64;
-
-            playing.set(false);
-            timestamp.set(Some(val));
-            scrub_active.set(false);
-
-            if let Some(timeout) = throttle_timeout.borrow_mut().take() {
-                timeout.cancel();
-            }
-            pending_fetch_val.set(None);
-            last_fetch_at_ms.set(js_sys::Date::now());
-            history::fetch_and_apply_with(val, fetch_ctx);
-        }
+    let on_range_input = move |e: web_sys::Event| {
+        let Some(val) = rail_value(&e, false) else {
+            return;
+        };
+        scrub_active.set(true);
+        timestamp.set(Some(val));
+        history::preview(val, fetch_ctx);
     };
 
-    let on_overview_input = {
-        let throttle_timeout = Rc::clone(&throttle_timeout);
-        let pending_fetch_val = Rc::clone(&pending_fetch_val);
-        let last_fetch_at_ms = Rc::clone(&last_fetch_at_ms);
-        move |e: web_sys::Event| {
-            let Some(target) = e.target() else {
-                return;
-            };
-            let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
-                return;
-            };
-            let raw = input.value_as_number();
-            if !raw.is_finite() {
-                return;
-            }
-            let mut val = raw.round() as i64;
-            if let Some(bounds_now) = bounds.get_untracked() {
-                val = clamp_timestamp_to_bounds(val, bounds_now);
-                focus_window.set(Some(center_focus_window(
-                    bounds_now,
-                    val,
-                    focus_span.get_untracked(),
-                )));
-            }
-
-            playing.set(false);
-            scrub_active.set(false);
-            timestamp.set(Some(val));
-
-            let now_ms = js_sys::Date::now();
-            let elapsed_ms = now_ms - last_fetch_at_ms.get();
-            if elapsed_ms >= 150.0 && throttle_timeout.borrow().is_none() {
-                last_fetch_at_ms.set(now_ms);
-                history::fetch_and_apply_with(val, fetch_ctx);
-                return;
-            }
-
-            pending_fetch_val.set(Some(val));
-            if throttle_timeout.borrow().is_some() {
-                return;
-            }
-
-            let wait_ms = (150.0 - elapsed_ms).max(0.0).round() as u32;
-            let throttle_timeout_cb = Rc::clone(&throttle_timeout);
-            let pending_fetch_val_cb = Rc::clone(&pending_fetch_val);
-            let last_fetch_at_ms_cb = Rc::clone(&last_fetch_at_ms);
-            let timeout = Timeout::new(wait_ms, move || {
-                let _ = throttle_timeout_cb.borrow_mut().take();
-                if let Some(next_val) = pending_fetch_val_cb.take() {
-                    last_fetch_at_ms_cb.set(js_sys::Date::now());
-                    history::fetch_and_apply_with(next_val, fetch_ctx);
-                }
-            });
-            *throttle_timeout.borrow_mut() = Some(timeout);
-        }
+    let on_range_change = move |e: web_sys::Event| {
+        let Some(val) = rail_value(&e, false) else {
+            return;
+        };
+        timestamp.set(Some(val));
+        scrub_active.set(false);
+        history::fetch_and_apply_with(val, fetch_ctx);
     };
 
-    let on_overview_change = {
-        let throttle_timeout = Rc::clone(&throttle_timeout);
-        let pending_fetch_val = Rc::clone(&pending_fetch_val);
-        let last_fetch_at_ms = Rc::clone(&last_fetch_at_ms);
-        move |e: web_sys::Event| {
-            let Some(target) = e.target() else {
-                return;
-            };
-            let Ok(input) = target.dyn_into::<web_sys::HtmlInputElement>() else {
-                return;
-            };
-            let raw = input.value_as_number();
-            if !raw.is_finite() {
-                return;
-            }
-            let mut val = raw.round() as i64;
-            if let Some(bounds_now) = bounds.get_untracked() {
-                val = clamp_timestamp_to_bounds(val, bounds_now);
-                focus_window.set(Some(center_focus_window(
-                    bounds_now,
-                    val,
-                    focus_span.get_untracked(),
-                )));
-            }
+    let on_overview_input = move |e: web_sys::Event| {
+        overview_active.set(true);
+        let Some(val) = rail_value(&e, true) else {
+            return;
+        };
+        scrub_active.set(false);
+        timestamp.set(Some(val));
+        history::preview(val, fetch_ctx);
+    };
 
-            playing.set(false);
-            scrub_active.set(false);
-            timestamp.set(Some(val));
-
-            if let Some(timeout) = throttle_timeout.borrow_mut().take() {
-                timeout.cancel();
-            }
-            pending_fetch_val.set(None);
-            last_fetch_at_ms.set(js_sys::Date::now());
-            history::fetch_and_apply_with(val, fetch_ctx);
-        }
+    let on_overview_change = move |e: web_sys::Event| {
+        let Some(val) = rail_value(&e, true) else {
+            return;
+        };
+        scrub_active.set(false);
+        timestamp.set(Some(val));
+        overview_active.set(false);
+        history::fetch_and_apply_with(val, fetch_ctx);
     };
 
     let speed_options: &[f64] = &[1.0, 10.0, 60.0, 360.0];
@@ -484,6 +383,7 @@ pub fn Timeline() -> impl IntoView {
                             history_timestamp: timestamp,
                             playback_active: playing,
                             fetch: history::HistoryFetchContext {
+                                history_map_time,
                                 mode,
                                 history_fetch_nonce,
                                 history_legacy_geometry_active,
@@ -509,6 +409,7 @@ pub fn Timeline() -> impl IntoView {
                             history_timestamp: timestamp,
                             playback_active: playing,
                             fetch: history::HistoryFetchContext {
+                                history_map_time,
                                 mode,
                                 history_fetch_nonce,
                                 history_legacy_geometry_active,
@@ -654,6 +555,8 @@ pub fn Timeline() -> impl IntoView {
                                 .to_string()
                             on:input=on_overview_input
                             on:change=on_overview_change
+                            on:pointerup=overview_release
+                            on:pointercancel=overview_release
                         />
                     </div>
 
@@ -729,6 +632,8 @@ pub fn Timeline() -> impl IntoView {
                         value=timestamp.get_untracked().unwrap_or(0).to_string()
                         on:input=on_range_input
                         on:change=on_range_change
+                        on:pointerup=release
+                        on:pointercancel=release
                     />
 
                     <span style="color: var(--color-text-dim); flex-shrink: 0; font-size: 0.65rem;">

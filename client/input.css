@@ -416,7 +416,7 @@
    the left edge the way the sidebar collapses out through the right. Phones get a summary
    button and a bottom sheet with the same content instead. */
 :root {
-  --war-queued: #c7a3f0;
+  --war-queued: #f5c542;
   --war-entered: #ffa13d;
   --war-fighting: #ff4545;
   --war-online: #50c878;

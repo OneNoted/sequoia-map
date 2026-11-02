@@ -124,44 +124,17 @@ fn hatch_overlay(uv: vec2<f32>, size_px: vec2<f32>, base: vec3<f32>) -> vec3<f32
     return mix(base, min(base + vec3<f32>(0.45), vec3<f32>(1.0)), stripe * 0.8);
 }
 
-// Luma-weighted RGB distance — a cheap stand-in for perceptual difference, so a
-// swap in green counts for more than the same swap in blue.
-fn perceptual_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
-    let d = a - b;
-    return sqrt(d.r * d.r * 0.30 + d.g * d.g * 0.59 + d.b * d.b * 0.11);
-}
-
-// The war marker is red, but a red guild would swallow it. When the guild color sits
-// too close to that red, fall back to whichever of dark red / pink reads better —
-// both stay unmistakably "war", neither disappears into the fill. The fallback is
-// scored against the guild fill (inside the border) and against the dark map
-// (outside it), so a dark red is only picked when the fill is light enough to frame it.
-fn war_accent_color(guild: vec3<f32>) -> vec3<f32> {
-    let bright_red = vec3<f32>(1.0, 0.271, 0.271);   // #ff4545
-    let dark_red = vec3<f32>(0.290, 0.024, 0.024);   // #4a0606
-    let pink = vec3<f32>(1.0, 0.369, 0.784);         // #ff5ec8
-    let backdrop = vec3<f32>(0.10, 0.11, 0.14);      // typical dark map terrain
-
-    if perceptual_distance(guild, bright_red) >= 0.25 {
-        return bright_red;
-    }
-    let dark_score = perceptual_distance(dark_red, guild) * 0.65
-        + perceptual_distance(dark_red, backdrop) * 0.35;
-    let pink_score = perceptual_distance(pink, guild) * 0.65
-        + perceptual_distance(pink, backdrop) * 0.35;
-    if dark_score >= pink_score {
-        return dark_red;
-    }
-    return pink;
-}
-
-// Queued territories are lavender, entered ones amber: an escalation toward the war red
-// that stays clear of the HQ gold.
+// War stages escalate gold, amber, red: queued, entered, confirmed fighting. They are drawn
+// as their own layer inside the guild's border, so the owner's colour never has to give way.
 fn pending_war_color(entered: bool) -> vec3<f32> {
     if entered {
         return vec3<f32>(1.0, 0.631, 0.239);   // #ffa13d
     }
-    return vec3<f32>(0.780, 0.639, 0.941);     // #c7a3f0
+    return vec3<f32>(0.961, 0.773, 0.259);     // #f5c542
+}
+
+fn war_red() -> vec3<f32> {
+    return vec3<f32>(1.0, 0.271, 0.271);       // #ff4545
 }
 
 // A cooling territory's bar: a cool tone no war stage or HQ uses.
@@ -177,11 +150,6 @@ fn hq_corner(uv: vec2<f32>, size_px: vec2<f32>) -> f32 {
     let to_y = min(px.y, size_px.y - px.y);
     let arm = clamp(min(size_px.x, size_px.y) * 0.2, 5.0, 16.0);
     return select(0.0, 1.0, to_x <= arm && to_y <= arm);
-}
-
-// Urgency warms a pending outline toward coral, well clear of the fighting red.
-fn urgent_war_color() -> vec3<f32> {
-    return vec3<f32>(1.0, 0.435, 0.380);       // #ff6f61
 }
 
 // 1.0 on a dash, 0.0 in a gap, in screen pixels so the rhythm holds at every zoom. Each edge
@@ -377,11 +345,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var border_width = max(3.2 * border_mult * vp.scale, 0.8);
     // War stages and an HQ's corner brackets have to read at far zoom too, where a
     // world-scaled border thins to a hairline.
-    if is_pending_war || is_at_war || (is_headquarters && hq_corner(in.uv, in.size_px) > 0.5) {
+    if is_headquarters && hq_corner(in.uv, in.size_px) > 0.5 {
         border_width = max(border_width, 2.0);
     }
+    // A war stage needs room for the guild's band and the narrower stage layer inside it.
     if is_pending_war || is_at_war {
-        border_width = border_width * war_width;
+        border_width = max(border_width, 4.0) * war_width;
     }
     let feather = max(0.4 * vp.scale, 0.15);
 
@@ -413,21 +382,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // The war outline's own strength, 1 at the default opacity.
     let war_strength = clamp(war_opacity / 0.88, 0.0, 1.14);
 
-    // Over the last three minutes before the expected start the pending colour warms; once
-    // the start has passed unconfirmed it settles back, since that is not a war.
+    // Over the last three minutes before the stage is due its colour brightens, keeping its
+    // hue so it never reads as the next stage, and stays bright once due: only the backend
+    // advances a stage.
     var pending_color = pending_war_color(is_entered);
     if is_pending_war && war_urgency {
         let left = in.war_times.x - reference_rel_secs;
-        if left > 0.0 {
-            let urgency = 1.0 - clamp(left / 180.0, 0.0, 1.0);
-            pending_color = mix(pending_color, urgent_war_color(), urgency * urgency * 0.9);
-        }
+        let urgency = 1.0 - clamp(left / 180.0, 0.0, 1.0);
+        pending_color = mix(pending_color, vec3<f32>(1.0, 0.97, 0.88), urgency * urgency * 0.6);
     }
 
     // Fill zone — compute color and alpha with all effects
     var fill_color = compute_resource_fill(in.resource_data, in.uv, in.size_px, base_color);
     // War is transient and urgent, so it overrides the HQ gold while it lasts.
-    let war_color = war_accent_color(base_color);
+    let war_color = war_red();
     if is_at_war {
         fill_color = mix(fill_color, war_color, 0.06);
     } else if is_pending_war {
@@ -491,28 +459,35 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Blend border and fill with anti-aliased transition
     var border_color = base_color;
-    if is_at_war {
-        // Distinct from the cooldown/defense reds, which only ever tint the fill. Mixed
-        // hard toward the accent so a same-hue guild color can't wash it back out.
-        border_color = mix(base_color, war_color, min(0.92 * war_strength, 1.0));
-    } else if is_pending_war {
-        // Dashed by default so a queued territory never reads as a war in progress, whatever
-        // its guild color; the gaps keep the guild's own border visible.
+    if is_at_war || is_pending_war {
+        // Layered: the guild's colour keeps the outer band, a dark seam parts it from the
+        // narrower stage layer inside, so a stage in the guild's own hue still reads.
+        let stage_from = border_width * 0.55;
+        let seam = clamp(border_width * 0.1, 0.5, 1.5);
+        let seam_t = smoothstep(stage_from - feather, stage_from + feather, edge_dist);
+        let stage_t = smoothstep(stage_from + seam - feather, stage_from + seam + feather, edge_dist);
+        var stage_color = war_color;
         var on = 1.0;
-        if !war_solid {
-            on = pending_dash(in.uv, in.size_px, border_width);
+        if is_pending_war {
+            stage_color = pending_color;
+            if !war_solid {
+                on = pending_dash(in.uv, in.size_px, border_width);
+            }
+            // The progress outline lights the share of the queue timer still to run,
+            // clockwise from the top-left corner; the run-down share stays in a darker tone
+            // of the stage, so a due queue still reads as queued.
+            if war_progress {
+                let duration = max(in.war_times.z - in.war_times.y, 1.0);
+                let remaining = clamp((in.war_times.z - reference_rel_secs) / duration, 0.0, 1.0);
+                let position = perimeter_position(in.uv, in.size_px);
+                let edge = 1.0 / max(2.0 * (in.size_px.x + in.size_px.y), 1.0);
+                let lit = 1.0 - smoothstep(remaining - edge, remaining + edge, position);
+                stage_color = mix(stage_color * 0.5, stage_color, lit);
+            }
         }
-        // The progress outline lights the share of the queue timer still to run, clockwise
-        // from the top-left corner; the run-down share stays faintly marked.
-        if war_progress {
-            let duration = max(in.war_times.z - in.war_times.y, 1.0);
-            let remaining = clamp((in.war_times.z - reference_rel_secs) / duration, 0.0, 1.0);
-            let position = perimeter_position(in.uv, in.size_px);
-            let edge = 1.0 / max(2.0 * (in.size_px.x + in.size_px.y), 1.0);
-            let lit = 1.0 - smoothstep(remaining - edge, remaining + edge, position);
-            on = on * mix(0.28, 1.0, lit);
-        }
-        border_color = mix(base_color, pending_color, min(on * war_strength, 1.0));
+        let strength = min(on * war_strength, 1.0);
+        border_color = mix(base_color, base_color * 0.25, seam_t * (1.0 - stage_t) * strength);
+        border_color = mix(border_color, stage_color, stage_t * strength);
     }
     if is_headquarters {
         border_color = mix(border_color, vec3<f32>(0.973, 0.831, 0.275), hq_corner(in.uv, in.size_px));
