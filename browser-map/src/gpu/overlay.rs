@@ -777,14 +777,14 @@ enum Which {
     Teammates,
 }
 
-/// Plate colours as (border and icon, text): queued lavender, entered amber, war red and a
+/// Plate colours as (border and icon, text): queued gold, entered amber, war red and a
 /// capture green. Endings that do not say who won are grey.
 fn plate_tones(label: PlateLabel) -> ([u8; 3], [u8; 3]) {
     match label {
         PlateLabel::Front {
             stage: StageKind::Queued,
             ..
-        } => ([0xc7, 0xa3, 0xf0], [0xe6, 0xd8, 0xf8]),
+        } => ([0xf5, 0xc5, 0x42], [0xfb, 0xe8, 0xb0]),
         PlateLabel::Front {
             stage: StageKind::Entered,
             ..

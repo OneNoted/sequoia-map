@@ -45,15 +45,14 @@ pub enum HqCrownStyle {
     Fill,
 }
 
-/// How a queued or entered territory's outline is drawn.
+/// How a queued or entered territory's stage layer is drawn, inside the guild's own border.
 ///
 /// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
-/// A confirmed war keeps its solid red outline whatever this says.
+/// A confirmed war keeps its solid red layer whatever this says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WarOutlineStyle {
-    /// Dashes over the guild's own border, so a pending war never reads as a fight.
-    #[default]
     Dashed,
+    #[default]
     Solid,
 }
 
@@ -63,8 +62,8 @@ pub enum WarOutlineColor {
     /// The stage's own colour throughout.
     #[default]
     Stage,
-    /// Warms from the stage colour over the last [`WAR_OUTLINE_URGENCY_SECS`] before the
-    /// war's expected start, and settles back once that has passed without a confirmed war.
+    /// Brightens the stage colour over the last [`WAR_OUTLINE_URGENCY_SECS`] before the stage
+    /// is due, and stays bright once due until the backend advances the stage.
     Urgency,
 }
 
@@ -94,9 +93,9 @@ pub struct WarOutline {
 impl Default for WarOutline {
     fn default() -> Self {
         Self {
-            style: WarOutlineStyle::Dashed,
+            style: WarOutlineStyle::Solid,
             color: WarOutlineColor::Stage,
-            progress: false,
+            progress: true,
             width: 1.0,
             opacity: DEFAULT_WAR_OUTLINE_OPACITY,
         }
@@ -537,7 +536,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn war_outline_defaults_to_restrained_dashes_and_survives_partial_or_bad_saves() {
+    fn war_outline_defaults_to_solid_progress_and_survives_partial_or_bad_saves() {
         use super::{WarOutline, WarOutlineColor, WarOutlineStyle};
         let default = WarOutline::default();
         assert_eq!(
@@ -547,9 +546,9 @@ pub(crate) mod tests {
                 default.progress,
                 default.width
             ),
-            (WarOutlineStyle::Dashed, WarOutlineColor::Stage, false, 1.0)
+            (WarOutlineStyle::Solid, WarOutlineColor::Stage, true, 1.0)
         );
-        assert!(!default.moves());
+        assert!(default.moves());
 
         let saved = serde_json::to_string(&WarOutline {
             style: WarOutlineStyle::Solid,
@@ -564,15 +563,14 @@ pub(crate) mod tests {
             r#"{"style":"Solid","color":"Urgency","progress":true,"width":1.5,"opacity":0.6}"#
         );
 
-        let partial: WarOutline = serde_json::from_str(r#"{"progress":true}"#).expect("partial");
+        let partial: WarOutline = serde_json::from_str(r#"{"style":"Dashed"}"#).expect("partial");
         assert_eq!(
             partial,
             WarOutline {
-                progress: true,
+                style: WarOutlineStyle::Dashed,
                 ..default
             }
         );
-        assert!(partial.moves());
 
         let wild = WarOutline {
             width: 9.0,

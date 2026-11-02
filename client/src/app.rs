@@ -458,7 +458,7 @@ pub(crate) use sequoia_map_engine::settings::{
 
 use gloo_storage::Storage;
 
-const SETTINGS_DEFAULTS_VERSION: u32 = 2;
+const SETTINGS_DEFAULTS_VERSION: u32 = 3;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -843,6 +843,15 @@ impl SettingsV2 {
             let defaults = SettingsV2::default();
             self.show_claim_labels = defaults.show_claim_labels;
             self.show_far_zoom_territory_tags = defaults.show_far_zoom_territory_tags;
+        }
+
+        // Every save wrote the whole outline, so the old dashed, progress-off defaults are
+        // indistinguishable from a choice; they move to the new defaults once.
+        if self.defaults_version < 3 {
+            if self.war_outline.style == WarOutlineStyle::Dashed {
+                self.war_outline.style = WarOutlineStyle::Solid;
+            }
+            self.war_outline.progress = true;
         }
 
         self.defaults_version = SETTINGS_DEFAULTS_VERSION;
@@ -3942,6 +3951,32 @@ mod tests {
         assert!(!parsed.show_claim_labels);
         assert!(parsed.show_far_zoom_territory_tags);
         assert!(!parsed.show_debug_info);
+    }
+
+    #[test]
+    fn the_old_dashed_outline_default_moves_to_solid_progress_once() {
+        use super::{WarOutlineColor, WarOutlineStyle};
+        let old: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "defaults_version": 2,
+            "war_outline": {"style": "Dashed", "color": "Urgency", "progress": false, "width": 1.5, "opacity": 0.6},
+        }))
+        .unwrap();
+        let moved = old.with_current_defaults().war_outline;
+        assert_eq!(
+            (moved.style, moved.color, moved.progress, moved.width),
+            (WarOutlineStyle::Solid, WarOutlineColor::Urgency, true, 1.5)
+        );
+
+        let chosen: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "defaults_version": 3,
+            "war_outline": {"style": "Dashed", "progress": false},
+        }))
+        .unwrap();
+        let kept = chosen.with_current_defaults().war_outline;
+        assert_eq!(
+            (kept.style, kept.progress),
+            (WarOutlineStyle::Dashed, false)
+        );
     }
 
     #[test]
