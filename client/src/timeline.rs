@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::wasm_bindgen;
 
 use crate::app::{
     CurrentMode, GuildColorStore, HistoryBarHeight, HistoryBoundsSignal, HistoryBufferModeActive,
@@ -11,6 +12,7 @@ use crate::app::{
     SidebarWidth, TerritoryGeometryStore,
 };
 use crate::history;
+use crate::precision_scrub::{self, FINEST_LEVEL, Rail, Scrub};
 use crate::territory::ClientTerritoryMap;
 
 const HOUR_SECS: i64 = 60 * 60;
@@ -31,7 +33,120 @@ const STEP_BACK_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="currentColor" aria
 const STEP_FORWARD_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="11" y="3" width="2" height="10" rx="0.5"/><path d="M3 3v10l7-5z"/></svg>"#;
 const MORE_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="12.5" cy="8" r="1.5"/></svg>"#;
 const LIVE_SVG: &str = r#"<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>"#;
+const LIFT_SVG: &str = r#"<svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true"><path d="M5 1.5L9 7H1z"/></svg>"#;
 const DEFAULT_HISTORY_FOCUS_SPAN: Option<i64> = Some(6 * HOUR_SECS);
+
+/// How far beside a rail's thumb a press still takes hold of it rather than jumping; a
+/// fingertip is wider than a cursor.
+const THUMB_SLACK_MOUSE_PX: f64 = 3.0;
+const THUMB_SLACK_TOUCH_PX: f64 = 10.0;
+/// The precision cue sits this far above the pointer, clear of a fingertip, and never lower
+/// than just above the bar or higher than just under the site navigation.
+const CUE_GAP_MOUSE_PX: f64 = 22.0;
+const CUE_GAP_TOUCH_PX: f64 = 56.0;
+const CUE_ABOVE_BAR_PX: f64 = 10.0;
+const CUE_HIGHEST_PX: f64 = 100.0;
+/// About half the cue's width: how close to the bar's ends its centre may come.
+const CUE_HALF_WIDTH_PX: f64 = 112.0;
+
+#[wasm_bindgen]
+extern "C" {
+    /// A `MouseEvent` read through getters that keep the doubles browsers report; web-sys's
+    /// stable `client_x`/`client_y` return `i32`.
+    #[wasm_bindgen(extends = web_sys::MouseEvent)]
+    type FractionalMouseEvent;
+    #[wasm_bindgen(method, getter = clientX)]
+    fn client_x(this: &FractionalMouseEvent) -> f64;
+    #[wasm_bindgen(method, getter = clientY)]
+    fn client_y(this: &FractionalMouseEvent) -> f64;
+}
+
+fn client_position(event: &web_sys::PointerEvent) -> (f64, f64) {
+    let precise = event.unchecked_ref::<FractionalMouseEvent>();
+    (precise.client_x(), precise.client_y())
+}
+
+/// `input` as laid out now. Its thumb's diameter is `--tl-thumb` (client/input.css).
+fn rail_of(input: &web_sys::HtmlInputElement) -> Option<Rail> {
+    let thumb = web_sys::window()?
+        .get_computed_style(input)
+        .ok()??
+        .get_property_value("--tl-thumb")
+        .ok()?
+        .trim()
+        .strip_suffix("px")?
+        .parse()
+        .ok()?;
+    let rect = input.get_bounding_client_rect();
+    let rail = Rail {
+        left: rect.left(),
+        width: rect.width(),
+        thumb,
+        center_y: rect.top() + rect.height() / 2.0,
+        min: input.min().parse().ok()?,
+        max: input.max().parse().ok()?,
+    };
+    (rail.max > rail.min && rail.width > rail.thumb).then_some(rail)
+}
+
+/// A pointer holding one of the rails.
+struct HeldRail {
+    scrub: Scrub,
+    overview: bool,
+    input: web_sys::HtmlInputElement,
+    /// The rail's frame, which holds the pointer until it lets go.
+    frame: web_sys::Element,
+    touch: bool,
+    /// Playback the press paused resumes on release.
+    resume_playback: bool,
+    shown: i64,
+}
+
+/// The precision cue over a held rail, in pixels from the History bar's top-left.
+#[derive(Clone, Copy, PartialEq)]
+struct ScrubCue {
+    overview: bool,
+    timestamp: i64,
+    /// Halvings of speed: 0 at full speed, up to [`FINEST_LEVEL`].
+    level: u8,
+    thumb_x: f64,
+    cue_x: f64,
+    /// The cue's bottom edge, where the guide from the thumb ends.
+    bottom: f64,
+    thumb_top: f64,
+}
+
+fn place_cue(bar: &web_sys::Element, rail: &Rail, held: &HeldRail, pointer_y: f64) -> ScrubCue {
+    let frame = bar.get_bounding_client_rect();
+    let timestamp = held.scrub.timestamp();
+    let thumb_x = rail.x_of(timestamp as f64) - frame.left();
+    let margin = CUE_HALF_WIDTH_PX.min(frame.width() / 2.0);
+    let gap = if held.touch {
+        CUE_GAP_TOUCH_PX
+    } else {
+        CUE_GAP_MOUSE_PX
+    };
+    let bottom = (pointer_y - gap)
+        .min(frame.top() - CUE_ABOVE_BAR_PX)
+        .max(CUE_HIGHEST_PX)
+        - frame.top();
+    ScrubCue {
+        overview: held.overview,
+        timestamp,
+        level: precision_scrub::level_for_scale(held.scrub.scale()),
+        thumb_x,
+        cue_x: thumb_x.clamp(margin, frame.width() - margin),
+        bottom,
+        thumb_top: rail.center_y - rail.thumb / 2.0 - frame.top(),
+    }
+}
+
+/// A scrubbed time, to the second a fine scrub can reach.
+fn format_scrub_time(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
+}
 
 pub(crate) fn format_history_timestamp(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
@@ -290,17 +405,8 @@ pub fn Timeline() -> impl IntoView {
         playing.set(false);
         Some(val)
     };
-    // A drag that ends where it began fires no change, so releasing the pointer also ends it.
-    // The overview lets go a task later: the release's change, dispatched in this same task,
-    // must read the released value before the effect rewrites the overview.
-    let release = move |_: web_sys::PointerEvent| scrub_active.set(false);
-    let overview_release = move |_: web_sys::PointerEvent| {
-        gloo_timers::callback::Timeout::new(0, move || {
-            overview_active.try_set(false);
-        })
-        .forget();
-    };
-
+    // Keys and assistive technology change a rail through its native input; a pointer holds
+    // its frame instead (below).
     let on_range_input = move |e: web_sys::Event| {
         let Some(val) = rail_value(&e, false) else {
             return;
@@ -413,6 +519,207 @@ pub fn Timeline() -> impl IntoView {
             observer.disconnect();
         }
     });
+
+    // A pointer on a rail drags its thumb itself, finer the higher it rises above the rail
+    // (crate::precision_scrub). The rail's frame holds the pointer wherever it goes until it
+    // lets go, so the map beneath neither pans nor selects.
+    let held = StoredValue::new_local(None::<HeldRail>);
+    let cue: RwSignal<Option<ScrubCue>> = RwSignal::new(None);
+    let owns = move |e: &web_sys::PointerEvent| {
+        held.with_value(|held| {
+            held.as_ref()
+                .is_some_and(|held| held.scrub.pointer_id == e.pointer_id())
+        })
+    };
+    // The held rail's time: its thumb, the selected time and, for the overview, the detail
+    // window around it. The map follows through the coalesced preview.
+    let show_held = move |overview: bool, input: &web_sys::HtmlInputElement, ts: i64| {
+        input.set_value(&ts.to_string());
+        if overview && let Some(bounds_now) = bounds.get_untracked() {
+            focus_window.set(Some(center_focus_window(
+                bounds_now,
+                ts,
+                focus_span.get_untracked(),
+            )));
+        }
+        timestamp.set(Some(ts));
+        history::preview(ts, fetch_ctx);
+    };
+    // Letting go seeks the time shown exactly, as releasing a native rail does, and resumes
+    // playback the press paused. Leaving History lets go without either.
+    let let_go = move |settle: bool| {
+        let Some(released) = held.try_update_value(Option::take).flatten() else {
+            return;
+        };
+        let pointer_id = released.scrub.pointer_id;
+        if released.frame.has_pointer_capture(pointer_id) {
+            let _ = released.frame.release_pointer_capture(pointer_id);
+        }
+        cue.set(None);
+        scrub_active.set(false);
+        if settle && mode.get_untracked() == MapMode::History {
+            let ts = released.scrub.timestamp();
+            if released.overview
+                && let Some(bounds_now) = bounds.get_untracked()
+            {
+                focus_window.set(Some(center_focus_window(
+                    bounds_now,
+                    ts,
+                    focus_span.get_untracked(),
+                )));
+            }
+            timestamp.set(Some(ts));
+            history::fetch_and_apply_with(ts, fetch_ctx);
+            if released.resume_playback {
+                playing.set(true);
+            }
+        }
+        overview_active.set(false);
+    };
+    let press = move |e: web_sys::PointerEvent, overview: bool| {
+        let mouse = e.pointer_type() == "mouse";
+        if !e.is_primary() || (mouse && e.button() != 0) || mode.get_untracked() != MapMode::History
+        {
+            return;
+        }
+        // One pointer holds a rail at a time; one its frame no longer holds has let go.
+        if held.with_value(|held| {
+            held.as_ref()
+                .is_some_and(|held| held.frame.has_pointer_capture(held.scrub.pointer_id))
+        }) {
+            return;
+        }
+        let_go(true);
+        let input_ref = if overview { overview_ref } else { slider_ref };
+        let (Some(input), Some(frame)) = (
+            input_ref.get_untracked(),
+            e.current_target()
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok()),
+        ) else {
+            return;
+        };
+        let (Some(rail), Some(bar)) = (rail_of(&input), bar_ref.get_untracked()) else {
+            return;
+        };
+        let value = input.value_as_number();
+        if !value.is_finite() {
+            return;
+        }
+        if mouse {
+            // No text selection or focus change from the press; the rail takes focus itself.
+            // Touch presses stay default: `touch-action: none` keeps the page still.
+            e.prevent_default();
+        }
+        let _ = input.focus();
+        let _ = frame.set_pointer_capture(e.pointer_id());
+
+        let (x, y) = client_position(&e);
+        let slack = if mouse {
+            THUMB_SLACK_MOUSE_PX
+        } else {
+            THUMB_SLACK_TOUCH_PX
+        };
+        let start = value.round() as i64;
+        let scrub = Scrub::press(e.pointer_id(), x, y, &rail, start, slack);
+        let shown = scrub.timestamp();
+        let pressed = HeldRail {
+            scrub,
+            overview,
+            input,
+            frame,
+            touch: !mouse,
+            resume_playback: playing.get_untracked(),
+            shown,
+        };
+        playing.set(false);
+        overview_active.set(overview);
+        scrub_active.set(!overview);
+        if shown != start {
+            show_held(overview, &pressed.input, shown);
+        }
+        cue.set(Some(place_cue(&bar, &rail, &pressed, y)));
+        held.set_value(Some(pressed));
+    };
+    // Moves the held rail's pointer to the event's position: the rail as laid out now, and the
+    // time it shows if that changed.
+    let follow = move |e: &web_sys::PointerEvent| {
+        let (x, y) = client_position(e);
+        held.try_update_value(|held| {
+            let held = held.as_mut()?;
+            let rail = rail_of(&held.input)?;
+            let ts = held.scrub.move_to(x, y, &rail);
+            let step = (ts != held.shown).then(|| (held.overview, held.input.clone(), ts));
+            held.shown = ts;
+            Some((rail, step))
+        })
+        .flatten()
+    };
+    let drag = move |e: web_sys::PointerEvent| {
+        if !owns(&e) {
+            return;
+        }
+        // A mouse whose button came up where the page heard no release has let go where it
+        // last moved.
+        if e.pointer_type() == "mouse" && (e.buttons() & 1) == 0 {
+            let_go(true);
+            return;
+        }
+        let Some((rail, step)) = follow(&e) else {
+            return;
+        };
+        let y = client_position(&e).1;
+        let next_cue = bar_ref.get_untracked().and_then(|bar| {
+            held.with_value(|held| held.as_ref().map(|held| place_cue(&bar, &rail, held, y)))
+        });
+        if next_cue.is_some() {
+            cue.set(next_cue);
+        }
+        if let Some((overview, input, ts)) = step {
+            show_held(overview, &input, ts);
+        }
+    };
+    // A release may land away from the last move; its own position chooses the time.
+    let release = move |e: web_sys::PointerEvent| {
+        if owns(&e) {
+            let _ = follow(&e);
+            let_go(true);
+        }
+    };
+    // A cancelled or lost pointer reports no position worth taking: the last move's time stands.
+    let lose = move |e: web_sys::PointerEvent| {
+        if owns(&e) {
+            let_go(true);
+        }
+    };
+    // Leaving History lets go without a seek; the phone sheet covering the bar settles.
+    Effect::new(move || {
+        let history = mode.get() == MapMode::History;
+        let covered = is_mobile.get() && sidebar_open.get();
+        if (!history || covered) && held.with_value(Option::is_some) {
+            let_go(history);
+        }
+    });
+    on_cleanup(move || {
+        if let Some(released) = held.try_update_value(Option::take).flatten() {
+            let _ = released
+                .frame
+                .release_pointer_capture(released.scrub.pointer_id);
+        }
+    });
+    let held_level = move |overview: bool| {
+        cue.with(|cue| {
+            cue.filter(|cue| cue.overview == overview)
+                .map(|cue| cue.level)
+        })
+    };
+    let cue_level = move || cue.with(|cue| cue.map_or(0, |cue| cue.level));
+    let cue_px = move |pick: fn(&ScrubCue) -> f64| {
+        cue.with(|cue| {
+            cue.as_ref()
+                .map(|cue| format!("{:.1}px", pick(cue)))
+                .unwrap_or_default()
+        })
+    };
 
     // The time field follows the selected time, except while it is being edited.
     let time_ref = NodeRef::<leptos::html::Input>::new();
@@ -607,7 +914,16 @@ pub fn Timeline() -> impl IntoView {
 
             <div class="tl-rails">
                 <span class="tl-edge tl-overview-start">{move || edge(bounds.get(), |w| w.0)}</span>
-                <div class="tl-overview">
+                <div
+                    class="tl-overview tl-scrub"
+                    class:tl-scrub-held=move || held_level(true).is_some()
+                    class:tl-scrub-fine=move || held_level(true).is_some_and(|level| level > 0)
+                    on:pointerdown=move |e| press(e, true)
+                    on:pointermove=drag
+                    on:pointerup=release
+                    on:pointercancel=lose
+                    on:lostpointercapture=lose
+                >
                     <div class="timeline-focus-band" style=move || focus_band_style(focus_window.get(), bounds.get()) />
                     <input
                         node_ref=overview_ref
@@ -630,8 +946,6 @@ pub fn Timeline() -> impl IntoView {
                             .to_string()
                         on:input=on_overview_input
                         on:change=on_overview_change
-                        on:pointerup=overview_release
-                        on:pointercancel=overview_release
                     />
                 </div>
                 <span class="tl-edge tl-overview-end">{move || edge(bounds.get(), |w| w.1)}</span>
@@ -639,23 +953,62 @@ pub fn Timeline() -> impl IntoView {
                 <div class="tl-lens" aria-hidden="true" style=move || lens_style(focus_window.get(), bounds.get()) />
 
                 <span class="tl-edge tl-fine-start">{move || edge(rail_window(), |w| w.0)}</span>
-                <input
-                    node_ref=slider_ref
-                    type="range"
-                    class="timeline-slider tl-fine"
-                    aria-label="Selected time"
-                    aria-valuetext=move || timestamp.get().map(format_history_timestamp).unwrap_or_default()
-                    min=move || rail_window().map(|(start, _)| start.to_string()).unwrap_or_else(|| "0".to_string())
-                    max=move || rail_window().map(|(_, end)| end.to_string()).unwrap_or_else(|| "0".to_string())
-                    step="1"
-                    value=timestamp.get_untracked().unwrap_or(0).to_string()
-                    on:input=on_range_input
-                    on:change=on_range_change
+                <div
+                    class="tl-fine tl-scrub"
+                    class:tl-scrub-held=move || held_level(false).is_some()
+                    class:tl-scrub-fine=move || held_level(false).is_some_and(|level| level > 0)
+                    on:pointerdown=move |e| press(e, false)
+                    on:pointermove=drag
                     on:pointerup=release
-                    on:pointercancel=release
-                />
+                    on:pointercancel=lose
+                    on:lostpointercapture=lose
+                >
+                    <input
+                        node_ref=slider_ref
+                        type="range"
+                        class="timeline-slider"
+                        aria-label="Selected time"
+                        aria-valuetext=move || timestamp.get().map(format_history_timestamp).unwrap_or_default()
+                        min=move || rail_window().map(|(start, _)| start.to_string()).unwrap_or_else(|| "0".to_string())
+                        max=move || rail_window().map(|(_, end)| end.to_string()).unwrap_or_else(|| "0".to_string())
+                        step="1"
+                        value=timestamp.get_untracked().unwrap_or(0).to_string()
+                        on:input=on_range_input
+                        on:change=on_range_change
+                    />
+                </div>
                 <span class="tl-edge tl-fine-end">{move || edge(rail_window(), |w| w.1)}</span>
             </div>
+
+            // While a rail is held: the time to the second and how fine the drag is, above the
+            // pointer, with a guide down to the thumb once the drag is finer than the rail.
+            <Show when=move || cue.with(Option::is_some)>
+                <div
+                    class="tl-scrub-guide"
+                    aria-hidden="true"
+                    style:display=move || { if cue_level() > 0 { "block" } else { "none" } }
+                    style:left=move || cue_px(|cue| cue.thumb_x)
+                    style:top=move || cue_px(|cue| cue.bottom)
+                    style:height=move || cue_px(|cue| (cue.thumb_top - cue.bottom).max(0.0))
+                />
+                <div
+                    class="tl-scrub-cue"
+                    class:tl-scrub-cue-fine=move || { cue_level() > 0 }
+                    aria-hidden="true"
+                    style:left=move || cue_px(|cue| cue.cue_x)
+                    style:top=move || cue_px(|cue| cue.bottom)
+                >
+                    <span class="tl-scrub-time">
+                        {move || cue.with(|cue| cue.map(|cue| format_scrub_time(cue.timestamp)).unwrap_or_default())}
+                    </span>
+                    <span class="tl-scrub-hint"><span inner_html=LIFT_SVG />"finer"</span>
+                    <span class="tl-scrub-level">
+                        {(0..FINEST_LEVEL).map(|step| view! {
+                            <i class:tl-scrub-on=move || { cue_level() > step } />
+                        }).collect::<Vec<_>>()}
+                    </span>
+                </div>
+            </Show>
         </div>
     }
 }
