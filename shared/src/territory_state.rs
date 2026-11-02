@@ -64,6 +64,12 @@ macro_rules! fields {
                 changes
             }
 
+            /// Every field with its value, `None` ones included: applied to any state, it
+            /// replaces that state entirely.
+            pub fn fields(&self) -> Vec<TerritoryStateField> {
+                vec![$(TerritoryStateField::$variant(self.$field.clone())),*]
+            }
+
             pub fn apply(&mut self, field: TerritoryStateField) {
                 match field {
                     $(TerritoryStateField::$variant(value) => self.$field = value,)*
@@ -207,6 +213,23 @@ mod tests {
             rebuilt.apply(change);
         }
         assert_eq!(rebuilt, after);
+    }
+
+    #[test]
+    fn all_fields_replace_a_state_including_the_ones_that_are_unknown() {
+        let mut stale = TerritoryState {
+            treasury: Some("HIGH".into()),
+            stored: Some(resources(7, 7)),
+            ..TerritoryState::default()
+        };
+        let current = TerritoryState {
+            headquarters: Some(true),
+            ..TerritoryState::default()
+        };
+        for field in current.fields() {
+            stale.apply(field);
+        }
+        assert_eq!(stale, current);
     }
 
     #[test]

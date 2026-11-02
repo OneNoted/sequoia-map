@@ -452,7 +452,9 @@ pub async fn season_windows(
 }
 
 /// Remove history older than `cutoff` while keeping the latest checkpoint at or before it,
-/// so the first retained fact still has its base. Returns removed facts and checkpoints.
+/// so the first retained fact still has its base. The earliest bound covers what remains of
+/// both facts and state rows; counts, takes and heat stay ownership-only. Returns removed
+/// facts and checkpoints.
 pub async fn expire_before(
     pool: &sqlx::PgPool,
     cutoff: DateTime<Utc>,
@@ -471,10 +473,11 @@ pub async fn expire_before(
         .execute(&mut *tx)
         .await?
         .rows_affected();
-    sqlx::query("DELETE FROM history_api_state WHERE recorded_at <= $1")
+    let states = sqlx::query("DELETE FROM history_api_state WHERE recorded_at <= $1")
         .bind(anchor)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
     let checkpoints = sqlx::query("DELETE FROM history_checkpoint WHERE taken_at < $1")
         .bind(anchor)
         .execute(&mut *tx)
@@ -497,10 +500,19 @@ pub async fn expire_before(
         .await?;
         sqlx::query(
             "UPDATE history_meta SET fact_count = fact_count - $1, \
-                 earliest_at = (SELECT min(recorded_at) FROM history_fact), \
                  earliest_take_at = (SELECT min(recorded_at) FROM history_fact WHERE take)",
         )
         .bind(i64::try_from(facts).unwrap_or(i64::MAX))
+        .execute(&mut *tx)
+        .await?;
+    }
+    if facts > 0 || states > 0 {
+        // State rows are recorded in stream order, so the first by position is the earliest.
+        sqlx::query(
+            "UPDATE history_meta SET earliest_at = LEAST( \
+                 (SELECT min(recorded_at) FROM history_fact), \
+                 (SELECT recorded_at FROM history_api_state ORDER BY stream_seq LIMIT 1))",
+        )
         .execute(&mut *tx)
         .await?;
     }

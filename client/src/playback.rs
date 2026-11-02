@@ -672,6 +672,37 @@ mod tests {
     }
 
     #[test]
+    fn a_full_row_replaces_what_playback_held_for_a_territory() {
+        let current = TerritoryState {
+            headquarters: Some(true),
+            ..TerritoryState::default()
+        };
+        let mut territory_states = BTreeMap::from([(
+            "A".to_string(),
+            HistoryTerritoryState {
+                observed_at: "seek".to_string(),
+                state: TerritoryState {
+                    treasury: Some("HIGH".to_string()),
+                    ..TerritoryState::default()
+                },
+            },
+        )]);
+        let mut states = VecDeque::from([PendingState {
+            at_micros: 10,
+            observed_at: "repair".to_string(),
+            changes: vec![HistoryStateChange {
+                territory: "A".to_string(),
+                fields: current.fields(),
+            }],
+        }]);
+        take_due_states(&mut states, &mut territory_states, 10);
+        assert_eq!(
+            territory_states["A"].state, current,
+            "treasury HIGH is gone"
+        );
+    }
+
+    #[test]
     fn playback_shows_a_recorded_state_only_for_its_holding() {
         let holding = |uuid: &str| Territory {
             guild: GuildRef {

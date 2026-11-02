@@ -342,23 +342,22 @@ impl WriterState {
     }
 
     /// The official-API state of each territory in `current` that differs from what was last
-    /// staged, as the changed fields; a territory seen for the first time has all its known
-    /// fields. Territories missing from `current` are forgotten, so one that returns is
-    /// recorded in full.
+    /// staged, as the changed fields. A territory without a staged state (seen for the first
+    /// time, or after a dropped batch cleared them) gets every field, unknown ones included,
+    /// so its row replaces whatever a reader held. Territories missing from `current` are
+    /// forgotten, so one that returns is recorded in full.
     pub fn state_changes(
         &mut self,
         current: &HashMap<String, TerritoryState>,
     ) -> Vec<(String, Vec<TerritoryStateField>)> {
         self.api_states.retain(|name, _| current.contains_key(name));
-        let unknown = TerritoryState::default();
         let mut changes: Vec<_> = current
             .iter()
             .filter_map(|(name, state)| {
-                let before = self
-                    .api_states
-                    .get(name)
-                    .map_or(&unknown, |(_, state)| state);
-                let fields = state.changes_from(before);
+                let fields = match self.api_states.get(name) {
+                    Some((_, before)) => state.changes_from(before),
+                    None => state.fields(),
+                };
                 (!fields.is_empty()).then(|| (name.clone(), fields))
             })
             .collect();
@@ -1448,6 +1447,187 @@ mod tests {
                 .1
                 .contains(&TerritoryStateField::Headquarters(Some(true)))
         );
+    }
+
+    #[tokio::test]
+    async fn a_clear_lost_in_an_outage_is_repaired_by_a_full_row() {
+        let Some((pool, _lock)) = reset_test_database().await else {
+            eprintln!("Skipping state repair test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let mut writer = WriterState::default();
+        writer.recover(&pool).await.expect("recover");
+        let avo = Holding::new("AVO", "2026-11-01T10:00:00Z");
+        let live = avo.live("Orc Road");
+        let first = avo.change("Orc Road", None);
+        let high = TerritoryState {
+            treasury: Some("HIGH".to_string()),
+            ..avo.api_state(true, 10)
+        };
+        let cleared = TerritoryState {
+            treasury: None,
+            ..high.clone()
+        };
+        poll(&mut writer, &pool, &live, &[(1, &first)], high, 2).await;
+        let checkpoints = || async {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM history_checkpoint")
+                .fetch_one(&pool)
+                .await
+                .expect("count")
+        };
+        assert_eq!(checkpoints().await, 1, "the checkpoint holds treasury HIGH");
+
+        // The API stops supplying the treasury while the database is down, and the queue
+        // overflows before it returns, dropping that change.
+        let outage = unreachable_pool();
+        let current = HashMap::from([("Orc Road".to_string(), cleared.clone())]);
+        let changes = writer.state_changes(&current);
+        assert_eq!(changes[0].1, vec![TerritoryStateField::Treasury(None)]);
+        let outcome = writer
+            .commit(
+                Some(&outage),
+                Commit {
+                    source: FactSource::Poller,
+                    changes: Vec::new(),
+                    reports: Vec::new(),
+                    states: Some(StateChanges {
+                        seq: 3,
+                        observed_at: Utc::now(),
+                        changes,
+                    }),
+                    live: &live,
+                    needs_checkpoint: false,
+                },
+            )
+            .await;
+        assert!(matches!(outcome, CommitOutcome::Deferred { .. }));
+        let mut dropped = 0;
+        while dropped == 0 {
+            let outcome = writer
+                .commit(
+                    Some(&outage),
+                    Commit {
+                        source: FactSource::Canonical,
+                        changes: Vec::new(),
+                        reports: runtime_reports(5_000),
+                        states: None,
+                        live: &live,
+                        needs_checkpoint: false,
+                    },
+                )
+                .await;
+            let CommitOutcome::Deferred {
+                dropped_reports, ..
+            } = outcome
+            else {
+                panic!("deferred, got {outcome:?}");
+            };
+            dropped += dropped_reports;
+        }
+
+        // Back online, the next poll replaces the state in full, unknown treasury included.
+        poll(&mut writer, &pool, &live, &[], cleared.clone(), 4).await;
+        assert_eq!(checkpoints().await, 1, "no checkpoint hides the repair row");
+        let seen = super::super::read::territories_at(&pool, Utc::now())
+            .await
+            .expect("seek");
+        assert_eq!(seen.states["Orc Road"].state, cleared);
+        let page = super::super::read::fact_page(
+            &pool,
+            super::super::beginning(),
+            Utc::now(),
+            (2, i16::MAX),
+            10,
+        )
+        .await
+        .expect("page");
+        let repair = &page.states.last().expect("repair row").changes[0].fields;
+        assert!(repair.contains(&TerritoryStateField::Treasury(None)));
+        assert_eq!(repair.len(), cleared.fields().len());
+
+        let mut restarted = WriterState::default();
+        restarted.recover(&pool).await.expect("recover");
+        assert!(restarted.state_changes(&current).is_empty());
+    }
+
+    #[tokio::test]
+    async fn retention_keeps_the_earliest_bound_over_both_kinds_of_history() {
+        let Some((pool, _lock)) = reset_test_database().await else {
+            eprintln!("Skipping retention bounds test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let at = |minute: i64| {
+            "2026-01-01T00:00:00Z"
+                .parse::<DateTime<Utc>>()
+                .expect("base")
+                + Duration::minutes(minute)
+        };
+        // A fact, state row or checkpoint at each minute, with stream positions in time order.
+        let history = |facts: &'static [i64],
+                       states: &'static [i64],
+                       checkpoints: &'static [i64]| {
+            let pool = pool.clone();
+            async move {
+                crate::test_support::reset_history(&pool).await;
+                for &minute in facts {
+                    sqlx::query(
+                        "INSERT INTO history_fact (stream_seq, recorded_at, acquired_at, guild_id, \
+                             ordinal, territory_id, source, take) \
+                         VALUES ($1, $2, $2, 1, 0, 1, 1, false)",
+                    )
+                    .bind(minute)
+                    .bind(at(minute))
+                    .execute(&pool)
+                    .await
+                    .expect("fact");
+                }
+                for &minute in states {
+                    sqlx::query(
+                        "INSERT INTO history_api_state (stream_seq, recorded_at, observed_at, changes) \
+                         VALUES ($1, $2, $2, '\\x0100')",
+                    )
+                    .bind(minute)
+                    .bind(at(minute))
+                    .execute(&pool)
+                    .await
+                    .expect("state row");
+                }
+                for &minute in checkpoints {
+                    sqlx::query(
+                        "INSERT INTO history_checkpoint (taken_at, through_seq, source, ownership) \
+                         VALUES ($1, $2, 2, '\\x01')",
+                    )
+                    .bind(at(minute))
+                    .bind(minute)
+                    .execute(&pool)
+                    .await
+                    .expect("checkpoint");
+                }
+                let earliest = [facts, states].concat().into_iter().min().map(at);
+                sqlx::query("UPDATE history_meta SET earliest_at = $1, fact_count = $2")
+                    .bind(earliest)
+                    .bind(facts.len() as i64)
+                    .execute(&pool)
+                    .await
+                    .expect("meta");
+                super::super::read::expire_before(&pool, at(15))
+                    .await
+                    .expect("expire");
+                sqlx::query_as::<_, (Option<DateTime<Utc>>, i64)>(
+                    "SELECT earliest_at, fact_count FROM history_meta",
+                )
+                .fetch_one(&pool)
+                .await
+                .expect("meta")
+            }
+        };
+
+        // State changes retained before the next owner change stay seekable.
+        assert_eq!(history(&[5, 30], &[20, 25], &[10]).await, (Some(at(20)), 1));
+        // Retained state changes with no ownership fact left still bound the history.
+        assert_eq!(history(&[5], &[20, 25], &[10]).await, (Some(at(20)), 0));
+        // Removing only state rows moves the bound past them; the fact count is unchanged.
+        assert_eq!(history(&[30], &[5], &[10]).await, (Some(at(30)), 1));
     }
 
     #[tokio::test]
