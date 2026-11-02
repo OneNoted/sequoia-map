@@ -114,9 +114,13 @@ impl Scrub {
     pub fn move_to(&mut self, x: f64, y: f64, rail: &Rail) -> i64 {
         let scale = scale_for_lift(rail.lift(y));
         let step_scale = (scale_for_lift(rail.lift(self.y)) + scale) / 2.0;
+        let finer = step_scale < 1.0;
+        if finer {
+            self.value = self.clamped();
+        }
         self.value += (x - self.x) * rail.secs_per_px() * step_scale;
-        if step_scale < 1.0 {
-            self.value = self.value.clamp(self.min as f64, self.max as f64);
+        if finer {
+            self.value = self.clamped();
         }
         self.x = x;
         self.y = y;
@@ -126,7 +130,11 @@ impl Scrub {
 
     /// The time the thumb shows: the pointer's, held within the rail's ends.
     pub fn timestamp(&self) -> i64 {
-        self.value.clamp(self.min as f64, self.max as f64).round() as i64
+        self.clamped().round() as i64
+    }
+
+    fn clamped(&self) -> f64 {
+        self.value.clamp(self.min as f64, self.max as f64)
     }
 
     /// The share of full speed the pointer drags at where it is now.
@@ -285,6 +293,21 @@ mod tests {
             // 60 px back at a sixty-fourth of 36 s per pixel.
             let back = scrub.move_to(past - outward * 60.0, high, &rail);
             assert_eq!(back, end - (outward * 34.0) as i64);
+        }
+    }
+
+    #[test]
+    fn a_reverse_that_lifts_as_it_leaves_an_overshoot_moves_time_at_once() {
+        let rail = rail();
+        for (end, outward) in [(rail.max, 1.0), (rail.min, -1.0)] {
+            let x = rail.x_of(end as f64);
+            let mut scrub = Scrub::press(1, x, rail.center_y, &rail, end, 3.0);
+            let past = x + outward * 12.0;
+            assert_eq!(scrub.move_to(past, rail.center_y, &rail), end);
+
+            // 10 px back while rising to the finest: half that speed on average, so ~183 s.
+            let back = scrub.move_to(past - outward * 10.0, rail.center_y - 500.0, &rail);
+            assert_eq!(back, end - (outward * 183.0) as i64);
         }
     }
 

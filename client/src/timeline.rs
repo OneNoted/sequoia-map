@@ -100,6 +100,8 @@ struct HeldRail {
     /// Playback the press paused resumes on release.
     resume_playback: bool,
     shown: i64,
+    /// The History visit the press belongs to; leaving it ends the hold.
+    session: u64,
 }
 
 /// The precision cue over a held rail, in pixels from the History bar's top-left.
@@ -247,10 +249,6 @@ fn normalize_focus_window(
     }
 }
 
-fn overview_value_for_window(window: (i64, i64)) -> i64 {
-    window.0 + (window.1.saturating_sub(window.0) / 2)
-}
-
 fn range_percent(value: i64, bounds: (i64, i64)) -> f64 {
     let earliest = bounds.0.min(bounds.1);
     let latest = bounds.0.max(bounds.1);
@@ -330,10 +328,10 @@ pub fn Timeline() -> impl IntoView {
         territories,
     };
 
-    // While a rail is held, its range and value belong to the pointer: the detail rail's
-    // window stays put and the overview's value is not rewritten until release.
+    // While the detail rail is held, its range belongs to the pointer: its window stays put.
+    // The overview's thumb is always the selected time; its focus band shows the window, which
+    // stops short of the selected time at either end of history.
     let scrub_active: RwSignal<bool> = RwSignal::new(false);
-    let overview_active: RwSignal<bool> = RwSignal::new(false);
     let focus_span: RwSignal<Option<i64>> = RwSignal::new(DEFAULT_HISTORY_FOCUS_SPAN);
     let focus_window: RwSignal<Option<(i64, i64)>> = RwSignal::new(None);
     let last_focus_span_key = Rc::new(Cell::new(i64::MIN));
@@ -371,18 +369,8 @@ pub fn Timeline() -> impl IntoView {
         {
             input.set_value(&ts.to_string());
         }
-        if !overview_active.get()
-            && let Some(input) = overview_ref_sync.get()
-        {
-            let overview_value = if focus_span.get().is_none() {
-                ts
-            } else {
-                focus_window
-                    .get()
-                    .map(overview_value_for_window)
-                    .unwrap_or(ts)
-            };
-            input.set_value(&overview_value.to_string());
+        if let Some(input) = overview_ref_sync.get() {
+            input.set_value(&ts.to_string());
         }
     });
 
@@ -426,7 +414,6 @@ pub fn Timeline() -> impl IntoView {
     };
 
     let on_overview_input = move |e: web_sys::Event| {
-        overview_active.set(true);
         let Some(val) = rail_value(&e, true) else {
             return;
         };
@@ -441,7 +428,6 @@ pub fn Timeline() -> impl IntoView {
         };
         scrub_active.set(false);
         timestamp.set(Some(val));
-        overview_active.set(false);
         history::fetch_and_apply_with(val, fetch_ctx);
     };
 
@@ -525,12 +511,6 @@ pub fn Timeline() -> impl IntoView {
     // lets go, so the map beneath neither pans nor selects.
     let held = StoredValue::new_local(None::<HeldRail>);
     let cue: RwSignal<Option<ScrubCue>> = RwSignal::new(None);
-    let owns = move |e: &web_sys::PointerEvent| {
-        held.with_value(|held| {
-            held.as_ref()
-                .is_some_and(|held| held.scrub.pointer_id == e.pointer_id())
-        })
-    };
     // The held rail's time: its thumb, the selected time and, for the overview, the detail
     // window around it. The map follows through the coalesced preview.
     let show_held = move |overview: bool, input: &web_sys::HtmlInputElement, ts: i64| {
@@ -546,7 +526,8 @@ pub fn Timeline() -> impl IntoView {
         history::preview(ts, fetch_ctx);
     };
     // Letting go seeks the time shown exactly, as releasing a native rail does, and resumes
-    // playback the press paused. Leaving History lets go without either.
+    // playback the press paused. Leaving History, or the visit the press belongs to, lets go
+    // without either: a seek now would outrun the handoff to Live.
     let let_go = move |settle: bool| {
         let Some(released) = held.try_update_value(Option::take).flatten() else {
             return;
@@ -557,7 +538,10 @@ pub fn Timeline() -> impl IntoView {
         }
         cue.set(None);
         scrub_active.set(false);
-        if settle && mode.get_untracked() == MapMode::History {
+        if settle
+            && released.session == history::current_session()
+            && mode.get_untracked() == MapMode::History
+        {
             let ts = released.scrub.timestamp();
             if released.overview
                 && let Some(bounds_now) = bounds.get_untracked()
@@ -574,7 +558,22 @@ pub fn Timeline() -> impl IntoView {
                 playing.set(true);
             }
         }
-        overview_active.set(false);
+    };
+    // Whether the hold is this pointer's. A hold left over from an earlier History visit ends
+    // here, before the pointer can move or release it.
+    let owns = move |e: &web_sys::PointerEvent| {
+        let (mine, stale) = held.with_value(|held| {
+            held.as_ref().map_or((false, false), |held| {
+                (
+                    held.scrub.pointer_id == e.pointer_id(),
+                    held.session != history::current_session(),
+                )
+            })
+        });
+        if stale {
+            let_go(false);
+        }
+        mine && !stale
     };
     let press = move |e: web_sys::PointerEvent, overview: bool| {
         let mouse = e.pointer_type() == "mouse";
@@ -630,9 +629,9 @@ pub fn Timeline() -> impl IntoView {
             touch: !mouse,
             resume_playback: playing.get_untracked(),
             shown,
+            session: history::current_session(),
         };
         playing.set(false);
-        overview_active.set(overview);
         scrub_active.set(!overview);
         if shown != start {
             show_held(overview, &pressed.input, shown);
@@ -933,17 +932,7 @@ pub fn Timeline() -> impl IntoView {
                         min=move || bounds.get().map(|(e, _)| e.to_string()).unwrap_or_else(|| "0".to_string())
                         max=move || bounds.get().map(|(_, l)| l.to_string()).unwrap_or_else(|| "0".to_string())
                         step="1"
-                        value=focus_window
-                            .get_untracked()
-                            .and_then(|window| {
-                                if focus_span.get_untracked().is_none() {
-                                    None
-                                } else {
-                                    Some(overview_value_for_window(window))
-                                }
-                            })
-                            .unwrap_or_else(|| timestamp.get_untracked().unwrap_or(0))
-                            .to_string()
+                        value=timestamp.get_untracked().unwrap_or(0).to_string()
                         on:input=on_overview_input
                         on:change=on_overview_change
                     />
