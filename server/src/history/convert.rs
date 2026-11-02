@@ -583,9 +583,10 @@ pub async fn verify(
     let mut mismatched_instants = Vec::new();
     for &at in instants {
         let legacy = legacy_ownership_at(pool, at).await?;
-        let current = super::read::ownership_at(pool, at)
+        let current = super::read::territories_at(pool, at)
             .await
-            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?
+            .ownership;
         let current: HashMap<String, (String, String, String, Option<i32>, i64)> = current
             .into_iter()
             .map(|(name, record)| {
@@ -1456,6 +1457,7 @@ mod tests {
                     changes: vec![(base + 1, 0, &change)],
                     reports: Vec::new(),
                     live: &live,
+                    states: None,
                     needs_checkpoint: false,
                 },
             )

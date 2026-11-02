@@ -360,7 +360,8 @@ async fn season_scalar_at(
     ))
 }
 
-/// `GET /api/history/at?t={rfc3339}` — Reconstruct ownership at a point in time.
+/// `GET /api/history/at?t={rfc3339}` — Reconstruct ownership and official-API territory
+/// state at a point in time.
 pub async fn history_at(
     State(state): State<AppState>,
     Query(query): Query<AtQuery>,
@@ -374,15 +375,19 @@ pub async fn history_at(
         merged_fallback_colors(&state, pool).await?;
 
     let ownership_fut = async {
-        history::read::ownership_at(pool, target)
+        history::read::territories_at(pool, target)
             .await
             .map_err(|error| {
                 tracing::warn!(%error, "history seek failed");
                 StatusCode::INTERNAL_SERVER_ERROR
             })
     };
-    let (season_scalar, mut ownership) =
+    let (season_scalar, territories) =
         tokio::try_join!(season_scalar_at(pool, target), ownership_fut)?;
+    let history::read::TerritoriesAt {
+        mut ownership,
+        states,
+    } = territories;
 
     for record in ownership.values_mut() {
         record.guild_color = with_fallback_color(
@@ -406,6 +411,7 @@ pub async fn history_at(
         ownership,
         season_scalar,
         season_leaderboard,
+        states,
     };
 
     // Cache older timestamps aggressively, recent ones briefly
@@ -491,6 +497,7 @@ pub async fn history_events(
         headers,
         Json(HistoryEvents {
             events,
+            states: page.states,
             has_more: page.has_more,
         }),
     ))

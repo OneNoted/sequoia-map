@@ -1,12 +1,16 @@
-//! Bounded history reads. Each query touches at most one checkpoint interval of facts, one
-//! page, or the per-day takeover rollup plus two partial days.
+//! Bounded history reads. Each query touches at most one checkpoint interval of facts and
+//! state rows, one page, or the per-day takeover rollup plus two partial days.
 
 use std::collections::HashMap;
 
 use chrono::{DateTime, Duration, NaiveTime, Utc};
-use sequoia_shared::history::OwnershipRecord;
+use sequoia_shared::TerritoryState;
+use sequoia_shared::history::{
+    HistoryStateChange, HistoryStateEvent, HistoryTerritoryState, OwnershipRecord,
+};
 
-use super::checkpoint;
+use super::writer::apply_state_changes;
+use super::{checkpoint, state};
 use super::{from_micros, unpack_color};
 
 #[derive(Debug, thiserror::Error)]
@@ -15,28 +19,49 @@ pub enum ReadError {
     Database(#[from] sqlx::Error),
     #[error(transparent)]
     Checkpoint(#[from] checkpoint::CheckpointError),
+    #[error(transparent)]
+    State(#[from] state::StateError),
 }
 
-/// Ownership at `at`: the latest checkpoint at or before it, then every fact recorded after
-/// the checkpoint and at or before `at`, in stream order. The legacy reconstruction used the
-/// same time filter and order, so imported rows whose time and sequence disagree keep their
-/// historical answer.
-pub async fn ownership_at(
+/// Territories at a point in time: their owners, and the official-API state of those that
+/// had one recorded by then.
+pub struct TerritoriesAt {
+    pub ownership: HashMap<String, OwnershipRecord>,
+    pub states: HashMap<String, HistoryTerritoryState>,
+}
+
+/// Territories at `at`: the latest checkpoint at or before it, then every fact and state row
+/// recorded after the checkpoint and at or before `at`, in stream order. The legacy
+/// reconstruction used the same time filter and order, so imported rows whose time and
+/// sequence disagree keep their historical answer.
+pub async fn territories_at(
     pool: &sqlx::PgPool,
     at: DateTime<Utc>,
-) -> Result<HashMap<String, OwnershipRecord>, ReadError> {
+) -> Result<TerritoriesAt, ReadError> {
     let mut tx = snapshot(pool).await?;
-    let base: Option<(DateTime<Utc>, Vec<u8>)> = sqlx::query_as(
-        "SELECT taken_at, ownership FROM history_checkpoint WHERE taken_at <= $1 \
+    let base: Option<CheckpointRow> = sqlx::query_as(
+        "SELECT taken_at, ownership, states FROM history_checkpoint WHERE taken_at <= $1 \
          ORDER BY taken_at DESC, id DESC LIMIT 1",
     )
     .bind(at)
     .fetch_optional(&mut *tx)
     .await?;
-    let (since, holdings) = match base {
-        Some((taken_at, bytes)) => (taken_at, checkpoint::decode(&bytes)?),
-        None => (super::beginning(), Vec::new()),
+    let (since, holdings, states) = match base {
+        Some((taken_at, ownership, states)) => (
+            taken_at,
+            checkpoint::decode(&ownership)?,
+            states
+                .as_deref()
+                .map(checkpoint::decode_states)
+                .transpose()?
+                .unwrap_or_default(),
+        ),
+        None => (super::beginning(), Vec::new(), Vec::new()),
     };
+    let mut states: HashMap<i16, (i64, TerritoryState)> = states
+        .into_iter()
+        .map(|record| (record.territory_id, (record.observed_micros, record.state)))
+        .collect();
     let mut owners: HashMap<i16, (i32, DateTime<Utc>)> = holdings
         .into_iter()
         .map(|holding| {
@@ -57,13 +82,41 @@ pub async fn ownership_at(
     for (territory_id, guild_id, acquired_at) in replay {
         owners.insert(territory_id, (guild_id, acquired_at));
     }
+    let state_rows: Vec<(DateTime<Utc>, Vec<u8>)> = sqlx::query_as(
+        "SELECT observed_at, changes FROM history_api_state \
+         WHERE recorded_at > $1 AND recorded_at <= $2 ORDER BY stream_seq",
+    )
+    .bind(since)
+    .bind(at)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (observed_at, bytes) in state_rows {
+        apply_state_changes(
+            &mut states,
+            super::micros(observed_at),
+            state::decode(&bytes)?,
+        );
+    }
 
     let territory_ids = sorted_unique(owners.keys().copied());
     let guild_ids = sorted_unique(owners.values().map(|(guild_id, _)| *guild_id));
     let (names, guilds) = resolve(&mut tx, &territory_ids, &guild_ids).await?;
     tx.commit().await?;
 
-    Ok(owners
+    let states = states
+        .into_iter()
+        .filter(|(territory_id, _)| owners.contains_key(territory_id))
+        .filter_map(|(territory_id, (observed_micros, state))| {
+            Some((
+                names.get(&territory_id)?.clone(),
+                HistoryTerritoryState {
+                    observed_at: from_micros(observed_micros).to_rfc3339(),
+                    state,
+                },
+            ))
+        })
+        .collect();
+    let ownership = owners
         .into_iter()
         .filter_map(|(territory_id, (guild_id, acquired_at))| {
             let name = names.get(&territory_id)?;
@@ -79,7 +132,8 @@ pub async fn ownership_at(
                 },
             ))
         })
-        .collect())
+        .collect();
+    Ok(TerritoriesAt { ownership, states })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,8 +163,13 @@ type FactTuple = (
 );
 type Guild = (String, String, String, Option<i32>);
 
+type StateTuple = (i64, DateTime<Utc>, DateTime<Utc>, Vec<u8>);
+/// Taken at, ownership and states of a checkpoint.
+type CheckpointRow = (DateTime<Utc>, Vec<u8>, Option<Vec<u8>>);
+
 pub struct FactPage {
     pub facts: Vec<FactRow>,
+    pub states: Vec<HistoryStateEvent>,
     pub has_more: bool,
 }
 
@@ -157,18 +216,20 @@ fn sorted_unique<T: Ord + Copy>(values: impl Iterator<Item = T>) -> Vec<T> {
     values
 }
 
-/// Facts recorded in `(from, to]` after the cursor, in stream order. A page never ends inside
-/// a stream position, so a client that resumes after a sequence number alone still sees the
-/// rest of a batch.
+/// Facts and state rows recorded in `(from, to]` after the cursor, in stream order, `limit`
+/// of them unless the last stream position holds more. A page never ends inside a stream
+/// position, so a client that resumes after a sequence number alone still sees the rest of a
+/// batch. Facts and state rows never share a position.
 pub async fn fact_page(
     pool: &sqlx::PgPool,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
     after: (i64, i16),
     limit: i64,
-) -> Result<FactPage, sqlx::Error> {
+) -> Result<FactPage, ReadError> {
     const SELECT: &str = "SELECT stream_seq, ordinal, recorded_at, acquired_at, territory_id, \
             guild_id, prev_guild_id FROM history_fact";
+    let limit = limit.max(1);
     let mut tx = snapshot(pool).await?;
     let mut rows: Vec<FactTuple> = sqlx::query_as(&format!(
         "{SELECT} WHERE (stream_seq, ordinal) > ($1, $2) \
@@ -182,10 +243,30 @@ pub async fn fact_page(
     .bind(limit + 1)
     .fetch_all(&mut *tx)
     .await?;
-    let mut has_more = rows.len() as i64 > limit;
+    let mut state_rows: Vec<StateTuple> = sqlx::query_as(
+        "SELECT stream_seq, recorded_at, observed_at, changes FROM history_api_state \
+         WHERE (stream_seq, 0) > ($1, $2) AND recorded_at > $3 AND recorded_at <= $4 \
+         ORDER BY stream_seq LIMIT $5",
+    )
+    .bind(after.0)
+    .bind(after.1)
+    .bind(from)
+    .bind(to)
+    .bind(limit + 1)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut positions: Vec<(i64, i16)> = rows
+        .iter()
+        .map(|row| (row.0, row.1))
+        .chain(state_rows.iter().map(|row| (row.0, 0)))
+        .collect();
+    positions.sort_unstable();
+    let mut has_more = positions.len() as i64 > limit;
     if has_more {
-        rows.truncate(limit as usize);
-        if let Some(&(seq, ordinal, ..)) = rows.last() {
+        let (seq, ordinal) = positions[limit as usize - 1];
+        rows.retain(|row| (row.0, row.1) <= (seq, ordinal));
+        state_rows.retain(|row| row.0 <= seq);
+        if rows.last().is_some_and(|row| row.0 == seq) {
             let rest: Vec<FactTuple> = sqlx::query_as(&format!(
                 "{SELECT} WHERE stream_seq = $1 AND ordinal > $2 \
                    AND recorded_at > $3 AND recorded_at <= $4 ORDER BY ordinal"
@@ -197,18 +278,32 @@ pub async fn fact_page(
             .fetch_all(&mut *tx)
             .await?;
             rows.extend(rest);
-            has_more = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS (SELECT 1 FROM history_fact WHERE stream_seq > $1 \
-                   AND recorded_at > $2 AND recorded_at <= $3)",
-            )
-            .bind(seq)
-            .bind(from)
-            .bind(to)
-            .fetch_one(&mut *tx)
-            .await?;
         }
+        has_more = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM history_fact WHERE stream_seq > $1 \
+                   AND recorded_at > $2 AND recorded_at <= $3) \
+                OR EXISTS (SELECT 1 FROM history_api_state WHERE stream_seq > $1 \
+                   AND recorded_at > $2 AND recorded_at <= $3)",
+        )
+        .bind(seq)
+        .bind(from)
+        .bind(to)
+        .fetch_one(&mut *tx)
+        .await?;
     }
-    let territory_ids = sorted_unique(rows.iter().map(|row| row.4));
+    let state_rows = state_rows
+        .into_iter()
+        .map(|(seq, recorded_at, observed_at, bytes)| {
+            Ok((seq, recorded_at, observed_at, state::decode(&bytes)?))
+        })
+        .collect::<Result<Vec<_>, state::StateError>>()?;
+    let territory_ids = sorted_unique(
+        rows.iter().map(|row| row.4).chain(
+            state_rows
+                .iter()
+                .flat_map(|row| row.3.iter().map(|(territory_id, _)| *territory_id)),
+        ),
+    );
     let guild_ids = sorted_unique(rows.iter().flat_map(|row| [Some(row.5), row.6]).flatten());
     let (names, guilds) = resolve(&mut tx, &territory_ids, &guild_ids).await?;
     tx.commit().await?;
@@ -239,7 +334,33 @@ pub async fn fact_page(
             },
         )
         .collect::<Result<Vec<_>, sqlx::Error>>()?;
-    Ok(FactPage { facts, has_more })
+    let states = state_rows
+        .into_iter()
+        .map(|(seq, recorded_at, observed_at, changes)| {
+            Ok(HistoryStateEvent {
+                stream_seq: u64::try_from(seq).unwrap_or_default(),
+                timestamp: recorded_at.to_rfc3339(),
+                observed_at: observed_at.to_rfc3339(),
+                changes: changes
+                    .into_iter()
+                    .map(|(territory_id, fields)| {
+                        Ok(HistoryStateChange {
+                            territory: names
+                                .get(&territory_id)
+                                .ok_or(sqlx::Error::RowNotFound)?
+                                .clone(),
+                            fields,
+                        })
+                    })
+                    .collect::<Result<_, sqlx::Error>>()?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    Ok(FactPage {
+        facts,
+        states,
+        has_more,
+    })
 }
 
 pub struct Bounds {
@@ -350,6 +471,10 @@ pub async fn expire_before(
         .execute(&mut *tx)
         .await?
         .rows_affected();
+    sqlx::query("DELETE FROM history_api_state WHERE recorded_at <= $1")
+        .bind(anchor)
+        .execute(&mut *tx)
+        .await?;
     let checkpoints = sqlx::query("DELETE FROM history_checkpoint WHERE taken_at < $1")
         .bind(anchor)
         .execute(&mut *tx)

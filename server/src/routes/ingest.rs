@@ -310,6 +310,7 @@ pub async fn ingest_territory(
                     .map(|update| Report::from_update(update, received_at))
                     .collect(),
                 live: &snapshot.territories,
+                states: None,
                 needs_checkpoint: false,
             });
         }

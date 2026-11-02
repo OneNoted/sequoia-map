@@ -6,14 +6,14 @@ use std::time::Duration;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use sequoia_shared::{
-    DataProvenance, GuildRef, Resources, Territory, TerritoryChange, TerritoryMap,
-    TerritoryRuntimeChange, TerritoryRuntimeData, VisibilityClass,
+    DataProvenance, GuildRef, Resources, StateOwner, Territory, TerritoryChange, TerritoryMap,
+    TerritoryRuntimeChange, TerritoryRuntimeData, TerritoryState,
 };
 use tracing::{info, warn};
 
 use crate::config::{canonical_override_ttl, territory_poll_interval, wynncraft_territory_url};
 use crate::history::FactSource;
-use crate::history::writer::{Commit, CommitOutcome};
+use crate::history::writer::{Commit, CommitOutcome, StateChanges};
 use crate::state::{
     AppState, ExtraTerrInfo, GuildColorMap, IngestTerritoryOverride, PreSerializedEvent,
     build_guild_color_lookup, lookup_guild_color,
@@ -37,7 +37,11 @@ pub async fn run(state: AppState) {
         interval.tick().await;
 
         match fetch_territories(&state.http_client, &territory_url).await {
-            Ok(mut new_map) => {
+            Ok(Polled {
+                map: mut new_map,
+                states,
+                observed_at,
+            }) => {
                 let mut supplemental_changed = false;
                 let cached_ingest_overrides = state.ingest_overrides.read().await.clone();
 
@@ -62,7 +66,8 @@ pub async fn run(state: AppState) {
                     override_ttl,
                 );
 
-                process_polled_map(&state, new_map, supplemental_changed).await;
+                process_polled_map(&state, new_map, &states, observed_at, supplemental_changed)
+                    .await;
             }
             Err(e) => {
                 warn!("Failed to fetch territories: {e}");
@@ -115,9 +120,22 @@ fn merge_supplemental_data(
     }
 }
 
-async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplemental_changed: bool) {
+/// `api_states` is the poll's official-API state before reporter overrides were merged into
+/// `new_map`; only it is recorded as state history.
+async fn process_polled_map(
+    state: &AppState,
+    new_map: TerritoryMap,
+    api_states: &HashMap<String, TerritoryState>,
+    observed_at: DateTime<Utc>,
+    supplemental_changed: bool,
+) {
     // The writer lock orders this whole diff-commit-publish step against canonical ingest.
     let mut writer = state.history.lock().await;
+    let state_changes = if state.db.is_some() {
+        writer.state_changes(api_states)
+    } else {
+        Vec::new()
+    };
     // 1. Read lock: compute ownership/runtime/static diffs, then release.
     let (
         changes,
@@ -148,7 +166,10 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
     };
     let emit_snapshot_event = has_removals || supplemental_changed || has_static_field_changes;
 
-    if changes.is_empty() && runtime_updates.is_empty() && !emit_snapshot_event {
+    // State changes are recorded at the runtime position, which is published even when the
+    // live runtime did not change, so the stream stays gap-free.
+    let emit_runtime_event = !runtime_updates.is_empty() || !state_changes.is_empty();
+    if changes.is_empty() && !emit_runtime_event && !emit_snapshot_event {
         // A quiet tick still retries history that waited for the database.
         if writer.has_pending()
             && let Some(pool) = state.db.as_ref()
@@ -166,7 +187,7 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
             return;
         }
     };
-    if !runtime_updates.is_empty() {
+    if emit_runtime_event {
         reserved_count = match reserved_count.checked_add(1) {
             Some(count) => count,
             None => {
@@ -239,7 +260,8 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
         }
     }
 
-    if !runtime_updates.is_empty() {
+    let mut state_seq = None;
+    if emit_runtime_event {
         let Some(seq) = seq_cursor.checked_add(1) else {
             warn!("Sequence counter overflow while preparing runtime update event");
             return;
@@ -256,6 +278,7 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
         };
         live_seq = seq;
         live_timestamp = timestamp.clone();
+        state_seq = Some(seq);
         outgoing.push(PreSerializedEvent::RuntimeUpdate {
             seq,
             json: update_json,
@@ -277,7 +300,14 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
         live_timestamp = timestamp.clone();
     }
 
-    if !sequenced_updates.is_empty() || has_removals || has_recolours {
+    let states = state_seq
+        .filter(|_| !state_changes.is_empty())
+        .map(|seq| StateChanges {
+            seq,
+            observed_at,
+            changes: state_changes,
+        });
+    if !sequenced_updates.is_empty() || states.is_some() || has_removals || has_recolours {
         let outcome = writer
             .commit(
                 state.db.as_ref(),
@@ -288,6 +318,7 @@ async fn process_polled_map(state: &AppState, new_map: TerritoryMap, supplementa
                         .map(|(seq, change)| (*seq, 0, change))
                         .collect(),
                     reports: Vec::new(),
+                    states,
                     live: &new_map,
                     needs_checkpoint: has_removals || has_recolours,
                 },
@@ -516,7 +547,7 @@ fn error_chain(error: &dyn std::error::Error) -> String {
     text
 }
 
-async fn fetch_territories(client: &reqwest::Client, url: &str) -> Result<TerritoryMap, String> {
+async fn fetch_territories(client: &reqwest::Client, url: &str) -> Result<Polled, String> {
     let resp = client
         .get(url)
         .send()
@@ -601,112 +632,98 @@ struct RawTerritory {
 }
 
 impl RawTerritory {
-    fn into_territory(self, observed_at: DateTime<Utc>) -> Territory {
-        let value = self;
-        let guild = value.guild.unwrap_or(RawGuildRef {
+    fn into_territory(self, observed_at: &str) -> (Territory, TerritoryState) {
+        let guild = self.guild.unwrap_or(RawGuildRef {
             uuid: None,
             name: None,
             prefix: None,
             hq: None,
         });
-        let guild_name = guild
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(UNCLAIMED_GUILD_NAME)
-            .to_string();
-        let guild_prefix = guild
-            .prefix
-            .as_deref()
-            .map(str::trim)
-            .filter(|prefix| !prefix.is_empty())
-            .unwrap_or(UNCLAIMED_GUILD_PREFIX)
-            .to_string();
-        let guild_uuid = guild
-            .uuid
-            .as_deref()
-            .map(str::trim)
-            .filter(|uuid| !uuid.is_empty())
-            .unwrap_or(UNCLAIMED_GUILD_UUID)
-            .to_string();
-        let (resources, held_resources, production_rates, storage_capacity) =
-            split_resource_payload(value.resources);
-        let connections = if value.links.is_empty() {
-            value.connections
-        } else {
-            value.links
+        let field = |value: Option<String>, unset: &str| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(unset)
+                .to_string()
         };
-        let runtime = build_api_runtime(ApiRuntimeParts {
-            hq: value.hq,
-            headquarters_territory: guild.hq,
-            treasury: value.treasury,
-            defences: value.defences,
-            held_resources,
-            production_rates,
-            storage_capacity,
-            observed_at,
-        });
-
-        Territory {
+        let (generation, base_generation, stored, capacity) = match self.resources {
+            RawResourcePayload::List(entries) => {
+                let mut generation = Resources::default();
+                let mut base = Resources::default();
+                let mut stored = Resources::default();
+                let mut capacity = Resources::default();
+                for entry in entries {
+                    set_resource_value(&mut generation, &entry.kind, entry.generation);
+                    set_resource_value(&mut base, &entry.kind, entry.base_generation);
+                    set_resource_value(&mut stored, &entry.kind, entry.stored);
+                    set_resource_value(&mut capacity, &entry.kind, entry.limit);
+                }
+                (Some(generation), Some(base), Some(stored), Some(capacity))
+            }
+            RawResourcePayload::Legacy(resources) => (None, Some(resources), None, None),
+            RawResourcePayload::Empty => (None, None, None, None),
+        };
+        let guild_uuid = field(guild.uuid, UNCLAIMED_GUILD_UUID);
+        let state = TerritoryState {
+            owner: Some(StateOwner {
+                guild_uuid: guild_uuid.clone(),
+                acquired_micros: self.acquired.timestamp_micros(),
+            }),
+            headquarters: self.hq,
+            guild_headquarters: guild.hq,
+            treasury: self.treasury,
+            defences: self.defences,
+            generation,
+            base_generation,
+            stored,
+            capacity,
+            location: Some(self.location.clone()),
+            links: Some(if self.links.is_empty() {
+                self.connections
+            } else {
+                self.links
+            }),
+        };
+        let territory = Territory {
             guild: GuildRef {
                 uuid: guild_uuid,
-                name: guild_name,
-                prefix: guild_prefix,
+                name: field(guild.name, UNCLAIMED_GUILD_NAME),
+                prefix: field(guild.prefix, UNCLAIMED_GUILD_PREFIX),
                 color: None,
             },
-            acquired: value.acquired,
-            location: value.location,
-            resources,
-            connections,
-            runtime,
-        }
+            acquired: self.acquired,
+            location: self.location,
+            resources: state.resources(),
+            connections: state.connections(),
+            runtime: state.runtime(observed_at.to_string()),
+        };
+        (territory, state)
     }
 }
 
-fn parse_wynncraft_territory_payload(bytes: &[u8]) -> Result<TerritoryMap, serde_json::Error> {
+/// A polled territory list: the map's view and each territory's state as supplied.
+struct Polled {
+    map: TerritoryMap,
+    states: HashMap<String, TerritoryState>,
+    observed_at: DateTime<Utc>,
+}
+
+fn parse_wynncraft_territory_payload(bytes: &[u8]) -> Result<Polled, serde_json::Error> {
     let raw_map: HashMap<String, RawTerritory> = serde_json::from_slice(bytes)?;
     let observed_at = Utc::now();
-    Ok(raw_map
-        .into_iter()
-        .map(|(territory, raw)| (territory, raw.into_territory(observed_at)))
-        .collect())
-}
-
-fn split_resource_payload(
-    payload: RawResourcePayload,
-) -> (
-    Resources,
-    Option<Resources>,
-    Option<Resources>,
-    Option<Resources>,
-) {
-    match payload {
-        RawResourcePayload::Legacy(resources) => (resources, None, None, None),
-        RawResourcePayload::List(entries) => {
-            let mut base = Resources::default();
-            let mut held = Resources::default();
-            let mut production = Resources::default();
-            let mut capacity = Resources::default();
-            for entry in entries {
-                // v3.7.2 currently returns baseGeneration for every resource slot.
-                // generation > 0 is the reliable signal that the territory produces it.
-                if entry.generation > 0 {
-                    set_resource_value(&mut base, &entry.kind, entry.base_generation);
-                }
-                set_resource_value(&mut held, &entry.kind, entry.stored);
-                set_resource_value(&mut production, &entry.kind, entry.generation);
-                set_resource_value(&mut capacity, &entry.kind, entry.limit);
-            }
-            (
-                base,
-                (!held.is_empty()).then_some(held),
-                (!production.is_empty()).then_some(production),
-                (!capacity.is_empty()).then_some(capacity),
-            )
-        }
-        RawResourcePayload::Empty => (Resources::default(), None, None, None),
+    let observed_text = observed_at.to_rfc3339();
+    let mut polled = Polled {
+        map: TerritoryMap::with_capacity(raw_map.len()),
+        states: HashMap::with_capacity(raw_map.len()),
+        observed_at,
+    };
+    for (name, raw) in raw_map {
+        let (territory, state) = raw.into_territory(&observed_text);
+        polled.map.insert(name.clone(), territory);
+        polled.states.insert(name, state);
     }
+    Ok(polled)
 }
 
 fn set_resource_value(resources: &mut Resources, kind: &str, value: i64) {
@@ -719,65 +736,6 @@ fn set_resource_value(resources: &mut Resources, kind: &str, value: i64) {
         "WOOD" => resources.wood = value,
         _ => {}
     }
-}
-
-fn clean_api_tier(raw: Option<String>) -> Option<String> {
-    raw.map(|value| value.trim().replace('_', " "))
-        .filter(|value| !value.is_empty())
-}
-
-struct ApiRuntimeParts {
-    hq: Option<bool>,
-    headquarters_territory: Option<String>,
-    treasury: Option<String>,
-    defences: Option<String>,
-    held_resources: Option<Resources>,
-    production_rates: Option<Resources>,
-    storage_capacity: Option<Resources>,
-    observed_at: DateTime<Utc>,
-}
-
-fn build_api_runtime(parts: ApiRuntimeParts) -> Option<TerritoryRuntimeData> {
-    let headquarters_territory = parts
-        .headquarters_territory
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let treasury = clean_api_tier(parts.treasury);
-    let defense_tier = clean_api_tier(parts.defences);
-    if parts.hq.is_none()
-        && headquarters_territory.is_none()
-        && treasury.is_none()
-        && defense_tier.is_none()
-        && parts.held_resources.is_none()
-        && parts.production_rates.is_none()
-        && parts.storage_capacity.is_none()
-    {
-        return None;
-    }
-
-    Some(TerritoryRuntimeData {
-        headquarters: parts.hq,
-        headquarters_territory,
-        held_resources: parts.held_resources,
-        production_rates: parts.production_rates,
-        storage_capacity: parts.storage_capacity,
-        treasury,
-        defense_tier,
-        contested: None,
-        active_war: None,
-        extra_scrapes: None,
-        provenance: Some(DataProvenance {
-            source: "wynncraft_api".to_string(),
-            visibility: VisibilityClass::Public,
-            confidence: 1.0,
-            reporter_count: 1,
-            observed_at: parts.observed_at.to_rfc3339(),
-            menu_season_id: None,
-            menu_captured_territories: None,
-            menu_sr_per_hour: None,
-            menu_observed_at: None,
-        }),
-    })
 }
 
 fn compute_diff(old: &TerritoryMap, new: &TerritoryMap) -> Vec<TerritoryChange> {
@@ -1165,12 +1123,12 @@ mod tests {
         let parsed = parse_wynncraft_territory_payload(payload.as_bytes())
             .expect("payload with null guild should parse");
 
-        let lion = parsed.get("Lion Lair").expect("lion lair should exist");
+        let lion = parsed.map.get("Lion Lair").expect("lion lair should exist");
         assert_eq!(lion.guild.uuid, UNCLAIMED_GUILD_UUID);
         assert_eq!(lion.guild.name, UNCLAIMED_GUILD_NAME);
         assert_eq!(lion.guild.prefix, UNCLAIMED_GUILD_PREFIX);
 
-        let ragni = parsed.get("Ragni").expect("ragni should exist");
+        let ragni = parsed.map.get("Ragni").expect("ragni should exist");
         assert_eq!(ragni.guild.uuid, "abc");
         assert_eq!(ragni.guild.name, "Aequitas");
         assert_eq!(ragni.guild.prefix, "Aeq");
@@ -1203,6 +1161,7 @@ mod tests {
         let parsed = parse_wynncraft_territory_payload(payload.as_bytes())
             .expect("new territory payload should parse");
         let territory = parsed
+            .map
             .get("Forts in Fall")
             .expect("territory should be present");
 
@@ -1265,7 +1224,7 @@ mod tests {
         let mut rx = state.event_tx.subscribe();
         let unchanged_map = single_territory_map("g1", "GuildOne", "G1");
 
-        process_polled_map(&state, unchanged_map, false).await;
+        process_polled_map(&state, unchanged_map, &HashMap::new(), Utc::now(), false).await;
 
         assert!(matches!(
             rx.try_recv(),
@@ -1312,7 +1271,7 @@ mod tests {
             .guild
             .color = Some((1, 2, 3));
 
-        process_polled_map(&state, supplemented_map, true).await;
+        process_polled_map(&state, supplemented_map, &HashMap::new(), Utc::now(), true).await;
 
         match rx.try_recv() {
             Ok(PreSerializedEvent::Snapshot { seq, .. }) => assert_eq!(seq, 32),
@@ -1377,7 +1336,7 @@ mod tests {
             Some((1, 2, 3))
         );
 
-        process_polled_map(&state, new_map, false).await;
+        process_polled_map(&state, new_map, &HashMap::new(), Utc::now(), false).await;
 
         {
             let current = state.live_snapshot.read().await;
@@ -1459,21 +1418,36 @@ mod tests {
             .expect("counts")
         };
 
-        process_polled_map(&state, coloured((10, 20, 30)), false).await;
+        process_polled_map(
+            &state,
+            coloured((10, 20, 30)),
+            &HashMap::new(),
+            Utc::now(),
+            false,
+        )
+        .await;
         let before = counts().await;
         let between = Utc::now();
         tokio::time::sleep(Duration::from_millis(5)).await;
 
         // Athena recolours the guild: same owner, name, prefix and acquisition.
-        process_polled_map(&state, coloured((40, 50, 60)), false).await;
+        process_polled_map(
+            &state,
+            coloured((40, 50, 60)),
+            &HashMap::new(),
+            Utc::now(),
+            false,
+        )
+        .await;
         let after = counts().await;
 
         let colour_at = |at| {
             let pool = pool.clone();
             async move {
-                crate::history::read::ownership_at(&pool, at)
+                crate::history::read::territories_at(&pool, at)
                     .await
-                    .expect("seek")["Alpha"]
+                    .expect("seek")
+                    .ownership["Alpha"]
                     .guild_color
             }
         };
@@ -1503,8 +1477,14 @@ mod tests {
         let poll = tokio::spawn({
             let state = state.clone();
             async move {
-                process_polled_map(&state, single_territory_map("g2", "GuildTwo", "G2"), false)
-                    .await;
+                process_polled_map(
+                    &state,
+                    single_territory_map("g2", "GuildTwo", "G2"),
+                    &HashMap::new(),
+                    Utc::now(),
+                    false,
+                )
+                .await;
             }
         });
         for _ in 0..50 {
@@ -1552,7 +1532,7 @@ mod tests {
         let mut rx = state.event_tx.subscribe();
         let new_map = single_territory_map("g2", "GuildTwo", "G2");
 
-        process_polled_map(&state, new_map, false).await;
+        process_polled_map(&state, new_map, &HashMap::new(), Utc::now(), false).await;
 
         match rx.try_recv() {
             Ok(PreSerializedEvent::Update { seq, .. }) => assert_eq!(seq, 12),
@@ -1601,7 +1581,7 @@ mod tests {
         let mut rx = state.event_tx.subscribe();
         let new_map = single_territory_map("g2", "GuildTwo", "G2");
 
-        process_polled_map(&state, new_map, false).await;
+        process_polled_map(&state, new_map, &HashMap::new(), Utc::now(), false).await;
 
         match rx.try_recv() {
             Ok(PreSerializedEvent::Update { seq, .. }) => assert_eq!(seq, 22),
@@ -1678,7 +1658,7 @@ mod tests {
             .guild
             .color = Some((44, 55, 66));
 
-        process_polled_map(&state, updated, false).await;
+        process_polled_map(&state, updated, &HashMap::new(), Utc::now(), false).await;
 
         let db_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM history_fact")
             .fetch_one(&pool)

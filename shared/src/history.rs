@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::SeasonScalarSample;
+use crate::territory_state::{TerritoryState, TerritoryStateField};
 
 /// Snapshot of season rating data for one guild at a given sample time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +46,33 @@ pub struct HistorySnapshot {
     pub season_scalar: Option<SeasonScalarSample>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub season_leaderboard: Option<Vec<HistoryGuildSrEntry>>,
+    /// Official-API state of owned territories as last observed, absent where none was
+    /// recorded by then. Its owner can differ from `ownership` while reporters lead the API.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub states: HashMap<String, HistoryTerritoryState>,
+}
+
+/// A territory's official-API state at a point in time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryTerritoryState {
+    /// When the API supplied the latest change to this state.
+    pub observed_at: String,
+    pub state: TerritoryState,
+}
+
+/// Official-API state changes recorded at one stream position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryStateEvent {
+    pub stream_seq: u64,
+    pub timestamp: String,
+    pub observed_at: String,
+    pub changes: Vec<HistoryStateChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryStateChange {
+    pub territory: String,
+    pub fields: Vec<TerritoryStateField>,
 }
 
 /// A single territory change event from the history log.
@@ -74,6 +102,9 @@ pub struct HistoryEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEvents {
     pub events: Vec<HistoryEvent>,
+    /// State changes in the same window and order, at their own stream positions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<HistoryStateEvent>,
     pub has_more: bool,
 }
 
