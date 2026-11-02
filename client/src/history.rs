@@ -12,12 +12,30 @@ use crate::territory::{ClientTerritory, ClientTerritoryMap, apply_changes, from_
 
 const REKINDLED_WORLD_RELEASE_SECS: i64 = 1_723_248_000; // 2024-08-10T00:00:00Z
 const SEEK_RETRY_MS: u32 = 2_000;
+/// The shortest gap between two seeks that follow a drag.
+const PREVIEW_INTERVAL_MS: f64 = 100.0;
 
 thread_local! {
     static ACTIVE_HISTORY_FETCH: RefCell<Option<(u64, web_sys::AbortController)>> = const { RefCell::new(None) };
     /// Changes on every entry to and exit from history, so a reply that belongs to an
     /// earlier visit can never change the map.
     static HISTORY_SESSION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PREVIEW: RefCell<Preview> = const { RefCell::new(Preview {
+        in_flight: false,
+        pending: None,
+        last_sent_ms: f64::NEG_INFINITY,
+        timer: None,
+    }) };
+}
+
+/// The seeks that follow a drag. One is in flight at a time and is never aborted by the next
+/// input, so every reply that lands moves the map; inputs meanwhile only replace `pending`.
+struct Preview {
+    in_flight: bool,
+    /// The newest dragged-to time not yet requested, with the history visit it belongs to.
+    pending: Option<(i64, u64)>,
+    last_sent_ms: f64,
+    timer: Option<gloo_timers::callback::Timeout>,
 }
 
 pub fn current_session() -> u64 {
@@ -132,7 +150,65 @@ fn clear_active_history_fetch(request_nonce: u64) {
 }
 
 fn abort_active_history_fetch() {
+    cancel_preview();
     replace_active_history_fetch(0, None);
+}
+
+/// Show `timestamp` while a slider is being dragged: as soon as the seek in flight lands and
+/// at most every [`PREVIEW_INTERVAL_MS`]. Releasing the slider seeks exactly with
+/// [`fetch_and_apply_with`].
+pub fn preview(timestamp_secs: i64, ctx: HistoryFetchContext) {
+    PREVIEW
+        .with(|preview| preview.borrow_mut().pending = Some((timestamp_secs, current_session())));
+    send_preview(ctx);
+}
+
+fn send_preview(ctx: HistoryFetchContext) {
+    let next = PREVIEW.with(|preview| {
+        let mut preview = preview.borrow_mut();
+        if preview.in_flight || preview.timer.is_some() {
+            return None;
+        }
+        let (timestamp_secs, session) = preview.pending?;
+        if session != current_session() || ctx.mode.get_untracked() != MapMode::History {
+            preview.pending = None;
+            return None;
+        }
+        let now = js_sys::Date::now();
+        let wait = PREVIEW_INTERVAL_MS - (now - preview.last_sent_ms);
+        if wait > 0.0 {
+            preview.timer = Some(gloo_timers::callback::Timeout::new(
+                wait.ceil() as u32,
+                move || {
+                    if let Some(timer) = PREVIEW.with(|preview| preview.borrow_mut().timer.take()) {
+                        timer.forget();
+                    }
+                    send_preview(ctx);
+                },
+            ));
+            return None;
+        }
+        preview.pending = None;
+        preview.in_flight = true;
+        preview.last_sent_ms = now;
+        Some(timestamp_secs)
+    });
+    if let Some(timestamp_secs) = next {
+        seek(timestamp_secs, ctx, move || {
+            PREVIEW.with(|preview| preview.borrow_mut().in_flight = false);
+            send_preview(ctx);
+        });
+    }
+}
+
+fn cancel_preview() {
+    PREVIEW.with(|preview| {
+        let mut preview = preview.borrow_mut();
+        preview.pending = None;
+        if let Some(timer) = preview.timer.take() {
+            timer.cancel();
+        }
+    });
 }
 
 fn is_abort_error(error: &str) -> bool {
@@ -244,15 +320,17 @@ fn apply_ownership(territories: RwSignal<ClientTerritoryMap>, mut merged: Territ
 /// Fetch historical data and update the territories signal.
 /// Reads geometry from `TerritoryGeometryStore` context.
 pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
+    cancel_preview();
+    seek(timestamp_secs, ctx, || {});
+}
+
+/// Seek to `timestamp_secs`, replacing any seek in flight; `settled` runs once the request
+/// has ended, however it ended.
+fn seek(timestamp_secs: i64, ctx: HistoryFetchContext, settled: impl FnOnce() + 'static) {
     let HistoryFetchContext {
-        mode,
         history_fetch_nonce: fetch_nonce,
         history_legacy_geometry_active,
-        history_scalar_sample,
-        history_sr_leaderboard,
-        geo_store,
-        guild_color_store,
-        territories,
+        ..
     } = ctx;
 
     let request_nonce = fetch_nonce.get_untracked().wrapping_add(1);
@@ -267,49 +345,70 @@ pub fn fetch_and_apply_with(timestamp_secs: i64, ctx: HistoryFetchContext) {
     replace_active_history_fetch(request_nonce, abort_controller);
 
     spawn_local(async move {
-        match fetch_history_at_with_abort(timestamp_secs, abort_signal.as_ref()).await {
-            Ok(snapshot) => {
-                clear_active_history_fetch(request_nonce);
-                // Only the latest seek of this history visit may change the map.
-                if fetch_nonce.get_untracked() != request_nonce
-                    || current_session() != session
-                    || mode.get_untracked() != MapMode::History
-                {
-                    return;
-                }
-                let merged = geo_store.with_value(|geo| {
-                    guild_color_store.with_value(|colors| merge_with_static(&snapshot, geo, colors))
-                });
-                history_scalar_sample.set(snapshot.season_scalar);
-                history_sr_leaderboard.set(snapshot.season_leaderboard);
-                apply_ownership(territories, merged);
-                crate::playback::seek_applied(request_nonce);
-            }
-            Err(e) => {
-                clear_active_history_fetch(request_nonce);
-                if is_abort_error(&e) {
-                    return;
-                }
-                let current = move || {
-                    fetch_nonce.get_untracked() == request_nonce
-                        && current_session() == session
-                        && mode.get_untracked() == MapMode::History
-                };
-                if !current() {
-                    return;
-                }
-                web_sys::console::warn_1(&format!("History fetch failed: {e}").into());
-                // Playback waits for this seek, so retry it unless a newer seek, an exit or
-                // another visit has replaced it by then.
-                gloo_timers::callback::Timeout::new(SEEK_RETRY_MS, move || {
-                    if current() {
-                        fetch_and_apply_with(timestamp_secs, ctx);
-                    }
-                })
-                .forget();
-            }
-        }
+        let fetched = fetch_history_at_with_abort(timestamp_secs, abort_signal.as_ref()).await;
+        clear_active_history_fetch(request_nonce);
+        apply_seek(fetched, timestamp_secs, request_nonce, session, ctx);
+        settled();
     });
+}
+
+fn apply_seek(
+    fetched: Result<HistorySnapshot, String>,
+    timestamp_secs: i64,
+    request_nonce: u64,
+    session: u64,
+    ctx: HistoryFetchContext,
+) {
+    let HistoryFetchContext {
+        mode,
+        history_fetch_nonce: fetch_nonce,
+        history_scalar_sample,
+        history_sr_leaderboard,
+        geo_store,
+        guild_color_store,
+        territories,
+        ..
+    } = ctx;
+    match fetched {
+        Ok(snapshot) => {
+            // Only the latest seek of this history visit may change the map.
+            if fetch_nonce.get_untracked() != request_nonce
+                || current_session() != session
+                || mode.get_untracked() != MapMode::History
+            {
+                return;
+            }
+            let merged = geo_store.with_value(|geo| {
+                guild_color_store.with_value(|colors| merge_with_static(&snapshot, geo, colors))
+            });
+            history_scalar_sample.set(snapshot.season_scalar);
+            history_sr_leaderboard.set(snapshot.season_leaderboard);
+            apply_ownership(territories, merged);
+            crate::playback::seek_applied(request_nonce);
+        }
+        Err(e) => {
+            if is_abort_error(&e) {
+                return;
+            }
+            let current = move || {
+                fetch_nonce.get_untracked() == request_nonce
+                    && current_session() == session
+                    && mode.get_untracked() == MapMode::History
+            };
+            if !current() {
+                return;
+            }
+            web_sys::console::warn_1(&format!("History fetch failed: {e}").into());
+            // Playback waits for this seek, so retry it unless a newer seek, an exit or
+            // another visit has replaced it by then.
+            gloo_timers::callback::Timeout::new(SEEK_RETRY_MS, move || {
+                if current() {
+                    fetch_and_apply_with(timestamp_secs, ctx);
+                }
+            })
+            .forget();
+        }
+    }
 }
 
 pub fn replay_updates_after_seq(
