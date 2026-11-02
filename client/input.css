@@ -1913,6 +1913,9 @@
 @media (pointer: coarse) {
   .timeline-bar { --tl-hit: 44px; }
 }
+/* Opened on purpose, the extra controls rise over the territory peek card that shares the
+   space above the bar (.tcard-peek). */
+.timeline-bar:has(.tl-extras-open) { z-index: 91; }
 .tl-note {
   position: absolute;
   left: 12px;
