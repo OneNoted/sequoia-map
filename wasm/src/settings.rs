@@ -398,7 +398,7 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            after(|s| s.war_outline.progress = true),
+            after(|s| s.war_outline.progress = !s.war_outline.progress),
             Rebuild {
                 territories: true,
                 ..Rebuild::NONE
