@@ -426,7 +426,8 @@ pub(crate) struct HistorySeasonScalarSample(pub RwSignal<Option<SeasonScalarSamp
 pub(crate) struct HistorySeasonLeaderboard(pub RwSignal<Option<Vec<HistoryGuildSrEntry>>>);
 #[derive(Clone, Copy)]
 pub(crate) struct WarControllerData(pub RwSignal<Option<WarControllerState>>);
-/// Whether the viewer may see the war feed at all: signed in *and* in Sequoia.
+/// Whether the viewer may see war features at all: a Sequoia member ranked Sprite or above, or
+/// a website admin, as the server says on `/api/auth/me`.
 ///
 /// The server is the real gate - it refuses `/api/warcontroller` and withholds the SSE
 /// `warcontroller` frames from everyone else. This is the display side of the same rule, which
@@ -1204,14 +1205,17 @@ pub fn MapPage() -> impl IntoView {
     let route_mode_sync_in_flight: RwSignal<bool> = RwSignal::new(false);
     let warcontroller_state: RwSignal<Option<WarControllerState>> = RwSignal::new(None);
     // Website session, resolved on mount below. Declared here because the war feed is
-    // gated on it: the server refuses that feed to anyone outside Sequoia, and the map
+    // gated on it: the server refuses that feed to anyone without war access, and the map
     // must not render it - or reserve space for it - either.
     let viewer = RwSignal::new(None::<crate::auth::Viewer>);
-    let war_feed_visible: Memo<bool> = Memo::new(move |_| {
-        viewer.with(|current| {
-            current
+    // The server's answer, kept as it was while the server cannot tell.
+    let war_access = RwSignal::new(false);
+    let war_feed_visible: Memo<bool> = Memo::new(move |_| war_access.get());
+    let account = Memo::new(move |_| {
+        viewer.with(|viewer| {
+            viewer
                 .as_ref()
-                .is_some_and(crate::auth::Viewer::is_guild_member)
+                .map(|viewer| (viewer.discord_id.clone(), viewer.minecraft_uuid.clone()))
         })
     });
     let territory_geometry: StoredValue<TerritoryGeometryMap> = StoredValue::new(HashMap::new());
@@ -1401,8 +1405,8 @@ pub fn MapPage() -> impl IntoView {
     provide_context(IsMobile(is_mobile));
 
     // Website session, resolved on mount (the signal itself is declared alongside the war
-    // feed above). The navbar shows who is signed in, and the war feed is gated on
-    // Sequoia membership, so a failure here leaves the bar reading "Sign in" and the war
+    // feed above). The navbar shows who is signed in, and the war feed is gated on the
+    // session's war access, so a failure here leaves the bar reading "Sign in" and the war
     // overview hidden - which is the safe way round for internal data.
     provide_context(CurrentViewer(viewer));
     provide_context(crate::member_war::MemberWar::new());
@@ -1410,6 +1414,16 @@ pub fn MapPage() -> impl IntoView {
     // a back-forward restore, while the first is still backing off - would leave two loops
     // probing forever. One at a time.
     let probe_in_flight = RwSignal::new(false);
+    let apply_session = move |session: crate::auth::Session| {
+        let held = viewer.get_untracked();
+        if !crate::auth::same_account(held.as_ref(), session.viewer.as_ref()) {
+            // Another account's war state must not stay on screen for this one; the seed below
+            // asks again for the new account if it may see any.
+            warcontroller_state.set(None);
+        }
+        war_access.set(session.war_access_after(held.as_ref(), war_access.get_untracked()));
+        viewer.set(session.viewer);
+    };
     let refresh_viewer = move || {
         if probe_in_flight.get_untracked() {
             return;
@@ -1422,9 +1436,9 @@ pub fn MapPage() -> impl IntoView {
             // hiccup never blanks a session that is still good.
             let mut backoff = FIRST_PROBE_BACKOFF;
             loop {
-                match crate::auth::fetch_viewer().await {
-                    Ok(resolved) => {
-                        viewer.set(resolved);
+                match crate::auth::fetch_session().await {
+                    Ok(session) => {
+                        apply_session(session);
                         probe_in_flight.set(false);
                         return;
                     }
@@ -1445,14 +1459,15 @@ pub fn MapPage() -> impl IntoView {
         });
     };
     refresh_viewer();
-    // Membership can be revoked, and a session can expire, while the map stays open for hours.
+    // Membership and rank can change, and a session can expire, while the map stays open for
+    // hours.
     // The server mutes the war feed on its own schedule; this is the display side of that, so
     // the panel and the at-war highlight cannot outlive the access they depend on.
     wasm_bindgen_futures::spawn_local(async move {
         loop {
             gloo_timers::future::sleep(VIEWER_PROBE_REFRESH).await;
-            if let Ok(resolved) = crate::auth::fetch_viewer().await {
-                viewer.set(resolved);
+            if let Ok(session) = crate::auth::fetch_session().await {
+                apply_session(session);
             }
         }
     });
@@ -1917,10 +1932,11 @@ pub fn MapPage() -> impl IntoView {
         }
     });
 
-    // Seed war controller state once the viewer resolves to a Sequoia member; the SSE
-    // stream keeps it current afterwards. Fetching before that would be a guaranteed 403,
-    // and anything already held has to go the moment membership lapses.
+    // Seed war controller state once the session has war access; the SSE stream keeps it
+    // current afterwards. Fetching before that would be a guaranteed 403, and anything
+    // already held has to go the moment access lapses.
     Effect::new(move |_| {
+        account.track();
         if !war_feed_visible.get() {
             if warcontroller_state.with_untracked(Option::is_some) {
                 warcontroller_state.set(None);

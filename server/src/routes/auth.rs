@@ -39,23 +39,6 @@ pub struct Viewer {
     pub guild_rank: Option<String>,
 }
 
-impl Viewer {
-    /// Sequoia membership: any in-game guild rank, or a website administrator - the same
-    /// application-wide staff override the website's own branch gate applies.
-    ///
-    /// A backend that does not send `guild_rank` therefore fails closed for everyone but
-    /// admins, which is the right way round for internal war data.
-    pub fn is_guild_member(&self) -> bool {
-        self.website_admin || self.guild_rank.is_some()
-    }
-}
-
-/// Whether the request carries a session belonging to a Sequoia member. Signed-out
-/// viewers, and signed-in outsiders, are both denied.
-pub fn viewer_is_guild_member(viewer: Option<&Viewer>) -> bool {
-    viewer.is_some_and(Viewer::is_guild_member)
-}
-
 /// The outcome of a session probe, keeping "nobody is signed in" apart from "the backend
 /// could not tell us".
 ///
@@ -64,8 +47,8 @@ pub fn viewer_is_guild_member(viewer: Option<&Viewer>) -> bool {
 /// page. Callers must decide for themselves whether an unanswerable probe is fatal.
 #[derive(Debug, Clone)]
 pub enum ViewerProbe {
-    /// A verified identity. Still not necessarily a Sequoia member - check with
-    /// [`viewer_is_guild_member`].
+    /// A verified identity. Still not necessarily allowed war features - check with
+    /// [`super::war_access`].
     Viewer(Viewer),
     /// No session, or one the backend refused. An authoritative answer.
     Anonymous,
@@ -84,10 +67,6 @@ impl ViewerProbe {
             Self::Anonymous | Self::Unavailable => None,
         }
     }
-
-    pub fn is_unavailable(&self) -> bool {
-        matches!(self, Self::Unavailable)
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,16 +74,23 @@ pub struct ReturnToQuery {
     return_to: Option<String>,
 }
 
-/// Resolves the `seq_session` cookie to a verified identity, or null.
+/// Resolves the `seq_session` cookie to a verified identity, or null, and whether it may see
+/// war features: `war_access` is true or false, or null while the rank cannot be read.
 ///
 /// Answers `503` when the backend could not be reached at all, rather than reporting a
 /// signed-out viewer: the client retries a 5xx and keeps whatever session it already holds,
 /// which is what stops a backend restart from blanking a member's war feed.
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match resolve_viewer(&state, &headers).await {
-        ViewerProbe::Unavailable => session_unavailable(),
-        probe => session_json(serde_json::json!({ "viewer": probe.viewer() })),
-    }
+    let probe = resolve_viewer(&state, &headers).await;
+    let war_access = match &probe {
+        ViewerProbe::Unavailable => return session_unavailable(),
+        ViewerProbe::Viewer(viewer) => super::war_access::viewer_war_access(&state, viewer).await,
+        ViewerProbe::Anonymous => super::war_access::WarAccess::Denied,
+    };
+    session_json(serde_json::json!({
+        "viewer": probe.viewer(),
+        "war_access": war_access.known(),
+    }))
 }
 
 /// Resolves the request's `seq_session` cookie to a [`ViewerProbe`].
@@ -130,7 +116,7 @@ pub async fn logout(Query(query): Query<ReturnToQuery>) -> Response {
     redirect_to_auth("logout", query.return_to.as_deref())
 }
 
-async fn fetch_viewer(state: &AppState, token: &str) -> ViewerProbe {
+pub(crate) async fn fetch_viewer(state: &AppState, token: &str) -> ViewerProbe {
     // Without a configured backend there is nothing that could ever answer. `Unavailable` is
     // the honest label, but it is the wrong *answer*: it asks every caller to retry a
     // condition that cannot change without a restart, and the client retries any 5xx forever.
@@ -248,7 +234,7 @@ fn session_unavailable() -> Response {
         .into_response()
 }
 
-fn session_cookie(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
     let raw = headers.get(header::COOKIE)?.to_str().ok()?;
     raw.split(';').find_map(|pair| {
         let (name, value) = pair.split_once('=')?;
@@ -326,30 +312,6 @@ mod tests {
     }
 
     #[test]
-    fn any_guild_rank_makes_a_viewer_a_member() {
-        assert!(viewer_with(Some("chief"), false).is_guild_member());
-        assert!(viewer_with(Some("recruit"), false).is_guild_member());
-    }
-
-    #[test]
-    fn a_website_admin_is_a_member_without_a_rank() {
-        assert!(viewer_with(None, true).is_guild_member());
-    }
-
-    #[test]
-    fn a_signed_in_outsider_is_not_a_member() {
-        // The backend answers for any linked account, not just Sequoia's roster, and a
-        // deploy predating the `guild_rank` field sends none at all - both must fail closed.
-        assert!(!viewer_with(None, false).is_guild_member());
-        assert!(!viewer_is_guild_member(Some(&viewer_with(None, false))));
-    }
-
-    #[test]
-    fn a_signed_out_visitor_is_not_a_member() {
-        assert!(!viewer_is_guild_member(None));
-    }
-
-    #[test]
     fn a_4xx_is_a_verdict_and_a_5xx_is_not() {
         assert!(matches!(
             probe_for_error_status(StatusCode::UNAUTHORIZED),
@@ -362,10 +324,16 @@ mod tests {
         // The restart case: the backend is up but unwell, which says nothing about the
         // session. Reading it as "signed out" is what used to mute a member's war feed.
         assert!(
-            probe_for_error_status(StatusCode::BAD_GATEWAY).is_unavailable(),
+            matches!(
+                probe_for_error_status(StatusCode::BAD_GATEWAY),
+                ViewerProbe::Unavailable
+            ),
             "a 5xx must stay retryable"
         );
-        assert!(probe_for_error_status(StatusCode::SERVICE_UNAVAILABLE).is_unavailable());
+        assert!(matches!(
+            probe_for_error_status(StatusCode::SERVICE_UNAVAILABLE),
+            ViewerProbe::Unavailable
+        ));
     }
 
     #[test]
@@ -373,10 +341,16 @@ mod tests {
         // Neither answers the question that was asked, and `Anonymous` is final for an SSE
         // stream - a rate-limited burst would mute the war feed until the next page load.
         assert!(
-            probe_for_error_status(StatusCode::TOO_MANY_REQUESTS).is_unavailable(),
+            matches!(
+                probe_for_error_status(StatusCode::TOO_MANY_REQUESTS),
+                ViewerProbe::Unavailable
+            ),
             "a 429 is about the probe, not the session"
         );
-        assert!(probe_for_error_status(StatusCode::REQUEST_TIMEOUT).is_unavailable());
+        assert!(matches!(
+            probe_for_error_status(StatusCode::REQUEST_TIMEOUT),
+            ViewerProbe::Unavailable
+        ));
     }
 
     #[test]
@@ -396,31 +370,12 @@ mod tests {
     }
 
     #[test]
-    fn only_a_resolved_member_passes_the_gate() {
-        // `viewer()` is `None` for both of the non-identity outcomes, so the gate denies
-        // them - the difference between the two is for the caller's retry policy, not this.
-        assert!(viewer_is_guild_member(
-            ViewerProbe::Viewer(viewer_with(Some("chief"), false)).viewer()
-        ));
-        assert!(!viewer_is_guild_member(
-            ViewerProbe::Viewer(viewer_with(None, false)).viewer()
-        ));
-        assert!(!viewer_is_guild_member(ViewerProbe::Anonymous.viewer()));
-        assert!(!viewer_is_guild_member(ViewerProbe::Unavailable.viewer()));
-
-        assert!(!ViewerProbe::Anonymous.is_unavailable());
-        assert!(!ViewerProbe::Viewer(viewer_with(Some("chief"), false)).is_unavailable());
-        assert!(ViewerProbe::Unavailable.is_unavailable());
-    }
-
-    #[test]
     fn a_viewer_deserializes_without_a_guild_rank() {
         let viewer: Viewer = serde_json::from_str(
             r#"{"discord_id":"1","minecraft_uuid":"ee860b7c-9a1d-49cf-9f19-ab673ba0f23b"}"#,
         )
         .expect("legacy viewer payload parses");
         assert_eq!(viewer.guild_rank, None);
-        assert!(!viewer.is_guild_member());
     }
 
     #[test]

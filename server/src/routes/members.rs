@@ -1,8 +1,8 @@
 //! A Sequoia member's war standing and record, for other members.
 //!
-//! The same member gate as the war feed. The player asked about must be on Sequoia's current
-//! in-game roster; that membership only decides who can be looked up and says nothing about
-//! which guild a past war counted for. The record is the backend's stored points for one UUID,
+//! The same gate as the war feed ([`super::war_access`]). The player asked about must be on
+//! Sequoia's current in-game roster; that membership only decides who can be looked up and
+//! says nothing about which guild a past war counted for. The record is the backend's stored points for one UUID,
 //! the roles come from the public rank-profile feed. Every answer, refusals included, belongs
 //! to the asking session only ([`router`]). Only the public feed is kept here, for a minute,
 //! and nothing member-only is stored on this side.
@@ -26,9 +26,10 @@ use tracing::warn;
 use super::http_util::mark_private;
 use crate::config;
 use crate::services::season_data::{self, SeasonWindowSource};
-use crate::state::{AppState, CachedRankRoles};
+use crate::state::{AppState, CachedRankRoles, RankedProfile};
 
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
+const PROGRESSION_RANK: &str = "progression_rank";
 const ROSTER_RANKS: [&str; 6] = [
     "owner",
     "chief",
@@ -168,18 +169,14 @@ async fn get_member_war(
     }
 }
 
-/// The gate, then Sequoia's current roster: `403` for anyone but a member.
+/// The war gate ([`super::war_access`]), then Sequoia's current roster.
 async fn sequoia_roster(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<serde_json::Value, StatusCode> {
-    let probe = super::auth::resolve_viewer(state, headers).await;
-    if probe.is_unavailable() {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    }
-    if !super::auth::viewer_is_guild_member(probe.viewer()) {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    super::war_access::war_access(state, headers)
+        .await
+        .into_result()?;
     let payload = super::api::guild_payload(state, config::SEQUOIA_GUILD_NAME.to_string()).await?;
     serde_json::from_str(&payload).map_err(|_| StatusCode::BAD_GATEWAY)
 }
@@ -223,14 +220,14 @@ fn find_on_roster(roster: &serde_json::Value, username: &str) -> Option<RosterEn
 }
 
 /// Whether a read of the feed is still within its freshness window.
-fn is_fresh(cached: &CachedRankRoles, now: DateTime<Utc>) -> bool {
+pub(crate) fn is_fresh(cached: &CachedRankRoles, now: DateTime<Utc>) -> bool {
     (now - cached.fetched_at).num_seconds() < config::RANK_ROLES_CACHE_TTL_SECS
 }
 
 /// The linked feed's war roles and progression ranks by UUID, read at most once a minute for every viewer, one read at
 /// a time. A failed read keeps serving the last good one, untouched, and the next read waits
 /// out a short backoff, so an outage costs one upstream attempt per backoff, not one per viewer.
-async fn rank_roles(state: &AppState) -> Option<CachedRankRoles> {
+pub(crate) async fn rank_roles(state: &AppState) -> Option<CachedRankRoles> {
     let fresh = |cached: &&CachedRankRoles| is_fresh(cached, Utc::now());
     if let Some(cached) = state.rank_roles_cache.read().await.as_ref().filter(fresh) {
         return Some(cached.clone());
@@ -374,10 +371,11 @@ fn custom_window(
     })
 }
 
-/// What the roster rows need from one read of the whole feed, by Minecraft UUID: war roles and
-/// progression ranks for the profiles that hold any.
+/// What the roster rows and the war gate need from one read of the whole feed, by Minecraft
+/// UUID: war roles and progression ranks for the profiles that hold any, and where those ranks
+/// sit in the hierarchy.
 fn by_uuid(body: &ProfilesBody, fetched_at: DateTime<Utc>) -> CachedRankRoles {
-    let (mut roles, mut progression) = (HashMap::new(), HashMap::new());
+    let (mut roles, mut progression, mut ranked) = (HashMap::new(), HashMap::new(), HashMap::new());
     for profile in &body.profiles {
         let Some(minecraft) = profile.minecraft.as_ref() else {
             continue;
@@ -386,14 +384,53 @@ fn by_uuid(body: &ProfilesBody, fetched_at: DateTime<Utc>) -> CachedRankRoles {
         if !held.is_empty() {
             roles.insert(minecraft.uuid.clone(), held);
         }
-        if let Some(rank) = progression_rank(&body.catalog, profile) {
-            progression.insert(minecraft.uuid.clone(), rank);
+        if let Some(role) = progression_role(&body.catalog, profile) {
+            if let Some(position) = role.position {
+                let discord_id = profile
+                    .discord
+                    .as_ref()
+                    .and_then(|discord| discord.id.clone());
+                ranked.insert(
+                    minecraft.uuid.clone(),
+                    RankedProfile {
+                        discord_id,
+                        position,
+                    },
+                );
+            }
+            progression.insert(minecraft.uuid.clone(), progression_rank_of(role));
         }
     }
+    let rank_positions = body
+        .catalog
+        .roles
+        .iter()
+        .filter(|role| role.category == PROGRESSION_RANK)
+        .filter_map(|role| Some((role.key.clone(), role.position?)))
+        .collect();
+    let parse = |time: &str| {
+        DateTime::parse_from_rfc3339(time)
+            .ok()
+            .map(|time| time.with_timezone(&Utc))
+    };
+    let synced_at = body
+        .source
+        .guilds
+        .iter()
+        .map(|guild| guild.last_full_sync_at.as_deref().and_then(parse))
+        .try_fold(None, |oldest: Option<DateTime<Utc>>, synced| {
+            let synced = synced?;
+            Some(Some(oldest.map_or(synced, |oldest| oldest.min(synced))))
+        })
+        .flatten();
     CachedRankRoles {
         stale: body.source.stale,
         roles,
         progression,
+        ranked,
+        rank_positions,
+        generated_at: body.generated_at.as_deref().and_then(parse),
+        synced_at,
         fetched_at,
     }
 }
@@ -435,6 +472,8 @@ async fn rank_standing(state: &AppState, uuid: &str) -> RankStanding {
 /// The published rank-profile shape, as far as war roles and progression ranks need it.
 #[derive(Debug, Deserialize)]
 struct ProfilesBody {
+    #[serde(default)]
+    generated_at: Option<String>,
     source: ProfileSource,
     catalog: ProfileCatalog,
     profiles: Vec<Profile>,
@@ -443,6 +482,14 @@ struct ProfilesBody {
 #[derive(Debug, Deserialize)]
 struct ProfileSource {
     stale: bool,
+    #[serde(default)]
+    guilds: Vec<SourceGuild>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceGuild {
+    #[serde(default)]
+    last_full_sync_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -461,6 +508,9 @@ struct CatalogRole {
     asset_key: Option<String>,
     #[serde(default)]
     colors: Option<RoleColors>,
+    /// The role's Discord position: higher sits above. Absent until the backend has synced it.
+    #[serde(default)]
+    position: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -478,9 +528,17 @@ struct CatalogAsset {
 #[derive(Debug, Deserialize)]
 struct Profile {
     #[serde(default)]
+    discord: Option<ProfileDiscord>,
+    #[serde(default)]
     minecraft: Option<ProfileMinecraft>,
     role_keys: Vec<String>,
     summary: ProfileSummary,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileDiscord {
+    #[serde(default)]
+    id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -504,27 +562,31 @@ fn war_roles(body: ProfilesBody) -> RankStanding {
         Some(profile) => RankStanding::Synced {
             stale: body.source.stale,
             roles: profile_war_roles(&body.catalog, profile),
-            progression: progression_rank(&body.catalog, profile),
+            progression: progression_role(&body.catalog, profile).map(progression_rank_of),
         },
         None => RankStanding::NoProfile,
     }
 }
 
-/// The progression rank the profile's summary names, when the catalog lists that key as one.
-fn progression_rank(catalog: &ProfileCatalog, profile: &Profile) -> Option<ProgressionRank> {
+/// The catalog role for the progression rank the profile's summary names, when the catalog lists
+/// that key as one.
+fn progression_role<'a>(catalog: &'a ProfileCatalog, profile: &Profile) -> Option<&'a CatalogRole> {
     let key = profile.summary.progression_rank.as_deref()?;
-    let role = catalog
+    catalog
         .roles
         .iter()
-        .find(|role| role.key == key && role.category == "progression_rank")?;
-    Some(ProgressionRank {
+        .find(|role| role.key == key && role.category == PROGRESSION_RANK)
+}
+
+fn progression_rank_of(role: &CatalogRole) -> ProgressionRank {
+    ProgressionRank {
         key: role.key.clone(),
         label: role.label.clone(),
         color: role
             .colors
             .as_ref()
             .and_then(|colors| colors.primary.clone()),
-    })
+    }
 }
 
 /// The war roles a profile holds, classified by the feed's own catalog: the highest insignia and
@@ -592,8 +654,9 @@ mod tests {
             .with_timezone(&Utc)
     }
 
-    /// A stand-in backend: `/auth/web/me` answers for the bearer `member` or `outsider`, and the
-    /// war-points route always fails, as an outage would.
+    /// A stand-in backend: `/auth/web/me` answers for the bearer `member` or `outsider`, a current
+    /// rank feed places the member's Discord account at Sprite, and the war-points route always
+    /// fails, as an outage would.
     async fn spawn_backend() -> std::net::SocketAddr {
         async fn me(headers: HeaderMap) -> Response {
             let bearer = headers
@@ -612,10 +675,26 @@ mod tests {
             }))
             .into_response()
         }
-        let backend = Router::new().route("/auth/web/me", get(me)).route(
-            "/internal/war-points/players/{uuid}",
-            get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
-        );
+        let feed = || {
+            let now = Utc::now().to_rfc3339();
+            axum::Json(serde_json::json!({
+                "generated_at": now,
+                "source": {"stale": false, "guilds": [{"guild_id": "1", "last_full_sync_at": now}]},
+                "catalog": {"roles": [{"key": "rank.sprite", "label": "Sprite",
+                                       "category": "progression_rank", "position": 90}]},
+                "profiles": [{"discord": {"id": "1"},
+                              "minecraft": {"uuid": "ee860b7c-9a1d-49cf-9f19-ab673ba0f23b"},
+                              "role_keys": ["rank.sprite"],
+                              "summary": {"progression_rank": "rank.sprite"}}]
+            }))
+        };
+        let backend = Router::new()
+            .route("/auth/web/me", get(me))
+            .route("/v1/rank-profiles", get(move || async move { feed() }))
+            .route(
+                "/internal/war-points/players/{uuid}",
+                get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -673,6 +752,10 @@ mod tests {
                         stale: false,
                         roles: [("uuid".to_string(), Vec::new())].into(),
                         progression: HashMap::new(),
+                        ranked: HashMap::new(),
+                        rank_positions: HashMap::new(),
+                        generated_at: None,
+                        synced_at: None,
                         fetched_at: read_at,
                     };
                     *state.rank_roles_cache.write().await = Some(last_good);
@@ -722,10 +805,12 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let backend = runtime.block_on(spawn_backend());
-        temp_env::with_var(
-            "SEQUOIA_BACKEND_BASE_URL",
-            Some(format!("http://{backend}")),
+        let backend = format!("http://{}", runtime.block_on(spawn_backend()));
+        temp_env::with_vars(
+            [
+                ("SEQUOIA_BACKEND_BASE_URL", Some(backend.as_str())),
+                ("SEQUOIA_RANK_PROFILES_BASE_URL", Some(backend.as_str())),
+            ],
             || {
                 runtime.block_on(async {
                 let state = AppState::new(None);

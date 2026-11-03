@@ -11,21 +11,13 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::warn;
 
 use crate::config::SSE_KEEPALIVE_SECS;
-use crate::routes::auth::ViewerProbe;
+use crate::routes::war_access::{WarAccess, war_access};
 use crate::state::{AppState, PreSerializedEvent};
-
-/// How often a long-lived stream re-checks that its viewer is still a Sequoia member.
-///
-/// The cookie was read once at connect and cannot be refreshed here, so re-probing it is what
-/// catches an expired session or a revoked guild rank; without it a stream that never drops
-/// keeps serving guild-internal war intel indefinitely. Checked only when a war frame is
-/// actually pending, so an idle stream costs nothing.
-const WAR_FEED_REVALIDATE: Duration = Duration::from_secs(300);
 
 /// How soon to re-probe after the backend failed to answer at all.
 ///
-/// Shorter than [`WAR_FEED_REVALIDATE`] so a stream that connected during a restart, or that
-/// is riding out one, recovers within seconds of the backend coming back.
+/// Shorter than [`crate::config::war_feed_revalidate`] so a stream that connected during a
+/// restart, or that is riding out one, recovers within seconds of the backend coming back.
 const WAR_FEED_RETRY: Duration = Duration::from_secs(30);
 
 /// How long a stream keeps serving while the probe stays unanswerable.
@@ -43,11 +35,10 @@ const WAR_FEED_UNKNOWN_GRACE: Duration = Duration::from_secs(300);
 /// blackout to be ridden out and re-probed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WarFeedAccess {
-    /// A confirmed Sequoia member.
+    /// A confirmed Sprite-or-above member, or a website admin.
     Granted,
-    /// A confirmed non-member, or a session the backend refused. The only settled state, and
-    /// never re-probed - so an anonymous stream costs the backend one round trip for its
-    /// whole life.
+    /// A confirmed refusal. Re-checked on the revalidation schedule like a grant, so a promotion
+    /// reaches an open stream; a stream with no session costs no upstream call to re-check.
     Denied,
     /// The probe could not be answered. `serving` carries the decision being held over, and
     /// is false for a stream that never had one.
@@ -59,11 +50,6 @@ impl WarFeedAccess {
     fn serves(self) -> bool {
         matches!(self, Self::Granted | Self::Unknown { serving: true, .. })
     }
-
-    /// Whether this stream should keep spending backend round trips on re-probing.
-    fn is_final(self) -> bool {
-        matches!(self, Self::Denied)
-    }
 }
 
 /// Folds a fresh probe into the current access state.
@@ -71,13 +57,11 @@ impl WarFeedAccess {
 /// Kept as a free function so the policy - hold on failure, give up after
 /// [`WAR_FEED_UNKNOWN_GRACE`], answer immediately to anything conclusive - is testable
 /// without a live stream. `now` is passed in for the same reason.
-fn next_access(current: WarFeedAccess, probe: &ViewerProbe, now: Instant) -> WarFeedAccess {
-    if !probe.is_unavailable() {
-        return if crate::routes::auth::viewer_is_guild_member(probe.viewer()) {
-            WarFeedAccess::Granted
-        } else {
-            WarFeedAccess::Denied
-        };
+fn next_access(current: WarFeedAccess, probe: WarAccess, now: Instant) -> WarFeedAccess {
+    match probe {
+        WarAccess::Granted => return WarFeedAccess::Granted,
+        WarAccess::Denied => return WarFeedAccess::Denied,
+        WarAccess::Unavailable => {}
     }
     match current {
         // The blackout starts now, carrying the decision it interrupted.
@@ -100,6 +84,67 @@ fn next_access(current: WarFeedAccess, probe: &ViewerProbe, now: Instant) -> War
             }
         }
         WarFeedAccess::Denied => WarFeedAccess::Denied,
+    }
+}
+
+/// A stream's war access, and when it is next re-checked.
+struct WarGate {
+    access: WarFeedAccess,
+    next_probe_due: Instant,
+}
+
+impl WarGate {
+    /// Resolves access at connect. A failure there starts as a blackout that has served
+    /// nothing: no war data goes out yet, but the stream re-probes and opens up on its own
+    /// once the backend is back, rather than staying blank until the viewer reloads the page.
+    async fn open(state: &AppState, headers: &HeaderMap) -> Self {
+        let now = Instant::now();
+        let mut gate = Self {
+            access: WarFeedAccess::Unknown {
+                serving: false,
+                since: now,
+            },
+            next_probe_due: now,
+        };
+        gate.recheck(state, headers).await;
+        gate
+    }
+
+    fn serves(&self) -> bool {
+        self.access.serves()
+    }
+
+    /// Re-checks access when it is due. Called before every war frame goes out, live or
+    /// replayed, so no path can emit on an answer past its schedule. Every state is re-checked,
+    /// which is what lets a stream that connected during an outage, or before a promotion,
+    /// start serving once the answer changes. Returns whether the stream has just stopped
+    /// serving, for the caller to send the clearing frame.
+    async fn recheck(&mut self, state: &AppState, headers: &HeaderMap) -> bool {
+        let now = Instant::now();
+        if now < self.next_probe_due {
+            return false;
+        }
+        let probe = war_access(state, headers).await;
+        let now = Instant::now();
+        let was_serving = self.access.serves();
+        self.access = next_access(self.access, probe, now);
+        self.next_probe_due = now
+            + if probe == WarAccess::Unavailable {
+                WAR_FEED_RETRY
+            } else {
+                crate::config::war_feed_revalidate()
+            };
+        let stopped = was_serving && !self.access.serves();
+        if stopped && probe == WarAccess::Unavailable {
+            warn!(
+                "the website session could not be re-probed for {}s; clearing the war feed for \
+                 this stream until the backend answers again",
+                WAR_FEED_UNKNOWN_GRACE.as_secs()
+            );
+        } else if stopped {
+            warn!("war feed viewer no longer has war access; clearing and muting the feed");
+        }
+        stopped
     }
 }
 
@@ -131,32 +176,17 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
         let rx = state.event_tx.subscribe();
         let mut stream = BroadcastStream::new(rx);
 
-        // The war feed is internal guild intel: resolve the session before emitting any of
-        // it, and never for a viewer outside Sequoia. Deliberately after the snapshot -
-        // the probe can take seconds, and the map's first paint must not wait on it.
-        let probe = crate::routes::auth::resolve_viewer(&state, &headers).await;
-        let now = Instant::now();
-        // A connect-time failure starts as a blackout that has served nothing: no war data
-        // goes out yet, but the stream re-probes and opens up on its own once the backend is
-        // back, rather than staying blank until the viewer reloads the page.
-        let mut access = next_access(
-            WarFeedAccess::Unknown { serving: false, since: now },
-            &probe,
-            now,
-        );
-        let mut next_probe_due = now
-            + if probe.is_unavailable() {
-                WAR_FEED_RETRY
-            } else {
-                WAR_FEED_REVALIDATE
-            };
+        // The war feed is internal guild intel: resolve the viewer's access before emitting
+        // any of it. Deliberately after the snapshot - the probe can take seconds, and the
+        // map's first paint must not wait on it.
+        let mut gate = WarGate::open(&state, &headers).await;
         // Newest war payload this stream has emitted. Subscribing first means a live frame can
         // now be queued *behind* an older seed or lag replay, so every war frame is checked
         // against this and dropped if it would move the client backwards.
         let mut last_war_ts: Option<i64> = None;
 
         // Seed war controller state so a fresh client isn't blank until the next poll tick.
-        let warcontroller = if access.serves() {
+        let warcontroller = if gate.serves() {
             state
                 .warcontroller_cache
                 .read()
@@ -182,7 +212,7 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
             // accepted even if the backend stamps it a moment before this one - and the
             // client is covered by the same rule from the other side, since
             // `WarControllerState::supersedes` lets real data beat a held clear outright.
-            None if access.serves() => {
+            None if gate.serves() => {
                 if let Some(payload) = empty_war_state() {
                     yield Ok(Event::default().event("warcontroller").data(payload));
                 }
@@ -202,58 +232,21 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
                             ("runtime_update", Some(seq), json)
                         }
                         PreSerializedEvent::WarController { timestamp, clears, json } => {
-                            // A settled denial is the end of it; anything else is re-probed,
-                            // which is what lets a stream that connected during an outage
-                            // start serving once the backend answers again.
-                            if access.is_final() {
-                                continue;
+                            if gate.recheck(&state, &headers).await
+                                && let Some(cleared) = empty_war_state()
+                            {
+                                // One last frame so the panel and the at-war highlight clear on
+                                // the client, rather than freezing on whatever it was last
+                                // shown. The territory stream continues. The watermark is left
+                                // unset, as it is for the empty seed above: this clear is
+                                // stamped on *our* clock, and pinning it would drop the first
+                                // frame after a re-grant if the backend's clock trails ours.
+                                // Nothing stale can slip through in the meantime - frames are
+                                // skipped outright while the feed is muted.
+                                last_war_ts = None;
+                                yield Ok(Event::default().event("warcontroller").data(cleared));
                             }
-                            if Instant::now() >= next_probe_due {
-                                let probe = crate::routes::auth::resolve_viewer(&state, &headers)
-                                    .await;
-                                let now = Instant::now();
-                                let was_serving = access.serves();
-                                access = next_access(access, &probe, now);
-                                next_probe_due = now
-                                    + if probe.is_unavailable() {
-                                        WAR_FEED_RETRY
-                                    } else {
-                                        WAR_FEED_REVALIDATE
-                                    };
-                                if was_serving && !access.serves() {
-                                    if probe.is_unavailable() {
-                                        warn!(
-                                            "the website session could not be re-probed for \
-                                             {}s; clearing the war feed for this stream until \
-                                             the backend answers again",
-                                            WAR_FEED_UNKNOWN_GRACE.as_secs()
-                                        );
-                                    } else {
-                                        warn!(
-                                            "war feed viewer is no longer a Sequoia member; \
-                                             clearing and muting the feed for this stream"
-                                        );
-                                    }
-                                    // One last frame so the panel and the at-war highlight
-                                    // clear on the client, rather than freezing on whatever
-                                    // it was last shown. The territory stream continues.
-                                    // The watermark is left unset, as it is for the empty
-                                    // seed above: this clear is stamped on *our* clock, and
-                                    // pinning it would drop the first frame after a re-grant
-                                    // if the backend's clock trails ours. Nothing stale can
-                                    // slip through in the meantime - frames are skipped
-                                    // outright while the feed is muted.
-                                    if let Some(cleared) = empty_war_state() {
-                                        last_war_ts = None;
-                                        yield Ok(
-                                            Event::default()
-                                                .event("warcontroller")
-                                                .data(cleared),
-                                        );
-                                    }
-                                }
-                            }
-                            if !access.serves() {
+                            if !gate.serves() {
                                 continue;
                             }
                             if !admit_war_frame(&mut last_war_ts, timestamp, clears) {
@@ -301,8 +294,16 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
 
                     // War frames ride the same channel, so they are among the events a lagging
                     // client just missed. If the skipped one was the final "war ended", nothing
-                    // else would ever correct it - replay the current cache too.
-                    let replay = if access.serves() {
+                    // else would ever correct it - replay the current cache too, once access has
+                    // been re-checked as it would be for a live frame.
+                    if gate.recheck(&state, &headers).await
+                        && let Some(cleared) = empty_war_state()
+                    {
+                        last_war_ts = None;
+                        yield Ok(Event::default().event("warcontroller").data(cleared));
+                        continue;
+                    }
+                    let replay = if gate.serves() {
                         state
                             .warcontroller_cache
                             .read()
@@ -328,7 +329,7 @@ pub async fn territory_events(State(state): State<AppState>, headers: HeaderMap)
                         // nothing here would leave it rendering the expired war for good, which
                         // is exactly what the staleness bound exists to prevent. Same rule as
                         // the empty seed: emitted unconditionally, watermark left unset.
-                        None if access.serves() => {
+                        None if gate.serves() => {
                             if let Some(payload) = empty_war_state() {
                                 last_war_ts = None;
                                 yield Ok(Event::default().event("warcontroller").data(payload));
@@ -509,17 +510,6 @@ mod tests {
         assert!(recovered.supersedes(Some(&cleared)));
     }
 
-    fn viewer_probe(guild_rank: Option<&str>) -> ViewerProbe {
-        ViewerProbe::Viewer(crate::routes::auth::Viewer {
-            discord_id: "1".to_string(),
-            discord_username: None,
-            minecraft_uuid: "ee860b7c-9a1d-49cf-9f19-ab673ba0f23b".to_string(),
-            minecraft_username: None,
-            website_admin: false,
-            guild_rank: guild_rank.map(str::to_string),
-        })
-    }
-
     #[test]
     fn a_conclusive_probe_settles_access_either_way() {
         let now = Instant::now();
@@ -529,15 +519,15 @@ mod tests {
         };
 
         assert_eq!(
-            next_access(fresh, &viewer_probe(Some("chief")), now),
+            next_access(fresh, WarAccess::Granted, now),
             WarFeedAccess::Granted
         );
         assert_eq!(
-            next_access(fresh, &viewer_probe(None), now),
+            next_access(fresh, WarAccess::Denied, now),
             WarFeedAccess::Denied
         );
         assert_eq!(
-            next_access(WarFeedAccess::Granted, &ViewerProbe::Anonymous, now),
+            next_access(WarFeedAccess::Granted, WarAccess::Denied, now),
             WarFeedAccess::Denied
         );
     }
@@ -547,7 +537,7 @@ mod tests {
         // The blip this whole state exists for: the backend restarts, and the member keeps
         // their panel instead of losing it for the life of the page.
         let now = Instant::now();
-        let held = next_access(WarFeedAccess::Granted, &ViewerProbe::Unavailable, now);
+        let held = next_access(WarFeedAccess::Granted, WarAccess::Unavailable, now);
         assert_eq!(
             held,
             WarFeedAccess::Unknown {
@@ -556,17 +546,17 @@ mod tests {
             }
         );
         assert!(held.serves());
-        assert!(!held.is_final());
+        assert_ne!(held, WarFeedAccess::Denied);
 
         // Still failing, but well inside the grace window.
         let later = now + WAR_FEED_UNKNOWN_GRACE / 2;
-        let still_held = next_access(held, &ViewerProbe::Unavailable, later);
+        let still_held = next_access(held, WarAccess::Unavailable, later);
         assert_eq!(still_held, held, "the blackout keeps its original start");
         assert!(still_held.serves());
 
         // And it re-opens the moment the backend answers again.
         assert_eq!(
-            next_access(still_held, &viewer_probe(Some("recruit")), later),
+            next_access(still_held, WarAccess::Granted, later),
             WarFeedAccess::Granted
         );
     }
@@ -578,24 +568,16 @@ mod tests {
             serving: true,
             since: now,
         };
-        let expired = next_access(
-            held,
-            &ViewerProbe::Unavailable,
-            now + WAR_FEED_UNKNOWN_GRACE,
-        );
+        let expired = next_access(held, WarAccess::Unavailable, now + WAR_FEED_UNKNOWN_GRACE);
         assert!(
             !expired.serves(),
             "a revocation must not outlive a long outage"
         );
         // But settling on `Denied` would mute the stream for good over an outage that never
         // said anything about this viewer.
-        assert!(!expired.is_final());
+        assert_ne!(expired, WarFeedAccess::Denied);
         assert_eq!(
-            next_access(
-                expired,
-                &viewer_probe(Some("chief")),
-                now + WAR_FEED_UNKNOWN_GRACE
-            ),
+            next_access(expired, WarAccess::Granted, now + WAR_FEED_UNKNOWN_GRACE),
             WarFeedAccess::Granted,
             "the feed comes back when the backend does"
         );
@@ -609,29 +591,38 @@ mod tests {
                 serving: false,
                 since: now,
             },
-            &ViewerProbe::Unavailable,
+            WarAccess::Unavailable,
             now,
         );
         assert!(
             !fresh.serves(),
             "nothing goes out before access is confirmed"
         );
-        assert!(!fresh.is_final(), "but it must not be written off either");
+        assert_ne!(
+            fresh,
+            WarFeedAccess::Denied,
+            "but it must not be written off either"
+        );
         assert_eq!(
-            next_access(fresh, &viewer_probe(Some("chief")), now),
+            next_access(fresh, WarAccess::Granted, now),
             WarFeedAccess::Granted
         );
     }
 
     #[test]
-    fn a_denied_stream_is_never_probed_again() {
+    fn a_denied_stream_opens_when_a_recheck_grants_it() {
+        // A promotion reaches an open stream on the next revalidation, and an outage tells a
+        // denied stream nothing, so it keeps serving nothing.
         let now = Instant::now();
-        assert!(WarFeedAccess::Denied.is_final());
-        // Even an unanswerable probe cannot move it, so an anonymous stream costs the
-        // backend exactly one round trip for its whole life.
+        let denied = WarFeedAccess::Denied;
+        assert!(!denied.serves());
         assert_eq!(
-            next_access(WarFeedAccess::Denied, &ViewerProbe::Unavailable, now),
+            next_access(denied, WarAccess::Unavailable, now),
             WarFeedAccess::Denied
+        );
+        assert_eq!(
+            next_access(denied, WarAccess::Granted, now),
+            WarFeedAccess::Granted
         );
     }
 }

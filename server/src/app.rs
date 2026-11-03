@@ -155,13 +155,16 @@ pub(crate) fn build_app(state: AppState) -> Router {
         .route("/api/auth/logout", axum::routing::get(routes::auth::logout))
         .route("/api/health", axum::routing::get(routes::api::health))
         .route("/api/metrics", axum::routing::get(routes::api::metrics))
+        // War answers, refusals included, belong to the asking session only.
         .route(
             "/api/warcontroller",
-            axum::routing::get(routes::api::get_warcontroller),
+            axum::routing::get(routes::api::get_warcontroller)
+                .layer(middleware::map_response(routes::http_util::mark_private)),
         )
         .route(
             "/api/war-activity",
-            axum::routing::get(routes::war_activity::get_war_activity),
+            axum::routing::get(routes::war_activity::get_war_activity)
+                .layer(middleware::map_response(routes::http_util::mark_private)),
         )
         .route(
             "/api/history/at",
