@@ -241,26 +241,42 @@ pub struct CachedRankRoles {
     pub stale: bool,
     pub roles: HashMap<String, Vec<sequoia_shared::member_war::WarRole>>,
     pub progression: HashMap<String, sequoia_shared::member_war::ProgressionRank>,
-    /// Discord role position of each held progression rank, by UUID, when the catalog has one.
-    pub progression_positions: HashMap<String, i64>,
+    /// Each positioned progression rank the feed holds, by Minecraft UUID.
+    pub ranked: HashMap<String, RankedProfile>,
     /// Discord role position of each catalogued progression rank, by key.
     pub rank_positions: HashMap<String, i64>,
+    /// When the backend built this snapshot. It keeps serving its last one, under the same
+    /// stamp, while it cannot build another.
+    pub generated_at: Option<DateTime<Utc>>,
+    /// The oldest last full Discord sync among the feed's source guilds; `None` when any is
+    /// missing or unreadable.
+    pub synced_at: Option<DateTime<Utc>>,
+    /// When this server received it.
     pub fetched_at: DateTime<Utc>,
 }
 
+/// A progression rank as the feed links it: the Discord account it is synced from, and the
+/// rank's Discord role position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedProfile {
+    pub discord_id: Option<String>,
+    pub position: i64,
+}
+
 impl CachedRankRoles {
-    /// Whether the progression rank `uuid` holds is `floor` or above.
+    /// Whether the progression rank the account (`uuid`, `discord_id`) holds is `floor` or
+    /// above.
     ///
     /// Ranks compare by their Discord role positions, the hierarchy the feed itself uses to pick
-    /// a member's rank. A UUID with no positioned rank is below every floor. `None` when the
-    /// catalog gives `floor` no position, which says nothing about the player.
-    pub fn progression_at_least(&self, uuid: &str, floor: &str) -> Option<bool> {
+    /// a member's rank. A UUID with no positioned rank is below every floor. `None` when that
+    /// cannot be told: the catalog gives `floor` no position, or the feed links the UUID's rank
+    /// to another Discord account, or to none.
+    pub fn progression_at_least(&self, uuid: &str, discord_id: &str, floor: &str) -> Option<bool> {
         let floor = *self.rank_positions.get(floor)?;
-        Some(
-            self.progression_positions
-                .get(uuid)
-                .is_some_and(|position| *position >= floor),
-        )
+        let Some(ranked) = self.ranked.get(uuid) else {
+            return Some(false);
+        };
+        (ranked.discord_id.as_deref() == Some(discord_id)).then_some(ranked.position >= floor)
     }
 }
 

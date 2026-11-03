@@ -26,7 +26,7 @@ use tracing::warn;
 use super::http_util::mark_private;
 use crate::config;
 use crate::services::season_data::{self, SeasonWindowSource};
-use crate::state::{AppState, CachedRankRoles};
+use crate::state::{AppState, CachedRankRoles, RankedProfile};
 
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
 const PROGRESSION_RANK: &str = "progression_rank";
@@ -375,8 +375,7 @@ fn custom_window(
 /// UUID: war roles and progression ranks for the profiles that hold any, and where those ranks
 /// sit in the hierarchy.
 fn by_uuid(body: &ProfilesBody, fetched_at: DateTime<Utc>) -> CachedRankRoles {
-    let (mut roles, mut progression, mut progression_positions) =
-        (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut roles, mut progression, mut ranked) = (HashMap::new(), HashMap::new(), HashMap::new());
     for profile in &body.profiles {
         let Some(minecraft) = profile.minecraft.as_ref() else {
             continue;
@@ -387,7 +386,17 @@ fn by_uuid(body: &ProfilesBody, fetched_at: DateTime<Utc>) -> CachedRankRoles {
         }
         if let Some(role) = progression_role(&body.catalog, profile) {
             if let Some(position) = role.position {
-                progression_positions.insert(minecraft.uuid.clone(), position);
+                let discord_id = profile
+                    .discord
+                    .as_ref()
+                    .and_then(|discord| discord.id.clone());
+                ranked.insert(
+                    minecraft.uuid.clone(),
+                    RankedProfile {
+                        discord_id,
+                        position,
+                    },
+                );
             }
             progression.insert(minecraft.uuid.clone(), progression_rank_of(role));
         }
@@ -399,12 +408,29 @@ fn by_uuid(body: &ProfilesBody, fetched_at: DateTime<Utc>) -> CachedRankRoles {
         .filter(|role| role.category == PROGRESSION_RANK)
         .filter_map(|role| Some((role.key.clone(), role.position?)))
         .collect();
+    let parse = |time: &str| {
+        DateTime::parse_from_rfc3339(time)
+            .ok()
+            .map(|time| time.with_timezone(&Utc))
+    };
+    let synced_at = body
+        .source
+        .guilds
+        .iter()
+        .map(|guild| guild.last_full_sync_at.as_deref().and_then(parse))
+        .try_fold(None, |oldest: Option<DateTime<Utc>>, synced| {
+            let synced = synced?;
+            Some(Some(oldest.map_or(synced, |oldest| oldest.min(synced))))
+        })
+        .flatten();
     CachedRankRoles {
         stale: body.source.stale,
         roles,
         progression,
-        progression_positions,
+        ranked,
         rank_positions,
+        generated_at: body.generated_at.as_deref().and_then(parse),
+        synced_at,
         fetched_at,
     }
 }
@@ -446,6 +472,8 @@ async fn rank_standing(state: &AppState, uuid: &str) -> RankStanding {
 /// The published rank-profile shape, as far as war roles and progression ranks need it.
 #[derive(Debug, Deserialize)]
 struct ProfilesBody {
+    #[serde(default)]
+    generated_at: Option<String>,
     source: ProfileSource,
     catalog: ProfileCatalog,
     profiles: Vec<Profile>,
@@ -454,6 +482,14 @@ struct ProfilesBody {
 #[derive(Debug, Deserialize)]
 struct ProfileSource {
     stale: bool,
+    #[serde(default)]
+    guilds: Vec<SourceGuild>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceGuild {
+    #[serde(default)]
+    last_full_sync_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -492,9 +528,17 @@ struct CatalogAsset {
 #[derive(Debug, Deserialize)]
 struct Profile {
     #[serde(default)]
+    discord: Option<ProfileDiscord>,
+    #[serde(default)]
     minecraft: Option<ProfileMinecraft>,
     role_keys: Vec<String>,
     summary: ProfileSummary,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileDiscord {
+    #[serde(default)]
+    id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -610,9 +654,9 @@ mod tests {
             .with_timezone(&Utc)
     }
 
-    /// A stand-in backend: `/auth/web/me` answers for the bearer `member` or `outsider`, the rank
-    /// feed places the member at Sprite, and the war-points route always fails, as an outage
-    /// would.
+    /// A stand-in backend: `/auth/web/me` answers for the bearer `member` or `outsider`, a current
+    /// rank feed places the member's Discord account at Sprite, and the war-points route always
+    /// fails, as an outage would.
     async fn spawn_backend() -> std::net::SocketAddr {
         async fn me(headers: HeaderMap) -> Response {
             let bearer = headers
@@ -631,20 +675,22 @@ mod tests {
             }))
             .into_response()
         }
-        let feed = serde_json::json!({
-            "source": {"stale": false},
-            "catalog": {"roles": [{"key": "rank.sprite", "label": "Sprite",
-                                   "category": "progression_rank", "position": 90}]},
-            "profiles": [{"minecraft": {"uuid": "ee860b7c-9a1d-49cf-9f19-ab673ba0f23b"},
-                          "role_keys": ["rank.sprite"],
-                          "summary": {"progression_rank": "rank.sprite"}}]
-        });
+        let feed = || {
+            let now = Utc::now().to_rfc3339();
+            axum::Json(serde_json::json!({
+                "generated_at": now,
+                "source": {"stale": false, "guilds": [{"guild_id": "1", "last_full_sync_at": now}]},
+                "catalog": {"roles": [{"key": "rank.sprite", "label": "Sprite",
+                                       "category": "progression_rank", "position": 90}]},
+                "profiles": [{"discord": {"id": "1"},
+                              "minecraft": {"uuid": "ee860b7c-9a1d-49cf-9f19-ab673ba0f23b"},
+                              "role_keys": ["rank.sprite"],
+                              "summary": {"progression_rank": "rank.sprite"}}]
+            }))
+        };
         let backend = Router::new()
             .route("/auth/web/me", get(me))
-            .route(
-                "/v1/rank-profiles",
-                get(move || async move { axum::Json(feed) }),
-            )
+            .route("/v1/rank-profiles", get(move || async move { feed() }))
             .route(
                 "/internal/war-points/players/{uuid}",
                 get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
@@ -706,8 +752,10 @@ mod tests {
                         stale: false,
                         roles: [("uuid".to_string(), Vec::new())].into(),
                         progression: HashMap::new(),
-                        progression_positions: HashMap::new(),
+                        ranked: HashMap::new(),
                         rank_positions: HashMap::new(),
+                        generated_at: None,
+                        synced_at: None,
                         fetched_at: read_at,
                     };
                     *state.rank_roles_cache.write().await = Some(last_good);

@@ -1211,6 +1211,13 @@ pub fn MapPage() -> impl IntoView {
     // The server's answer, kept as it was while the server cannot tell.
     let war_access = RwSignal::new(false);
     let war_feed_visible: Memo<bool> = Memo::new(move |_| war_access.get());
+    let account = Memo::new(move |_| {
+        viewer.with(|viewer| {
+            viewer
+                .as_ref()
+                .map(|viewer| (viewer.discord_id.clone(), viewer.minecraft_uuid.clone()))
+        })
+    });
     let territory_geometry: StoredValue<TerritoryGeometryMap> = StoredValue::new(HashMap::new());
     let guild_colors: StoredValue<GuildColorMap> = StoredValue::new(HashMap::new());
 
@@ -1408,10 +1415,14 @@ pub fn MapPage() -> impl IntoView {
     // probing forever. One at a time.
     let probe_in_flight = RwSignal::new(false);
     let apply_session = move |session: crate::auth::Session| {
-        viewer.set(session.viewer);
-        if let Some(granted) = session.war_access {
-            war_access.set(granted);
+        let held = viewer.get_untracked();
+        if !crate::auth::same_account(held.as_ref(), session.viewer.as_ref()) {
+            // Another account's war state must not stay on screen for this one; the seed below
+            // asks again for the new account if it may see any.
+            warcontroller_state.set(None);
         }
+        war_access.set(session.war_access_after(held.as_ref(), war_access.get_untracked()));
+        viewer.set(session.viewer);
     };
     let refresh_viewer = move || {
         if probe_in_flight.get_untracked() {
@@ -1925,6 +1936,7 @@ pub fn MapPage() -> impl IntoView {
     // current afterwards. Fetching before that would be a guaranteed 403, and anything
     // already held has to go the moment access lapses.
     Effect::new(move |_| {
+        account.track();
         if !war_feed_visible.get() {
             if warcontroller_state.with_untracked(Option::is_some) {
                 warcontroller_state.set(None);

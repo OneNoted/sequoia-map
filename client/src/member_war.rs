@@ -257,7 +257,8 @@ async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Load<T> {
 
 impl MemberWar {
     /// Creates the store. Any change to the viewer (another account, a selected Minecraft
-    /// account, gaining or losing membership) forgets everything fetched and every open row.
+    /// account, gaining or losing membership) or to its war access forgets everything fetched
+    /// and every open row.
     pub fn new() -> Self {
         let this = Self {
             expanded: RwSignal::new(HashSet::new()),
@@ -274,16 +275,19 @@ impl MemberWar {
             member_epochs: StoredValue::new(HashMap::new()),
         };
         let CurrentViewer(viewer) = expect_context();
-        Effect::new(move |previous: Option<Option<crate::auth::Viewer>>| {
-            let current = viewer.get();
-            if previous.is_some_and(|previous| previous != current) {
-                this.generation.update_value(|generation| *generation += 1);
-                this.in_flight.update_value(HashSet::clear);
-                this.entries.set(HashMap::new());
-                this.expanded.set(HashSet::new());
-            }
-            current
-        });
+        let crate::app::WarFeedVisible(war_access) = expect_context();
+        Effect::new(
+            move |previous: Option<(Option<crate::auth::Viewer>, bool)>| {
+                let current = (viewer.get(), war_access.get());
+                if previous.is_some_and(|previous| previous != current) {
+                    this.generation.update_value(|generation| *generation += 1);
+                    this.in_flight.update_value(HashSet::clear);
+                    this.entries.set(HashMap::new());
+                    this.expanded.set(HashSet::new());
+                }
+                current
+            },
+        );
         this
     }
 

@@ -149,6 +149,22 @@ pub fn db_max_connections() -> u32 {
         .unwrap_or(DEFAULT_DB_MAX_CONNECTIONS)
 }
 
+/// How often a long-lived event stream re-checks its viewer's war access:
+/// `WAR_FEED_REVALIDATE_SECS`, five minutes by default.
+///
+/// The cookie was read once at connect and cannot be refreshed there, so re-probing it is what
+/// catches an expired session, a revoked guild rank or a lowered progression rank - and a raised
+/// one, for a stream that was denied. Without it a stream that never drops keeps serving
+/// guild-internal war intel indefinitely. Checked only when a war frame is actually pending, so
+/// an idle stream costs nothing, and each check reuses the session's remembered answer.
+pub fn war_feed_revalidate() -> Duration {
+    std::env::var("WAR_FEED_REVALIDATE_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map_or(Duration::from_secs(300), Duration::from_secs)
+}
+
 pub fn sse_broadcast_buffer() -> usize {
     std::env::var("SSE_BROADCAST_BUFFER")
         .ok()

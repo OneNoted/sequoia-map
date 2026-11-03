@@ -50,6 +50,29 @@ pub struct Session {
     pub war_access: Option<bool>,
 }
 
+impl Session {
+    /// Whether this session may see war features, given the account and answer held before it.
+    ///
+    /// A known answer stands. An unknown one - the server could not read the rank - keeps a
+    /// grant only for the very account it was given to: another Discord or Minecraft account,
+    /// signing in or signing out never inherits it.
+    pub fn war_access_after(&self, held_viewer: Option<&Viewer>, held_access: bool) -> bool {
+        self.war_access
+            .unwrap_or_else(|| held_access && same_account(held_viewer, self.viewer.as_ref()))
+    }
+}
+
+/// Whether two sessions belong to the same signed-in account: the same Discord and Minecraft
+/// identities. Signed out is no account.
+pub fn same_account(left: Option<&Viewer>, right: Option<&Viewer>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.discord_id == right.discord_id && left.minecraft_uuid == right.minecraft_uuid
+        }
+        _ => false,
+    }
+}
+
 /// Resolves the current website session, `Err` when the answer could not be obtained.
 ///
 /// The two are kept apart because they call for opposite handling. A signed-out answer is
@@ -133,6 +156,53 @@ mod tests {
         let unknown: Session =
             serde_json::from_str(r#"{"viewer":null,"war_access":null}"#).expect("unknown parses");
         assert_eq!(unknown.war_access, None);
+    }
+
+    fn viewer(discord_id: &str, minecraft_uuid: &str) -> Viewer {
+        Viewer {
+            discord_id: discord_id.to_string(),
+            discord_username: None,
+            minecraft_uuid: minecraft_uuid.to_string(),
+            minecraft_username: None,
+            website_admin: false,
+            guild_rank: Some("recruit".to_string()),
+        }
+    }
+
+    #[test]
+    fn an_unknown_answer_keeps_a_grant_only_for_the_same_account() {
+        let held = viewer("1", "u");
+        let unknown = |next: Option<Viewer>| Session {
+            viewer: next,
+            war_access: None,
+        };
+        assert!(
+            unknown(Some(viewer("1", "u"))).war_access_after(Some(&held), true),
+            "the same account through a rank outage"
+        );
+        assert!(
+            !unknown(Some(viewer("2", "u"))).war_access_after(Some(&held), true),
+            "another Discord account on the same Minecraft account"
+        );
+        assert!(
+            !unknown(Some(viewer("1", "v"))).war_access_after(Some(&held), true),
+            "another Minecraft account"
+        );
+        assert!(
+            !unknown(Some(viewer("1", "u"))).war_access_after(None, true),
+            "signing in during an outage inherits nothing"
+        );
+        assert!(!unknown(None).war_access_after(Some(&held), true));
+        assert!(!unknown(Some(viewer("1", "u"))).war_access_after(Some(&held), false));
+        let known = |granted| Session {
+            viewer: Some(viewer("2", "u")),
+            war_access: Some(granted),
+        };
+        assert!(
+            known(true).war_access_after(Some(&held), false),
+            "a known answer stands"
+        );
+        assert!(!known(false).war_access_after(Some(&held), true));
     }
 
     #[test]

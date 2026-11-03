@@ -20,6 +20,15 @@ use crate::state::{AppState, CachedRankRoles};
 const DECISION_TTL: Duration = Duration::from_secs(30);
 /// Answers kept before expired ones are swept.
 const MAX_DECISIONS: usize = 4096;
+/// The oldest feed snapshot that may decide, by the backend's own `generated_at`. It rebuilds
+/// every 15 s and is cached for 30 s; on a failed rebuild it keeps serving the old snapshot,
+/// stamp and staleness flag included, so only this age can tell a frozen feed from a live one.
+const RANK_SNAPSHOT_MAX_AGE_SECS: i64 = 300;
+/// The oldest last full Discord sync that may decide. The backend resyncs every 30 minutes and
+/// flags its own snapshot stale past that; this holds the same line however old the flag is.
+const RANK_SYNC_MAX_AGE_SECS: i64 = 35 * 60;
+/// How far ahead of this server's clock a backend stamp may be before it is not believed.
+const CLOCK_SKEW_SECS: i64 = 60;
 
 /// The answer for one session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,25 +101,37 @@ pub async fn viewer_war_access(state: &AppState, viewer: &Viewer) -> WarAccess {
 
 /// A member's answer from the rank feed.
 ///
-/// Only a fresh read the feed itself vouches for decides. The roster keeps showing a failing
-/// feed's last good read, and the feed flags its own read stale when its Discord sync lags; both
-/// are fine for display but could carry a rank the member no longer holds, so here they are
-/// unavailable rather than a verdict, as is a catalog that cannot place the floor.
+/// Only current evidence decides, and only for the account it belongs to. Anything else is
+/// unavailable rather than a verdict: a read past this server's minute (the roster keeps
+/// showing a failing feed's last good one), a snapshot the feed flags stale, one whose own
+/// stamps are old or missing, a catalog that cannot place the floor, or a rank the feed links
+/// to another Discord account than the session's.
 fn rank_decision(
     viewer: &Viewer,
     ranks: Option<&CachedRankRoles>,
     now: DateTime<Utc>,
 ) -> WarAccess {
-    let Some(ranks) = ranks.filter(|ranks| !ranks.stale && super::members::is_fresh(ranks, now))
-    else {
+    let Some(ranks) = ranks.filter(|ranks| evidence_is_current(ranks, now)) else {
         return WarAccess::Unavailable;
     };
     let uuid = viewer.minecraft_uuid.to_ascii_lowercase();
-    match ranks.progression_at_least(&uuid, WAR_RANK_FLOOR) {
+    match ranks.progression_at_least(&uuid, &viewer.discord_id, WAR_RANK_FLOOR) {
         Some(true) => WarAccess::Granted,
         Some(false) => WarAccess::Denied,
         None => WarAccess::Unavailable,
     }
+}
+
+/// Whether a feed read is current by every clock it carries: this server's receipt, the
+/// backend's snapshot stamp and the Discord syncs behind it.
+fn evidence_is_current(ranks: &CachedRankRoles, now: DateTime<Utc>) -> bool {
+    let within = |time: Option<DateTime<Utc>>, max_age: i64| {
+        time.is_some_and(|time| (-CLOCK_SKEW_SECS..=max_age).contains(&(now - time).num_seconds()))
+    };
+    !ranks.stale
+        && super::members::is_fresh(ranks, now)
+        && within(ranks.generated_at, RANK_SNAPSHOT_MAX_AGE_SECS)
+        && within(ranks.synced_at, RANK_SYNC_MAX_AGE_SECS)
 }
 
 fn remember(state: &AppState, key: [u8; 32], access: WarAccess) {
@@ -146,14 +167,25 @@ mod tests {
         }
     }
 
-    /// The live catalog's positions around the floor.
-    fn feed(held: Option<i64>, fetched_at: DateTime<Utc>) -> CachedRankRoles {
+    /// A healthy read at `now`: the live catalog's positions around the floor, a snapshot built
+    /// seconds ago and Discord synced ten minutes ago, with `held` linked to [`member`]'s
+    /// Discord account.
+    fn feed(held: Option<i64>, now: DateTime<Utc>) -> CachedRankRoles {
         CachedRankRoles {
             stale: false,
             roles: HashMap::new(),
             progression: HashMap::new(),
-            progression_positions: held
-                .map(|position| (MEMBER.to_string(), position))
+            ranked: held
+                .map(|position| {
+                    let discord_id = Some("1".to_string());
+                    (
+                        MEMBER.to_string(),
+                        crate::state::RankedProfile {
+                            discord_id,
+                            position,
+                        },
+                    )
+                })
                 .into_iter()
                 .collect(),
             rank_positions: [
@@ -163,7 +195,9 @@ mod tests {
             ]
             .map(|(key, position)| (key.to_string(), position))
             .into(),
-            fetched_at,
+            generated_at: Some(now - chrono::Duration::seconds(10)),
+            synced_at: Some(now - chrono::Duration::minutes(10)),
+            fetched_at: now,
         }
     }
 
@@ -225,6 +259,81 @@ mod tests {
     }
 
     #[test]
+    fn a_frozen_feed_is_an_outage_however_recently_it_was_received() {
+        // The backend keeps serving its last snapshot, stamps and `stale: false` included, when
+        // it cannot build another; this server's own receipt time says nothing about that.
+        let now = Utc::now();
+        let decide = |change: fn(&mut CachedRankRoles, DateTime<Utc>)| {
+            let mut read = feed(Some(94), now);
+            change(&mut read, now);
+            rank_decision(&member(), Some(&read), now)
+        };
+        assert_eq!(
+            decide(|_, _| {}),
+            WarAccess::Granted,
+            "the healthy read itself"
+        );
+        assert_eq!(
+            decide(|read, now| {
+                read.generated_at =
+                    Some(now - chrono::Duration::seconds(RANK_SNAPSHOT_MAX_AGE_SECS + 1));
+            }),
+            WarAccess::Unavailable,
+            "a snapshot built past its bound"
+        );
+        assert_eq!(
+            decide(|read, _| read.generated_at = None),
+            WarAccess::Unavailable,
+            "no snapshot stamp"
+        );
+        assert_eq!(
+            decide(|read, now| {
+                read.synced_at = Some(now - chrono::Duration::seconds(RANK_SYNC_MAX_AGE_SECS + 1));
+            }),
+            WarAccess::Unavailable,
+            "Discord last synced past its bound"
+        );
+        assert_eq!(
+            decide(|read, _| read.synced_at = None),
+            WarAccess::Unavailable,
+            "a guild with no recorded sync"
+        );
+        assert_eq!(
+            decide(|read, now| {
+                read.generated_at = Some(now + chrono::Duration::seconds(CLOCK_SKEW_SECS + 5));
+            }),
+            WarAccess::Unavailable,
+            "a stamp from the future"
+        );
+        assert_eq!(
+            decide(|read, now| read.generated_at = Some(now + chrono::Duration::seconds(5))),
+            WarAccess::Granted,
+            "ordinary clock skew"
+        );
+    }
+
+    #[test]
+    fn a_rank_counts_only_for_the_discord_account_the_feed_links_it_to() {
+        let now = Utc::now();
+        let mut relinked = member();
+        relinked.discord_id = "2".to_string();
+        assert_eq!(
+            rank_decision(&relinked, Some(&feed(Some(94), now)), now),
+            WarAccess::Unavailable,
+            "another Discord account now holds this Minecraft UUID"
+        );
+        let mut unlinked = feed(Some(94), now);
+        for ranked in unlinked.ranked.values_mut() {
+            ranked.discord_id = None;
+        }
+        assert_eq!(
+            rank_decision(&member(), Some(&unlinked), now),
+            WarAccess::Unavailable,
+            "a rank the feed links to no Discord account"
+        );
+    }
+
+    #[test]
     fn refusals_keep_a_verdict_apart_from_an_outage() {
         assert_eq!(WarAccess::Granted.into_result(), Ok(()));
         assert_eq!(WarAccess::Denied.into_result(), Err(StatusCode::FORBIDDEN));
@@ -238,7 +347,12 @@ mod tests {
     const FEED_DOWN: u8 = 0;
     const FEED_STALE: u8 = 1;
     const FEED_UP: u8 = 2;
-    const UUIDS: [(&str, &str); 7] = [
+    /// Answers 200 with `stale: false` from a snapshot built ten minutes ago, as the backend
+    /// does when it cannot rebuild.
+    const FEED_FROZEN: u8 = 3;
+    /// Answers as [`FEED_UP`], except that `sprite` has been lowered to Sapling.
+    const FEED_DEMOTED: u8 = 4;
+    const UUIDS: [(&str, &str); 9] = [
         ("outsider", "00000000-0000-0000-0000-000000000001"),
         ("sapling", "00000000-0000-0000-0000-000000000002"),
         ("sprite", "00000000-0000-0000-0000-000000000003"),
@@ -246,10 +360,14 @@ mod tests {
         ("unranked", "00000000-0000-0000-0000-000000000005"),
         ("admin", "00000000-0000-0000-0000-000000000006"),
         ("chief-sapling", "00000000-0000-0000-0000-000000000007"),
+        // A Discord account newly linked to `sprite`'s Minecraft account.
+        ("relinked", "00000000-0000-0000-0000-000000000003"),
+        ("nodiscord", "00000000-0000-0000-0000-000000000008"),
     ];
 
-    /// A stand-in backend whose `/auth/web/me` answers by bearer token, and a rank feed with the
-    /// live catalog's positions around the floor, failing or flagged stale as `feed` says.
+    /// A stand-in backend whose `/auth/web/me` answers by bearer token, each with its own Discord
+    /// account, and a rank feed in the published shape with the live catalog's positions around
+    /// the floor, behaving as `feed` says.
     async fn spawn_upstreams(feed: Arc<AtomicU8>) -> std::net::SocketAddr {
         async fn me(headers: HeaderMap) -> Response {
             let bearer = headers
@@ -259,7 +377,9 @@ mod tests {
                 .unwrap_or_default();
             let (guild_rank, website_admin) = match bearer {
                 "outsider" => (None, false),
-                "sapling" | "sprite" | "unranked" => (Some("recruit"), false),
+                "sapling" | "sprite" | "unranked" | "relinked" | "nodiscord" => {
+                    (Some("recruit"), false)
+                }
                 "dryad" => (Some("captain"), false),
                 "chief-sapling" => (Some("chief"), false),
                 "admin" => (None, true),
@@ -271,7 +391,7 @@ mod tests {
                 .find(|(name, _)| *name == bearer)
                 .map(|(_, uuid)| *uuid);
             axum::Json(serde_json::json!({
-                "discord_id": "1",
+                "discord_id": format!("d-{bearer}"),
                 "minecraft_uuid": uuid,
                 "guild_rank": guild_rank,
                 "website_admin": website_admin,
@@ -283,11 +403,15 @@ mod tests {
                 .iter()
                 .find(|(held, _)| *held == name)
                 .map(|(_, uuid)| *uuid);
-            serde_json::json!({"minecraft": {"uuid": uuid}, "role_keys": [rank],
-                               "summary": {"progression_rank": rank}})
+            let discord =
+                (name != "nodiscord").then(|| serde_json::json!({"id": format!("d-{name}")}));
+            serde_json::json!({"discord": discord, "minecraft": {"uuid": uuid},
+                               "role_keys": [rank], "summary": {"progression_rank": rank}})
         };
         let body = serde_json::json!({
-            "source": {"stale": false},
+            "source": {"stale": false, "guilds": [
+                {"guild_id": "1030187086722109570"}, {"guild_id": "1104432054717927544"}
+            ]},
             "catalog": {"roles": [
                 {"key": "rank.dryad", "label": "Dryad", "category": "progression_rank", "position": 94},
                 {"key": "rank.sprite", "label": "Sprite", "category": "progression_rank", "position": 90},
@@ -298,7 +422,8 @@ mod tests {
                 profile("sapling", "rank.sapling"),
                 profile("sprite", "rank.sprite"),
                 profile("dryad", "rank.dryad"),
-                profile("chief-sapling", "rank.sapling")
+                profile("chief-sapling", "rank.sapling"),
+                profile("nodiscord", "rank.sprite")
             ]
         });
         let upstreams = Router::new().route("/auth/web/me", get(me)).route(
@@ -306,13 +431,30 @@ mod tests {
             get(move || {
                 let (mut body, feed) = (body.clone(), Arc::clone(&feed));
                 async move {
-                    match feed.load(Ordering::SeqCst) {
-                        FEED_DOWN => StatusCode::SERVICE_UNAVAILABLE.into_response(),
-                        mode => {
-                            body["source"]["stale"] = (mode == FEED_STALE).into();
-                            axum::Json(body).into_response()
-                        }
+                    let mode = feed.load(Ordering::SeqCst);
+                    if mode == FEED_DOWN {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
                     }
+                    let now = Utc::now();
+                    let built = if mode == FEED_FROZEN {
+                        now - chrono::Duration::minutes(10)
+                    } else {
+                        now
+                    };
+                    body["generated_at"] = built.to_rfc3339().into();
+                    for guild in body["source"]["guilds"]
+                        .as_array_mut()
+                        .into_iter()
+                        .flatten()
+                    {
+                        guild["last_full_sync_at"] =
+                            (built - chrono::Duration::minutes(5)).to_rfc3339().into();
+                    }
+                    body["source"]["stale"] = (mode == FEED_STALE).into();
+                    if mode == FEED_DEMOTED {
+                        body["profiles"][2]["summary"]["progression_rank"] = "rank.sapling".into();
+                    }
+                    axum::Json(body).into_response()
                 }
             }),
         );
@@ -330,6 +472,17 @@ mod tests {
     where
         F: std::future::Future<Output = ()>,
     {
+        with_app_env(feed, &[], body);
+    }
+
+    /// [`with_app`], with more environment for the app.
+    fn with_app_env<F>(
+        feed: u8,
+        env: &[(&str, &str)],
+        body: impl FnOnce(String, AppState, Arc<AtomicU8>) -> F,
+    ) where
+        F: std::future::Future<Output = ()>,
+    {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -338,13 +491,16 @@ mod tests {
         let upstreams = runtime.block_on(spawn_upstreams(Arc::clone(&feed)));
         let upstream_url = format!("http://{upstreams}");
         temp_env::with_vars(
-            [
-                ("SEQUOIA_BACKEND_BASE_URL", Some(upstream_url.as_str())),
-                (
-                    "SEQUOIA_RANK_PROFILES_BASE_URL",
-                    Some(upstream_url.as_str()),
-                ),
-            ],
+            env.iter()
+                .map(|(name, value)| (*name, Some(*value)))
+                .chain([
+                    ("SEQUOIA_BACKEND_BASE_URL", Some(upstream_url.as_str())),
+                    (
+                        "SEQUOIA_RANK_PROFILES_BASE_URL",
+                        Some(upstream_url.as_str()),
+                    ),
+                ])
+                .collect::<Vec<_>>(),
             || {
                 runtime.block_on(async {
                     let state = AppState::new(None);
@@ -411,10 +567,47 @@ mod tests {
                     assert_eq!(headers["vary"], "Cookie", "{session:?} {path}");
                 }
             }
-            for (path, _) in routes {
-                let status = ask(&base, Some("down"), path).await.status().as_u16();
-                assert_eq!(status, 503, "auth backend down: {path}");
+            for session in ["down", "relinked", "nodiscord"] {
+                for (path, _) in routes {
+                    let status = ask(&base, Some(session), path).await.status().as_u16();
+                    assert_eq!(status, 503, "{session}: {path}");
+                }
             }
+        });
+    }
+
+    #[test]
+    fn a_frozen_feed_answering_200_is_still_an_outage() {
+        with_app(FEED_FROZEN, |base, state, _feed| async move {
+            for session in ["sprite", "dryad", "sapling"] {
+                let status = ask(&base, Some(session), "/api/warcontroller")
+                    .await
+                    .status();
+                assert_eq!(
+                    status.as_u16(),
+                    503,
+                    "{session}, snapshot built ten minutes ago"
+                );
+            }
+            let read = state
+                .rank_roles_cache
+                .read()
+                .await
+                .clone()
+                .expect("the read is held");
+            assert!(!read.stale && super::super::members::is_fresh(&read, Utc::now()));
+            assert_eq!(
+                ask(&base, Some("admin"), "/api/warcontroller")
+                    .await
+                    .status(),
+                200
+            );
+            assert_eq!(
+                ask(&base, Some("outsider"), "/api/warcontroller")
+                    .await
+                    .status(),
+                403
+            );
         });
     }
 
@@ -542,6 +735,75 @@ mod tests {
                     "{session:?}: {seen}"
                 );
             }
+        });
+    }
+
+    /// Whatever a body yields within `wait` milliseconds.
+    async fn read_for(body: &mut axum::body::BodyDataStream, wait: u64) -> String {
+        use futures::StreamExt;
+
+        let mut seen = String::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(wait);
+        while let Ok(Some(Ok(chunk))) = tokio::time::timeout_at(deadline, body.next()).await {
+            seen.push_str(&String::from_utf8_lossy(&chunk));
+        }
+        seen
+    }
+
+    /// A demotion that lands while a stream is lagging: the replay that follows the lag must go
+    /// through the same overdue re-check as a live frame, so the stream sends its clearing frame
+    /// and never the cached war state.
+    #[test]
+    fn an_overdue_recheck_runs_before_a_lag_replay_on_a_real_stream() {
+        let env = [
+            ("WAR_FEED_REVALIDATE_SECS", "1"),
+            ("SSE_BROADCAST_BUFFER", "4"),
+        ];
+        with_app_env(FEED_UP, &env, |_base, state, feed| async move {
+            let war: sequoia_shared::WarControllerState = serde_json::from_str(
+                r#"{"timestamp":100,"players":[{"username":"PrivateIntel","class":"WARRIOR"}]}"#,
+            )
+            .expect("war state");
+            *state.warcontroller_cache.write().await = Some(crate::state::CachedWarController {
+                json: Arc::new(bytes::Bytes::from(serde_json::to_vec(&war).expect("json"))),
+                state: war,
+                fetched_at: Utc::now(),
+            });
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::header::COOKIE,
+                "seq_session=sprite".parse().expect("cookie"),
+            );
+            let response =
+                crate::routes::sse::territory_events(axum::extract::State(state.clone()), headers)
+                    .await;
+            let mut body = response.into_body().into_data_stream();
+            assert!(
+                read_for(&mut body, 500).await.contains("PrivateIntel"),
+                "seeded while granted"
+            );
+
+            // Demoted, with both remembered answers lapsed and the re-check overdue.
+            feed.store(FEED_DEMOTED, Ordering::SeqCst);
+            *state.rank_roles_cache.write().await = None;
+            state.war_access.clear();
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            // More broadcasts than the buffer holds, none read yet: the stream lags.
+            for seq in 0..8 {
+                let json = Arc::new(bytes::Bytes::from_static(b"{}"));
+                let _ = state
+                    .event_tx
+                    .send(crate::state::PreSerializedEvent::Update { seq, json });
+            }
+            let after = read_for(&mut body, 1000).await;
+            assert!(
+                after.contains(r#""unavailable":true"#),
+                "the clearing frame goes out: {after}"
+            );
+            assert!(
+                !after.contains("PrivateIntel"),
+                "the cached war state is not replayed: {after}"
+            );
         });
     }
 }
