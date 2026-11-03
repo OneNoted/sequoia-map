@@ -22,6 +22,7 @@ use crate::config::{
 };
 use crate::history::writer::HistoryWriter;
 use crate::map_image::MapImages;
+use crate::routes::war_access::WarAccess;
 use crate::services::wynncraft_api::GuildSeasonDefinition;
 
 pub type GuildColor = (u8, u8, u8);
@@ -200,6 +201,8 @@ pub struct AppState {
     pub rank_roles_cache: Arc<RwLock<Option<CachedRankRoles>>>,
     /// Held while the feed is read; holds when the last read failed, so reads back off.
     pub rank_roles_fetch_lock: Arc<Mutex<Option<DateTime<Utc>>>>,
+    /// Recent war-feature access answers by session-token digest, with when each expires.
+    pub war_access: Arc<DashMap<[u8; 32], (std::time::Instant, WarAccess)>>,
     /// Latest war controller state from the Sequoia backend, with its pre-serialized payload.
     pub warcontroller_cache: Arc<RwLock<Option<CachedWarController>>>,
     /// Extra territory data (resources, connections) from bundled and supplemental sources.
@@ -238,7 +241,27 @@ pub struct CachedRankRoles {
     pub stale: bool,
     pub roles: HashMap<String, Vec<sequoia_shared::member_war::WarRole>>,
     pub progression: HashMap<String, sequoia_shared::member_war::ProgressionRank>,
+    /// Discord role position of each held progression rank, by UUID, when the catalog has one.
+    pub progression_positions: HashMap<String, i64>,
+    /// Discord role position of each catalogued progression rank, by key.
+    pub rank_positions: HashMap<String, i64>,
     pub fetched_at: DateTime<Utc>,
+}
+
+impl CachedRankRoles {
+    /// Whether the progression rank `uuid` holds is `floor` or above.
+    ///
+    /// Ranks compare by their Discord role positions, the hierarchy the feed itself uses to pick
+    /// a member's rank. A UUID with no positioned rank is below every floor. `None` when the
+    /// catalog gives `floor` no position, which says nothing about the player.
+    pub fn progression_at_least(&self, uuid: &str, floor: &str) -> Option<bool> {
+        let floor = *self.rank_positions.get(floor)?;
+        Some(
+            self.progression_positions
+                .get(uuid)
+                .is_some_and(|position| *position >= floor),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -485,6 +508,7 @@ impl AppState {
             map_intel_fetch_lock: Arc::new(Mutex::new(())),
             rank_roles_cache: Arc::new(RwLock::new(None)),
             rank_roles_fetch_lock: Arc::new(Mutex::new(None)),
+            war_access: Arc::new(DashMap::new()),
             warcontroller_cache: Arc::new(RwLock::new(None)),
             extra_terr: Arc::new(RwLock::new(HashMap::new())),
             extra_data_dirty: Arc::new(AtomicBool::new(true)),

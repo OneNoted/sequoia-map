@@ -769,14 +769,7 @@ fn GuildPanel() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let camera = expect_context::<BrowserMap>().camera();
     let tick: RwSignal<i64> = expect_context();
-    let crate::navbar::CurrentViewer(viewer) = expect_context();
-    let viewer_is_member = Memo::new(move |_| {
-        viewer.with(|viewer| {
-            viewer
-                .as_ref()
-                .is_some_and(crate::auth::Viewer::is_guild_member)
-        })
-    });
+    let crate::app::WarFeedVisible(viewer_has_war_access) = expect_context();
 
     // `None` while the guild's details are on their way.
     let facts: RwSignal<Option<GuildFacts>> = RwSignal::new(None);
@@ -888,7 +881,7 @@ fn GuildPanel() -> impl IntoView {
                     let ours = facts.prefix.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX);
                     let members = facts.online_members.clone();
                     // Members open each other's war records in place; everyone else links out.
-                    if ours && viewer_is_member.get() {
+                    if ours && viewer_has_war_access.get() {
                         return Some(view! {
                             <section class="tcard-section" aria-label="Online members">
                                 <h3 class="tcard-section-title">"Online members"</h3>

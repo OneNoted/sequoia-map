@@ -43,6 +43,8 @@ pub const DEFAULT_RANK_PROFILES_BASE_URL: &str = "https://api.seqwawa.com";
 pub const RANK_ROLES_CACHE_TTL_SECS: i64 = 60;
 /// How long after a failed feed read the next one waits; meanwhile the last good read serves.
 pub const RANK_ROLES_FAILURE_BACKOFF_SECS: i64 = 15;
+/// The lowest synced progression rank that may see war features, as the rank catalog keys it.
+pub const WAR_RANK_FLOOR: &str = "rank.sprite";
 /// The in-game guild whose members can inspect each other's war records.
 pub const SEQUOIA_GUILD_NAME: &str = "Sequoia";
 pub const GUILD_CACHE_TTL_SECS: i64 = 600; // 10 minutes

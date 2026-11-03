@@ -183,21 +183,20 @@ pub async fn get_season_race(
     Ok((headers, Json(response)))
 }
 
-/// The war feed is internal guild intel, so it is served only to a signed-in Sequoia
-/// member. Everyone else is refused outright rather than handed an empty state, so the
-/// client can tell "no wars" apart from "not yours to see".
+/// The war feed is internal guild intel, so it is served only to a viewer with war access
+/// ([`super::war_access`]). Everyone else is refused outright rather than handed an empty
+/// state, so the client can tell "no wars" apart from "not yours to see".
 pub async fn get_warcontroller(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let probe = super::auth::resolve_viewer(&state, &headers).await;
-    // A probe that never got an answer must not read to the client as "you are not a
-    // member": 503 is retryable, 403 would have the map hide the feed for good.
-    if probe.is_unavailable() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    if !super::auth::viewer_is_guild_member(probe.viewer()) {
-        return StatusCode::FORBIDDEN.into_response();
+    // An answer that could not be had must not read to the client as a refusal: 503 is
+    // retryable, 403 would have the map hide the feed for good.
+    if let Err(status) = super::war_access::war_access(&state, &headers)
+        .await
+        .into_result()
+    {
+        return status.into_response();
     }
 
     let cached = {
@@ -1162,7 +1161,7 @@ mod tests {
                         .json::<serde_json::Value>()
                         .await
                         .expect("me body parses"),
-                    serde_json::json!({ "viewer": null })
+                    serde_json::json!({ "viewer": null, "war_access": false })
                 );
 
                 server_handle.abort();
@@ -1232,7 +1231,7 @@ mod tests {
             .expect("me request");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let body = response.text().await.expect("me body");
-        assert_eq!(body, r#"{"viewer":null}"#);
+        assert_eq!(body, r#"{"viewer":null,"war_access":false}"#);
 
         server_handle.abort();
         let _ = server_handle.await;

@@ -7,4 +7,5 @@ pub mod ingest;
 pub mod map_image;
 pub mod members;
 pub mod sse;
+pub mod war_access;
 pub mod war_activity;

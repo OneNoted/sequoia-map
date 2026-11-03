@@ -947,7 +947,7 @@ fn RecordView(username: String) -> impl IntoView {
             {move || match failure.get() {
                 Some(Failure::NoSeason) => Some(view! { <p class="mwar-quiet">"No published season is running"</p> }.into_any()),
                 Some(Failure::NotOnRoster) => Some(view! { <p class="mwar-quiet">"No longer on the Sequoia roster"</p> }.into_any()),
-                Some(Failure::Denied) => Some(view! { <p class="mwar-quiet">"Sign in as a Sequoia member to see war records"</p> }.into_any()),
+                Some(Failure::Denied) => Some(view! { <p class="mwar-quiet">"War records are for Sequoia members ranked Sprite or higher"</p> }.into_any()),
                 Some(Failure::Invalid) => Some(view! { <p class="mwar-quiet">"This period can't be shown"</p> }.into_any()),
                 Some(Failure::Unavailable) => Some(view! {
                     <p class="mwar-quiet">

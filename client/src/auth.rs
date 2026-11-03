@@ -3,9 +3,9 @@
 //! There is no login form here. `sequoia-backend` owns the account (Discord
 //! OAuth linked to a Minecraft UUID) and issues the `seq_session` cookie for
 //! `.seqwawa.com`; the map server exchanges that HttpOnly cookie for an
-//! identity on `/api/auth/me`. The server is the real gate on everything
-//! member-only; what the viewer decides here is what the map bothers to
-//! render - the account chip, and the war feed's presence.
+//! identity on `/api/auth/me`, with whether it may see war features. The server
+//! is the real gate on those; what the session says here is what the map bothers
+//! to render - the account chip, and the war features' presence.
 
 use serde::Deserialize;
 
@@ -35,31 +35,28 @@ pub struct Viewer {
     pub guild_rank: Option<String>,
 }
 
-impl Viewer {
-    /// Sequoia membership: any in-game guild rank, or a website administrator - the same
-    /// application-wide staff override the website's own branch gate applies.
-    ///
-    /// Display-side only. The server refuses the war feed to non-members on its own; this
-    /// just keeps the map from asking for, or reserving space for, data it cannot have.
-    pub fn is_guild_member(&self) -> bool {
-        self.website_admin || self.guild_rank.is_some()
-    }
-}
-
-#[derive(Deserialize)]
-struct MeResponse {
+/// The current website session.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct Session {
+    /// `None` when signed out.
     #[serde(default)]
-    viewer: Option<Viewer>,
+    pub viewer: Option<Viewer>,
+    /// Whether the server lets this session see war features: Sequoia members ranked Sprite or
+    /// above, and website administrators. `None` while the server could not tell.
+    ///
+    /// Display-side only. The server refuses war data on its own; this keeps the map from
+    /// asking for, or reserving space for, data it cannot have.
+    #[serde(default)]
+    pub war_access: Option<bool>,
 }
 
-/// Resolves the current website session: `Ok(None)` when signed out, `Err` when the answer
-/// could not be obtained.
+/// Resolves the current website session, `Err` when the answer could not be obtained.
 ///
 /// The two are kept apart because they call for opposite handling. A signed-out answer is
 /// final. A failure - offline, server restarting, unreadable body - is not, and collapsing it
 /// into "signed out" would hide the war feed from a member until they reloaded the page, so
 /// the caller retries instead.
-pub async fn fetch_viewer() -> Result<Option<Viewer>, String> {
+pub async fn fetch_session() -> Result<Session, String> {
     let response = gloo_net::http::Request::get("/api/auth/me")
         .send()
         .await
@@ -69,12 +66,14 @@ pub async fn fetch_viewer() -> Result<Option<Viewer>, String> {
         return Err(format!("status {}", response.status()));
     }
     if !response.ok() {
-        return Ok(None);
+        return Ok(Session {
+            viewer: None,
+            war_access: Some(false),
+        });
     }
     response
-        .json::<MeResponse>()
+        .json::<Session>()
         .await
-        .map(|body| body.viewer)
         .map_err(|error| format!("decode failed: {error}"))
 }
 
@@ -120,31 +119,20 @@ pub fn nmsr_face(identifier: &str, size: u32) -> String {
 mod tests {
     use super::*;
 
-    fn viewer_with(guild_rank: Option<&str>, website_admin: bool) -> Viewer {
-        Viewer {
-            discord_id: "1".to_string(),
-            discord_username: None,
-            minecraft_uuid: "ee860b7c-9a1d-49cf-9f19-ab673ba0f23b".to_string(),
-            minecraft_username: None,
-            website_admin,
-            guild_rank: guild_rank.map(str::to_string),
-        }
-    }
-
     #[test]
-    fn any_guild_rank_makes_a_viewer_a_member() {
-        assert!(viewer_with(Some("chief"), false).is_guild_member());
-        assert!(viewer_with(Some("recruit"), false).is_guild_member());
-    }
-
-    #[test]
-    fn a_website_admin_is_a_member_without_a_rank() {
-        assert!(viewer_with(None, true).is_guild_member());
-    }
-
-    #[test]
-    fn a_signed_in_outsider_is_not_a_member() {
-        assert!(!viewer_with(None, false).is_guild_member());
+    fn a_session_reads_war_access_as_the_server_states_it() {
+        let session: Session = serde_json::from_str(
+            r#"{"viewer":{"discord_id":"1","minecraft_uuid":"ee860b7c-9a1d-49cf-9f19-ab673ba0f23b","guild_rank":"chief"},"war_access":false}"#,
+        )
+        .expect("session parses");
+        assert_eq!(
+            session.war_access,
+            Some(false),
+            "a high in-game rank grants nothing"
+        );
+        let unknown: Session =
+            serde_json::from_str(r#"{"viewer":null,"war_access":null}"#).expect("unknown parses");
+        assert_eq!(unknown.war_access, None);
     }
 
     #[test]
@@ -154,7 +142,6 @@ mod tests {
         )
         .expect("legacy viewer payload parses");
         assert_eq!(viewer.guild_rank, None);
-        assert!(!viewer.is_guild_member());
     }
 
     #[test]

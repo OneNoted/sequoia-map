@@ -1,6 +1,6 @@
 //! Recent war activity for members: one bounded page at a time from the backend's journal.
 //!
-//! The same member gate as the war feed. The query is checked and bounded here, forwarded with
+//! The same gate as the war feed ([`super::war_access`]). The query is checked and bounded here, forwarded with
 //! the internal token, and the answer is parsed into the shared types before it goes out, so
 //! the browser only ever receives the agreed shape. Nothing is cached or stored on this side.
 
@@ -35,12 +35,11 @@ pub async fn get_war_activity(
     headers: HeaderMap,
     Query(query): Query<ActivityQuery>,
 ) -> Response {
-    let probe = super::auth::resolve_viewer(&state, &headers).await;
-    if probe.is_unavailable() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
-    if !super::auth::viewer_is_guild_member(probe.viewer()) {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(status) = super::war_access::war_access(&state, &headers)
+        .await
+        .into_result()
+    {
+        return status.into_response();
     }
     let Ok(params) = upstream_params(query) else {
         return StatusCode::BAD_REQUEST.into_response();
