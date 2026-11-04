@@ -60,6 +60,49 @@ pub struct FrameOutcome {
     pub next_refresh: NextRefresh,
 }
 
+/// The step of renderer initialization that failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub enum InitStage {
+    /// The canvas refused a graphics context.
+    Surface,
+    Adapter,
+    Device,
+    SurfaceConfig,
+    /// Buffers, textures and pipelines.
+    Resources,
+    TextRenderer,
+}
+
+impl InitStage {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Surface => "surface",
+            Self::Adapter => "adapter",
+            Self::Device => "device",
+            Self::SurfaceConfig => "surface-config",
+            Self::Resources => "resources",
+            Self::TextRenderer => "text-renderer",
+        }
+    }
+}
+
+/// Why the renderer could not start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InitError {
+    pub stage: InitStage,
+    pub detail: String,
+}
+
+impl InitError {
+    pub fn new(stage: InitStage, detail: impl std::fmt::Display) -> Self {
+        Self {
+            stage,
+            detail: detail.to_string(),
+        }
+    }
+}
+
 /// Runtime renderer capabilities resolved at initialization.
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct RenderCapabilities {

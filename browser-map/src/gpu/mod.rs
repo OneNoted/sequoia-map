@@ -46,7 +46,7 @@ use sequoia_shared::colors::hsl_to_rgb;
 use sequoia_shared::territory::Resources;
 use sequoia_shared::war_board::StageKind;
 
-use crate::frame::{Frame, FrameMetrics, FrameOutcome, RenderCapabilities};
+use crate::frame::{Frame, FrameMetrics, FrameOutcome, InitError, InitStage, RenderCapabilities};
 use crate::icons::ResourceAtlas;
 use crate::tiles::{LoadedTile, TileQuality};
 
@@ -739,6 +739,29 @@ fn report_uncaptured_error(error: wgpu::Error) {
     }
 }
 
+/// The errors a start reports as its own failure rather than only logging them.
+const SETUP_ERRORS: [wgpu::ErrorFilter; 3] = [
+    wgpu::ErrorFilter::Validation,
+    wgpu::ErrorFilter::OutOfMemory,
+    wgpu::ErrorFilter::Internal,
+];
+
+fn watch_setup_errors(device: &wgpu::Device) {
+    for filter in SETUP_ERRORS {
+        device.push_error_scope(filter);
+    }
+}
+
+/// The first error since [`watch_setup_errors`], closing its scopes.
+async fn setup_error(device: &wgpu::Device) -> Option<wgpu::Error> {
+    let mut first = None;
+    for _ in SETUP_ERRORS {
+        let error = device.pop_error_scope().await;
+        first = first.or(error);
+    }
+    first
+}
+
 fn gpu_is_firefox() -> bool {
     web_sys::window()
         .and_then(|w| w.navigator().user_agent().ok())
@@ -1080,7 +1103,7 @@ impl GpuRenderer {
     }
 
     /// Async initialization with a WebGL2-only path.
-    pub async fn init(canvas: HtmlCanvasElement) -> Result<Self, String> {
+    pub async fn init(canvas: HtmlCanvasElement) -> Result<Self, InitError> {
         web_sys::console::log_1(&"wgpu init: using WebGL2 backend (WebGPU disabled)".into());
         Self::init_with_backends(canvas, wgpu::Backends::GL, "webgl").await
     }
@@ -1090,7 +1113,7 @@ impl GpuRenderer {
         canvas: HtmlCanvasElement,
         backends: wgpu::Backends,
         backend_path: &str,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, InitError> {
         // The icon overlay pipeline uses the same textured-quad primitives as the text
         // overlay path, so it can run on the active WebGL2 renderer as well. Only fall
         // back if icon renderer initialization itself fails.
@@ -1113,9 +1136,9 @@ impl GpuRenderer {
         });
 
         let surface_target = wgpu::SurfaceTarget::Canvas(canvas);
-        let surface = instance
-            .create_surface(surface_target)
-            .map_err(|e| format!("wgpu init ({backend_path}) create_surface: {e}"))?;
+        let surface = instance.create_surface(surface_target).map_err(|e| {
+            InitError::new(InitStage::Surface, format!("wgpu ({backend_path}): {e}"))
+        })?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -1124,7 +1147,12 @@ impl GpuRenderer {
                 ..Default::default()
             })
             .await
-            .ok_or_else(|| format!("wgpu init ({backend_path}): no suitable GPU adapter found"))?;
+            .ok_or_else(|| {
+                InitError::new(
+                    InitStage::Adapter,
+                    format!("wgpu ({backend_path}): no suitable GPU adapter found"),
+                )
+            })?;
 
         // WebGL2 adapters expose zero compute limits, so requesting the plain
         // default limits (which include compute) fails validation.
@@ -1151,7 +1179,9 @@ impl GpuRenderer {
                 None,
             )
             .await
-            .map_err(|e| format!("wgpu init ({backend_path}) request_device: {e}"))?;
+            .map_err(|e| {
+                InitError::new(InitStage::Device, format!("wgpu ({backend_path}): {e}"))
+            })?;
         // wgpu's default handler panics, and a panic mid-frame leaves the whole map wedged.
         // Validation and lost-context errors are reported instead; the frame they spoil is
         // redrawn, and a lost context is rebuilt by the canvas.
@@ -1159,7 +1189,12 @@ impl GpuRenderer {
 
         let mut surface_config = surface
             .get_default_config(&adapter, width, height)
-            .ok_or_else(|| format!("wgpu init ({backend_path}): surface unsupported by adapter"))?;
+            .ok_or_else(|| {
+                InitError::new(
+                    InitStage::SurfaceConfig,
+                    format!("wgpu ({backend_path}): surface unsupported by adapter"),
+                )
+            })?;
         let caps = surface.get_capabilities(&adapter);
 
         // Prefer a non-sRGB format so tile textures (uploaded as Rgba8Unorm)
@@ -1193,7 +1228,17 @@ impl GpuRenderer {
             )
             .into(),
         );
+        watch_setup_errors(&device);
         surface.configure(&device, &surface_config);
+        if let Some(error) = setup_error(&device).await {
+            return Err(InitError::new(
+                InitStage::SurfaceConfig,
+                format!("wgpu ({backend_path}): {error}"),
+            ));
+        }
+        // Without this, a pipeline that failed to build would only be logged, and the map
+        // would count as running while drawing nothing.
+        watch_setup_errors(&device);
 
         // --- Shared geometry ---
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1848,7 +1893,16 @@ impl GpuRenderer {
         };
 
         if !renderer.ensure_text_renderer() {
-            return Err("wgpu init (webgl): failed to initialize GPU text renderer".into());
+            return Err(InitError::new(
+                InitStage::TextRenderer,
+                format!("wgpu ({backend_path}): failed to initialize GPU text renderer"),
+            ));
+        }
+        if let Some(error) = setup_error(&renderer.device).await {
+            return Err(InitError::new(
+                InitStage::Resources,
+                format!("wgpu ({backend_path}): {error}"),
+            ));
         }
 
         Ok(renderer)

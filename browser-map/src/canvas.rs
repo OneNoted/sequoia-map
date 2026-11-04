@@ -1,15 +1,12 @@
-//! The map canvas component: renderer lifecycle, demand-driven repaints and DOM overlays.
-//!
-//! The browser may take the canvas's WebGL context away at any time (backgrounded tabs on
-//! mobile, GPU process restarts, driver resets). The canvas then drops its renderer, asks for
-//! the context back and builds a new renderer once it is restored; until then it draws
-//! nothing rather than calling into a dead context.
+//! The map canvas component: demand-driven repaints and DOM overlays over the renderer that
+//! [`renderer_lifecycle`] starts, rebuilds and disposes. Until a renderer runs, the canvas
+//! draws nothing rather than calling into a missing or dead context.
 
-use std::cell::{Cell, RefCell};
+mod renderer_lifecycle;
+
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use leptos::prelude::*;
 use sequoia_map_engine::gesture::{Gestures, ScreenRect};
@@ -17,6 +14,8 @@ use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::{Rebuild, SceneChange, ScenePlanner};
 use sequoia_map_engine::spatial::SpatialGrid;
 use web_sys::HtmlCanvasElement;
+
+use renderer_lifecycle::{Attempt, RendererLifecycle};
 
 use crate::frame::{Frame, FrameMetrics, HeatColors, RenderCapabilities};
 use crate::gpu::GpuRenderer;
@@ -85,14 +84,6 @@ impl MapState {
     }
 }
 
-/// Whether the WebGL context is usable, and which renderer start is current.
-#[derive(Default)]
-struct GlContext {
-    lost: Cell<bool>,
-    /// Bumped on every loss, so a renderer started before it is never installed after it.
-    generation: Cell<u32>,
-}
-
 #[derive(Clone, Copy)]
 struct RenderStats {
     capabilities: RenderCapabilities,
@@ -106,26 +97,21 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
     let inputs = map.inputs;
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let state = Rc::new(RefCell::new(MapState::new()));
-    let gpu_error: RwSignal<Option<String>> = RwSignal::new(None);
     let select_box: RwSignal<Option<ScreenRect>> = RwSignal::new(None);
     let render_stats: Option<RwSignal<Option<RenderStats>>> =
         render_stats_enabled().then(|| RwSignal::new(None));
-    // Set on unmount: a frame or renderer init still in flight must not touch disposed
-    // signals or revive the renderer.
-    let disposed = Arc::new(AtomicBool::new(false));
-
-    let gl_context = Rc::new(GlContext::default());
-    let pending_font: RwSignal<Option<(u32, String)>> = RwSignal::new(None);
+    let lifecycle = RendererLifecycle::new(state.clone(), canvas_ref);
+    let pending_font: RwSignal<Option<(Attempt, String)>> = RwSignal::new(None);
 
     let scheduler = Rc::new(RenderScheduler::new({
         let state = state.clone();
-        let disposed = disposed.clone();
-        let gl_context = gl_context.clone();
+        let lifecycle = lifecycle.clone();
         move || {
-            if disposed.load(Ordering::Relaxed) {
+            // An unmounted canvas's frame must not touch disposed signals.
+            if lifecycle.is_disposed() {
                 return false;
             }
-            if gl_context.lost.get() {
+            if lifecycle.is_lost() {
                 state.borrow_mut().renderer = None;
                 return false;
             }
@@ -138,7 +124,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 .renderer
                 .as_ref()
                 .and_then(GpuRenderer::pending_text_font)
-                .map(|font| (gl_context.generation.get(), font));
+                .map(|font| (lifecycle.attempt(), font));
             if pending_font.get_untracked() != request {
                 pending_font.set(request);
             }
@@ -152,10 +138,9 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
     Effect::new({
         let state = state.clone();
         let scheduler = scheduler.clone();
-        let disposed = disposed.clone();
-        let gl_context = gl_context.clone();
+        let lifecycle = lifecycle.clone();
         move || {
-            let Some((generation, font)) = pending_font.get() else {
+            let Some((attempt, font)) = pending_font.get() else {
                 return;
             };
             let Some(fonts) = web_sys::window()
@@ -166,14 +151,12 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
             };
             let state = state.clone();
             let scheduler = scheduler.clone();
-            let disposed = disposed.clone();
-            let gl_context = gl_context.clone();
+            let lifecycle = lifecycle.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 if wasm_bindgen_futures::JsFuture::from(fonts.load(&font))
                     .await
                     .is_err()
-                    || disposed.load(Ordering::Relaxed)
-                    || gl_context.generation.get() != generation
+                    || lifecycle.attempt() != attempt
                 {
                     return;
                 }
@@ -262,7 +245,9 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
     // animation tick never reaches the planner, so its frames only advance shader time.
     Effect::new({
         let scheduler = scheduler.clone();
+        let lifecycle = lifecycle.clone();
         move || {
+            lifecycle.track();
             map.camera.track();
             inputs.settings.track();
             inputs.clock_secs.track();
@@ -279,89 +264,37 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         }
     });
 
-    let start_renderer = {
-        let state = state.clone();
-        let scheduler = scheduler.clone();
-        let disposed = disposed.clone();
-        let gl_context = gl_context.clone();
-        move |canvas: HtmlCanvasElement| {
-            let state = state.clone();
-            let scheduler = scheduler.clone();
-            let disposed = disposed.clone();
-            let gl_context = gl_context.clone();
-            let generation = gl_context.generation.get();
-            wasm_bindgen_futures::spawn_local(async move {
-                let result = GpuRenderer::init(canvas).await;
-                if disposed.load(Ordering::Relaxed) || gl_context.generation.get() != generation {
-                    return;
-                }
-                match result {
-                    Ok(renderer) => {
-                        {
-                            let mut state = state.borrow_mut();
-                            state.renderer = Some(renderer);
-                            // A new renderer starts with empty caches.
-                            state.planner = ScenePlanner::default();
-                        }
-                        gpu_error.set(None);
-                        gl_context.lost.set(false);
-                        scheduler.mark_dirty();
-                    }
-                    Err(error) => {
-                        web_sys::console::error_1(
-                            &format!("wgpu init failed (fail-closed): {error}").into(),
-                        );
-                        gpu_error.set(Some(error));
-                    }
-                }
-            });
-        }
-    };
-
     Effect::new({
-        let start_renderer = start_renderer.clone();
-        move |started: Option<bool>| {
-            if started == Some(true) {
-                return true;
+        let lifecycle = lifecycle.clone();
+        move || {
+            if canvas_ref.get().is_some() {
+                lifecycle.mount();
             }
-            let Some(canvas) = canvas_ref.get() else {
-                return false;
-            };
-            start_renderer(canvas);
-            true
         }
     });
 
     let on_context_lost = {
-        let state = state.clone();
-        let scheduler = scheduler.clone();
-        let gl_context = gl_context.clone();
-        move |event: web_sys::Event| {
-            // Without this the browser never gives the context back.
-            event.prevent_default();
-            web_sys::console::warn_1(
-                &"map: WebGL context lost; waiting for it to be restored".into(),
-            );
-            gl_context.lost.set(true);
-            gl_context
-                .generation
-                .set(gl_context.generation.get().wrapping_add(1));
-            if let Ok(mut state) = state.try_borrow_mut() {
-                state.renderer = None;
-            }
-            scheduler.mark_dirty();
-        }
+        let lifecycle = lifecycle.clone();
+        move |event: web_sys::Event| lifecycle.context_lost(&event)
     };
-    let on_context_restored = move |_: web_sys::Event| {
-        web_sys::console::warn_1(&"map: WebGL context restored; rebuilding the renderer".into());
-        if let Some(canvas) = canvas_ref.get_untracked() {
-            start_renderer(canvas);
-        }
+    let on_context_restored = {
+        let lifecycle = lifecycle.clone();
+        move |_: web_sys::Event| lifecycle.context_restored()
     };
+    let on_context_creation_error = {
+        let lifecycle = lifecycle.clone();
+        move |event: web_sys::Event| lifecycle.context_creation_error(&event)
+    };
+    let failure = lifecycle.view_failure();
 
-    // Everything else (renderer, gesture state, pending frame) is dropped with the last
-    // handler and effect that holds it.
-    on_cleanup(move || disposed.store(true, Ordering::Relaxed));
+    // Everything else (gesture state, pending frame) is dropped with the last handler and
+    // effect that holds it.
+    let owner = StoredValue::new_local(lifecycle);
+    on_cleanup(move || {
+        if let Some(lifecycle) = owner.try_get_value() {
+            lifecycle.dispose();
+        }
+    });
 
     let input = MapInput {
         map,
@@ -412,6 +345,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 on:contextmenu=move |event| event.prevent_default()
                 on:webglcontextlost=on_context_lost
                 on:webglcontextrestored=on_context_restored
+                on:webglcontextcreationerror=on_context_creation_error
             />
             {move || {
                 select_box.get().map(|rect| {
@@ -427,7 +361,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                     }
                 })
             }}
-            {move || gpu_error.get().map(|message| view! { <GpuErrorPanel message /> })}
+            {failure}
             {move || {
                 render_stats
                     .and_then(|stats| stats.get())
@@ -584,39 +518,6 @@ fn render_stats_enabled() -> bool {
         })
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
-}
-
-fn diagnostics_token(message: &str) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in message.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("GPUX-{hash:016x}")
-}
-
-#[component]
-fn GpuErrorPanel(message: String) -> impl IntoView {
-    let token = diagnostics_token(&message);
-    view! {
-        <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(12, 14, 23, 0.96); z-index: 30;">
-            <div style="max-width: 640px; margin: 0 24px; border: 1px solid var(--color-border-accent); background: var(--color-deep); box-shadow: 0 24px 64px rgba(0,0,0,0.55); border-radius: 8px; padding: 22px 20px;">
-                <div style="font-family: var(--font-display); color: var(--color-gold); letter-spacing: 0.08em; font-size: 0.78rem; text-transform: uppercase; margin-bottom: 8px;">
-                    "Unsupported GPU Configuration"
-                </div>
-                <div style="font-family: var(--font-body); color: var(--color-text-primary); line-height: 1.45; font-size: 0.92rem;">
-                    "The map renderer requires wgpu/WebGL2 and does not provide a Canvas2D fallback."
-                </div>
-                <div style="margin-top: 10px; font-family: var(--font-mono); font-size: 0.74rem; color: var(--color-text-secondary); word-break: break-word;">
-                    {message}
-                </div>
-                <div style="margin-top: 12px; font-family: var(--font-mono); font-size: 0.7rem; color: var(--color-text-dim);">
-                    "Diagnostics token: "
-                    <span style="color: var(--color-gold);">{token}</span>
-                </div>
-            </div>
-        </div>
-    }
 }
 
 #[component]

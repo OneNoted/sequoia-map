@@ -3,7 +3,7 @@
 
 use sequoia_map_engine::scene::Rebuild;
 
-use crate::frame::{Frame, FrameMetrics, FrameOutcome, RenderCapabilities};
+use crate::frame::{Frame, FrameMetrics, FrameOutcome, InitError, InitStage, RenderCapabilities};
 
 // The renderer's label fitting needs no GPU, so its tests run here; nothing else uses it.
 #[cfg(test)]
@@ -13,8 +13,11 @@ mod glyphs;
 pub enum GpuRenderer {}
 
 impl GpuRenderer {
-    pub async fn init(_canvas: web_sys::HtmlCanvasElement) -> Result<Self, String> {
-        Err("the map renderer needs WebGL2 in a browser".into())
+    pub async fn init(_canvas: web_sys::HtmlCanvasElement) -> Result<Self, InitError> {
+        Err(InitError::new(
+            InitStage::Surface,
+            "the map renderer needs WebGL2 in a browser",
+        ))
     }
 
     pub fn capabilities(&self) -> RenderCapabilities {
