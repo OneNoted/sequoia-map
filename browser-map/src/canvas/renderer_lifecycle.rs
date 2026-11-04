@@ -21,7 +21,6 @@ use wasm_bindgen::closure::Closure;
 use web_sys::HtmlCanvasElement;
 
 use super::MapState;
-use crate::assets::asset_version;
 use crate::frame::{InitError, InitStage};
 use crate::gpu::GpuRenderer;
 use sequoia_map_engine::scene::ScenePlanner;
@@ -194,7 +193,8 @@ struct StartFailure {
     canvas: (u32, u32),
     dpr: f64,
     hidden: bool,
-    release: Option<String>,
+    /// The hashed name of the client's WebAssembly module, which names its build.
+    client: Option<String>,
 }
 
 impl fmt::Display for StartFailure {
@@ -202,12 +202,12 @@ impl fmt::Display for StartFailure {
         let (width, height) = self.canvas;
         write!(
             f,
-            "stage={} start={} canvas={width}x{height} dpr={} visibility={} release={}",
+            "stage={} start={} canvas={width}x{height} dpr={} visibility={} client={}",
             self.error.stage.name(),
             self.start,
             self.dpr,
             if self.hidden { "hidden" } else { "visible" },
-            self.release.as_deref().unwrap_or("dev"),
+            self.client.as_deref().unwrap_or("unknown"),
         )?;
         if let Some(message) = &self.browser_message {
             write!(f, " browser={message:?}")?;
@@ -431,7 +431,7 @@ impl RendererLifecycle {
             canvas: (width, height),
             dpr,
             hidden,
-            release: asset_version(),
+            client: client_build(),
         };
         match finished {
             Finished::RestartAfter(delay) => {
@@ -516,6 +516,20 @@ fn start_context(canvas: &HtmlCanvasElement) -> ((u32, u32), f64, bool) {
         .and_then(|window| window.document())
         .is_some_and(|document| document.hidden());
     ((canvas.width(), canvas.height()), dpr, hidden)
+}
+
+/// The client build, from the WebAssembly module the page loaded.
+fn client_build() -> Option<String> {
+    let entries = web_sys::window()?
+        .performance()?
+        .get_entries_by_type("resource");
+    entries.iter().find_map(|entry| {
+        let url = js_sys::Reflect::get(&entry, &"name".into())
+            .ok()?
+            .as_string()?;
+        let file = url.split(['?', '#']).next()?.rsplit('/').next()?;
+        file.strip_suffix("_bg.wasm").map(str::to_owned)
+    })
 }
 
 fn diagnostics_token(message: &str) -> String {
@@ -739,12 +753,12 @@ mod tests {
             canvas: (300, 150),
             dpr: 3.0,
             hidden: false,
-            release: Some("9a6346775a95bd0a".into()),
+            client: Some("sequoia-client-72779fe13d72a252".into()),
         };
         assert_eq!(
             failure.to_string(),
             "stage=surface start=4 canvas=300x150 dpr=3 visibility=visible \
-             release=9a6346775a95bd0a browser=\"WebGL is disabled\" \
+             client=sequoia-client-72779fe13d72a252 browser=\"WebGL is disabled\" \
              detail=\"canvas.getContext() returned null\""
         );
     }
