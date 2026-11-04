@@ -739,6 +739,29 @@ fn report_uncaptured_error(error: wgpu::Error) {
     }
 }
 
+/// The errors a start reports as its own failure rather than only logging them.
+const SETUP_ERRORS: [wgpu::ErrorFilter; 3] = [
+    wgpu::ErrorFilter::Validation,
+    wgpu::ErrorFilter::OutOfMemory,
+    wgpu::ErrorFilter::Internal,
+];
+
+fn watch_setup_errors(device: &wgpu::Device) {
+    for filter in SETUP_ERRORS {
+        device.push_error_scope(filter);
+    }
+}
+
+/// The first error since [`watch_setup_errors`], closing its scopes.
+async fn setup_error(device: &wgpu::Device) -> Option<wgpu::Error> {
+    let mut first = None;
+    for _ in SETUP_ERRORS {
+        let error = device.pop_error_scope().await;
+        first = first.or(error);
+    }
+    first
+}
+
 fn gpu_is_firefox() -> bool {
     web_sys::window()
         .and_then(|w| w.navigator().user_agent().ok())
@@ -1205,7 +1228,17 @@ impl GpuRenderer {
             )
             .into(),
         );
+        watch_setup_errors(&device);
         surface.configure(&device, &surface_config);
+        if let Some(error) = setup_error(&device).await {
+            return Err(InitError::new(
+                InitStage::SurfaceConfig,
+                format!("wgpu ({backend_path}): {error}"),
+            ));
+        }
+        // Without this, a pipeline that failed to build would only be logged, and the map
+        // would count as running while drawing nothing.
+        watch_setup_errors(&device);
 
         // --- Shared geometry ---
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1863,6 +1896,12 @@ impl GpuRenderer {
             return Err(InitError::new(
                 InitStage::TextRenderer,
                 format!("wgpu ({backend_path}): failed to initialize GPU text renderer"),
+            ));
+        }
+        if let Some(error) = setup_error(&renderer.device).await {
+            return Err(InitError::new(
+                InitStage::Resources,
+                format!("wgpu ({backend_path}): {error}"),
             ));
         }
 

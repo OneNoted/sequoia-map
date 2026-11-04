@@ -69,6 +69,8 @@ pub enum InitStage {
     Adapter,
     Device,
     SurfaceConfig,
+    /// Buffers, textures and pipelines.
+    Resources,
     TextRenderer,
 }
 
@@ -79,6 +81,7 @@ impl InitStage {
             Self::Adapter => "adapter",
             Self::Device => "device",
             Self::SurfaceConfig => "surface-config",
+            Self::Resources => "resources",
             Self::TextRenderer => "text-renderer",
         }
     }

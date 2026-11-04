@@ -6,13 +6,15 @@
 //! context the browser takes away is asked back with `preventDefault` and rebuilt once it
 //! returns. Every start carries an attempt number, and one that finishes after a loss, a
 //! newer start or unmount superseded it is dropped, so only the current start can install
-//! a renderer.
+//! a renderer. A superseded start is also aborted: one that has not begun never touches the
+//! canvas, and one waiting on the browser drops what it has made so far.
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use futures::future::{AbortHandle, abortable};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -261,6 +263,8 @@ pub(super) struct RendererLifecycle {
     canvas: NodeRef<leptos::html::Canvas>,
     /// The one pending restart or Retry cooldown.
     timer: RefCell<Option<Timeout>>,
+    /// Aborts the running start.
+    running: RefCell<Option<AbortHandle>>,
     /// The browser's reason for the last refused context, until the start it belongs to ends.
     browser_message: RefCell<Option<String>>,
     /// Size, DPR and visibility when the current attempt began.
@@ -279,6 +283,7 @@ impl RendererLifecycle {
             state,
             canvas,
             timer: RefCell::new(None),
+            running: RefCell::new(None),
             browser_message: RefCell::new(None),
             started_with: Cell::new(((0, 0), 1.0, false)),
             installed: Trigger::new(),
@@ -319,7 +324,7 @@ impl RendererLifecycle {
             return;
         }
         web_sys::console::warn_1(&"map: WebGL context lost; waiting for it to be restored".into());
-        self.timer.borrow_mut().take();
+        self.cancel();
         self.failure.set(None);
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.renderer = None;
@@ -355,7 +360,7 @@ impl RendererLifecycle {
 
     pub(super) fn dispose(&self) {
         self.lifecycle.borrow_mut().dispose();
-        self.timer.borrow_mut().take();
+        self.cancel();
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.renderer = None;
         }
@@ -367,11 +372,24 @@ impl RendererLifecycle {
         };
         self.browser_message.borrow_mut().take();
         self.started_with.set(start_context(&canvas));
+        let (init, abort) = abortable(GpuRenderer::init(canvas));
+        if let Some(superseded) = self.running.replace(Some(abort)) {
+            superseded.abort();
+        }
         let this = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let result = GpuRenderer::init(canvas).await;
-            this.finished(attempt, result);
+            if let Ok(result) = init.await {
+                this.finished(attempt, result);
+            }
         });
+    }
+
+    /// Stops the running start and any pending restart or cooldown.
+    fn cancel(&self) {
+        if let Some(running) = self.running.borrow_mut().take() {
+            running.abort();
+        }
+        self.timer.borrow_mut().take();
     }
 
     fn finished(self: &Rc<Self>, attempt: Attempt, result: Result<GpuRenderer, InitError>) {
