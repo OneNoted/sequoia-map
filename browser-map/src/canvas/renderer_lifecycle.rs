@@ -518,6 +518,7 @@ impl RendererLifecycle {
         let attempt = start.attempt;
         self.browser_message.borrow_mut().take();
         self.started_with.set(start_context(&canvas));
+        let in_document = canvas.clone();
         let (init, abort) = abortable(GpuRenderer::init(
             canvas,
             start.backend,
@@ -528,6 +529,11 @@ impl RendererLifecycle {
         }
         let this = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
+            // Unmounting takes the canvas out of the document before its cleanup reaches the
+            // lifecycle, so a start queued just before would otherwise bind a removed canvas.
+            if !in_document.is_connected() {
+                return;
+            }
             if let Ok(result) = init.await {
                 this.finished(attempt, result);
             }
