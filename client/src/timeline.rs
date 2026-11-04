@@ -188,6 +188,15 @@ fn clamp_timestamp_to_bounds(ts: i64, bounds: (i64, i64)) -> i64 {
     ts.clamp(bounds.0.min(bounds.1), bounds.0.max(bounds.1))
 }
 
+/// Shows the selected time on a rail over `range`, writing the range first so the value is
+/// clamped to the range it belongs to. A time beyond the range, such as now after the latest
+/// record, shows at that end; no selected time shows the latest.
+fn show_on_rail(input: &web_sys::HtmlInputElement, range: (i64, i64), ts: Option<i64>) {
+    input.set_min(&range.0.to_string());
+    input.set_max(&range.1.to_string());
+    input.set_value(&clamp_timestamp_to_bounds(ts.unwrap_or(range.1), range).to_string());
+}
+
 fn normalized_focus_span(bounds: (i64, i64), focus_span: Option<i64>) -> Option<i64> {
     let total = bounds.1.saturating_sub(bounds.0);
     let span = focus_span?.clamp(1, total.max(1));
@@ -313,8 +322,6 @@ pub fn Timeline() -> impl IntoView {
     let is_visible = move || mode.get() == MapMode::History;
     let slider_ref = NodeRef::<leptos::html::Input>::new();
     let overview_ref = NodeRef::<leptos::html::Input>::new();
-    let slider_ref_sync = slider_ref;
-    let overview_ref_sync = overview_ref;
     let HistoryMapTime(history_map_time) = expect_context();
     let fetch_ctx = history::HistoryFetchContext {
         history_map_time,
@@ -362,15 +369,23 @@ pub fn Timeline() -> impl IntoView {
         focus_window.set(Some(next));
     });
 
+    // Each rail takes its range and then the selected time together, whenever either changes.
+    // A range input clamps its value to the range it has when the value is set, and again
+    // whenever the range changes, so a time set while bounds were still loading (or for
+    // another window) would stay clamped to that stale range, at the far left.
     Effect::new(move || {
-        let ts = timestamp.get().unwrap_or(0);
-        if !scrub_active.get()
-            && let Some(input) = slider_ref_sync.get()
-        {
-            input.set_value(&ts.to_string());
+        let ts = timestamp.get();
+        if let (Some(input), Some(range)) = (overview_ref.get(), bounds.get()) {
+            show_on_rail(&input, range, ts);
         }
-        if let Some(input) = overview_ref_sync.get() {
-            input.set_value(&ts.to_string());
+    });
+    Effect::new(move || {
+        let ts = timestamp.get();
+        let range = focus_window.get().or_else(|| bounds.get());
+        if !scrub_active.get()
+            && let (Some(input), Some(range)) = (slider_ref.get(), range)
+        {
+            show_on_rail(&input, range, ts);
         }
     });
 
@@ -929,10 +944,9 @@ pub fn Timeline() -> impl IntoView {
                         type="range"
                         class="timeline-slider timeline-overview-slider"
                         aria-label="Whole history"
-                        min=move || bounds.get().map(|(e, _)| e.to_string()).unwrap_or_else(|| "0".to_string())
-                        max=move || bounds.get().map(|(_, l)| l.to_string()).unwrap_or_else(|| "0".to_string())
+                        min="0"
+                        max="0"
                         step="1"
-                        value=timestamp.get_untracked().unwrap_or(0).to_string()
                         on:input=on_overview_input
                         on:change=on_overview_change
                     />
@@ -958,10 +972,9 @@ pub fn Timeline() -> impl IntoView {
                         class="timeline-slider"
                         aria-label="Selected time"
                         aria-valuetext=move || timestamp.get().map(format_history_timestamp).unwrap_or_default()
-                        min=move || rail_window().map(|(start, _)| start.to_string()).unwrap_or_else(|| "0".to_string())
-                        max=move || rail_window().map(|(_, end)| end.to_string()).unwrap_or_else(|| "0".to_string())
+                        min="0"
+                        max="0"
                         step="1"
-                        value=timestamp.get_untracked().unwrap_or(0).to_string()
                         on:input=on_range_input
                         on:change=on_range_change
                     />
