@@ -268,11 +268,74 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         let lifecycle = lifecycle.clone();
         move || {
             if canvas_ref.get().is_some() {
-                lifecycle.mount();
+                lifecycle.canvas_changed();
             }
         }
     });
 
+    let failure = lifecycle.view_failure();
+    let canvas_epoch = lifecycle.canvas_epoch();
+    let input = MapInput {
+        map,
+        on_event,
+        state,
+        scheduler,
+        select_box,
+    };
+    let parts = StoredValue::new_local((input, lifecycle));
+    // A canvas keeps its first context type, so the lifecycle has the element replaced,
+    // handlers and all, when another backend needs it. Keying it on the epoch makes that a
+    // new element: an unkeyed rebuild would update the old one in place.
+    let canvas = view! {
+        <For each=move || [canvas_epoch.get()] key=|epoch| *epoch let:_epoch>
+            {parts
+                .with_value(|(input, lifecycle)| {
+                    map_canvas_element(canvas_ref, input.clone(), lifecycle.clone())
+                })}
+        </For>
+    };
+
+    // Everything else (gesture state, pending frame) is dropped with the last handler and
+    // effect that holds it.
+    on_cleanup(move || {
+        if let Some((_, lifecycle)) = parts.try_get_value() {
+            lifecycle.dispose();
+        }
+    });
+
+    view! {
+        <div style="position: absolute; inset: 0;">
+            {canvas}
+            {move || {
+                select_box.get().map(|rect| {
+                    let width = rect.width().max(1.0);
+                    let height = rect.height().max(1.0);
+                    let (left, top) = (rect.left, rect.top);
+                    view! {
+                        <div
+                            style=format!(
+                                "position: absolute; left: {left}px; top: {top}px; width: {width}px; height: {height}px; z-index: 26; pointer-events: none; border: 1px dashed rgba(245,197,66,0.94); background: rgba(245,197,66,0.14); box-shadow: 0 0 0 1px rgba(12,14,23,0.38) inset;"
+                            )
+                        ></div>
+                    }
+                })
+            }}
+            {failure}
+            {move || {
+                render_stats
+                    .and_then(|stats| stats.get())
+                    .map(|stats| view! { <RenderStatsPanel stats /> })
+            }}
+        </div>
+    }
+}
+
+/// The map's `<canvas>`, with its input and graphics-context handlers.
+fn map_canvas_element(
+    canvas_ref: NodeRef<leptos::html::Canvas>,
+    input: MapInput,
+    lifecycle: Rc<RendererLifecycle>,
+) -> impl IntoView {
     let on_context_lost = {
         let lifecycle = lifecycle.clone();
         move |event: web_sys::Event| lifecycle.context_lost(&event)
@@ -281,29 +344,8 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         let lifecycle = lifecycle.clone();
         move |_: web_sys::Event| lifecycle.context_restored()
     };
-    let on_context_creation_error = {
-        let lifecycle = lifecycle.clone();
-        move |event: web_sys::Event| lifecycle.context_creation_error(&event)
-    };
-    let failure = lifecycle.view_failure();
-
-    // Everything else (gesture state, pending frame) is dropped with the last handler and
-    // effect that holds it.
-    let owner = StoredValue::new_local(lifecycle);
-    on_cleanup(move || {
-        if let Some(lifecycle) = owner.try_get_value() {
-            lifecycle.dispose();
-        }
-    });
-
-    let input = MapInput {
-        map,
-        on_event,
-        state,
-        scheduler,
-        select_box,
-    };
-
+    let on_context_creation_error =
+        move |event: web_sys::Event| lifecycle.context_creation_error(&event);
     let on_pointer_down = {
         let input = input.clone();
         move |event| input.pointer_down(&event)
@@ -331,43 +373,21 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
     let on_wheel = move |event| input.wheel(&event);
 
     view! {
-        <div style="position: absolute; inset: 0;">
-            <canvas
-                node_ref=canvas_ref
-                style="position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: grab;"
-                on:pointerdown=on_pointer_down
-                on:pointermove=on_pointer_move
-                on:pointerup=on_pointer_up
-                on:pointercancel=on_pointer_cancel
-                on:lostpointercapture=on_lost_capture
-                on:pointerleave=on_pointer_leave
-                on:wheel=on_wheel
-                on:contextmenu=move |event| event.prevent_default()
-                on:webglcontextlost=on_context_lost
-                on:webglcontextrestored=on_context_restored
-                on:webglcontextcreationerror=on_context_creation_error
-            />
-            {move || {
-                select_box.get().map(|rect| {
-                    let width = rect.width().max(1.0);
-                    let height = rect.height().max(1.0);
-                    let (left, top) = (rect.left, rect.top);
-                    view! {
-                        <div
-                            style=format!(
-                                "position: absolute; left: {left}px; top: {top}px; width: {width}px; height: {height}px; z-index: 26; pointer-events: none; border: 1px dashed rgba(245,197,66,0.94); background: rgba(245,197,66,0.14); box-shadow: 0 0 0 1px rgba(12,14,23,0.38) inset;"
-                            )
-                        ></div>
-                    }
-                })
-            }}
-            {failure}
-            {move || {
-                render_stats
-                    .and_then(|stats| stats.get())
-                    .map(|stats| view! { <RenderStatsPanel stats /> })
-            }}
-        </div>
+        <canvas
+            node_ref=canvas_ref
+            style="position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; user-select: none; cursor: grab;"
+            on:pointerdown=on_pointer_down
+            on:pointermove=on_pointer_move
+            on:pointerup=on_pointer_up
+            on:pointercancel=on_pointer_cancel
+            on:lostpointercapture=on_lost_capture
+            on:pointerleave=on_pointer_leave
+            on:wheel=on_wheel
+            on:contextmenu=move |event| event.prevent_default()
+            on:webglcontextlost=on_context_lost
+            on:webglcontextrestored=on_context_restored
+            on:webglcontextcreationerror=on_context_creation_error
+        />
     }
 }
 

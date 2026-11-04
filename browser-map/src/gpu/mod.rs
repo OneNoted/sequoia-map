@@ -46,7 +46,9 @@ use sequoia_shared::colors::hsl_to_rgb;
 use sequoia_shared::territory::Resources;
 use sequoia_shared::war_board::StageKind;
 
-use crate::frame::{Frame, FrameMetrics, FrameOutcome, InitError, InitStage, RenderCapabilities};
+use crate::frame::{
+    Backend, Frame, FrameMetrics, FrameOutcome, InitError, InitStage, RenderCapabilities,
+};
 use crate::icons::ResourceAtlas;
 use crate::tiles::{LoadedTile, TileQuality};
 
@@ -597,6 +599,77 @@ fn downsample_rgba8_level(src: &[u8], src_w: u32, src_h: u32) -> (u32, u32, Vec<
     (next_w, next_h, dst)
 }
 
+/// Pixels a WebGPU image upload copies into WASM memory at a time.
+const UPLOAD_BAND_BYTES: usize = 1 << 20;
+
+/// Uploads `image` to `texture`, `size` from the origin. WebGL2 copies it straight from the
+/// browser's buffer. On WebGPU that copy throws once the device is lost, and wgpu turns the
+/// exception into a panic that wedges the map before the loss can be recovered, so the pixels
+/// go through `write_texture`, which a lost device ignores, a band of rows at a time to keep
+/// their copy in WASM memory small.
+pub(super) fn upload_image_data(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    image: web_sys::ImageData,
+    size: wgpu::Extent3d,
+    webgl: bool,
+) {
+    if webgl {
+        queue.copy_external_image_to_texture(
+            &wgpu::CopyExternalImageSourceInfo {
+                source: wgpu::ExternalImageSource::ImageData(image),
+                origin: wgpu::Origin2d::ZERO,
+                flip_y: false,
+            },
+            wgpu::CopyExternalImageDestInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+                color_space: wgpu::PredefinedColorSpace::Srgb,
+                premultiplied_alpha: false,
+            },
+            size,
+        );
+        return;
+    }
+    let Ok(pixels) = js_sys::Reflect::get(&image, &"data".into()) else {
+        return;
+    };
+    let pixels = pixels.unchecked_into::<js_sys::Uint8ClampedArray>();
+    let row = 4 * image.width();
+    let rows = u32::try_from(UPLOAD_BAND_BYTES / row.max(1) as usize)
+        .unwrap_or(u32::MAX)
+        .max(1);
+    let mut band = vec![0; (row * rows.min(size.height)) as usize];
+    let mut y = 0;
+    while y < size.height {
+        let count = rows.min(size.height - y);
+        let bytes = &mut band[..(row * count) as usize];
+        pixels.subarray(y * row, (y + count) * row).copy_to(bytes);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(count),
+            },
+            wgpu::Extent3d {
+                width: size.width,
+                height: count,
+                depth_or_array_layers: 1,
+            },
+        );
+        y += count;
+    }
+}
+
 #[inline]
 fn write_texture_mip_chain(
     queue: &wgpu::Queue,
@@ -760,6 +833,95 @@ async fn setup_error(device: &wgpu::Device) -> Option<wgpu::Error> {
         first = first.or(error);
     }
     first
+}
+
+/// Checks that the browser offers a WebGPU adapter worth using before wgpu asks for one.
+/// wgpu cannot tell a software fallback adapter, which would draw more slowly than WebGL2,
+/// from a real one.
+async fn usable_webgpu_adapter(accept_fallback: bool) -> Result<(), InitError> {
+    use js_sys::{Function, Object, Promise, Reflect};
+    use wasm_bindgen::JsValue;
+
+    let unavailable =
+        |detail: &str| InitError::new(InitStage::Adapter, format!("webgpu: {detail}"));
+    let navigator = web_sys::window()
+        .ok_or_else(|| unavailable("no window"))?
+        .navigator();
+    let gpu = Reflect::get(&navigator, &"gpu".into())
+        .ok()
+        .filter(|gpu| !gpu.is_undefined() && !gpu.is_null())
+        .ok_or_else(|| unavailable("navigator.gpu is absent"))?;
+    let options = Object::new();
+    let _ = Reflect::set(
+        &options,
+        &"powerPreference".into(),
+        &"high-performance".into(),
+    );
+    let request = Reflect::get(&gpu, &"requestAdapter".into())
+        .ok()
+        .and_then(|request| request.dyn_into::<Function>().ok())
+        .ok_or_else(|| unavailable("requestAdapter is missing"))?;
+    let promise = request
+        .call1(&gpu, &options)
+        .ok()
+        .and_then(|promise| promise.dyn_into::<Promise>().ok())
+        .ok_or_else(|| unavailable("requestAdapter threw"))?;
+    let adapter = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|error| unavailable(&format!("requestAdapter rejected: {error:?}")))?;
+    if adapter.is_null() || adapter.is_undefined() {
+        return Err(unavailable("no adapter"));
+    }
+    let info = Reflect::get(&adapter, &"info".into()).unwrap_or(JsValue::UNDEFINED);
+    let fallback = Reflect::get(&info, &"isFallbackAdapter".into())
+        .ok()
+        .and_then(|fallback| fallback.as_bool())
+        .or_else(|| {
+            Reflect::get(&adapter, &"isFallbackAdapter".into())
+                .ok()
+                .and_then(|fallback| fallback.as_bool())
+        })
+        .unwrap_or(false);
+    if fallback && !accept_fallback {
+        return Err(unavailable("only a software fallback adapter"));
+    }
+    Ok(())
+}
+
+/// A WebGPU device a start made, destroyed if the start fails before a renderer owns it.
+struct FailedStartDevice(Option<wgpu::Device>);
+
+impl FailedStartDevice {
+    fn release(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for FailedStartDevice {
+    fn drop(&mut self) {
+        if let Some(device) = &self.0 {
+            device.destroy();
+        }
+    }
+}
+
+/// The `lost` promise of the WebGPU device configured on `canvas`. wgpu 24 drops the closure
+/// its own device-lost callback would run, so the loss is read from the canvas's context.
+fn configured_device_lost(canvas: &HtmlCanvasElement) -> Option<js_sys::Promise> {
+    use js_sys::{Function, Promise, Reflect};
+
+    let context = canvas.get_context("webgpu").ok()??;
+    let configuration = Reflect::get(&context, &"getConfiguration".into())
+        .ok()?
+        .dyn_into::<Function>()
+        .ok()?
+        .call0(&context)
+        .ok()?;
+    let device = Reflect::get(&configuration, &"device".into()).ok()?;
+    Reflect::get(&device, &"lost".into())
+        .ok()?
+        .dyn_into::<Promise>()
+        .ok()
 }
 
 fn gpu_is_firefox() -> bool {
@@ -979,6 +1141,8 @@ struct MinimapTerrain {
 // --- GpuRenderer ---
 
 pub struct GpuRenderer {
+    /// The WebGPU device's `lost` promise; WebGL2 loses its context through canvas events.
+    device_lost: Option<js_sys::Promise>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
@@ -1092,6 +1256,16 @@ pub struct GpuRenderer {
     frame_metrics: FrameMetrics,
 }
 
+impl Drop for GpuRenderer {
+    fn drop(&mut self) {
+        // wgpu's WebGPU objects go only when the browser collects them; destroying the device
+        // frees its memory now.
+        if !self.capabilities.webgl2 {
+            self.device.destroy();
+        }
+    }
+}
+
 impl GpuRenderer {
     #[inline]
     fn quad_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
@@ -1102,10 +1276,25 @@ impl GpuRenderer {
         }
     }
 
-    /// Async initialization with a WebGL2-only path.
-    pub async fn init(canvas: HtmlCanvasElement) -> Result<Self, InitError> {
-        web_sys::console::log_1(&"wgpu init: using WebGL2 backend (WebGPU disabled)".into());
-        Self::init_with_backends(canvas, wgpu::Backends::GL, "webgl").await
+    /// Starts a renderer on `backend`. A WebGPU start needs an adapter that is not a software
+    /// fallback, unless `accept_fallback_adapter`.
+    pub async fn init(
+        canvas: HtmlCanvasElement,
+        backend: Backend,
+        accept_fallback_adapter: bool,
+    ) -> Result<Self, InitError> {
+        match backend {
+            Backend::WebGl2 => Self::init_with_backends(canvas, wgpu::Backends::GL, "webgl").await,
+            Backend::WebGpu => {
+                usable_webgpu_adapter(accept_fallback_adapter).await?;
+                Self::init_with_backends(canvas, wgpu::Backends::BROWSER_WEBGPU, "webgpu").await
+            }
+        }
+    }
+
+    /// Takes the promise that resolves when this renderer's WebGPU device is lost.
+    pub fn take_device_lost(&mut self) -> Option<js_sys::Promise> {
+        self.device_lost.take()
     }
 
     /// Core initialization parameterized by backend selection.
@@ -1114,6 +1303,7 @@ impl GpuRenderer {
         backends: wgpu::Backends,
         backend_path: &str,
     ) -> Result<Self, InitError> {
+        let webgl = backends == wgpu::Backends::GL;
         // The icon overlay pipeline uses the same textured-quad primitives as the text
         // overlay path, so it can run on the active WebGL2 renderer as well. Only fall
         // back if icon renderer initialization itself fails.
@@ -1135,15 +1325,26 @@ impl GpuRenderer {
             ..Default::default()
         });
 
-        let surface_target = wgpu::SurfaceTarget::Canvas(canvas);
-        let surface = instance.create_surface(surface_target).map_err(|e| {
-            InitError::new(InitStage::Surface, format!("wgpu ({backend_path}): {e}"))
-        })?;
+        let create_surface = |canvas| {
+            instance
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+                .map_err(|e| {
+                    InitError::new(InitStage::Surface, format!("wgpu ({backend_path}): {e}"))
+                })
+        };
+        // A WebGL2 adapter comes from the canvas's context. A WebGPU one needs no canvas, so
+        // the canvas is bound to WebGPU only once a device exists, and a browser without a
+        // usable device leaves it free for WebGL2.
+        let early_surface = if webgl {
+            Some(create_surface(canvas.clone())?)
+        } else {
+            None
+        };
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
+                compatible_surface: early_surface.as_ref(),
                 ..Default::default()
             })
             .await
@@ -1156,10 +1357,10 @@ impl GpuRenderer {
 
         // WebGL2 adapters expose zero compute limits, so requesting the plain
         // default limits (which include compute) fails validation.
-        let mut required_limits = if backends == wgpu::Backends::GL {
+        let mut required_limits = if webgl {
             wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
         } else {
-            wgpu::Limits::default()
+            wgpu::Limits::default().using_resolution(adapter.limits())
         };
         // Some WebGL2 adapters (for example automation/headless environments) expose
         // lower color-attachment limits than the downlevel default profile. Clamp
@@ -1186,6 +1387,11 @@ impl GpuRenderer {
         // Validation and lost-context errors are reported instead; the frame they spoil is
         // redrawn, and a lost context is rebuilt by the canvas.
         device.on_uncaptured_error(Box::new(report_uncaptured_error));
+        let device_guard = FailedStartDevice((!webgl).then(|| device.clone()));
+        let surface = match early_surface {
+            Some(surface) => surface,
+            None => create_surface(canvas.clone())?,
+        };
 
         let mut surface_config = surface
             .get_default_config(&adapter, width, height)
@@ -1239,6 +1445,11 @@ impl GpuRenderer {
         // Without this, a pipeline that failed to build would only be logged, and the map
         // would count as running while drawing nothing.
         watch_setup_errors(&device);
+        let device_lost = if webgl {
+            None
+        } else {
+            configured_device_lost(&canvas)
+        };
 
         // --- Shared geometry ---
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1813,7 +2024,9 @@ impl GpuRenderer {
                 cache: None,
             });
 
+        device_guard.release();
         let mut renderer = Self {
+            device_lost,
             device,
             queue,
             surface,
@@ -1884,7 +2097,7 @@ impl GpuRenderer {
             diag_console_logging: gpu_console_diag_enabled(),
             last_render_time_ms: 0.0,
             capabilities: RenderCapabilities {
-                webgl2: backends == wgpu::Backends::GL,
+                webgl2: webgl,
                 gpu_text_msdf: true,
                 gpu_dynamic_labels: true,
                 compatibility_fallback: !supports_gpu_icons,
@@ -2906,25 +3119,17 @@ impl GpuRenderer {
                     | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             });
-            // The read-back pixels go to the GPU straight from the browser's buffer rather
-            // than through a copy in WASM memory, which would grow for good to hold a tile.
-            // Uploading the <img> itself instead makes browsers decode the file again, as
-            // straight alpha, synchronously: slower than this draw and read-back.
-            self.queue.copy_external_image_to_texture(
-                &wgpu::CopyExternalImageSourceInfo {
-                    source: wgpu::ExternalImageSource::ImageData(image_data),
-                    origin: wgpu::Origin2d::ZERO,
-                    flip_y: false,
-                },
-                wgpu::CopyExternalImageDestInfo {
-                    texture: &texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                    color_space: wgpu::PredefinedColorSpace::Srgb,
-                    premultiplied_alpha: false,
-                },
+            // The read-back pixels go to the GPU from the browser's buffer, never as a whole
+            // tile in WASM memory, which would grow for good to hold one (see
+            // `upload_image_data`). Uploading the <img> itself instead makes browsers decode
+            // the file again, as straight alpha, synchronously: slower than this draw and
+            // read-back.
+            upload_image_data(
+                &self.queue,
+                &texture,
+                image_data,
                 size,
+                self.capabilities.webgl2,
             );
 
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -4533,6 +4738,7 @@ impl GpuRenderer {
         let overlay = self.overlay_renderer.get_or_insert_with(|| {
             GpuOverlayRenderer::new(
                 &self.device,
+                self.capabilities.webgl2,
                 self.surface_config.format,
                 &self.viewport_bind_group_layout,
                 &Self::quad_vertex_layout(),

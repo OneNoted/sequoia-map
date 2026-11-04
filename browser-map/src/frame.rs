@@ -60,6 +60,36 @@ pub struct FrameOutcome {
     pub next_refresh: NextRefresh,
 }
 
+/// The browser graphics API a renderer runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    WebGl2,
+    WebGpu,
+}
+
+impl Backend {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::WebGl2 => "webgl2",
+            Self::WebGpu => "webgpu",
+        }
+    }
+
+    /// Whether a start on this backend that failed at `stage` had already bound the canvas
+    /// to its context type, so another backend needs a fresh canvas.
+    pub fn bound_canvas(self, stage: InitStage) -> bool {
+        match self {
+            // The WebGL2 context is the first thing a start asks for.
+            Self::WebGl2 => stage != InitStage::Surface,
+            // A WebGPU start finds its adapter and device before it touches the canvas.
+            Self::WebGpu => !matches!(
+                stage,
+                InitStage::Adapter | InitStage::Device | InitStage::Surface
+            ),
+        }
+    }
+}
+
 /// The step of renderer initialization that failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
