@@ -844,9 +844,8 @@ async fn usable_webgpu_adapter(accept_fallback: bool) -> Result<(), InitError> {
 
     let unavailable =
         |detail: &str| InitError::new(InitStage::Adapter, format!("webgpu: {detail}"));
-    let navigator = web_sys::window()
-        .ok_or_else(|| unavailable("no window"))?
-        .navigator();
+    let window = web_sys::window().ok_or_else(|| unavailable("no window"))?;
+    let navigator = window.navigator();
     let gpu = Reflect::get(&navigator, &"gpu".into())
         .ok()
         .filter(|gpu| !gpu.is_undefined() && !gpu.is_null())
@@ -885,7 +884,22 @@ async fn usable_webgpu_adapter(accept_fallback: bool) -> Result<(), InitError> {
     if fallback && !accept_fallback {
         return Err(unavailable("only a software fallback adapter"));
     }
+    // The device is watched for loss through its canvas context's configuration; without a
+    // way to read it the map would not recover from a lost device.
+    let configuration = Reflect::get(&window, &"GPUCanvasContext".into())
+        .ok()
+        .and_then(|context| Reflect::get(&context, &"prototype".into()).ok())
+        .and_then(|prototype| Reflect::get(&prototype, &"getConfiguration".into()).ok())
+        .is_some_and(|method| method.is_function());
+    if !configuration {
+        return Err(unavailable("GPUCanvasContext.getConfiguration is missing"));
+    }
     Ok(())
+}
+
+/// What a start that is no longer wanted returns; the lifecycle drops it as stale.
+fn superseded() -> InitError {
+    InitError::new(InitStage::Device, "superseded before it finished")
 }
 
 /// A WebGPU device a start made, destroyed if the start fails before a renderer owns it.
@@ -1278,16 +1292,27 @@ impl GpuRenderer {
 
     /// Starts a renderer on `backend`. A WebGPU start needs an adapter that is not a software
     /// fallback, unless `accept_fallback_adapter`.
+    ///
+    /// The browser's own steps cannot be cancelled, so a start runs until each one settles,
+    /// asking `wanted` after every step: once it is no longer wanted, it destroys what it made
+    /// and stops.
     pub async fn init(
         canvas: HtmlCanvasElement,
         backend: Backend,
         accept_fallback_adapter: bool,
+        wanted: impl Fn() -> bool,
     ) -> Result<Self, InitError> {
         match backend {
-            Backend::WebGl2 => Self::init_with_backends(canvas, wgpu::Backends::GL, "webgl").await,
+            Backend::WebGl2 => {
+                Self::init_with_backends(canvas, wgpu::Backends::GL, "webgl", &wanted).await
+            }
             Backend::WebGpu => {
                 usable_webgpu_adapter(accept_fallback_adapter).await?;
-                Self::init_with_backends(canvas, wgpu::Backends::BROWSER_WEBGPU, "webgpu").await
+                if !wanted() {
+                    return Err(superseded());
+                }
+                Self::init_with_backends(canvas, wgpu::Backends::BROWSER_WEBGPU, "webgpu", &wanted)
+                    .await
             }
         }
     }
@@ -1302,6 +1327,7 @@ impl GpuRenderer {
         canvas: HtmlCanvasElement,
         backends: wgpu::Backends,
         backend_path: &str,
+        wanted: &dyn Fn() -> bool,
     ) -> Result<Self, InitError> {
         let webgl = backends == wgpu::Backends::GL;
         // The icon overlay pipeline uses the same textured-quad primitives as the text
@@ -1354,6 +1380,9 @@ impl GpuRenderer {
                     format!("wgpu ({backend_path}): no suitable GPU adapter found"),
                 )
             })?;
+        if !wanted() {
+            return Err(superseded());
+        }
 
         // WebGL2 adapters expose zero compute limits, so requesting the plain
         // default limits (which include compute) fails validation.
@@ -1386,8 +1415,11 @@ impl GpuRenderer {
         // wgpu's default handler panics, and a panic mid-frame leaves the whole map wedged.
         // Validation and lost-context errors are reported instead; the frame they spoil is
         // redrawn, and a lost context is rebuilt by the canvas.
-        device.on_uncaptured_error(Box::new(report_uncaptured_error));
         let device_guard = FailedStartDevice((!webgl).then(|| device.clone()));
+        if !wanted() {
+            return Err(superseded());
+        }
+        device.on_uncaptured_error(Box::new(report_uncaptured_error));
         let surface = match early_surface {
             Some(surface) => surface,
             None => create_surface(canvas.clone())?,
@@ -1442,13 +1474,23 @@ impl GpuRenderer {
                 format!("wgpu ({backend_path}): {error}"),
             ));
         }
+        if !wanted() {
+            return Err(superseded());
+        }
         // Without this, a pipeline that failed to build would only be logged, and the map
         // would count as running while drawing nothing.
         watch_setup_errors(&device);
+        // A WebGPU renderer that could not notice its device being lost would draw nothing
+        // after a GPU reset and never recover, so it does not start without the observer.
         let device_lost = if webgl {
             None
         } else {
-            configured_device_lost(&canvas)
+            Some(configured_device_lost(&canvas).ok_or_else(|| {
+                InitError::new(
+                    InitStage::SurfaceConfig,
+                    "webgpu: the configured device cannot be watched for loss",
+                )
+            })?)
         };
 
         // --- Shared geometry ---
@@ -2116,6 +2158,9 @@ impl GpuRenderer {
                 InitStage::Resources,
                 format!("wgpu ({backend_path}): {error}"),
             ));
+        }
+        if !wanted() {
+            return Err(superseded());
         }
 
         Ok(renderer)

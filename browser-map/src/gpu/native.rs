@@ -19,6 +19,7 @@ impl GpuRenderer {
         _canvas: web_sys::HtmlCanvasElement,
         _backend: Backend,
         _accept_fallback_adapter: bool,
+        _wanted: impl Fn() -> bool,
     ) -> Result<Self, InitError> {
         Err(InitError::new(
             InitStage::Surface,

@@ -346,6 +346,14 @@ fn map_canvas_element(
     };
     let on_context_creation_error =
         move |event: web_sys::Event| lifecycle.context_creation_error(&event);
+    // Replacing or unmounting this element ends the contacts it held, which cannot report
+    // their own end once it is gone.
+    let owner = StoredValue::new_local(input.clone());
+    on_cleanup(move || {
+        if let Some(input) = owner.try_get_value() {
+            input.cancel_gestures();
+        }
+    });
     let on_pointer_down = {
         let input = input.clone();
         move |event| input.pointer_down(&event)

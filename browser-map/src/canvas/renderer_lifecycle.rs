@@ -6,8 +6,9 @@
 //! context the browser takes away is asked back with `preventDefault` and rebuilt once it
 //! returns. Every start carries an attempt number, and one that finishes after a loss, a
 //! newer start or unmount superseded it is dropped, so only the current start can install
-//! a renderer. A superseded start is also aborted: one that has not begun never touches the
-//! canvas, and one waiting on the browser drops what it has made so far.
+//! a renderer. A superseded start also stops: one that has not begun never touches the
+//! canvas, and one waiting on the browser finishes that step, destroys what it has made and
+//! goes no further.
 //!
 //! Starts use WebGPU while the browser offers a usable adapter and no WebGPU start has
 //! failed, and WebGL2 otherwise. A failed WebGPU start hands over to WebGL2 at once, outside
@@ -21,7 +22,6 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use futures::future::{AbortHandle, abortable};
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
@@ -339,8 +339,6 @@ pub(super) struct RendererLifecycle {
     canvas: NodeRef<leptos::html::Canvas>,
     /// The one pending restart or Retry cooldown.
     timer: RefCell<Option<Timeout>>,
-    /// Aborts the running start.
-    running: RefCell<Option<AbortHandle>>,
     /// The browser's reason for the last refused context, until the start it belongs to ends.
     browser_message: RefCell<Option<String>>,
     /// Size, DPR and visibility when the current attempt began.
@@ -367,7 +365,6 @@ impl RendererLifecycle {
             state,
             canvas,
             timer: RefCell::new(None),
-            running: RefCell::new(None),
             browser_message: RefCell::new(None),
             started_with: Cell::new(((0, 0), 1.0, false)),
             accept_fallback_adapter: preference.as_deref() == Some("webgpu-fallback"),
@@ -518,34 +515,33 @@ impl RendererLifecycle {
         let attempt = start.attempt;
         self.browser_message.borrow_mut().take();
         self.started_with.set(start_context(&canvas));
-        let in_document = canvas.clone();
-        let (init, abort) = abortable(GpuRenderer::init(
-            canvas,
-            start.backend,
-            self.accept_fallback_adapter,
-        ));
-        if let Some(superseded) = self.running.replace(Some(abort)) {
-            superseded.abort();
-        }
+        // Unmounting takes the canvas out of the document before its cleanup reaches the
+        // lifecycle, so a start that is still current but whose canvas has gone is not wanted
+        // either.
+        let wanted = {
+            let this = Rc::downgrade(self);
+            let canvas = canvas.clone();
+            move || {
+                canvas.is_connected()
+                    && this
+                        .upgrade()
+                        .is_some_and(|this| this.lifecycle.borrow().is_current(attempt))
+            }
+        };
+        let (backend, accept_fallback_adapter) = (start.backend, self.accept_fallback_adapter);
         let this = self.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            // Unmounting takes the canvas out of the document before its cleanup reaches the
-            // lifecycle, so a start queued just before would otherwise bind a removed canvas.
-            if !in_document.is_connected() {
+            if !wanted() {
                 return;
             }
-            if let Ok(result) = init.await {
-                this.finished(attempt, result);
-            }
+            let result = GpuRenderer::init(canvas, backend, accept_fallback_adapter, wanted).await;
+            this.finished(attempt, result);
         });
     }
 
-    /// Stops the running start, a start waiting for its canvas, and any pending restart or
-    /// cooldown.
+    /// Stops a start waiting for its canvas and any pending restart or cooldown. A running
+    /// start sees it is superseded at its next step.
     fn cancel(&self) {
-        if let Some(running) = self.running.borrow_mut().take() {
-            running.abort();
-        }
         self.fresh_canvas.borrow_mut().take();
         self.timer.borrow_mut().take();
     }

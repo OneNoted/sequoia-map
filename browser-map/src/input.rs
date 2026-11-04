@@ -110,6 +110,14 @@ impl MapInput {
         self.scheduler.mark_dirty();
     }
 
+    /// Forgets every contact without committing anything: the canvas they pressed is gone,
+    /// and so are its `pointercancel` and `lostpointercapture` events.
+    pub(crate) fn cancel_gestures(&self) {
+        let output = self.state.borrow_mut().gestures.reset();
+        self.dispatch(output.events, false);
+        self.scheduler.mark_dirty();
+    }
+
     pub(crate) fn pointer_leave(&self) {
         if self.state.borrow().gestures.is_pressed() {
             return;
