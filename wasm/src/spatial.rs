@@ -61,7 +61,11 @@ impl SpatialGrid {
         let mut tops = Vec::with_capacity(territories.len());
         let mut bottoms = Vec::with_capacity(territories.len());
 
-        for (idx, (name, ct)) in territories.iter().enumerate() {
+        // Listed by name, so overlaps and equal distances resolve the same way on every load
+        // rather than in the map's hash order.
+        let mut listed: Vec<_> = territories.iter().collect();
+        listed.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        for (idx, (name, ct)) in listed.into_iter().enumerate() {
             let loc = &ct.territory.location;
             let l = loc.left();
             let r = loc.right();
@@ -74,14 +78,10 @@ impl SpatialGrid {
             tops.push(t);
             bottoms.push(b);
 
-            // Insert into all overlapping grid cells
-            let col_start = ((l as f64 - min_x) / cell_w).floor().max(0.0) as usize;
-            let col_end = ((r as f64 - min_x) / cell_w).ceil().min(GRID_COLS as f64) as usize;
-            let row_start = ((t as f64 - min_y) / cell_h).floor().max(0.0) as usize;
-            let row_end = ((b as f64 - min_y) / cell_h).ceil().min(GRID_ROWS as f64) as usize;
-
-            for row in row_start..row_end {
-                for col in col_start..col_end {
+            let cols = cells_spanned(l as f64, r as f64, min_x, cell_w, GRID_COLS);
+            let rows = cells_spanned(t as f64, b as f64, min_y, cell_h, GRID_ROWS);
+            for row in rows.into_iter().flatten() {
+                for col in cols.clone().into_iter().flatten() {
                     cells[row * GRID_COLS + col].push(idx);
                 }
             }
@@ -121,10 +121,11 @@ impl SpatialGrid {
         if self.cells.is_empty() {
             return None;
         }
-        let cols = cells_within(wx, reach, self.min_x, self.cell_w, GRID_COLS)?;
-        let rows = cells_within(wy, reach, self.min_y, self.cell_h, GRID_ROWS)?;
+        let cols = cells_spanned(wx - reach, wx + reach, self.min_x, self.cell_w, GRID_COLS)?;
+        let rows = cells_spanned(wy - reach, wy + reach, self.min_y, self.cell_h, GRID_ROWS)?;
 
-        // Ties, such as overlapping territories, go to the first one listed.
+        // A containing territory is at distance 0, so it wins over any within reach; ties,
+        // such as overlapping territories, go to the first listed.
         let mut nearest: Option<(f64, usize)> = None;
         for row in rows {
             for col in cols.clone() {
@@ -145,16 +146,20 @@ impl SpatialGrid {
     }
 }
 
-/// The grid cells along one axis that `value ± reach` touches, or `None` when it misses the grid.
-fn cells_within(
-    value: f64,
-    reach: f64,
+/// The grid cells along one axis that the closed interval `[lo, hi]` touches, or `None` when
+/// it misses the grid. Cell `k` covers `[origin + k·size, origin + (k+1)·size)`, so a
+/// territory edge exactly on a cell boundary is in the cell after it too. Territories are
+/// filed and points looked up by this one rule, so a lookup sees every territory whose
+/// closed rectangle it can reach.
+fn cells_spanned(
+    lo: f64,
+    hi: f64,
     origin: f64,
     size: f64,
     count: usize,
 ) -> Option<std::ops::Range<usize>> {
-    let first = ((value - reach - origin) / size).floor();
-    let last = ((value + reach - origin) / size).floor();
+    let first = ((lo - origin) / size).floor();
+    let last = ((hi - origin) / size).floor();
     if last < 0.0 || first >= count as f64 {
         return None;
     }
@@ -201,6 +206,7 @@ mod tests {
         let grid = grid(&[("West", [0, 0], [100, 100]), ("East", [104, 0], [200, 100])]);
         assert_eq!(grid.find_at(101.0, 50.0, 0.0).as_deref(), None);
         assert_eq!(grid.find_at(101.0, 50.0, 3.0).as_deref(), Some("West"));
+        assert_eq!(grid.find_at(101.0, 50.0, 1.0).as_deref(), Some("West"));
         assert_eq!(grid.find_at(103.0, 50.0, 3.0).as_deref(), Some("East"));
         assert_eq!(grid.find_at(50.0, 50.0, 3.0).as_deref(), Some("West"));
     }
@@ -219,6 +225,48 @@ mod tests {
         assert_eq!(grid.find_at(-2.5, 50.0, 3.0).as_deref(), Some("West"));
         assert_eq!(grid.find_at(50.0, 102.5, 3.0).as_deref(), Some("West"));
         assert_eq!(grid.find_at(-3.5, 50.0, 3.0).as_deref(), None);
+    }
+
+    /// Spans x and y from 1 to 399, so the padded grid starts at 0 with 8-unit cells: West's
+    /// right and bottom edges (96) and East's and South's near edges (104) lie exactly on
+    /// cell boundaries.
+    fn on_cell_boundaries() -> SpatialGrid {
+        grid(&[
+            ("West", [1, 1], [96, 96]),
+            ("East", [104, 1], [399, 96]),
+            ("South", [1, 104], [96, 399]),
+        ])
+    }
+
+    #[test]
+    fn edges_on_a_cell_boundary_are_inside_their_territory() {
+        let grid = on_cell_boundaries();
+        assert_eq!(grid.find_at(96.0, 50.0, 0.0).as_deref(), Some("West"));
+        assert_eq!(grid.find_at(50.0, 96.0, 0.0).as_deref(), Some("West"));
+    }
+
+    #[test]
+    fn a_reach_exactly_to_an_edge_on_a_cell_boundary_hits_it() {
+        let grid = on_cell_boundaries();
+        assert_eq!(grid.find_at(97.0, 50.0, 1.0).as_deref(), Some("West"));
+        assert_eq!(grid.find_at(50.0, 97.0, 1.0).as_deref(), Some("West"));
+        assert_eq!(grid.find_at(103.0, 50.0, 1.0).as_deref(), Some("East"));
+        assert_eq!(grid.find_at(50.0, 103.0, 1.0).as_deref(), Some("South"));
+        assert_eq!(grid.find_at(97.5, 50.0, 1.0).as_deref(), None);
+    }
+
+    #[test]
+    fn equal_distances_across_a_cell_boundary_go_to_the_first_name() {
+        let grid = on_cell_boundaries();
+        assert_eq!(grid.find_at(100.0, 50.0, 4.0).as_deref(), Some("East"));
+        assert_eq!(grid.find_at(50.0, 100.0, 4.0).as_deref(), Some("South"));
+    }
+
+    #[test]
+    fn a_containing_territory_wins_over_one_within_reach() {
+        let grid = on_cell_boundaries();
+        assert_eq!(grid.find_at(96.0, 50.0, 8.0).as_deref(), Some("West"));
+        assert_eq!(grid.find_at(50.0, 96.0, 8.0).as_deref(), Some("West"));
     }
 
     #[test]
