@@ -49,6 +49,7 @@ use sequoia_shared::war_board::StageKind;
 use crate::frame::{
     Backend, Frame, FrameMetrics, FrameOutcome, InitError, InitStage, RenderCapabilities,
 };
+use crate::highlight::{InstanceIndex, NO_INSTANCE};
 use crate::icons::ResourceAtlas;
 use crate::tiles::{LoadedTile, TileQuality};
 
@@ -99,7 +100,13 @@ struct ViewportUniform {
     time: f32,
     resolution: [f32; 2],
     _pad1: [f32; 2],
+    /// The hovered and selected territories' instance indices, or [`NO_INSTANCE`]; only the
+    /// territory shader reads them. Kept here rather than in the instances, so a change of
+    /// hover or selection rewrites this uniform instead of every territory instance.
+    interaction: [i32; 4],
 }
+
+const NO_INTERACTION: [i32; 4] = [NO_INSTANCE, NO_INSTANCE, 0, 0];
 
 /// Per-territory instance data: 28 floats = 112 bytes.
 #[repr(C)]
@@ -1257,6 +1264,8 @@ pub struct GpuRenderer {
 
     // Persistent instance buffer to avoid per-rebuild allocation
     instances_buf: Vec<TerritoryInstance>,
+    /// Where each territory sits in `instances_buf`, for the hover and selection uniform.
+    instance_index: InstanceIndex,
 
     // Diagnostics
     diag_static_rebuilds: u32,
@@ -1530,6 +1539,7 @@ impl GpuRenderer {
                 time: 0.0,
                 resolution: [width as f32 / dpr, height as f32 / dpr],
                 _pad1: [0.0, 0.0],
+                interaction: NO_INTERACTION,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1551,6 +1561,7 @@ impl GpuRenderer {
                     time: 0.0,
                     resolution: [width as f32 / dpr, height as f32 / dpr],
                     _pad1: [0.0, 0.0],
+                    interaction: NO_INTERACTION,
                 }]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -2131,6 +2142,7 @@ impl GpuRenderer {
             max_anim_end_ms: 0.0,
             start_time_ms: js_sys::Date::now(),
             instances_buf: Vec::new(),
+            instance_index: InstanceIndex::default(),
             diag_static_rebuilds: 0,
             diag_dynamic_rebuilds: 0,
             diag_icon_rebuilds: 0,
@@ -3250,9 +3262,6 @@ impl GpuRenderer {
                     None => ct.guild_color,
                 };
 
-                let is_hovered = frame.hovered == Some(name.as_str());
-                let is_selected = frame.selected == Some(name.as_str());
-
                 let resource_data = if settings.defense_highlight {
                     ct.territory
                         .runtime
@@ -3267,19 +3276,9 @@ impl GpuRenderer {
                 let has_overlay =
                     resource_data[0] > 0.5 || (resource_data[3] as u32 & (1 << 10)) != 0; // mode 0 + double emeralds
 
+                // The shader firms this for the hovered and selected territories.
                 let fill_alpha = if has_overlay {
                     settings.overlay_fill_alpha()
-                        + if is_selected {
-                            0.18
-                        } else if is_hovered {
-                            0.10
-                        } else {
-                            0.0
-                        }
-                } else if is_selected {
-                    0.38
-                } else if is_hovered {
-                    0.33
                 } else {
                     0.26
                 };
@@ -3315,10 +3314,7 @@ impl GpuRenderer {
                     });
                     [mark.due_at.map_or(0.0, relative), timer[0], timer[1]]
                 });
-                let flags = (is_hovered as u32)
-                    + (is_selected as u32) * 2
-                    + (is_headquarters as u32) * 4
-                    + war_flag;
+                let flags = (is_headquarters as u32) * 4 + war_flag;
 
                 let acquired_rel_secs = if settings.suppress_cooldown_visuals {
                     -1_000_000.0_f32
@@ -3373,6 +3369,7 @@ impl GpuRenderer {
             }));
 
         self.instance_count = self.instances_buf.len() as u32;
+        self.instance_index.rebuild(frame.territories.keys());
 
         // Cache the latest animation end time so render() can check
         // has_anims with a single comparison instead of scanning all territories.
@@ -4423,7 +4420,14 @@ impl GpuRenderer {
         let w = self.width as f32 / self.dpr;
         let h = self.height as f32 / self.dpr;
 
-        // Update viewport uniform
+        let tiles_pending = self.sync_tiles(frame.tiles);
+        let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
+            // Fail closed: map rendering requires the GPU text pipeline.
+            return FrameOutcome::default();
+        };
+
+        // After the rebuild: the hover and selection indices must point into the instances
+        // this frame draws, which new territory data may have reordered.
         self.queue.write_buffer(
             &self.viewport_buffer,
             0,
@@ -4433,15 +4437,10 @@ impl GpuRenderer {
                 time: self.shader_time(now),
                 resolution: [w, h],
                 _pad1: [self.shader_reference_time(frame.clock_secs), 0.0],
+                interaction: self.interaction(frame),
             }]),
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
-
-        let tiles_pending = self.sync_tiles(frame.tiles);
-        let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
-            // Fail closed: map rendering requires the GPU text pipeline.
-            return FrameOutcome::default();
-        };
         let outcome = FrameOutcome {
             animating: now < self.max_anim_end_ms || tiles_pending,
             next_refresh,
@@ -4805,6 +4804,16 @@ impl GpuRenderer {
         ((now_ms - self.start_time_ms) / 1000.0) as f32
     }
 
+    /// The hovered and selected territories, as indices into the territory instances.
+    fn interaction(&self, frame: &Frame) -> [i32; 4] {
+        [
+            self.instance_index.of(frame.hovered),
+            self.instance_index.of(frame.selected),
+            0,
+            0,
+        ]
+    }
+
     /// The timer clock relative to init, which drives the cooldown borders.
     fn shader_reference_time(&self, clock_secs: i64) -> f32 {
         (clock_secs as f64 - self.start_time_ms / 1000.0) as f32
@@ -5039,6 +5048,7 @@ impl GpuRenderer {
                 time: 0.0,
                 resolution: [width as f32 / dpr, height as f32 / dpr],
                 _pad1: [0.0, 0.0],
+                interaction: NO_INTERACTION,
             }]),
         );
         let bg_color = [19.0 / 255.0, 22.0 / 255.0, 31.0 / 255.0, 0.88_f32];
@@ -5155,6 +5165,7 @@ impl GpuRenderer {
                 time: self.shader_time(frame.now_ms),
                 resolution: [w, h],
                 _pad1: [self.shader_reference_time(frame.clock_secs), 0.0],
+                interaction: self.interaction(frame),
             }]),
         );
         // Clip-space rectangle of the minimap for the terrain blit.

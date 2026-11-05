@@ -14,6 +14,7 @@ mod gpu;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "gpu/native.rs"]
 mod gpu;
+mod highlight;
 mod icons;
 mod input;
 pub mod live_feed;

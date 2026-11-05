@@ -10,6 +10,8 @@ struct Viewport {
     time: f32,
     resolution: vec2<f32>,
     _pad1: vec2<f32>,
+    // Instance indices of the hovered and selected territories, -1 for none.
+    interaction: vec4<i32>,
 };
 
 @group(0) @binding(0)
@@ -43,6 +45,8 @@ struct VertexOutput {
     @location(8) war_times: vec3<f32>,
     // War outline width multiplier and opacity.
     @location(9) war_outline: vec2<f32>,
+    // 1.0 when this territory is hovered (x) or selected (y).
+    @location(10) @interpolate(flat) highlight: vec2<f32>,
 };
 
 fn world_to_ndc(world_pos: vec2<f32>) -> vec4<f32> {
@@ -52,7 +56,11 @@ fn world_to_ndc(world_pos: vec2<f32>) -> vec4<f32> {
 }
 
 @vertex
-fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
+fn vs_main(
+    vertex: VertexInput,
+    instance: InstanceInput,
+    @builtin(instance_index) instance_index: u32,
+) -> VertexOutput {
     var out: VertexOutput;
 
     let world_pos = instance.rect.xy + vertex.quad_pos * instance.rect.zw;
@@ -67,6 +75,11 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.resource_data = instance.resource_data;
     out.war_times = instance.cooldown.yzw;
     out.war_outline = instance.anim_time.zw;
+    let index = i32(instance_index);
+    out.highlight = vec2<f32>(
+        select(0.0, 1.0, index == vp.interaction.x),
+        select(0.0, 1.0, index == vp.interaction.y),
+    );
 
     return out;
 }
@@ -289,7 +302,16 @@ fn compute_resource_fill(rd: vec4<f32>, uv: vec2<f32>, size_px: vec2<f32>, guild
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let fill_alpha = in.state.x;
+    let is_hovered = in.highlight.x > 0.5;
+    let is_selected = in.highlight.y > 0.5;
+    // Hover and selection firm the fill, more over a resource or defense overlay.
+    let has_overlay = in.resource_data.x > 0.5 || (u32(in.resource_data.w + 0.5) & 1024u) != 0u;
+    var fill_alpha = in.state.x;
+    if is_selected {
+        fill_alpha += select(0.12, 0.18, has_overlay);
+    } else if is_hovered {
+        fill_alpha += select(0.07, 0.10, has_overlay);
+    }
     let zoom_fill_boost = smoothstep(0.40, 0.12, vp.scale) * 0.24;
     let border_alpha = in.state.y;
     let flags = in.state.z;
@@ -300,8 +322,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         cooldown_frac = clamp((600.0 - age_secs) / 600.0, 0.0, 1.0);
     }
 
-    let is_hovered = (u32(flags) & 1u) != 0u;
-    let is_selected = (u32(flags) & 2u) != 0u;
     let is_headquarters = (u32(flags) & 4u) != 0u;
     let is_at_war = (u32(flags) & 8u) != 0u;
     let is_entered = (u32(flags) & 16u) != 0u;

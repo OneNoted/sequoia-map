@@ -199,16 +199,12 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         }
     });
 
+    // Hover and selection reach the renderer as a uniform each frame: a redraw, no rebuild.
     Effect::new({
-        let state = state.clone();
         let scheduler = scheduler.clone();
         move || {
             map.hovered.track();
             inputs.selected.track();
-            state
-                .borrow_mut()
-                .planner
-                .invalidate(SceneChange::Highlight);
             scheduler.mark_dirty();
         }
     });
