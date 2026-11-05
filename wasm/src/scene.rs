@@ -71,8 +71,6 @@ impl BitOrAssign for Rebuild {
 pub enum SceneChange {
     /// Territory ownership, geometry, resources or runtime state.
     Territories,
-    /// Hovered or selected territory.
-    Highlight,
     /// Heat or war overlay data.
     Overlay,
     /// The icon atlas became available.
@@ -83,7 +81,7 @@ impl SceneChange {
     fn invalidates(self) -> Rebuild {
         match self {
             SceneChange::Territories => Rebuild::ALL,
-            SceneChange::Highlight | SceneChange::Overlay => Rebuild {
+            SceneChange::Overlay => Rebuild {
                 territories: true,
                 ..Rebuild::NONE
             },
@@ -402,7 +400,7 @@ mod tests {
     #[test]
     fn data_changes_invalidate_what_depends_on_them() {
         let mut planner = settled(0.5, 100, i64::MAX);
-        planner.invalidate(SceneChange::Highlight);
+        planner.invalidate(SceneChange::Overlay);
         assert_eq!(
             planner.plan(&at(0.5), &settings(), 100, true),
             only(|r| r.territories = true)
