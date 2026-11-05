@@ -460,7 +460,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     var f_alpha = min(fill_alpha + zoom_fill_boost, 1.0);
     if cooldown_fill {
-        f_alpha = max(f_alpha, 0.5);
+        // The cooldown colour needs a stronger fill than the guild's to read. The floor is on
+        // the resting fill, so hover and selection still add their lift on top of it.
+        f_alpha = min(max(in.state.x + zoom_fill_boost, 0.5) + fill_alpha - in.state.x, 1.0);
     }
     var cooldown_strip_mix: f32 = 0.0;
     var cooldown_strip_color: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
