@@ -18,6 +18,7 @@ use sequoia_map_engine::claim_labels::{
 };
 use sequoia_map_engine::colors::brighten;
 use sequoia_map_engine::connections::{self, ConnectionMesh, ConnectionProjection};
+use sequoia_map_engine::cooldown::{COOLDOWN_SECS, CooldownEndsCache};
 use sequoia_map_engine::defense::DefenseTier;
 use sequoia_map_engine::hq_layout::{Caption, HqCrown, HqLayout, TerritoryBox};
 use sequoia_map_engine::icon_atlas::ICON_COUNT;
@@ -100,14 +101,26 @@ struct ViewportUniform {
     scale: f32,
     time: f32,
     resolution: [f32; 2],
-    _pad1: [f32; 2],
+    /// The timer clock relative to init, and [`COOLDOWN_FILL`] and [`COOLDOWN_PULSE`]. Only
+    /// the territory shader reads it; the others leave the slot as padding.
+    cooldown: [f32; 2],
     /// The hovered and selected territories' instance indices, or [`NO_INSTANCE`]; only the
     /// territory shader reads them. Kept here rather than in the instances, so a change of
     /// hover or selection rewrites this uniform instead of every territory instance.
     interaction: [i32; 4],
+    /// The territory overlay's opacity (see `RenderSettings::territory_opacity`), then
+    /// padding. Only the territory shader reads it.
+    territory: [f32; 4],
 }
 
 const NO_INTERACTION: [i32; 4] = [NO_INSTANCE, NO_INSTANCE, 0, 0];
+/// The territory overlay at full strength: the minimap's overview, and the default.
+const FULL_TERRITORY: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+
+/// Cooling territories show the fill instead of the bar.
+const COOLDOWN_FILL: u32 = 1;
+/// A cooling fill pulses over its final seconds.
+const COOLDOWN_PULSE: u32 = 2;
 
 /// Per-territory instance data: 28 floats = 112 bytes.
 #[repr(C)]
@@ -329,8 +342,6 @@ const WAR_FLAG_URGENCY: u32 = 128;
 const WAR_FLAG_PROGRESS: u32 = 256;
 /// Smallest far-zoom guild name an HQ shows before falling back to its tag, screen pixels.
 const FAR_ZOOM_CAPTION_MIN_PX: f32 = 8.0;
-/// A captured territory is fresh (on cooldown) for this long.
-const FRESH_TERRITORY_SECS: i64 = 600;
 const ORNAMENT_MIN_RENDERED_PX: f32 = 1.0;
 const ORNAMENT_UV_PADDING_PX: u32 = 2;
 const SEQUOIA_ORNAMENT_FALLBACK_GOLD: [u8; 3] = [245, 197, 66];
@@ -1278,6 +1289,8 @@ pub struct GpuRenderer {
     // Cached max animation end time (epoch ms) — avoids scanning all
     // territories every frame just to check if animations are active.
     max_anim_end_ms: f64,
+    /// When the territories' cooldowns end, for the final-seconds pulse.
+    cooldown_ends: CooldownEndsCache,
 
     // Relative timing: epoch ms at init, for f32-safe shader time
     start_time_ms: f64,
@@ -1558,8 +1571,9 @@ impl GpuRenderer {
                 scale: 1.0,
                 time: 0.0,
                 resolution: [width as f32 / dpr, height as f32 / dpr],
-                _pad1: [0.0, 0.0],
+                cooldown: [0.0, 0.0],
                 interaction: NO_INTERACTION,
+                territory: FULL_TERRITORY,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1580,8 +1594,9 @@ impl GpuRenderer {
                     scale: 1.0,
                     time: 0.0,
                     resolution: [width as f32 / dpr, height as f32 / dpr],
-                    _pad1: [0.0, 0.0],
+                    cooldown: [0.0, 0.0],
                     interaction: NO_INTERACTION,
+                    territory: FULL_TERRITORY,
                 }]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -2167,6 +2182,7 @@ impl GpuRenderer {
             height,
             dpr,
             max_anim_end_ms: 0.0,
+            cooldown_ends: CooldownEndsCache::default(),
             start_time_ms: js_sys::Date::now(),
             instances_buf: Vec::new(),
             instance_index: InstanceIndex::default(),
@@ -4070,7 +4086,7 @@ impl GpuRenderer {
                 }
 
                 if show_dynamic_cooldown {
-                    let remaining = 600 - state.age_secs;
+                    let remaining = COOLDOWN_SECS - state.age_secs;
                     text_buf.clear();
                     let _ = write!(&mut text_buf, "{}:{:02}", remaining / 60, remaining % 60);
                     let cooldown_gap = 3.5 + line_gap * 0.35;
@@ -4300,7 +4316,7 @@ impl GpuRenderer {
             let acquired_secs = ct.territory.acquired.timestamp();
             let state = dynamic_text_state(reference_time_secs, acquired_secs);
             if state.is_fresh {
-                next_change_secs = next_change_secs.min(acquired_secs + FRESH_TERRITORY_SECS);
+                next_change_secs = next_change_secs.min(acquired_secs + COOLDOWN_SECS);
             }
             let detail_layout_alpha = resource_icon_detail_layout_alpha;
             let label_lift = compute_resource_icon_label_lift_world(
@@ -4467,13 +4483,30 @@ impl GpuRenderer {
                 scale: vp.scale as f32,
                 time: self.shader_time(now),
                 resolution: [w, h],
-                _pad1: [self.shader_reference_time(frame.clock_secs), 0.0],
+                cooldown: self.cooldown_uniform(frame),
                 interaction: self.interaction(frame),
+                territory: [frame.settings.territory_opacity(), 0.0, 0.0, 0.0],
             }]),
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
+        // A pulse asks for frames only while some cooldown is in its final seconds. The ends
+        // are looked at, and built, only when a pulse is possible at all.
+        let pulsing = self.cooldown_uniform(frame)[1] as u32 & COOLDOWN_PULSE != 0
+            && self
+                .cooldown_ends
+                .get(
+                    frame.territory_revision,
+                    !frame.settings.suppress_cooldown_visuals,
+                    || {
+                        frame
+                            .territories
+                            .values()
+                            .map(|ct| ct.territory.acquired.timestamp())
+                    },
+                )
+                .pulsing_at(frame.clock_secs);
         let outcome = FrameOutcome {
-            animating: now < self.max_anim_end_ms || tiles_pending,
+            animating: now < self.max_anim_end_ms || tiles_pending || pulsing,
             next_refresh,
         };
 
@@ -4850,6 +4883,20 @@ impl GpuRenderer {
         (clock_secs as f64 - self.start_time_ms / 1000.0) as f32
     }
 
+    /// The uniform pair the territory shader times cooldowns with: the timer clock, and
+    /// whether they show the fill and may pulse.
+    fn cooldown_uniform(&self, frame: &Frame) -> [f32; 2] {
+        let settings = frame.settings;
+        let fill = settings.cooldown_fill(frame.heat.is_some());
+        let flags = if fill { COOLDOWN_FILL } else { 0 }
+            | if fill && settings.cooldown_pulse {
+                COOLDOWN_PULSE
+            } else {
+                0
+            };
+        [self.shader_reference_time(frame.clock_secs), flags as f32]
+    }
+
     /// Rebuilds the requested cached layers, plus any whose GPU resources had to be
     /// recreated. `None` when the text pipeline cannot be created.
     fn rebuild_layers(
@@ -5078,8 +5125,9 @@ impl GpuRenderer {
                 scale: layout.scale,
                 time: 0.0,
                 resolution: [width as f32 / dpr, height as f32 / dpr],
-                _pad1: [0.0, 0.0],
+                cooldown: [0.0, 0.0],
                 interaction: NO_INTERACTION,
+                territory: FULL_TERRITORY,
             }]),
         );
         let bg_color = [19.0 / 255.0, 22.0 / 255.0, 31.0 / 255.0, 0.88_f32];
@@ -5195,8 +5243,9 @@ impl GpuRenderer {
                 scale: layout.scale,
                 time: self.shader_time(frame.now_ms),
                 resolution: [w, h],
-                _pad1: [self.shader_reference_time(frame.clock_secs), 0.0],
+                cooldown: self.cooldown_uniform(frame),
                 interaction: self.interaction(frame),
+                territory: FULL_TERRITORY,
             }]),
         );
         // Clip-space rectangle of the minimap for the terrain blit.

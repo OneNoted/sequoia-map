@@ -1,4 +1,4 @@
-// Territory rendering shader — instanced rectangles with fills, borders, bevels, and cooldown strips.
+// Territory rendering shader — instanced rectangles with fills, borders, bevels, and cooldowns.
 //
 // Viewport uniform transforms world coordinates → clip space.
 // Per-instance data provides rect position/size, color, state flags, and animation params.
@@ -9,9 +9,12 @@ struct Viewport {
     scale: f32,
     time: f32,
     resolution: vec2<f32>,
-    _pad1: vec2<f32>,
+    // The timer clock relative to init, and flags: 1 cooldowns show the fill, 2 it pulses.
+    cooldown: vec2<f32>,
     // Instance indices of the hovered and selected territories, -1 for none.
     interaction: vec4<i32>,
+    // x: the territory overlay's opacity, 0 to 1.
+    territory: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -156,6 +159,18 @@ fn war_red() -> vec3<f32> {
 // A cooling territory's bar: a cool tone no war stage or HQ uses.
 fn cooldown_bar_color() -> vec3<f32> {
     return vec3<f32>(0.561, 0.808, 0.910);     // #8fcee8
+}
+
+// A cooling territory's fill, by how much of the cooldown has passed: red at the capture,
+// amber halfway, green near the end.
+fn cooldown_fill_color(passed: f32) -> vec3<f32> {
+    let red = vec3<f32>(0.878, 0.255, 0.212);   // #e04136
+    let amber = vec3<f32>(0.957, 0.639, 0.157); // #f4a328
+    let green = vec3<f32>(0.322, 0.749, 0.380); // #52bf61
+    if passed < 0.5 {
+        return mix(red, amber, passed * 2.0);
+    }
+    return mix(amber, green, (passed - 0.5) * 2.0);
 }
 
 // Headquarters are marked by gold brackets on their corners rather than a full rectangle,
@@ -316,9 +331,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         fill_alpha += select(0.07, 0.10, has_overlay);
     }
     let zoom_fill_boost = smoothstep(0.40, 0.12, vp.scale) * 0.24;
-    let border_alpha = in.state.y;
+    // The opacity setting fades the resting guild fill (cooldown Fill and Heat included) and,
+    // to a floor that keeps boundaries and guild colour, the resting border. Hover and
+    // selection lift, war stages, HQ brackets, the capture flash, the cooldown bar and
+    // resource or defense overlays (which have their own opacity) keep full strength.
+    let opacity = clamp(vp.territory.x, 0.0, 1.0);
+    let border_alpha = in.state.y * mix(0.4, 1.0, opacity);
     let flags = in.state.z;
-    let reference_rel_secs = vp._pad1.x;
+    let reference_rel_secs = vp.cooldown.x;
+    let cooldown_flags = u32(vp.cooldown.y + 0.5);
     let age_secs = max(reference_rel_secs - in.acquired_rel_secs, 0.0);
     var cooldown_frac: f32 = 0.0;
     if age_secs < 600.0 {
@@ -423,6 +444,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Fill zone — compute color and alpha with all effects
     var fill_color = compute_resource_fill(in.resource_data, in.uv, in.size_px, base_color);
+    // The cooldown fill takes the place of the guild's fill colour; the war and HQ tints
+    // below still apply over it, and the border, labels and stage outline are untouched.
+    let cooldown_fill = (cooldown_flags & 1u) != 0u && cooldown_frac > 0.0;
+    if cooldown_fill {
+        fill_color = cooldown_fill_color(1.0 - cooldown_frac);
+        // Over the final ten seconds it breathes a little lighter, once a second.
+        if (cooldown_flags & 2u) != 0u && age_secs >= 590.0 {
+            let breath = 0.5 - 0.5 * cos(vp.time * 6.2831853);
+            fill_color = mix(fill_color, vec3<f32>(0.85, 1.0, 0.86), breath * 0.22);
+        }
+    }
     // War is transient and urgent, so it overrides the HQ gold while it lasts.
     let war_color = war_red();
     if is_at_war {
@@ -433,7 +465,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let hq_tint = vec3<f32>(0.973, 0.831, 0.275);
         fill_color = mix(fill_color, hq_tint, 0.06);
     }
-    var f_alpha = min(fill_alpha + zoom_fill_boost, 1.0);
+    var resting_fill = in.state.x + zoom_fill_boost;
+    if cooldown_fill {
+        // The cooldown colour needs a stronger fill than the guild's to read. The floor is on
+        // the resting fill, so hover and selection still add their lift on top of it.
+        resting_fill = max(resting_fill, 0.5);
+    }
+    let fill_opacity = select(opacity, 1.0, has_overlay);
+    var f_alpha = min(resting_fill * fill_opacity + fill_alpha - in.state.x, 1.0);
     var cooldown_strip_mix: f32 = 0.0;
     var cooldown_strip_color: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
 
@@ -462,18 +501,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
             if is_top || is_left {
                 // Top-left highlight
-                fill_color = mix(fill_color, vec3<f32>(1.0), 0.06 / max(f_alpha, 0.01));
+                fill_color = mix(fill_color, vec3<f32>(1.0), min(0.06 * fill_opacity / max(f_alpha, 0.01), 1.0));
             } else if is_bottom || is_right {
                 // Bottom-right shadow
-                fill_color = mix(fill_color, vec3<f32>(0.0), 0.15 / max(f_alpha, 0.01));
+                fill_color = mix(fill_color, vec3<f32>(0.0), min(0.15 * fill_opacity / max(f_alpha, 0.01), 1.0));
             }
         }
     }
 
     // Cooldown: one thin, steady bar inside the bottom edge whose length is the cooldown
-    // left. A fixed screen height keeps it discoverable when zoomed out without crowding the
-    // guild's border or a war outline; the exact time is on the label and the hover card.
-    if cooldown_frac > 0.0 {
+    // left, unless the fill shows it. A fixed screen height keeps it discoverable when zoomed
+    // out without crowding the guild's border or a war outline; the exact time is on the
+    // label and the hover card.
+    if cooldown_frac > 0.0 && !cooldown_fill {
         let bar_h = clamp(2.0 + vp.scale * 0.6, 2.0, 3.0);
         let inset = border_width + 1.0;
         let px_from_bottom = (1.0 - in.uv.y) * in.size_px.y;

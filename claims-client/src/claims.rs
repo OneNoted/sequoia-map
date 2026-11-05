@@ -19,7 +19,7 @@ use sequoia_shared::{
 use sequoia_browser_map::live_feed::{self, LiveFeed};
 use sequoia_browser_map::{BrowserMap, EditMode, MapCamera, MapCanvas, MapEvent, MapInputs};
 use sequoia_map_engine::settings::{
-    ConnectionStyle, HqCrownStyle, LabelScales, NameColor, RenderSettings,
+    ConnectionStyle, CooldownDisplay, HqCrownStyle, LabelScales, NameColor, RenderSettings,
 };
 use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap};
 use sequoia_map_engine::viewport::Viewport;
@@ -1471,10 +1471,13 @@ fn claims_render_settings(resource_highlight: bool) -> RenderSettings {
     RenderSettings {
         thick_cooldown_borders: false,
         suppress_cooldown_visuals: true,
+        cooldown_display: CooldownDisplay::Bar,
+        cooldown_pulse: false,
         resource_highlight,
         resource_highlight_opacity: 0.34,
         defense_highlight: false,
         fill_alpha_boost: 0.12,
+        territory_opacity: 1.0,
         show_connections: true,
         connection_style: ConnectionStyle::Classic,
         bold_connections: true,

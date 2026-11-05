@@ -45,6 +45,21 @@ pub enum HqCrownStyle {
     Fill,
 }
 
+/// How a new capture's cooldown shows on its territory. The exact time left stays on the
+/// countdown label and the hover card either way.
+///
+/// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CooldownDisplay {
+    /// A thin bar inside the bottom edge, as long as the time left.
+    Bar,
+    /// The fill runs red through amber to green as the cooldown passes and is the guild's
+    /// again when it ends. Where the fill already shows Heat or a resource or defense
+    /// highlight, the bar stays instead.
+    #[default]
+    Fill,
+}
+
 /// How a queued or entered territory's stage layer is drawn, inside the guild's own border.
 ///
 /// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
@@ -148,12 +163,21 @@ pub struct RenderSettings {
     pub thick_cooldown_borders: bool,
     /// Draws every territory as if its cooldown had expired.
     pub suppress_cooldown_visuals: bool,
+    pub cooldown_display: CooldownDisplay,
+    /// Whether a cooling fill pulses gently over its final seconds: the host's call, made for
+    /// live time without reduced motion. Like the display choice, the shader reads it from
+    /// the frame's uniforms, so neither rebuilds a layer.
+    pub cooldown_pulse: bool,
     pub resource_highlight: bool,
     /// Base fill alpha of resource-highlighted territories, before hover and selection.
     pub resource_highlight_opacity: f32,
     pub defense_highlight: bool,
     /// Added to every territory fill alpha.
     pub fill_alpha_boost: f32,
+    /// How strongly the territory overlay covers the terrain, 0 to 1 (see
+    /// [`RenderSettings::territory_opacity`]). Read from the frame's uniforms, so changing it
+    /// rebuilds no layer.
+    pub territory_opacity: f32,
 
     // Connection lines.
     pub show_connections: bool,
@@ -203,6 +227,8 @@ pub const RESOURCE_HIGHLIGHT_OPACITY_MAX: f32 = 0.90;
 pub const DEFAULT_RESOURCE_HIGHLIGHT_OPACITY: f32 = 0.45;
 /// Defense tiers keep the fixed overlay alpha.
 const DEFENSE_HIGHLIGHT_OPACITY: f32 = 0.34;
+/// The overlay as it has always been drawn.
+pub const DEFAULT_TERRITORY_OPACITY: f32 = 1.0;
 
 /// User label size multipliers. Each group is multiplied by the master scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -256,6 +282,26 @@ impl RenderSettings {
         } else {
             DEFAULT_RESOURCE_HIGHLIGHT_OPACITY
         }
+    }
+
+    /// The resting guild fill and border's share of their full strength, clamped to 0 to 1.
+    /// Hover and selection, war stages, HQ brackets, resource and defense overlays and labels
+    /// keep their full strength, so the map stays readable with the overlay faded.
+    pub fn territory_opacity(&self) -> f32 {
+        if self.territory_opacity.is_finite() {
+            self.territory_opacity.clamp(0.0, 1.0)
+        } else {
+            DEFAULT_TERRITORY_OPACITY
+        }
+    }
+
+    /// Whether cooling territories show [`CooldownDisplay::Fill`]: chosen, and the fill is
+    /// not already showing Heat (`heat`) or a resource or defense highlight.
+    pub fn cooldown_fill(&self, heat: bool) -> bool {
+        self.cooldown_display == CooldownDisplay::Fill
+            && !heat
+            && !self.resource_highlight
+            && !self.defense_highlight
     }
 
     /// The cached outputs that changing from `previous` to `self` makes stale.
@@ -325,8 +371,9 @@ impl RenderSettings {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, LabelScales, NameColor, RESOURCE_HIGHLIGHT_OPACITY_MAX,
-        RESOURCE_HIGHLIGHT_OPACITY_MIN, RenderSettings,
+        CooldownDisplay, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_TERRITORY_OPACITY,
+        LabelScales, NameColor, RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN,
+        RenderSettings,
     };
     use crate::scene::Rebuild;
 
@@ -334,10 +381,13 @@ pub(crate) mod tests {
         RenderSettings {
             thick_cooldown_borders: true,
             suppress_cooldown_visuals: false,
+            cooldown_display: CooldownDisplay::Bar,
+            cooldown_pulse: false,
             resource_highlight: false,
             resource_highlight_opacity: DEFAULT_RESOURCE_HIGHLIGHT_OPACITY,
             defense_highlight: false,
             fill_alpha_boost: 0.0,
+            territory_opacity: DEFAULT_TERRITORY_OPACITY,
             show_connections: true,
             connection_style: super::ConnectionStyle::Classic,
             bold_connections: false,
@@ -379,6 +429,70 @@ pub(crate) mod tests {
     #[test]
     fn unchanged_settings_invalidate_nothing() {
         assert_eq!(settings().invalidates(&settings()), Rebuild::NONE);
+    }
+
+    #[test]
+    fn the_cooldown_display_and_pulse_rebuild_no_layer() {
+        assert_eq!(
+            after(|s| s.cooldown_display = CooldownDisplay::Fill),
+            Rebuild::NONE
+        );
+        assert_eq!(after(|s| s.cooldown_pulse = true), Rebuild::NONE);
+    }
+
+    #[test]
+    fn territory_opacity_rebuilds_no_layer_and_stays_in_range() {
+        assert_eq!(after(|s| s.territory_opacity = 0.3), Rebuild::NONE);
+        let opacity = |value| {
+            RenderSettings {
+                territory_opacity: value,
+                ..settings()
+            }
+            .territory_opacity()
+        };
+        assert_eq!(opacity(0.3), 0.3);
+        assert_eq!(opacity(-1.0), 0.0);
+        assert_eq!(opacity(4.0), 1.0);
+        assert_eq!(opacity(f32::NAN), DEFAULT_TERRITORY_OPACITY);
+        assert_eq!(settings().territory_opacity(), 1.0);
+    }
+
+    #[test]
+    fn the_cooldown_fill_gives_way_to_fills_that_carry_data() {
+        let fill = RenderSettings {
+            cooldown_display: CooldownDisplay::Fill,
+            ..settings()
+        };
+        assert!(fill.cooldown_fill(false));
+        assert!(!fill.cooldown_fill(true));
+        assert!(
+            !RenderSettings {
+                resource_highlight: true,
+                ..fill.clone()
+            }
+            .cooldown_fill(false)
+        );
+        assert!(
+            !RenderSettings {
+                defense_highlight: true,
+                ..fill.clone()
+            }
+            .cooldown_fill(false)
+        );
+        assert!(!settings().cooldown_fill(false));
+    }
+
+    #[test]
+    fn the_cooldown_display_is_saved_by_name_and_defaults_to_the_fill() {
+        assert_eq!(
+            serde_json::to_string(&CooldownDisplay::Fill).unwrap(),
+            "\"Fill\""
+        );
+        assert_eq!(
+            serde_json::from_str::<CooldownDisplay>("\"Bar\"").unwrap(),
+            CooldownDisplay::Bar
+        );
+        assert_eq!(CooldownDisplay::default(), CooldownDisplay::Fill);
     }
 
     #[test]

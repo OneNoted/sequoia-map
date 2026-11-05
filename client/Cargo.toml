@@ -24,6 +24,8 @@ web-sys = { version = "0.3", features = [
     "HtmlDialogElement",
     "HtmlElement",
     "HtmlInputElement",
+    "MediaQueryList",
+    "MediaQueryListEvent",
     "Location",
     "Navigator",
     "NodeList",

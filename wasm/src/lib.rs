@@ -6,6 +6,7 @@ pub mod animation;
 pub mod claim_labels;
 pub mod colors;
 pub mod connections;
+pub mod cooldown;
 pub mod defense;
 pub mod gesture;
 pub mod heat;
