@@ -3636,24 +3636,28 @@ mod tests {
     }
 
     #[test]
-    fn the_cooldown_display_defaults_to_the_bar_and_round_trips() {
-        let old: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(old.cooldown_display, CooldownDisplay::Bar);
+    fn the_cooldown_display_defaults_to_the_fill_and_keeps_a_saved_bar() {
+        let unset: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(unset.cooldown_display, CooldownDisplay::Fill);
+        assert_eq!(
+            SettingsV2::default().cooldown_display,
+            CooldownDisplay::Fill
+        );
 
         let saved = SettingsV2 {
-            cooldown_display: CooldownDisplay::Fill,
+            cooldown_display: CooldownDisplay::Bar,
             ..SettingsV2::default()
         };
         let round_trip: SettingsV2 =
             serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-        assert_eq!(round_trip.cooldown_display, CooldownDisplay::Fill);
+        assert_eq!(round_trip.cooldown_display, CooldownDisplay::Bar);
 
         let future: SettingsV2 = serde_json::from_value(serde_json::json!({
             "cooldown_display": "Ring",
             "show_countdown": true,
         }))
         .unwrap();
-        assert_eq!(future.cooldown_display, CooldownDisplay::Bar);
+        assert_eq!(future.cooldown_display, CooldownDisplay::Fill);
         assert!(future.show_countdown);
     }
 

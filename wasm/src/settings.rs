@@ -52,11 +52,11 @@ pub enum HqCrownStyle {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CooldownDisplay {
     /// A thin bar inside the bottom edge, as long as the time left.
-    #[default]
     Bar,
     /// The fill runs red through amber to green as the cooldown passes and is the guild's
     /// again when it ends. Where the fill already shows Heat or a resource or defense
     /// highlight, the bar stays instead.
+    #[default]
     Fill,
 }
 
@@ -447,7 +447,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_cooldown_display_is_saved_by_name_and_defaults_to_the_bar() {
+    fn the_cooldown_display_is_saved_by_name_and_defaults_to_the_fill() {
         assert_eq!(
             serde_json::to_string(&CooldownDisplay::Fill).unwrap(),
             "\"Fill\""
@@ -456,7 +456,7 @@ pub(crate) mod tests {
             serde_json::from_str::<CooldownDisplay>("\"Bar\"").unwrap(),
             CooldownDisplay::Bar
         );
-        assert_eq!(CooldownDisplay::default(), CooldownDisplay::Bar);
+        assert_eq!(CooldownDisplay::default(), CooldownDisplay::Fill);
     }
 
     #[test]
