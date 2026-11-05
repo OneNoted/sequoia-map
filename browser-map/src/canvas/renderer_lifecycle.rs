@@ -359,7 +359,8 @@ impl RendererLifecycle {
         canvas: NodeRef<leptos::html::Canvas>,
     ) -> Rc<Self> {
         let preference = renderer_preference();
-        let webgpu = preference.as_deref() != Some("webgl2") && browser_has_webgpu();
+        let webgpu =
+            WEBGPU_ENABLED && preference.as_deref() != Some("webgl2") && browser_has_webgpu();
         Rc::new(Self {
             lifecycle: RefCell::new(Lifecycle::new(webgpu)),
             state,
@@ -680,8 +681,15 @@ impl RendererLifecycle {
     }
 }
 
+/// Whether the map may start on WebGPU at all. Withdrawn for now: viewers on WebGPU still see
+/// lag whose cause is not established, so every browser, including one that exposes WebGPU or
+/// a page that asks for it, draws with WebGL2. The WebGPU path stays built so it can be
+/// qualified again.
+const WEBGPU_ENABLED: bool = false;
+
 /// `window.__SEQUOIA_RENDERER__`, read once per mount: "webgl2" keeps the map on WebGL2, and
-/// "webgpu-fallback" lets WebGPU use a software adapter, to exercise it without a GPU.
+/// "webgpu-fallback" lets WebGPU use a software adapter, to exercise it without a GPU. Neither
+/// starts WebGPU while [`WEBGPU_ENABLED`] is off.
 fn renderer_preference() -> Option<String> {
     let window = web_sys::window()?;
     js_sys::Reflect::get(window.as_ref(), &"__SEQUOIA_RENDERER__".into())
