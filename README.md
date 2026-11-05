@@ -58,4 +58,6 @@ mise run verify      # every check: Clippy, all tests, CI lint and the release c
 
 ## License
 
-[MIT](LICENSE).
+Original code: [MIT](LICENSE), copyright Jonatan Jonasson. See
+[third-party notices and credits](THIRD_PARTY_NOTICES.md) for map imagery,
+data providers and fonts.
