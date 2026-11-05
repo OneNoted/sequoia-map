@@ -45,6 +45,21 @@ pub enum HqCrownStyle {
     Fill,
 }
 
+/// How a new capture's cooldown shows on its territory. The exact time left stays on the
+/// countdown label and the hover card either way.
+///
+/// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CooldownDisplay {
+    /// A thin bar inside the bottom edge, as long as the time left.
+    #[default]
+    Bar,
+    /// The fill runs red through amber to green as the cooldown passes and is the guild's
+    /// again when it ends. Where the fill already shows Heat or a resource or defense
+    /// highlight, the bar stays instead.
+    Fill,
+}
+
 /// How a queued or entered territory's stage layer is drawn, inside the guild's own border.
 ///
 /// Persisted in `localStorage` (`sequoia_settings_v2`) as PascalCase, like [`NameColor`].
@@ -148,6 +163,11 @@ pub struct RenderSettings {
     pub thick_cooldown_borders: bool,
     /// Draws every territory as if its cooldown had expired.
     pub suppress_cooldown_visuals: bool,
+    pub cooldown_display: CooldownDisplay,
+    /// Whether a cooling fill pulses gently over its final seconds: the host's call, made for
+    /// live time without reduced motion. Like the display choice, the shader reads it from
+    /// the frame's uniforms, so neither rebuilds a layer.
+    pub cooldown_pulse: bool,
     pub resource_highlight: bool,
     /// Base fill alpha of resource-highlighted territories, before hover and selection.
     pub resource_highlight_opacity: f32,
@@ -258,6 +278,15 @@ impl RenderSettings {
         }
     }
 
+    /// Whether cooling territories show [`CooldownDisplay::Fill`]: chosen, and the fill is
+    /// not already showing Heat (`heat`) or a resource or defense highlight.
+    pub fn cooldown_fill(&self, heat: bool) -> bool {
+        self.cooldown_display == CooldownDisplay::Fill
+            && !heat
+            && !self.resource_highlight
+            && !self.defense_highlight
+    }
+
     /// The cached outputs that changing from `previous` to `self` makes stale.
     pub fn invalidates(&self, previous: &Self) -> Rebuild {
         let territory_style = self.thick_cooldown_borders != previous.thick_cooldown_borders
@@ -325,8 +354,8 @@ impl RenderSettings {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, LabelScales, NameColor, RESOURCE_HIGHLIGHT_OPACITY_MAX,
-        RESOURCE_HIGHLIGHT_OPACITY_MIN, RenderSettings,
+        CooldownDisplay, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, LabelScales, NameColor,
+        RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN, RenderSettings,
     };
     use crate::scene::Rebuild;
 
@@ -334,6 +363,8 @@ pub(crate) mod tests {
         RenderSettings {
             thick_cooldown_borders: true,
             suppress_cooldown_visuals: false,
+            cooldown_display: CooldownDisplay::Bar,
+            cooldown_pulse: false,
             resource_highlight: false,
             resource_highlight_opacity: DEFAULT_RESOURCE_HIGHLIGHT_OPACITY,
             defense_highlight: false,
@@ -379,6 +410,53 @@ pub(crate) mod tests {
     #[test]
     fn unchanged_settings_invalidate_nothing() {
         assert_eq!(settings().invalidates(&settings()), Rebuild::NONE);
+    }
+
+    #[test]
+    fn the_cooldown_display_and_pulse_rebuild_no_layer() {
+        assert_eq!(
+            after(|s| s.cooldown_display = CooldownDisplay::Fill),
+            Rebuild::NONE
+        );
+        assert_eq!(after(|s| s.cooldown_pulse = true), Rebuild::NONE);
+    }
+
+    #[test]
+    fn the_cooldown_fill_gives_way_to_fills_that_carry_data() {
+        let fill = RenderSettings {
+            cooldown_display: CooldownDisplay::Fill,
+            ..settings()
+        };
+        assert!(fill.cooldown_fill(false));
+        assert!(!fill.cooldown_fill(true));
+        assert!(
+            !RenderSettings {
+                resource_highlight: true,
+                ..fill.clone()
+            }
+            .cooldown_fill(false)
+        );
+        assert!(
+            !RenderSettings {
+                defense_highlight: true,
+                ..fill.clone()
+            }
+            .cooldown_fill(false)
+        );
+        assert!(!settings().cooldown_fill(false));
+    }
+
+    #[test]
+    fn the_cooldown_display_is_saved_by_name_and_defaults_to_the_bar() {
+        assert_eq!(
+            serde_json::to_string(&CooldownDisplay::Fill).unwrap(),
+            "\"Fill\""
+        );
+        assert_eq!(
+            serde_json::from_str::<CooldownDisplay>("\"Bar\"").unwrap(),
+            CooldownDisplay::Bar
+        );
+        assert_eq!(CooldownDisplay::default(), CooldownDisplay::Bar);
     }
 
     #[test]

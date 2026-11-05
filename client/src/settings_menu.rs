@@ -15,29 +15,29 @@ use crate::app::{
     CONNECTION_OPACITY_SCALE_MAX, CONNECTION_OPACITY_SCALE_MIN, CONNECTION_SOLID_OPACITY_MAX,
     CONNECTION_SOLID_OPACITY_MIN, CONNECTION_THICKNESS_SCALE_MAX, CONNECTION_THICKNESS_SCALE_MIN,
     ConnectionOpacityScale, ConnectionSolidOpacity, ConnectionStyle, ConnectionStyleSetting,
-    ConnectionThicknessScale, CurrentMode, DEFAULT_CONNECTION_OPACITY_SCALE,
-    DEFAULT_CONNECTION_SOLID_OPACITY, DEFAULT_CONNECTION_THICKNESS_SCALE,
-    DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER, DEFAULT_LABEL_SCALE_STATIC_NAME,
-    DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight, HQ_CROWN_SCALE_MAX, HQ_CROWN_SCALE_MIN,
-    HeatFallbackApplied, HeatHistoryBasis, HeatHistoryBasisSetting, HeatLiveSource,
-    HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId, HeatWindowLabel,
-    HqCrownScale, HqCrownStyle, HqCrownStyleSetting, IsMobile, LABEL_SCALE_GROUP_MAX,
-    LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic,
-    LabelScaleIcons, LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, ManualSrScalar,
-    MapIntelModeEnabled, MapMode, NameColor, NameColorSetting, PLAYER_HEAD_SIZE_MAX,
-    PLAYER_HEAD_SIZE_MIN, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize,
-    RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont,
-    ResetSettingsTrigger, ResourceHighlight, ResourceHighlightOpacity, ShowClaimLabels,
-    ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
-    ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
-    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
-    ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel, TagColorSetting,
-    ThickCooldownBorders, WAR_OUTLINE_OPACITY_MAX, WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_WIDTH_MAX,
-    WAR_OUTLINE_WIDTH_MIN, WarFeedVisible, WarOutlineColor, WarOutlineControls, WarOutlineStyle,
-    clamp_connection_opacity_scale, clamp_connection_solid_opacity,
-    clamp_connection_thickness_scale, clamp_hq_crown_scale, clamp_label_scale_group,
-    clamp_label_scale_master, clamp_player_head_size, clamp_resource_highlight_opacity,
-    clamp_war_outline_opacity, clamp_war_outline_width,
+    ConnectionThicknessScale, CooldownDisplay, CooldownDisplaySetting, CurrentMode,
+    DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_SOLID_OPACITY,
+    DEFAULT_CONNECTION_THICKNESS_SCALE, DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER,
+    DEFAULT_LABEL_SCALE_STATIC_NAME, DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight,
+    HQ_CROWN_SCALE_MAX, HQ_CROWN_SCALE_MIN, HeatFallbackApplied, HeatHistoryBasis,
+    HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled,
+    HeatSelectedSeasonId, HeatWindowLabel, HqCrownScale, HqCrownStyle, HqCrownStyleSetting,
+    IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX,
+    LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
+    LabelScaleStaticName, ManualSrScalar, MapIntelModeEnabled, MapMode, NameColor,
+    NameColorSetting, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN, PlayerHeadRenderHead,
+    PlayerHeadRenderLabel, PlayerHeadSize, RESOURCE_HIGHLIGHT_OPACITY_MAX,
+    RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont, ResetSettingsTrigger, ResourceHighlight,
+    ResourceHighlightOpacity, ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo,
+    ShowFarZoomTerritoryTags, ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain,
+    ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads,
+    ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel,
+    TagColorSetting, ThickCooldownBorders, WAR_OUTLINE_OPACITY_MAX, WAR_OUTLINE_OPACITY_MIN,
+    WAR_OUTLINE_WIDTH_MAX, WAR_OUTLINE_WIDTH_MIN, WarFeedVisible, WarOutlineColor,
+    WarOutlineControls, WarOutlineStyle, clamp_connection_opacity_scale,
+    clamp_connection_solid_opacity, clamp_connection_thickness_scale, clamp_hq_crown_scale,
+    clamp_label_scale_group, clamp_label_scale_master, clamp_player_head_size,
+    clamp_resource_highlight_opacity, clamp_war_outline_opacity, clamp_war_outline_width,
 };
 use crate::season_scalar::clamp_manual_scalar;
 use crate::territory::ClientTerritoryMap;
@@ -178,6 +178,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let ShowClaimLabels(show_claim_labels) = expect_context();
     let ShowFarZoomTerritoryTags(show_far_zoom_territory_tags) = expect_context();
     let ThickCooldownBorders(thick_cooldown_borders) = expect_context();
+    let CooldownDisplaySetting(cooldown_display) = expect_context();
     let BoldConnections(bold_connections) = expect_context();
     let ConnectionStyleSetting(connection_style) = expect_context();
     let ConnectionOpacityScale(connection_opacity_scale) = expect_context();
@@ -355,6 +356,17 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 />
                 <SettingsSwitch label="Cooldown Countdown" shortcut="T" hint="Time left on a new capture's 10-minute cooldown" active=show_countdown />
                 <SettingsSwitch label="Thick Cooldown Borders" active=thick_cooldown_borders />
+                <SettingsChoice
+                    label="Cooldown"
+                    hint="Fill runs red to green over the cooldown. Heat and highlights keep the bar"
+                    name="settings-cooldown-display"
+                    options=vec![
+                        (CooldownDisplay::Bar, Signal::stored("Bar")),
+                        (CooldownDisplay::Fill, Signal::stored("Fill")),
+                    ]
+                    selected=cooldown_display
+                    on_select=Callback::new(move |display| cooldown_display.set(display))
+                />
             </SettingsSection>
 
             // Only for viewers who can actually see the war feed - the same rule the

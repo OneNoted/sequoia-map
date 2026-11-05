@@ -152,6 +152,8 @@ pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct HqCrownStyleSetting(pub RwSignal<HqCrownStyle>);
 #[derive(Clone, Copy)]
+pub(crate) struct CooldownDisplaySetting(pub RwSignal<CooldownDisplay>);
+#[derive(Clone, Copy)]
 pub(crate) struct HqCrownScale(pub RwSignal<f64>);
 /// The war outline settings, one signal per control; saved together as one [`WarOutline`].
 #[derive(Clone, Copy)]
@@ -458,7 +460,7 @@ pub(crate) struct GuildColorStore(pub StoredValue<GuildColorMap>);
 // the UI. Re-exported here to keep `crate::app::NameColor` paths working; its
 // serde form is PascalCase and is persisted in localStorage.
 pub(crate) use sequoia_map_engine::settings::{
-    HqCrownStyle, NameColor, WarOutline, WarOutlineColor, WarOutlineStyle,
+    CooldownDisplay, HqCrownStyle, NameColor, WarOutline, WarOutlineColor, WarOutlineStyle,
 };
 
 use gloo_storage::Storage;
@@ -530,8 +532,10 @@ struct SettingsV2 {
     show_resource_icons: bool,
     #[serde(default = "default_true")]
     show_territory_ornaments: bool,
-    #[serde(default, deserialize_with = "lenient_hq_crown_style")]
+    #[serde(default, deserialize_with = "lenient_default")]
     hq_crown_style: HqCrownStyle,
+    #[serde(default, deserialize_with = "lenient_default")]
+    cooldown_display: CooldownDisplay,
     #[serde(default = "default_hq_crown_scale")]
     hq_crown_scale: f64,
     #[serde(default, deserialize_with = "lenient_war_outline")]
@@ -653,17 +657,36 @@ const fn default_player_head_size() -> f64 {
     DEFAULT_PLAYER_HEAD_SIZE
 }
 
+/// Whether the system asks for reduced motion, following changes while the page is open.
+fn prefers_reduced_motion() -> Signal<bool> {
+    let query = web_sys::window()
+        .and_then(|window| window.match_media("(prefers-reduced-motion: reduce)").ok())
+        .flatten();
+    let Some(query) = query else {
+        return Signal::stored(false);
+    };
+    let reduced = RwSignal::new(query.matches());
+    let changed = wasm_bindgen::closure::Closure::<dyn Fn(web_sys::MediaQueryListEvent)>::new(
+        move |event: web_sys::MediaQueryListEvent| reduced.set(event.matches()),
+    );
+    let _ = query.add_event_listener_with_callback("change", changed.as_ref().unchecked_ref());
+    // The app lives as long as the page, and so does the listener.
+    changed.forget();
+    reduced.into()
+}
+
 /// A style this build does not know, saved by a newer one, falls back to the default
 /// rather than failing the whole settings blob.
-fn lenient_hq_crown_style<'de, D>(deserializer: D) -> Result<HqCrownStyle, D::Error>
+fn lenient_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
 {
     let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
-/// Like [`lenient_hq_crown_style`]: an outline saved by a newer build falls back to the
+/// Like [`lenient_default`]: an outline saved by a newer build falls back to the
 /// default rather than failing the whole settings blob.
 fn lenient_war_outline<'de, D>(deserializer: D) -> Result<WarOutline, D::Error>
 where
@@ -811,6 +834,7 @@ impl Default for SettingsV2 {
             show_resource_icons: true,
             show_territory_ornaments: false,
             hq_crown_style: HqCrownStyle::default(),
+            cooldown_display: CooldownDisplay::default(),
             hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
             war_outline: WarOutline::default(),
             manual_sr_scalar: default_manual_sr_scalar(),
@@ -958,6 +982,7 @@ impl From<LegacySettings> for SettingsV2 {
             show_resource_icons: value.show_resource_icons,
             show_territory_ornaments: false,
             hq_crown_style: HqCrownStyle::default(),
+            cooldown_display: CooldownDisplay::default(),
             hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
             war_outline: WarOutline::default(),
             manual_sr_scalar: value.manual_sr_scalar,
@@ -1103,6 +1128,8 @@ pub fn MapPage() -> impl IntoView {
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
     let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
     let hq_crown_style: RwSignal<HqCrownStyle> = RwSignal::new(saved.hq_crown_style);
+    let cooldown_display: RwSignal<CooldownDisplay> = RwSignal::new(saved.cooldown_display);
+    let reduced_motion = prefers_reduced_motion();
     let hq_crown_scale: RwSignal<f64> = RwSignal::new(clamp_hq_crown_scale(saved.hq_crown_scale));
     let war_outline = WarOutlineControls::new(saved.war_outline);
     let manual_sr_scalar: RwSignal<f64> =
@@ -1247,6 +1274,9 @@ pub fn MapPage() -> impl IntoView {
     let render_settings = Memo::new(move |_| RenderSettings {
         thick_cooldown_borders: thick_cooldown_borders.get(),
         suppress_cooldown_visuals: false,
+        cooldown_display: cooldown_display.get(),
+        // History's clock can stand still or race; the urgency of a cooldown ending is live.
+        cooldown_pulse: map_mode.get() == MapMode::Live && !reduced_motion.get(),
         resource_highlight: resource_highlight.get(),
         resource_highlight_opacity: resource_highlight_opacity.get() as f32,
         defense_highlight: defense_highlight.get(),
@@ -1346,6 +1376,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(ShowResourceIcons(show_resource_icons));
     provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
     provide_context(HqCrownStyleSetting(hq_crown_style));
+    provide_context(CooldownDisplaySetting(cooldown_display));
     provide_context(HqCrownScale(hq_crown_scale));
     provide_context(war_outline);
     provide_context(ManualSrScalar(manual_sr_scalar));
@@ -1549,6 +1580,7 @@ pub fn MapPage() -> impl IntoView {
         show_resource_icons.set(defaults.show_resource_icons);
         show_territory_ornaments.set(defaults.show_territory_ornaments);
         hq_crown_style.set(defaults.hq_crown_style);
+        cooldown_display.set(defaults.cooldown_display);
         hq_crown_scale.set(clamp_hq_crown_scale(defaults.hq_crown_scale));
         war_outline.set(defaults.war_outline);
         manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
@@ -2114,6 +2146,7 @@ pub fn MapPage() -> impl IntoView {
             show_resource_icons: show_resource_icons.get(),
             show_territory_ornaments: show_territory_ornaments.get(),
             hq_crown_style: hq_crown_style.get(),
+            cooldown_display: cooldown_display.get(),
             hq_crown_scale: clamp_hq_crown_scale(hq_crown_scale.get()),
             war_outline: war_outline.get(),
             manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
@@ -3575,7 +3608,10 @@ mod tests {
         DEFAULT_CONNECTION_THICKNESS_SCALE, clamp_connection_opacity_scale,
         clamp_connection_solid_opacity, clamp_connection_thickness_scale,
     };
-    use super::{DEFAULT_HQ_CROWN_SCALE, HQ_CROWN_SCALE_MAX, HqCrownStyle, clamp_hq_crown_scale};
+    use super::{
+        CooldownDisplay, DEFAULT_HQ_CROWN_SCALE, HQ_CROWN_SCALE_MAX, HqCrownStyle,
+        clamp_hq_crown_scale,
+    };
     use super::{
         DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_SIDEBAR_WIDTH,
         DEFAULT_WAR_PANEL_WIDTH, LegacySettings, MapMode, NameColor, PLAYER_HEAD_SIZE_MAX,
@@ -3597,6 +3633,28 @@ mod tests {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(parsed.war_panel_open);
         assert_eq!(parsed.war_panel_width, DEFAULT_WAR_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn the_cooldown_display_defaults_to_the_bar_and_round_trips() {
+        let old: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(old.cooldown_display, CooldownDisplay::Bar);
+
+        let saved = SettingsV2 {
+            cooldown_display: CooldownDisplay::Fill,
+            ..SettingsV2::default()
+        };
+        let round_trip: SettingsV2 =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!(round_trip.cooldown_display, CooldownDisplay::Fill);
+
+        let future: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "cooldown_display": "Ring",
+            "show_countdown": true,
+        }))
+        .unwrap();
+        assert_eq!(future.cooldown_display, CooldownDisplay::Bar);
+        assert!(future.show_countdown);
     }
 
     #[test]
