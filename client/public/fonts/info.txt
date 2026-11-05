@@ -1,8 +1,13 @@
-minecraft-*: Public Domain
-  link: https://www.fontspace.com/minecraft-font-f28180
+Minecraft font family: Jacob Debono / JDGraphics Fonts (2017)
+  Published licence: Public Domain
+  Source: https://www.fontspace.com/minecraft-font-f28180
   The .otf files feed the WebGL glyph atlas; the .woff2 files are the
   re-hinted faces seqwawa.com serves, used for the site navbar so the pixel
   stems rasterize identically across the two sites.
 
-inter-variable.woff2: SIL Open Font License 1.1, see OFL-Inter.txt
-  Copied from sequoia-web/frontend/static/assets/fonts.
+Inter variable font
+  Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+  SIL Open Font License 1.1. The complete notice is in OFL-Inter.txt and
+  must accompany redistributed copies of the font.
+  Source: https://rsms.me/inter/
+  Imported from sequoia-web/frontend/static/assets/fonts.
