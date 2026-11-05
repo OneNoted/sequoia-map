@@ -30,6 +30,12 @@ use crate::canvas::MapState;
 use crate::render_loop::RenderScheduler;
 use crate::{BrowserMap, EditMode, MapEvent};
 
+/// How far from a territory, in CSS pixels, a mouse still hovers and clicks it while the map
+/// is navigated. Neighbouring territories are often drawn a pixel or a few apart, and without
+/// this every crossing from one to the next passed over nothing: the hover glow and the
+/// tooltip dropped out and came back. Touch, pen and the edit tools keep exact hits.
+const MOUSE_HIT_REACH_PX: f64 = 4.0;
+
 #[derive(Clone)]
 pub(crate) struct MapInput {
     pub(crate) map: BrowserMap,
@@ -56,7 +62,11 @@ impl MapInput {
         if let Some(canvas) = event_canvas(event) {
             let _ = canvas.set_pointer_capture(pointer.id);
         }
-        self.dispatch(output.events, event.shift_key());
+        self.dispatch(
+            output.events,
+            event.shift_key(),
+            self.hit_reach_px(pointer.kind),
+        );
         self.scheduler.mark_dirty();
     }
 
@@ -74,10 +84,14 @@ impl MapInput {
         });
         match output {
             Some(output) => {
-                self.dispatch(output.events, event.shift_key());
+                self.dispatch(
+                    output.events,
+                    event.shift_key(),
+                    self.hit_reach_px(pointer.kind),
+                );
                 self.scheduler.mark_dirty();
             }
-            None => self.hover_at(pointer.x, pointer.y),
+            None => self.hover_at(pointer.x, pointer.y, self.hit_reach_px(pointer.kind)),
         }
     }
 
@@ -94,7 +108,11 @@ impl MapInput {
                 .events
                 .retain(|event| !matches!(event, GestureEvent::Tap { .. }));
         }
-        self.dispatch(output.events, event.shift_key());
+        self.dispatch(
+            output.events,
+            event.shift_key(),
+            self.hit_reach_px(pointer.kind),
+        );
         self.scheduler.mark_dirty();
     }
 
@@ -106,7 +124,7 @@ impl MapInput {
             .borrow_mut()
             .gestures
             .cancelled(event.pointer_id(), event.time_stamp());
-        self.dispatch(output.events, false);
+        self.dispatch(output.events, false, 0.0);
         self.scheduler.mark_dirty();
     }
 
@@ -114,7 +132,7 @@ impl MapInput {
     /// and so are its `pointercancel` and `lostpointercapture` events.
     pub(crate) fn cancel_gestures(&self) {
         let output = self.state.borrow_mut().gestures.reset();
-        self.dispatch(output.events, false);
+        self.dispatch(output.events, false, 0.0);
         self.scheduler.mark_dirty();
     }
 
@@ -145,6 +163,11 @@ impl MapInput {
                 .gestures
                 .wheel(view, sample, at, height, event.ctrl_key())
         });
+        // Wheels and trackpads are mouse pointers. Their reach is in screen pixels, so a still
+        // pointer can reach a territory, or stop reaching one, as the scale changes under it.
+        if !self.state.borrow().gestures.is_pressed() {
+            self.hover_at(at.0, at.1, self.hit_reach_px(PointerKind::Mouse));
+        }
         self.scheduler.mark_dirty();
     }
 
@@ -162,7 +185,10 @@ impl MapInput {
                 .center_on(minimap.screen_to_world(pointer.x, pointer.y));
             return Press::Handled;
         }
-        let on_territory = || self.territory_at(pointer.x, pointer.y).is_some();
+        let on_territory = || {
+            self.territory_at(pointer.x, pointer.y, self.hit_reach_px(pointer.kind))
+                .is_some()
+        };
         match self.map.inputs.edit.get_untracked() {
             EditMode::Navigate => Press::Pan,
             EditMode::Select => Press::Select,
@@ -172,15 +198,17 @@ impl MapInput {
         }
     }
 
-    fn dispatch(&self, events: Vec<GestureEvent>, shift: bool) {
+    /// Turns gesture output into map events, hit-testing with `reach_px` (see
+    /// [`Self::hit_reach_px`]). Cancels pass 0: they commit nothing that is hit-tested.
+    fn dispatch(&self, events: Vec<GestureEvent>, shift: bool, reach_px: f64) {
         for event in events {
             let map_event = match event {
                 GestureEvent::Tap { x, y } => Some(MapEvent::Tap {
-                    territory: self.territory_at(x, y),
+                    territory: self.territory_at(x, y, reach_px),
                     shift,
                 }),
                 GestureEvent::Stroke { x, y, start } => {
-                    let hit = self.territory_at(x, y);
+                    let hit = self.territory_at(x, y, reach_px);
                     let mut state = self.state.borrow_mut();
                     if start {
                         state.stroke_hit = None;
@@ -193,7 +221,7 @@ impl MapInput {
                     }
                 }
                 GestureEvent::Pick { x, y } => self
-                    .territory_at(x, y)
+                    .territory_at(x, y, reach_px)
                     .map(|territory| MapEvent::Pick { territory, shift }),
                 GestureEvent::SelectPreview(rect) => {
                     self.select_box.set(rect);
@@ -204,7 +232,7 @@ impl MapInput {
                     shift,
                 }),
                 GestureEvent::SelectTap { x, y } => Some(MapEvent::SelectTap {
-                    territory: self.territory_at(x, y),
+                    territory: self.territory_at(x, y, reach_px),
                     shift,
                 }),
             };
@@ -214,17 +242,33 @@ impl MapInput {
         }
     }
 
-    fn hover_at(&self, x: f64, y: f64) {
-        let hit = self.territory_at(x, y);
+    fn hover_at(&self, x: f64, y: f64, reach_px: f64) {
+        let hit = self.territory_at(x, y, reach_px);
         if self.map.hovered.with_untracked(|hovered| *hovered != hit) {
             self.map.hovered.set(hit.clone());
             self.on_event.run(MapEvent::Hover(hit));
         }
     }
 
-    fn territory_at(&self, x: f64, y: f64) -> Option<String> {
-        let (wx, wy) = self.map.camera.get_untracked().screen_to_world(x, y);
-        self.state.borrow().grid.find_at(wx, wy)
+    /// How far from a territory, in CSS pixels, a point from this pointer hits it: a mouse
+    /// reaches [`MOUSE_HIT_REACH_PX`] while the map is navigated, and only the inside counts
+    /// for touch, pen and every edit tool.
+    fn hit_reach_px(&self, kind: PointerKind) -> f64 {
+        let navigating = self.map.inputs.edit.get_untracked() == EditMode::Navigate;
+        if kind == PointerKind::Mouse && navigating {
+            MOUSE_HIT_REACH_PX
+        } else {
+            0.0
+        }
+    }
+
+    fn territory_at(&self, x: f64, y: f64, reach_px: f64) -> Option<String> {
+        let view = self.map.camera.get_untracked();
+        let (wx, wy) = view.screen_to_world(x, y);
+        self.state
+            .borrow()
+            .grid
+            .find_at(wx, wy, reach_px / view.scale)
     }
 
     fn territories_in(&self, rect: ScreenRect) -> Vec<String> {
