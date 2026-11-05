@@ -114,36 +114,112 @@ impl SpatialGrid {
         ))
     }
 
-    /// Find the territory at a world coordinate. Returns `None` if no territory at that point.
-    pub fn find_at(&self, wx: f64, wy: f64) -> Option<String> {
+    /// The territory at a world coordinate, or else the nearest one whose edge is within
+    /// `reach` world units of it. Neighbouring territories in the data are often a few blocks
+    /// apart; a point in that seam belongs to the nearer of them, not to neither.
+    pub fn find_at(&self, wx: f64, wy: f64, reach: f64) -> Option<String> {
         if self.cells.is_empty() {
             return None;
         }
+        let cols = cells_within(wx, reach, self.min_x, self.cell_w, GRID_COLS)?;
+        let rows = cells_within(wy, reach, self.min_y, self.cell_h, GRID_ROWS)?;
 
-        let col = ((wx - self.min_x) / self.cell_w).floor() as isize;
-        let row = ((wy - self.min_y) / self.cell_h).floor() as isize;
-
-        if col < 0 || row < 0 || col >= GRID_COLS as isize || row >= GRID_ROWS as isize {
-            return None;
-        }
-
-        let cell = &self.cells[row as usize * GRID_COLS + col as usize];
-        for &idx in cell {
-            if wx >= self.lefts[idx] as f64
-                && wx <= self.rights[idx] as f64
-                && wy >= self.tops[idx] as f64
-                && wy <= self.bottoms[idx] as f64
-            {
-                return Some(self.names[idx].clone());
+        // Ties, such as overlapping territories, go to the first one listed.
+        let mut nearest: Option<(f64, usize)> = None;
+        for row in rows {
+            for col in cols.clone() {
+                for &idx in &self.cells[row * GRID_COLS + col] {
+                    let dx = (self.lefts[idx] as f64 - wx).max(wx - self.rights[idx] as f64);
+                    let dy = (self.tops[idx] as f64 - wy).max(wy - self.bottoms[idx] as f64);
+                    let distance = dx.max(0.0).hypot(dy.max(0.0));
+                    let closer = nearest.is_none_or(|(best, best_idx)| {
+                        distance < best || (distance == best && idx < best_idx)
+                    });
+                    if distance <= reach && closer {
+                        nearest = Some((distance, idx));
+                    }
+                }
             }
         }
-        None
+        nearest.map(|(_, idx)| self.names[idx].clone())
     }
+}
+
+/// The grid cells along one axis that `value ± reach` touches, or `None` when it misses the grid.
+fn cells_within(
+    value: f64,
+    reach: f64,
+    origin: f64,
+    size: f64,
+    count: usize,
+) -> Option<std::ops::Range<usize>> {
+    let first = ((value - reach - origin) / size).floor();
+    let last = ((value + reach - origin) / size).floor();
+    if last < 0.0 || first >= count as f64 {
+        return None;
+    }
+    Some(first.max(0.0) as usize..last.min(count as f64 - 1.0) as usize + 1)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use sequoia_shared::{GuildRef, Region, Territory};
+
     use super::{GRID_COLS, GRID_ROWS, SpatialGrid};
+    use crate::territory::ClientTerritory;
+
+    fn grid(regions: &[(&str, [i32; 2], [i32; 2])]) -> SpatialGrid {
+        let territories = regions
+            .iter()
+            .map(|&(name, start, end)| {
+                let territory = Territory {
+                    guild: GuildRef {
+                        uuid: name.into(),
+                        name: name.into(),
+                        prefix: "G".into(),
+                        color: None,
+                    },
+                    acquired: chrono::DateTime::UNIX_EPOCH,
+                    location: Region { start, end },
+                    resources: Default::default(),
+                    connections: Vec::new(),
+                    runtime: None,
+                };
+                (
+                    name.to_string(),
+                    ClientTerritory::from_territory(name, territory),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        SpatialGrid::build(&territories)
+    }
+
+    #[test]
+    fn a_seam_between_neighbours_belongs_to_the_nearer_one() {
+        let grid = grid(&[("West", [0, 0], [100, 100]), ("East", [104, 0], [200, 100])]);
+        assert_eq!(grid.find_at(101.0, 50.0, 0.0).as_deref(), None);
+        assert_eq!(grid.find_at(101.0, 50.0, 3.0).as_deref(), Some("West"));
+        assert_eq!(grid.find_at(103.0, 50.0, 3.0).as_deref(), Some("East"));
+        assert_eq!(grid.find_at(50.0, 50.0, 3.0).as_deref(), Some("West"));
+    }
+
+    #[test]
+    fn a_point_beyond_reach_of_every_territory_hits_nothing() {
+        let grid = grid(&[("West", [0, 0], [100, 100]), ("East", [130, 0], [200, 100])]);
+        assert_eq!(grid.find_at(115.0, 50.0, 3.0).as_deref(), None);
+        assert_eq!(grid.find_at(50.0, 104.0, 3.0).as_deref(), None);
+        assert_eq!(grid.find_at(102.0, 102.0, 2.0).as_deref(), None);
+    }
+
+    #[test]
+    fn reach_extends_past_the_edge_of_the_map() {
+        let grid = grid(&[("West", [0, 0], [100, 100]), ("East", [104, 0], [200, 100])]);
+        assert_eq!(grid.find_at(-2.5, 50.0, 3.0).as_deref(), Some("West"));
+        assert_eq!(grid.find_at(50.0, 102.5, 3.0).as_deref(), Some("West"));
+        assert_eq!(grid.find_at(-3.5, 50.0, 3.0).as_deref(), None);
+    }
 
     #[test]
     fn find_at_does_not_truncate_negative_coordinates() {
@@ -162,7 +238,7 @@ mod tests {
             cell_h: 1.0,
         };
 
-        assert_eq!(grid.find_at(-0.2, 0.2), None);
-        assert_eq!(grid.find_at(0.2, 0.2), Some("Alpha".to_string()));
+        assert_eq!(grid.find_at(-0.2, 0.2, 0.0), None);
+        assert_eq!(grid.find_at(0.2, 0.2, 0.0), Some("Alpha".to_string()));
     }
 }

@@ -30,6 +30,11 @@ use crate::canvas::MapState;
 use crate::render_loop::RenderScheduler;
 use crate::{BrowserMap, EditMode, MapEvent};
 
+/// How far from a territory, in CSS pixels, a point still hits it. Neighbouring territories
+/// are often drawn a pixel or a few apart, and without this every crossing from one to the
+/// next passed over nothing: the hover glow and the tooltip dropped out and came back.
+const HIT_REACH_PX: f64 = 4.0;
+
 #[derive(Clone)]
 pub(crate) struct MapInput {
     pub(crate) map: BrowserMap,
@@ -145,6 +150,11 @@ impl MapInput {
                 .gestures
                 .wheel(view, sample, at, height, event.ctrl_key())
         });
+        // The reach is in screen pixels, so a still pointer can reach a territory, or stop
+        // reaching one, as the scale changes under it.
+        if !self.state.borrow().gestures.is_pressed() {
+            self.hover_at(at.0, at.1);
+        }
         self.scheduler.mark_dirty();
     }
 
@@ -223,8 +233,12 @@ impl MapInput {
     }
 
     fn territory_at(&self, x: f64, y: f64) -> Option<String> {
-        let (wx, wy) = self.map.camera.get_untracked().screen_to_world(x, y);
-        self.state.borrow().grid.find_at(wx, wy)
+        let view = self.map.camera.get_untracked();
+        let (wx, wy) = view.screen_to_world(x, y);
+        self.state
+            .borrow()
+            .grid
+            .find_at(wx, wy, HIT_REACH_PX / view.scale)
     }
 
     fn territories_in(&self, rect: ScreenRect) -> Vec<String> {
