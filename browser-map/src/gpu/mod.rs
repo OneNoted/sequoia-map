@@ -4420,7 +4420,14 @@ impl GpuRenderer {
         let w = self.width as f32 / self.dpr;
         let h = self.height as f32 / self.dpr;
 
-        // Update viewport uniform
+        let tiles_pending = self.sync_tiles(frame.tiles);
+        let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
+            // Fail closed: map rendering requires the GPU text pipeline.
+            return FrameOutcome::default();
+        };
+
+        // After the rebuild: the hover and selection indices must point into the instances
+        // this frame draws, which new territory data may have reordered.
         self.queue.write_buffer(
             &self.viewport_buffer,
             0,
@@ -4434,12 +4441,6 @@ impl GpuRenderer {
             }]),
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
-
-        let tiles_pending = self.sync_tiles(frame.tiles);
-        let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
-            // Fail closed: map rendering requires the GPU text pipeline.
-            return FrameOutcome::default();
-        };
         let outcome = FrameOutcome {
             animating: now < self.max_anim_end_ms || tiles_pending,
             next_refresh,

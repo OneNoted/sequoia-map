@@ -62,4 +62,16 @@ mod tests {
         index.rebuild(&names(&[]));
         assert_eq!(index.of(Some("Almuj")), NO_INSTANCE);
     }
+
+    #[test]
+    fn a_selection_whose_territory_is_gone_selects_no_other() {
+        let mut index = InstanceIndex::default();
+        assert_eq!(index.of(Some("Ragni")), NO_INSTANCE);
+        index.rebuild(&names(&["Ragni"]));
+        assert_eq!(index.of(Some("Ragni")), 0);
+        // Ragni replaced by Detlas at the same position: the old 0 must not carry over.
+        index.rebuild(&names(&["Detlas"]));
+        assert_eq!(index.of(Some("Ragni")), NO_INSTANCE);
+        assert_eq!(index.of(Some("Detlas")), 0);
+    }
 }
