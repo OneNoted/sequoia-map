@@ -55,6 +55,7 @@ use crate::tiles::{LoadedTile, TileQuality};
 
 mod glyphs;
 mod markers;
+mod mipmaps;
 mod overlay;
 use glyphs::{GlyphMeta, GlyphRef, GlyphSet, TextFit, hq_caption, line_units_with_tracking};
 use markers::GpuMarkerRenderer;
@@ -560,7 +561,7 @@ fn derive_sequoia_ornament_gold(
 }
 
 #[inline]
-fn glyph_mip_level_count(width: u32, height: u32) -> u32 {
+fn full_mip_level_count(width: u32, height: u32) -> u32 {
     if width == 0 || height == 0 {
         return 0;
     }
@@ -685,7 +686,7 @@ fn write_texture_mip_chain(
     base_w: u32,
     base_h: u32,
 ) {
-    let mip_levels = glyph_mip_level_count(base_w, base_h);
+    let mip_levels = full_mip_level_count(base_w, base_h);
     if mip_levels == 0 {
         return;
     }
@@ -1197,6 +1198,7 @@ pub struct GpuRenderer {
     tile_pipeline: wgpu::RenderPipeline,
     tile_bind_group_layout: wgpu::BindGroupLayout,
     tile_sampler: wgpu::Sampler,
+    tile_mips: mipmaps::MipChain,
     tile_textures: HashMap<usize, TileTexture>,
     tile_upload_canvas: Option<HtmlCanvasElement>,
     tile_upload_ctx: Option<CanvasRenderingContext2d>,
@@ -1808,14 +1810,19 @@ impl GpuRenderer {
                 ],
             });
 
+        // Trilinear: minified tiles read their mip chain, so a pan does not change which few
+        // of many texels a pixel shows. tile.wgsl keeps magnified texels square-edged.
         let tile_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("tile-sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
+
+        let tile_mips = mipmaps::MipChain::new(&device, wgpu::TextureFormat::Rgba8Unorm);
 
         let tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("tile-pl"),
@@ -2103,6 +2110,7 @@ impl GpuRenderer {
             tile_pipeline,
             tile_bind_group_layout,
             tile_sampler,
+            tile_mips,
             tile_textures: HashMap::new(),
             tile_upload_canvas: None,
             tile_upload_ctx: None,
@@ -2938,7 +2946,7 @@ impl GpuRenderer {
             .ok()?
             .data();
 
-        let mip_levels = glyph_mip_level_count(atlas_w, atlas_h);
+        let mip_levels = full_mip_level_count(atlas_w, atlas_h);
         let make_texture = |label: &'static str| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -3166,11 +3174,12 @@ impl GpuRenderer {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("tile-tex"),
                 size,
-                mip_level_count: 1,
+                mip_level_count: full_mip_level_count(w, h),
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
-                // External image copies require a render-attachment destination.
+                // External image copies, and drawing the mip levels, need a render-attachment
+                // destination.
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::COPY_DST
                     | wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -3188,6 +3197,7 @@ impl GpuRenderer {
                 size,
                 self.capabilities.webgl2,
             );
+            self.tile_mips.generate(&self.device, &self.queue, &texture);
 
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 

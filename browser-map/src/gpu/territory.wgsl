@@ -63,11 +63,14 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
 
-    let world_pos = instance.rect.xy + vertex.quad_pos * instance.rect.zw;
+    // One screen pixel past the rectangle, so the pixels its edge only partly covers are
+    // drawn too and can be anti-aliased; the coordinates extend with it, past 0 and 1.
+    let pad = (vertex.quad_pos * 2.0 - vec2<f32>(1.0, 1.0)) / max(vp.scale, 1e-4);
+    let world_pos = instance.rect.xy + vertex.quad_pos * instance.rect.zw + pad;
     out.clip_position = world_to_ndc(world_pos);
     out.color = instance.color;
     out.state = instance.state;
-    out.uv = vertex.quad_pos;
+    out.uv = vertex.quad_pos + pad / instance.rect.zw;
     out.size_px = instance.rect.zw * vp.scale;
     out.acquired_rel_secs = instance.cooldown.x;
     out.anim_color = instance.anim_color.xyz;
@@ -372,11 +375,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if is_pending_war || is_at_war {
         border_width = max(border_width, 4.0) * war_width;
     }
-    let feather = max(0.4 * vp.scale, 0.15);
+    // Every edge ramps over one screen pixel centred on where it truly is, at any zoom: a
+    // sub-pixel pan then slides a territory's edge, border and war layers instead of
+    // snapping them a pixel at a time.
+    let feather = 0.5;
 
     // Outer edge AA: fade alpha at territory boundary
-    let outer_x = smoothstep(0.0, feather, dx);
-    let outer_y = smoothstep(0.0, feather, dy);
+    let outer_x = smoothstep(-feather, feather, dx);
+    let outer_y = smoothstep(-feather, feather, dy);
     let outer_aa = outer_x * outer_y;
 
     // Inner edge: border→fill transition
