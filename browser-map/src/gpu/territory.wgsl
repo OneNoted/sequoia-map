@@ -13,6 +13,8 @@ struct Viewport {
     cooldown: vec2<f32>,
     // Instance indices of the hovered and selected territories, -1 for none.
     interaction: vec4<i32>,
+    // x: the territory overlay's opacity, 0 to 1.
+    territory: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -329,7 +331,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         fill_alpha += select(0.07, 0.10, has_overlay);
     }
     let zoom_fill_boost = smoothstep(0.40, 0.12, vp.scale) * 0.24;
-    let border_alpha = in.state.y;
+    // The opacity setting fades the resting guild fill (cooldown Fill and Heat included) and,
+    // to a floor that keeps boundaries and guild colour, the resting border. Hover and
+    // selection lift, war stages, HQ brackets, the capture flash, the cooldown bar and
+    // resource or defense overlays (which have their own opacity) keep full strength.
+    let opacity = clamp(vp.territory.x, 0.0, 1.0);
+    let border_alpha = in.state.y * mix(0.4, 1.0, opacity);
     let flags = in.state.z;
     let reference_rel_secs = vp.cooldown.x;
     let cooldown_flags = u32(vp.cooldown.y + 0.5);
@@ -458,12 +465,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let hq_tint = vec3<f32>(0.973, 0.831, 0.275);
         fill_color = mix(fill_color, hq_tint, 0.06);
     }
-    var f_alpha = min(fill_alpha + zoom_fill_boost, 1.0);
+    var resting_fill = in.state.x + zoom_fill_boost;
     if cooldown_fill {
         // The cooldown colour needs a stronger fill than the guild's to read. The floor is on
         // the resting fill, so hover and selection still add their lift on top of it.
-        f_alpha = min(max(in.state.x + zoom_fill_boost, 0.5) + fill_alpha - in.state.x, 1.0);
+        resting_fill = max(resting_fill, 0.5);
     }
+    let fill_opacity = select(opacity, 1.0, has_overlay);
+    var f_alpha = min(resting_fill * fill_opacity + fill_alpha - in.state.x, 1.0);
     var cooldown_strip_mix: f32 = 0.0;
     var cooldown_strip_color: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
 
@@ -492,10 +501,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
             if is_top || is_left {
                 // Top-left highlight
-                fill_color = mix(fill_color, vec3<f32>(1.0), 0.06 / max(f_alpha, 0.01));
+                fill_color = mix(fill_color, vec3<f32>(1.0), min(0.06 * fill_opacity / max(f_alpha, 0.01), 1.0));
             } else if is_bottom || is_right {
                 // Bottom-right shadow
-                fill_color = mix(fill_color, vec3<f32>(0.0), 0.15 / max(f_alpha, 0.01));
+                fill_color = mix(fill_color, vec3<f32>(0.0), min(0.15 * fill_opacity / max(f_alpha, 0.01), 1.0));
             }
         }
     }

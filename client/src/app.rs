@@ -142,6 +142,8 @@ pub(crate) struct ResourceHighlight(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ResourceHighlightOpacity(pub RwSignal<f64>);
 #[derive(Clone, Copy)]
+pub(crate) struct TerritoryOpacity(pub RwSignal<f64>);
+#[derive(Clone, Copy)]
 pub(crate) struct DefenseHighlight(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct MapIntelModeEnabled(pub RwSignal<bool>);
@@ -524,6 +526,8 @@ struct SettingsV2 {
     resource_highlight: bool,
     #[serde(default = "default_resource_highlight_opacity")]
     resource_highlight_opacity: f64,
+    #[serde(default = "default_territory_opacity")]
+    territory_opacity: f64,
     #[serde(default)]
     defense_highlight: bool,
     #[serde(default)]
@@ -761,6 +765,24 @@ pub(crate) fn clamp_connection_solid_opacity(value: f64) -> f64 {
 }
 
 /// Guards `NaN` like the head size: a hand-edited blob must not hide the highlight.
+const fn default_territory_opacity() -> f64 {
+    DEFAULT_TERRITORY_OPACITY
+}
+
+/// The overlay as it has always been drawn; also fills in saved settings that predate it.
+pub(crate) const DEFAULT_TERRITORY_OPACITY: f64 = 1.0;
+/// At 0 the guild fill is gone and borders keep a floor (see the renderer).
+pub(crate) const TERRITORY_OPACITY_MIN: f64 = 0.0;
+pub(crate) const TERRITORY_OPACITY_MAX: f64 = 1.0;
+
+pub(crate) fn clamp_territory_opacity(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(TERRITORY_OPACITY_MIN, TERRITORY_OPACITY_MAX)
+    } else {
+        DEFAULT_TERRITORY_OPACITY
+    }
+}
+
 pub(crate) fn clamp_resource_highlight_opacity(value: f64) -> f64 {
     if value.is_nan() {
         return DEFAULT_RESOURCE_HIGHLIGHT_OPACITY;
@@ -829,6 +851,7 @@ impl Default for SettingsV2 {
             player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
             resource_highlight: false,
             resource_highlight_opacity: default_resource_highlight_opacity(),
+            territory_opacity: DEFAULT_TERRITORY_OPACITY,
             defense_highlight: false,
             map_intel_enabled: false,
             show_resource_icons: true,
@@ -977,6 +1000,7 @@ impl From<LegacySettings> for SettingsV2 {
             player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
             resource_highlight: value.resource_highlight,
             resource_highlight_opacity: default_resource_highlight_opacity(),
+            territory_opacity: DEFAULT_TERRITORY_OPACITY,
             defense_highlight: value.defense_highlight,
             map_intel_enabled: value.map_intel_enabled,
             show_resource_icons: value.show_resource_icons,
@@ -1123,6 +1147,8 @@ pub fn MapPage() -> impl IntoView {
     let resource_highlight_opacity: RwSignal<f64> = RwSignal::new(
         clamp_resource_highlight_opacity(saved.resource_highlight_opacity),
     );
+    let territory_opacity: RwSignal<f64> =
+        RwSignal::new(clamp_territory_opacity(saved.territory_opacity));
     let defense_highlight: RwSignal<bool> = RwSignal::new(saved.defense_highlight);
     let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
@@ -1281,6 +1307,7 @@ pub fn MapPage() -> impl IntoView {
         resource_highlight_opacity: resource_highlight_opacity.get() as f32,
         defense_highlight: defense_highlight.get(),
         fill_alpha_boost: 0.0,
+        territory_opacity: territory_opacity.get() as f32,
         show_connections: show_connections.get(),
         connection_style: connection_style.get(),
         bold_connections: bold_connections.get(),
@@ -1370,6 +1397,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(ConnectionThicknessScale(connection_thickness_scale));
     provide_context(ResourceHighlight(resource_highlight));
     provide_context(ResourceHighlightOpacity(resource_highlight_opacity));
+    provide_context(TerritoryOpacity(territory_opacity));
     provide_context(KeybindHelpOpen(keybind_help_open));
     provide_context(DefenseHighlight(defense_highlight));
     provide_context(MapIntelModeEnabled(map_intel_enabled));
@@ -1575,6 +1603,7 @@ pub fn MapPage() -> impl IntoView {
         resource_highlight_opacity.set(clamp_resource_highlight_opacity(
             defaults.resource_highlight_opacity,
         ));
+        territory_opacity.set(clamp_territory_opacity(defaults.territory_opacity));
         defense_highlight.set(defaults.defense_highlight);
         map_intel_enabled.set(defaults.map_intel_enabled);
         show_resource_icons.set(defaults.show_resource_icons);
@@ -2141,6 +2170,7 @@ pub fn MapPage() -> impl IntoView {
             resource_highlight_opacity: clamp_resource_highlight_opacity(
                 resource_highlight_opacity.get(),
             ),
+            territory_opacity: clamp_territory_opacity(territory_opacity.get()),
             defense_highlight: defense_highlight.get(),
             map_intel_enabled: map_intel_enabled.get(),
             show_resource_icons: show_resource_icons.get(),
@@ -3621,6 +3651,10 @@ mod tests {
         should_wait_for_history_probe,
     };
     use super::{
+        DEFAULT_TERRITORY_OPACITY, TERRITORY_OPACITY_MAX, TERRITORY_OPACITY_MIN,
+        clamp_territory_opacity,
+    };
+    use super::{
         HEAT_LEGEND_BAR_CHARS, HeatScale, format_heat_count, heat_legend_rows, heat_legend_stops,
     };
     use super::{SHEET_DISMISS_DRAG_PX, SheetDrag, sidebar_transform};
@@ -3633,6 +3667,24 @@ mod tests {
         let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(parsed.war_panel_open);
         assert_eq!(parsed.war_panel_width, DEFAULT_WAR_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn territory_opacity_starts_at_full_strength_and_keeps_a_saved_choice() {
+        let unset: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(unset.territory_opacity, DEFAULT_TERRITORY_OPACITY);
+        assert_eq!(SettingsV2::default().territory_opacity, 1.0);
+
+        let saved = SettingsV2 {
+            territory_opacity: 0.35,
+            ..SettingsV2::default()
+        };
+        let round_trip: SettingsV2 =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!(round_trip.territory_opacity, 0.35);
+        assert_eq!(clamp_territory_opacity(f64::NAN), DEFAULT_TERRITORY_OPACITY);
+        assert_eq!(clamp_territory_opacity(-0.5), TERRITORY_OPACITY_MIN);
+        assert_eq!(clamp_territory_opacity(3.0), TERRITORY_OPACITY_MAX);
     }
 
     #[test]

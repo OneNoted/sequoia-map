@@ -32,12 +32,13 @@ use crate::app::{
     ShowFarZoomTerritoryTags, ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain,
     ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads,
     ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel,
-    TagColorSetting, ThickCooldownBorders, WAR_OUTLINE_OPACITY_MAX, WAR_OUTLINE_OPACITY_MIN,
-    WAR_OUTLINE_WIDTH_MAX, WAR_OUTLINE_WIDTH_MIN, WarFeedVisible, WarOutlineColor,
-    WarOutlineControls, WarOutlineStyle, clamp_connection_opacity_scale,
-    clamp_connection_solid_opacity, clamp_connection_thickness_scale, clamp_hq_crown_scale,
-    clamp_label_scale_group, clamp_label_scale_master, clamp_player_head_size,
-    clamp_resource_highlight_opacity, clamp_war_outline_opacity, clamp_war_outline_width,
+    TERRITORY_OPACITY_MAX, TERRITORY_OPACITY_MIN, TagColorSetting, TerritoryOpacity,
+    ThickCooldownBorders, WAR_OUTLINE_OPACITY_MAX, WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_WIDTH_MAX,
+    WAR_OUTLINE_WIDTH_MIN, WarFeedVisible, WarOutlineColor, WarOutlineControls, WarOutlineStyle,
+    clamp_connection_opacity_scale, clamp_connection_solid_opacity,
+    clamp_connection_thickness_scale, clamp_hq_crown_scale, clamp_label_scale_group,
+    clamp_label_scale_master, clamp_player_head_size, clamp_resource_highlight_opacity,
+    clamp_territory_opacity, clamp_war_outline_opacity, clamp_war_outline_width,
 };
 use crate::season_scalar::clamp_manual_scalar;
 use crate::territory::ClientTerritoryMap;
@@ -186,6 +187,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     let ConnectionThicknessScale(connection_thickness_scale) = expect_context();
     let ResourceHighlight(resource_highlight) = expect_context();
     let ResourceHighlightOpacity(resource_highlight_opacity) = expect_context();
+    let TerritoryOpacity(territory_opacity) = expect_context();
     let DefenseHighlight(defense_highlight) = expect_context();
     let MapIntelModeEnabled(map_intel_enabled) = expect_context();
     let ShowResourceIcons(show_resource_icons) = expect_context();
@@ -265,6 +267,15 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
             </PanelNav>
 
             <SettingsSection title="Map">
+                <SettingsSlider
+                    label="Territory opacity"
+                    value=territory_opacity
+                    min=TERRITORY_OPACITY_MIN
+                    max=TERRITORY_OPACITY_MAX
+                    step=0.05
+                    clamp=clamp_territory_opacity
+                    format=percent
+                />
                 <SettingsChoice
                     label="Overlay"
                     hint="Shortcuts P, D and I"

@@ -174,6 +174,10 @@ pub struct RenderSettings {
     pub defense_highlight: bool,
     /// Added to every territory fill alpha.
     pub fill_alpha_boost: f32,
+    /// How strongly the territory overlay covers the terrain, 0 to 1 (see
+    /// [`RenderSettings::territory_opacity`]). Read from the frame's uniforms, so changing it
+    /// rebuilds no layer.
+    pub territory_opacity: f32,
 
     // Connection lines.
     pub show_connections: bool,
@@ -223,6 +227,8 @@ pub const RESOURCE_HIGHLIGHT_OPACITY_MAX: f32 = 0.90;
 pub const DEFAULT_RESOURCE_HIGHLIGHT_OPACITY: f32 = 0.45;
 /// Defense tiers keep the fixed overlay alpha.
 const DEFENSE_HIGHLIGHT_OPACITY: f32 = 0.34;
+/// The overlay as it has always been drawn.
+pub const DEFAULT_TERRITORY_OPACITY: f32 = 1.0;
 
 /// User label size multipliers. Each group is multiplied by the master scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -275,6 +281,17 @@ impl RenderSettings {
             )
         } else {
             DEFAULT_RESOURCE_HIGHLIGHT_OPACITY
+        }
+    }
+
+    /// The resting guild fill and border's share of their full strength, clamped to 0 to 1.
+    /// Hover and selection, war stages, HQ brackets, resource and defense overlays and labels
+    /// keep their full strength, so the map stays readable with the overlay faded.
+    pub fn territory_opacity(&self) -> f32 {
+        if self.territory_opacity.is_finite() {
+            self.territory_opacity.clamp(0.0, 1.0)
+        } else {
+            DEFAULT_TERRITORY_OPACITY
         }
     }
 
@@ -354,8 +371,9 @@ impl RenderSettings {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        CooldownDisplay, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, LabelScales, NameColor,
-        RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN, RenderSettings,
+        CooldownDisplay, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_TERRITORY_OPACITY,
+        LabelScales, NameColor, RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN,
+        RenderSettings,
     };
     use crate::scene::Rebuild;
 
@@ -369,6 +387,7 @@ pub(crate) mod tests {
             resource_highlight_opacity: DEFAULT_RESOURCE_HIGHLIGHT_OPACITY,
             defense_highlight: false,
             fill_alpha_boost: 0.0,
+            territory_opacity: DEFAULT_TERRITORY_OPACITY,
             show_connections: true,
             connection_style: super::ConnectionStyle::Classic,
             bold_connections: false,
@@ -419,6 +438,23 @@ pub(crate) mod tests {
             Rebuild::NONE
         );
         assert_eq!(after(|s| s.cooldown_pulse = true), Rebuild::NONE);
+    }
+
+    #[test]
+    fn territory_opacity_rebuilds_no_layer_and_stays_in_range() {
+        assert_eq!(after(|s| s.territory_opacity = 0.3), Rebuild::NONE);
+        let opacity = |value| {
+            RenderSettings {
+                territory_opacity: value,
+                ..settings()
+            }
+            .territory_opacity()
+        };
+        assert_eq!(opacity(0.3), 0.3);
+        assert_eq!(opacity(-1.0), 0.0);
+        assert_eq!(opacity(4.0), 1.0);
+        assert_eq!(opacity(f32::NAN), DEFAULT_TERRITORY_OPACITY);
+        assert_eq!(settings().territory_opacity(), 1.0);
     }
 
     #[test]

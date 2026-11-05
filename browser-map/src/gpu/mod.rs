@@ -108,9 +108,14 @@ struct ViewportUniform {
     /// territory shader reads them. Kept here rather than in the instances, so a change of
     /// hover or selection rewrites this uniform instead of every territory instance.
     interaction: [i32; 4],
+    /// The territory overlay's opacity (see `RenderSettings::territory_opacity`), then
+    /// padding. Only the territory shader reads it.
+    territory: [f32; 4],
 }
 
 const NO_INTERACTION: [i32; 4] = [NO_INSTANCE, NO_INSTANCE, 0, 0];
+/// The territory overlay at full strength: the minimap's overview, and the default.
+const FULL_TERRITORY: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
 
 /// Cooling territories show the fill instead of the bar.
 const COOLDOWN_FILL: u32 = 1;
@@ -1568,6 +1573,7 @@ impl GpuRenderer {
                 resolution: [width as f32 / dpr, height as f32 / dpr],
                 cooldown: [0.0, 0.0],
                 interaction: NO_INTERACTION,
+                territory: FULL_TERRITORY,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1590,6 +1596,7 @@ impl GpuRenderer {
                     resolution: [width as f32 / dpr, height as f32 / dpr],
                     cooldown: [0.0, 0.0],
                     interaction: NO_INTERACTION,
+                    territory: FULL_TERRITORY,
                 }]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -4478,6 +4485,7 @@ impl GpuRenderer {
                 resolution: [w, h],
                 cooldown: self.cooldown_uniform(frame),
                 interaction: self.interaction(frame),
+                territory: [frame.settings.territory_opacity(), 0.0, 0.0, 0.0],
             }]),
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
@@ -5119,6 +5127,7 @@ impl GpuRenderer {
                 resolution: [width as f32 / dpr, height as f32 / dpr],
                 cooldown: [0.0, 0.0],
                 interaction: NO_INTERACTION,
+                territory: FULL_TERRITORY,
             }]),
         );
         let bg_color = [19.0 / 255.0, 22.0 / 255.0, 31.0 / 255.0, 0.88_f32];
@@ -5236,6 +5245,7 @@ impl GpuRenderer {
                 resolution: [w, h],
                 cooldown: self.cooldown_uniform(frame),
                 interaction: self.interaction(frame),
+                territory: FULL_TERRITORY,
             }]),
         );
         // Clip-space rectangle of the minimap for the terrain blit.

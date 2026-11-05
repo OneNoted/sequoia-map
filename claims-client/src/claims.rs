@@ -1477,6 +1477,7 @@ fn claims_render_settings(resource_highlight: bool) -> RenderSettings {
         resource_highlight_opacity: 0.34,
         defense_highlight: false,
         fill_alpha_boost: 0.12,
+        territory_opacity: 1.0,
         show_connections: true,
         connection_style: ConnectionStyle::Classic,
         bold_connections: true,
