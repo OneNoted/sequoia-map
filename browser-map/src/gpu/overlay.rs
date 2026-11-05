@@ -687,7 +687,7 @@ impl GpuOverlayRenderer {
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        super::upload_image_data(queue, &texture, image, size, self.webgl);
+        super::upload_image_data(queue, &texture, image, size, self.webgl, false);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         layer.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("overlay-bg"),

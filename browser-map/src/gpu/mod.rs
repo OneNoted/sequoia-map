@@ -614,13 +614,16 @@ const UPLOAD_BAND_BYTES: usize = 1 << 20;
 /// browser's buffer. On WebGPU that copy throws once the device is lost, and wgpu turns the
 /// exception into a panic that wedges the map before the loss can be recovered, so the pixels
 /// go through `write_texture`, which a lost device ignores, a band of rows at a time to keep
-/// their copy in WASM memory small.
+/// their copy in WASM memory small. With `premultiplied_alpha`, the texture holds colour
+/// multiplied by alpha, as filtering needs: averaging straight colour with transparent texels
+/// darkens it.
 pub(super) fn upload_image_data(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     image: web_sys::ImageData,
     size: wgpu::Extent3d,
     webgl: bool,
+    premultiplied_alpha: bool,
 ) {
     if webgl {
         queue.copy_external_image_to_texture(
@@ -635,7 +638,7 @@ pub(super) fn upload_image_data(
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
                 color_space: wgpu::PredefinedColorSpace::Srgb,
-                premultiplied_alpha: false,
+                premultiplied_alpha,
             },
             size,
         );
@@ -655,6 +658,9 @@ pub(super) fn upload_image_data(
         let count = rows.min(size.height - y);
         let bytes = &mut band[..(row * count) as usize];
         pixels.subarray(y * row, (y + count) * row).copy_to(bytes);
+        if premultiplied_alpha {
+            premultiply(bytes);
+        }
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
@@ -675,6 +681,18 @@ pub(super) fn upload_image_data(
             },
         );
         y += count;
+    }
+}
+
+/// Multiplies each RGBA8 pixel's colour by its alpha, rounding as browsers do.
+fn premultiply(pixels: &mut [u8]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        let alpha = u16::from(pixel[3]);
+        if alpha < 255 {
+            for channel in &mut pixel[..3] {
+                *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
+            }
+        }
     }
 }
 
@@ -1844,7 +1862,8 @@ impl GpuRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // Tile textures hold premultiplied colour (see `upload_image_data`).
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -3189,13 +3208,15 @@ impl GpuRenderer {
             // tile in WASM memory, which would grow for good to hold one (see
             // `upload_image_data`). Uploading the <img> itself instead makes browsers decode
             // the file again, as straight alpha, synchronously: slower than this draw and
-            // read-back.
+            // read-back. Tiles are stored premultiplied, so the mip levels and the sampler
+            // filter colour and coverage together.
             upload_image_data(
                 &self.queue,
                 &texture,
                 image_data,
                 size,
                 self.capabilities.webgl2,
+                true,
             );
             self.tile_mips.generate(&self.device, &self.queue, &texture);
 
@@ -5011,8 +5032,8 @@ impl GpuRenderer {
     /// Renders the minimap background and tiles into an image the size of the minimap,
     /// unless the cached one still matches the layout and tile set.
     ///
-    /// The image is drawn onto transparent black with the usual alpha blending, so it holds
-    /// premultiplied colour; compositing it with premultiplied blending gives the same
+    /// The image is drawn onto transparent black with the pipelines' usual blending, so it
+    /// holds premultiplied colour; compositing it with premultiplied blending gives the same
     /// result as drawing the background and tiles straight onto the frame.
     fn ensure_minimap_terrain(
         &mut self,

@@ -375,10 +375,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if is_pending_war || is_at_war {
         border_width = max(border_width, 4.0) * war_width;
     }
-    // Every edge ramps over one screen pixel centred on where it truly is, at any zoom: a
-    // sub-pixel pan then slides a territory's edge, border and war layers instead of
-    // snapping them a pixel at a time.
-    let feather = 0.5;
+    // Every edge ramps over one device pixel centred on where it truly is, at any zoom and
+    // display scale: a sub-pixel pan then slides a territory's edge, border and war layers
+    // instead of snapping them a pixel at a time. The distances are in CSS pixels, so the
+    // ramp's half-width is half a device pixel's size in them, kept within the one CSS pixel
+    // the quad reaches past the territory.
+    let device_px = fwidth(in.uv * in.size_px);
+    let feather = min(0.5 * max(device_px.x, device_px.y), 1.0);
 
     // Outer edge AA: fade alpha at territory boundary
     let outer_x = smoothstep(-feather, feather, dx);
