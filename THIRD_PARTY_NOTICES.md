@@ -1,8 +1,7 @@
 # Third-party notices and credits
 
-The [MIT licence](LICENSE) covers Sequoia Map's original software, copyright
-Jonatan Jonasson. Third-party imagery, fonts and data are not relicensed by that
-grant.
+The [MIT licence](LICENSE) covers Sequoia Map's original software. Third-party
+imagery, fonts and data are not relicensed by that grant.
 
 ## Map imagery and data
 
