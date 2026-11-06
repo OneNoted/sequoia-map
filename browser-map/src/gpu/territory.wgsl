@@ -211,11 +211,11 @@ fn pending_dash(uv: vec2<f32>, size_px: vec2<f32>, border_width: f32) -> f32 {
 // more, and a gap before the plain border resumes. Returns the dash, the gap and how many
 // gaps; no gaps on a territory too small to show them.
 fn cooldown_corner_dashes(size_px: vec2<f32>, border_width: f32) -> vec3<f32> {
-    let dash = max(border_width * 1.25, 2.5);
-    let gap = max(border_width, 2.0);
+    let dash = max(border_width, 3.0);
+    let gap = max(border_width * 0.8, 2.5);
     let short_side = min(size_px.x, size_px.y);
-    // Each corner's dashes take at most 30% of a side, so every edge keeps a plain middle.
-    var gaps = clamp(floor((short_side * 0.3 - border_width) / (dash + gap)), 0.0, 3.0);
+    // Each corner's dashes take at most a third of a side, so every edge keeps a plain middle.
+    var gaps = clamp(floor((short_side / 3.0 - border_width) / (dash + gap)), 0.0, 3.0);
     if short_side < 12.0 {
         gaps = 0.0;
     }
@@ -447,16 +447,20 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let feather = min(0.5 * max(device_px.x, device_px.y), 1.0);
 
     // While a territory cools its corners run in dashes, whichever way the cooldown itself is
-    // shown; a war stage's outline has the corners while it lasts. Like an HQ's brackets they
-    // keep a width that reads when zoomed out.
+    // shown; a war stage's outline has the corners while it lasts. The dashes are firmer and
+    // at least 3px wide, so they read at an ordinary zoom over a guild's usual thin border.
+    // Only the border line itself changes: the bevel and the cooldown bar keep their places.
+    var line_width = border_width;
     var corner_dash = 1.0;
+    var in_cooling_corner = false;
     if cooldown_frac > 0.0 && !(is_pending_war || is_at_war) {
-        let corner_width = max(border_width, 2.0);
+        let corner_width = max(border_width, 3.0);
         let dashes = cooldown_corner_dashes(in.size_px, corner_width);
         let reach = cooldown_corner_reach(dashes, corner_width);
         if dashes.z >= 1.0 && dx <= reach && dy <= reach {
-            border_width = corner_width;
-            corner_dash = cooldown_corner_dash(in.uv, in.size_px, border_width, feather);
+            line_width = corner_width;
+            corner_dash = cooldown_corner_dash(in.uv, in.size_px, corner_width, feather);
+            in_cooling_corner = true;
         }
     }
 
@@ -466,8 +470,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let outer_aa = outer_x * outer_y;
 
     // Inner edge: border→fill transition
-    let border_tx = smoothstep(border_width + feather, border_width - feather, dx);
-    let border_ty = smoothstep(border_width + feather, border_width - feather, dy);
+    let border_tx = smoothstep(line_width + feather, line_width - feather, dx);
+    let border_ty = smoothstep(line_width + feather, line_width - feather, dy);
     let border_t = max(border_tx, border_ty) * corner_dash;
 
     // Border alpha (state-dependent)
@@ -481,6 +485,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     if is_headquarters {
         b_alpha = max(b_alpha, 0.88);
+    }
+    if in_cooling_corner {
+        b_alpha = max(b_alpha, 0.95);
     }
     if is_at_war || is_pending_war {
         b_alpha = max(b_alpha, war_opacity);
