@@ -276,8 +276,6 @@ pub(crate) struct SidebarIndex(pub RwSignal<usize>);
 #[derive(Clone, Copy)]
 pub(crate) struct SidebarItems(pub RwSignal<Vec<String>>);
 #[derive(Clone, Copy)]
-pub(crate) struct ResetSettingsTrigger(pub RwSignal<u64>);
-#[derive(Clone, Copy)]
 pub(crate) struct ShowSettings(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowDebugInfo(pub RwSignal<bool>);
@@ -1061,6 +1059,289 @@ fn load_settings_v2() -> SettingsV2 {
     SettingsV2::default()
 }
 
+/// The settings in the menu, one signal each. The panels' layout and the leaderboard's sort
+/// are saved alongside but are not among them.
+#[derive(Clone, Copy)]
+struct SettingsSignals {
+    show_connections: RwSignal<bool>,
+    abbreviate_names: RwSignal<bool>,
+    show_countdown: RwSignal<bool>,
+    show_granular_map_time: RwSignal<bool>,
+    show_compound_map_time: RwSignal<bool>,
+    show_names: RwSignal<bool>,
+    show_claim_labels: RwSignal<bool>,
+    show_far_zoom_territory_tags: RwSignal<bool>,
+    thick_cooldown_borders: RwSignal<bool>,
+    bold_connections: RwSignal<bool>,
+    connection_style: RwSignal<ConnectionStyle>,
+    connection_opacity_scale: RwSignal<f64>,
+    connection_solid_opacity: RwSignal<f64>,
+    connection_thickness_scale: RwSignal<f64>,
+    show_war_panel: RwSignal<bool>,
+    show_war_markers: RwSignal<bool>,
+    activity_include_unconfirmed: RwSignal<bool>,
+    show_player_heads: RwSignal<bool>,
+    player_head_render_head: RwSignal<bool>,
+    player_head_render_label: RwSignal<bool>,
+    player_head_size: RwSignal<f64>,
+    resource_highlight: RwSignal<bool>,
+    resource_highlight_opacity: RwSignal<f64>,
+    territory_opacity: RwSignal<f64>,
+    defense_highlight: RwSignal<bool>,
+    map_intel_enabled: RwSignal<bool>,
+    show_resource_icons: RwSignal<bool>,
+    show_territory_ornaments: RwSignal<bool>,
+    hq_crown_style: RwSignal<HqCrownStyle>,
+    cooldown_display: RwSignal<CooldownDisplay>,
+    hq_crown_scale: RwSignal<f64>,
+    war_outline: WarOutlineControls,
+    manual_sr_scalar: RwSignal<f64>,
+    auto_sr_scalar_enabled: RwSignal<bool>,
+    show_leaderboard_sr_gain: RwSignal<bool>,
+    show_leaderboard_sr_value: RwSignal<bool>,
+    show_leaderboard_territory_count: RwSignal<bool>,
+    show_leaderboard_online: RwSignal<bool>,
+    heat_mode_enabled: RwSignal<bool>,
+    heat_live_source: RwSignal<HeatLiveSource>,
+    heat_history_basis: RwSignal<HeatHistoryBasis>,
+    heat_selected_season_id: RwSignal<Option<i32>>,
+    readable_font: RwSignal<bool>,
+    show_minimap: RwSignal<bool>,
+    name_color: RwSignal<NameColor>,
+    tag_color: RwSignal<NameColor>,
+    label_scale_master: RwSignal<f64>,
+    label_scale_static: RwSignal<f64>,
+    label_scale_static_name: RwSignal<f64>,
+    label_scale_dynamic: RwSignal<f64>,
+    label_scale_icons: RwSignal<f64>,
+    show_debug_info: RwSignal<bool>,
+}
+
+impl SettingsSignals {
+    fn new(saved: &SettingsV2) -> Self {
+        let signals = Self {
+            show_connections: RwSignal::new(saved.show_connections),
+            abbreviate_names: RwSignal::new(saved.abbreviate_names),
+            show_countdown: RwSignal::new(saved.show_countdown),
+            show_granular_map_time: RwSignal::new(saved.granular_map_time),
+            show_compound_map_time: RwSignal::new(saved.compound_map_time),
+            show_names: RwSignal::new(saved.show_names),
+            show_claim_labels: RwSignal::new(saved.show_claim_labels),
+            show_far_zoom_territory_tags: RwSignal::new(saved.show_far_zoom_territory_tags),
+            thick_cooldown_borders: RwSignal::new(saved.thick_cooldown_borders),
+            bold_connections: RwSignal::new(saved.bold_connections),
+            connection_style: RwSignal::new(saved.connection_style),
+            connection_opacity_scale: RwSignal::new(saved.connection_opacity_scale),
+            connection_solid_opacity: RwSignal::new(saved.connection_solid_opacity),
+            connection_thickness_scale: RwSignal::new(saved.connection_thickness_scale),
+            show_war_panel: RwSignal::new(saved.show_war_queue),
+            show_war_markers: RwSignal::new(saved.show_war_markers),
+            activity_include_unconfirmed: RwSignal::new(saved.activity_include_unconfirmed),
+            show_player_heads: RwSignal::new(saved.show_player_heads),
+            player_head_render_head: RwSignal::new(saved.player_head_render_head),
+            player_head_render_label: RwSignal::new(saved.player_head_render_label),
+            player_head_size: RwSignal::new(saved.player_head_size),
+            resource_highlight: RwSignal::new(saved.resource_highlight),
+            resource_highlight_opacity: RwSignal::new(saved.resource_highlight_opacity),
+            territory_opacity: RwSignal::new(saved.territory_fill_opacity),
+            defense_highlight: RwSignal::new(saved.defense_highlight),
+            map_intel_enabled: RwSignal::new(saved.map_intel_enabled),
+            show_resource_icons: RwSignal::new(saved.show_resource_icons),
+            show_territory_ornaments: RwSignal::new(saved.show_territory_ornaments),
+            hq_crown_style: RwSignal::new(saved.hq_crown_style),
+            cooldown_display: RwSignal::new(saved.cooldown_display),
+            hq_crown_scale: RwSignal::new(saved.hq_crown_scale),
+            war_outline: WarOutlineControls::new(saved.war_outline),
+            manual_sr_scalar: RwSignal::new(saved.manual_sr_scalar),
+            auto_sr_scalar_enabled: RwSignal::new(saved.auto_sr_scalar_enabled),
+            show_leaderboard_sr_gain: RwSignal::new(saved.show_leaderboard_sr_gain),
+            show_leaderboard_sr_value: RwSignal::new(saved.show_leaderboard_sr_value),
+            show_leaderboard_territory_count: RwSignal::new(saved.show_leaderboard_territory_count),
+            show_leaderboard_online: RwSignal::new(saved.show_leaderboard_online),
+            heat_mode_enabled: RwSignal::new(saved.heat_mode_enabled),
+            heat_live_source: RwSignal::new(saved.heat_live_source),
+            heat_history_basis: RwSignal::new(saved.heat_history_basis),
+            heat_selected_season_id: RwSignal::new(saved.heat_selected_season_id),
+            readable_font: RwSignal::new(saved.readable_font),
+            show_minimap: RwSignal::new(saved.show_minimap),
+            name_color: RwSignal::new(saved.name_color),
+            tag_color: RwSignal::new(saved.tag_color),
+            label_scale_master: RwSignal::new(saved.label_scale_master),
+            label_scale_static: RwSignal::new(saved.label_scale_static),
+            label_scale_static_name: RwSignal::new(saved.label_scale_static),
+            label_scale_dynamic: RwSignal::new(saved.label_scale_dynamic),
+            label_scale_icons: RwSignal::new(saved.label_scale_icons),
+            show_debug_info: RwSignal::new(saved.show_debug_info),
+        };
+        // Brings every value into its control's range.
+        signals.apply(saved);
+        signals
+    }
+
+    /// The settings as saved, with the layout at its defaults. Tracked.
+    fn read(self) -> SettingsV2 {
+        SettingsV2 {
+            show_connections: self.show_connections.get(),
+            abbreviate_names: self.abbreviate_names.get(),
+            show_countdown: self.show_countdown.get(),
+            granular_map_time: self.show_granular_map_time.get(),
+            compound_map_time: self.show_compound_map_time.get(),
+            show_names: self.show_names.get(),
+            show_claim_labels: self.show_claim_labels.get(),
+            show_far_zoom_territory_tags: self.show_far_zoom_territory_tags.get(),
+            thick_cooldown_borders: self.thick_cooldown_borders.get(),
+            bold_connections: self.bold_connections.get(),
+            connection_style: self.connection_style.get(),
+            connection_opacity_scale: self.connection_opacity_scale.get(),
+            connection_solid_opacity: self.connection_solid_opacity.get(),
+            connection_thickness_scale: self.connection_thickness_scale.get(),
+            show_war_queue: self.show_war_panel.get(),
+            show_war_markers: self.show_war_markers.get(),
+            activity_include_unconfirmed: self.activity_include_unconfirmed.get(),
+            show_player_heads: self.show_player_heads.get(),
+            player_head_render_head: self.player_head_render_head.get(),
+            player_head_render_label: self.player_head_render_label.get(),
+            player_head_size: self.player_head_size.get(),
+            resource_highlight: self.resource_highlight.get(),
+            resource_highlight_opacity: self.resource_highlight_opacity.get(),
+            territory_fill_opacity: self.territory_opacity.get(),
+            defense_highlight: self.defense_highlight.get(),
+            map_intel_enabled: self.map_intel_enabled.get(),
+            show_resource_icons: self.show_resource_icons.get(),
+            show_territory_ornaments: self.show_territory_ornaments.get(),
+            hq_crown_style: self.hq_crown_style.get(),
+            cooldown_display: self.cooldown_display.get(),
+            hq_crown_scale: self.hq_crown_scale.get(),
+            war_outline: self.war_outline.get(),
+            manual_sr_scalar: self.manual_sr_scalar.get(),
+            auto_sr_scalar_enabled: self.auto_sr_scalar_enabled.get(),
+            show_leaderboard_sr_gain: self.show_leaderboard_sr_gain.get(),
+            show_leaderboard_sr_value: self.show_leaderboard_sr_value.get(),
+            show_leaderboard_territory_count: self.show_leaderboard_territory_count.get(),
+            show_leaderboard_online: self.show_leaderboard_online.get(),
+            heat_mode_enabled: self.heat_mode_enabled.get(),
+            heat_live_source: self.heat_live_source.get(),
+            heat_history_basis: self.heat_history_basis.get(),
+            heat_selected_season_id: self.heat_selected_season_id.get(),
+            readable_font: self.readable_font.get(),
+            show_minimap: self.show_minimap.get(),
+            name_color: self.name_color.get(),
+            tag_color: self.tag_color.get(),
+            label_scale_master: self.label_scale_master.get(),
+            label_scale_static: self.label_scale_static.get(),
+            label_scale_static_name: Some(self.label_scale_static_name.get()),
+            label_scale_dynamic: self.label_scale_dynamic.get(),
+            label_scale_icons: self.label_scale_icons.get(),
+            show_debug_info: self.show_debug_info.get(),
+            ..SettingsV2::default()
+        }
+    }
+
+    /// Sets every setting from `saved`, each within its control's range. Leaves the layout.
+    fn apply(self, saved: &SettingsV2) {
+        self.show_connections.set(saved.show_connections);
+        self.abbreviate_names.set(saved.abbreviate_names);
+        self.show_countdown.set(saved.show_countdown);
+        self.show_granular_map_time.set(saved.granular_map_time);
+        self.show_compound_map_time.set(saved.compound_map_time);
+        self.show_names.set(saved.show_names);
+        self.show_claim_labels.set(saved.show_claim_labels);
+        self.show_far_zoom_territory_tags
+            .set(saved.show_far_zoom_territory_tags);
+        self.thick_cooldown_borders
+            .set(saved.thick_cooldown_borders);
+        self.bold_connections.set(saved.bold_connections);
+        self.connection_style.set(saved.connection_style);
+        self.connection_opacity_scale
+            .set(clamp_connection_opacity_scale(
+                saved.connection_opacity_scale,
+            ));
+        self.connection_solid_opacity
+            .set(clamp_connection_solid_opacity(
+                saved.connection_solid_opacity,
+            ));
+        self.connection_thickness_scale
+            .set(clamp_connection_thickness_scale(
+                saved.connection_thickness_scale,
+            ));
+        self.show_war_panel.set(saved.show_war_queue);
+        self.show_war_markers.set(saved.show_war_markers);
+        self.activity_include_unconfirmed
+            .set(saved.activity_include_unconfirmed);
+        self.show_player_heads.set(saved.show_player_heads);
+        self.player_head_render_head
+            .set(saved.player_head_render_head);
+        self.player_head_render_label
+            .set(saved.player_head_render_label);
+        self.player_head_size
+            .set(clamp_player_head_size(saved.player_head_size));
+        self.resource_highlight.set(saved.resource_highlight);
+        self.resource_highlight_opacity
+            .set(clamp_resource_highlight_opacity(
+                saved.resource_highlight_opacity,
+            ));
+        self.territory_opacity
+            .set(clamp_territory_opacity(saved.territory_fill_opacity));
+        self.defense_highlight.set(saved.defense_highlight);
+        self.map_intel_enabled.set(saved.map_intel_enabled);
+        self.show_resource_icons.set(saved.show_resource_icons);
+        self.show_territory_ornaments
+            .set(saved.show_territory_ornaments);
+        self.hq_crown_style.set(saved.hq_crown_style);
+        self.cooldown_display.set(saved.cooldown_display);
+        self.hq_crown_scale
+            .set(clamp_hq_crown_scale(saved.hq_crown_scale));
+        self.war_outline.set(saved.war_outline);
+        self.manual_sr_scalar
+            .set(season_scalar::clamp_manual_scalar(saved.manual_sr_scalar));
+        self.auto_sr_scalar_enabled
+            .set(saved.auto_sr_scalar_enabled);
+        self.show_leaderboard_sr_gain
+            .set(saved.show_leaderboard_sr_gain);
+        self.show_leaderboard_sr_value
+            .set(saved.show_leaderboard_sr_value);
+        self.show_leaderboard_territory_count
+            .set(saved.show_leaderboard_territory_count);
+        self.show_leaderboard_online
+            .set(saved.show_leaderboard_online);
+        self.heat_mode_enabled.set(saved.heat_mode_enabled);
+        self.heat_live_source.set(saved.heat_live_source);
+        self.heat_history_basis.set(saved.heat_history_basis);
+        self.heat_selected_season_id
+            .set(saved.heat_selected_season_id);
+        self.readable_font.set(saved.readable_font);
+        self.show_minimap.set(saved.show_minimap);
+        self.name_color.set(saved.name_color);
+        self.tag_color.set(saved.tag_color);
+        self.label_scale_master
+            .set(clamp_label_scale_master(saved.label_scale_master));
+        self.label_scale_static
+            .set(clamp_label_scale_group(saved.label_scale_static));
+        self.label_scale_static_name.set(clamp_label_scale_group(
+            saved
+                .label_scale_static_name
+                .unwrap_or(saved.label_scale_static),
+        ));
+        self.label_scale_dynamic
+            .set(clamp_label_scale_group(saved.label_scale_dynamic));
+        self.label_scale_icons
+            .set(clamp_label_scale_group(saved.label_scale_icons));
+        self.show_debug_info.set(saved.show_debug_info);
+    }
+
+    /// The settings, keyed as saved, for the history and the menu's resets. Tracked.
+    fn snapshot(self) -> settings_history::Snapshot {
+        settings_history::snapshot(serde_json::to_value(self.read()).unwrap_or_default())
+    }
+
+    fn apply_snapshot(self, snapshot: settings_history::Snapshot) {
+        if let Ok(saved) = serde_json::from_value::<SettingsV2>(serde_json::Value::Object(snapshot))
+        {
+            self.apply(&saved);
+        }
+    }
+}
+
 use crate::colors::rgba_css;
 use crate::heat::{self, HeatFetchInput};
 use crate::history;
@@ -1068,6 +1349,7 @@ use crate::keybinds::{KeybindHelpOpen, Shortcut};
 use crate::map_intel::MapIntelOverlay;
 use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
+use crate::settings_history::{self, SettingsStore};
 use crate::sidebar::Sidebar;
 use crate::territory::{ClientTerritoryMap, from_snapshot};
 use crate::territory_card::{
@@ -1108,19 +1390,45 @@ fn format_heat_window_label(heat: &HistoryHeat, mode: MapMode) -> String {
     )
 }
 
+/// `Some(false)` for Ctrl+Z (Cmd+Z), `Some(true)` for Ctrl+Shift+Z or Ctrl+Y.
+fn settings_undo_key(e: &web_sys::KeyboardEvent) -> Option<bool> {
+    if !(e.ctrl_key() || e.meta_key()) || e.alt_key() {
+        return None;
+    }
+    match e.key().to_ascii_lowercase().as_str() {
+        "z" => Some(e.shift_key()),
+        "y" if !e.shift_key() => Some(true),
+        _ => None,
+    }
+}
+
+/// Whether the key goes to a field the viewer types into.
+fn edits_text(target: Option<web_sys::EventTarget>) -> bool {
+    let Some(element) = target.and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+    else {
+        return false;
+    };
+    if element.is_content_editable() || element.tag_name() == "TEXTAREA" {
+        return true;
+    }
+    element
+        .dyn_into::<web_sys::HtmlInputElement>()
+        .is_ok_and(|input| {
+            !matches!(
+                input.type_().as_str(),
+                "range" | "radio" | "checkbox" | "button" | "submit" | "reset" | "color"
+            )
+        })
+}
+
+/// The saved season, or Latest (`None`, which the server reads as the newest season and so
+/// follows a new one) when the server no longer has the season saved.
 fn normalize_heat_selected_season_id(meta: &HistoryHeatMeta, selected: Option<i32>) -> Option<i32> {
-    let has_season = |season_id: i32| {
+    selected.filter(|season_id| {
         meta.seasons
             .iter()
-            .any(|window| window.season_id == season_id)
-    };
-    let latest_valid = meta
-        .latest_season_id
-        .filter(|season_id| has_season(*season_id));
-    match selected {
-        Some(season_id) if has_season(season_id) => Some(season_id),
-        _ => latest_valid,
-    }
+            .any(|window| window.season_id == *season_id)
+    })
 }
 #[component]
 pub fn App() -> impl IntoView {
@@ -1138,64 +1446,67 @@ pub fn MapPage() -> impl IntoView {
     // Epoch-second tick — drives cooldown countdown updates across canvas, tooltip, sidebar
     let tick: RwSignal<i64> = RwSignal::new(chrono::Utc::now().timestamp());
     let saved = load_settings_v2();
-    let show_connections: RwSignal<bool> = RwSignal::new(saved.show_connections);
-    let abbreviate_names: RwSignal<bool> = RwSignal::new(saved.abbreviate_names);
-    let show_countdown: RwSignal<bool> = RwSignal::new(saved.show_countdown);
-    let show_granular_map_time: RwSignal<bool> = RwSignal::new(saved.granular_map_time);
-    let show_compound_map_time: RwSignal<bool> = RwSignal::new(saved.compound_map_time);
-    let show_names: RwSignal<bool> = RwSignal::new(saved.show_names);
-    let show_claim_labels: RwSignal<bool> = RwSignal::new(saved.show_claim_labels);
-    let show_far_zoom_territory_tags: RwSignal<bool> =
-        RwSignal::new(saved.show_far_zoom_territory_tags);
-    let thick_cooldown_borders: RwSignal<bool> = RwSignal::new(saved.thick_cooldown_borders);
-    let bold_connections: RwSignal<bool> = RwSignal::new(saved.bold_connections);
-    let connection_style: RwSignal<ConnectionStyle> = RwSignal::new(saved.connection_style);
-    let connection_opacity_scale: RwSignal<f64> = RwSignal::new(clamp_connection_opacity_scale(
-        saved.connection_opacity_scale,
-    ));
-    let connection_solid_opacity: RwSignal<f64> = RwSignal::new(clamp_connection_solid_opacity(
-        saved.connection_solid_opacity,
-    ));
-    let connection_thickness_scale: RwSignal<f64> = RwSignal::new(
-        clamp_connection_thickness_scale(saved.connection_thickness_scale),
+    let settings_signals = SettingsSignals::new(&saved);
+    let settings_store = SettingsStore::new(
+        Memo::new(move |_| settings_signals.snapshot()),
+        SettingsSignals::new(&SettingsV2::default()).snapshot(),
+        Callback::new(move |snapshot| settings_signals.apply_snapshot(snapshot)),
     );
-    let resource_highlight: RwSignal<bool> = RwSignal::new(saved.resource_highlight);
-    let resource_highlight_opacity: RwSignal<f64> = RwSignal::new(
-        clamp_resource_highlight_opacity(saved.resource_highlight_opacity),
-    );
-    let territory_opacity: RwSignal<f64> =
-        RwSignal::new(clamp_territory_opacity(saved.territory_fill_opacity));
-    let defense_highlight: RwSignal<bool> = RwSignal::new(saved.defense_highlight);
-    let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
-    let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
-    let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
-    let hq_crown_style: RwSignal<HqCrownStyle> = RwSignal::new(saved.hq_crown_style);
-    let cooldown_display: RwSignal<CooldownDisplay> = RwSignal::new(saved.cooldown_display);
+    let SettingsSignals {
+        show_connections,
+        abbreviate_names,
+        show_countdown,
+        show_granular_map_time,
+        show_compound_map_time,
+        show_names,
+        show_claim_labels,
+        show_far_zoom_territory_tags,
+        thick_cooldown_borders,
+        bold_connections,
+        connection_style,
+        connection_opacity_scale,
+        connection_solid_opacity,
+        connection_thickness_scale,
+        show_war_panel,
+        show_war_markers,
+        activity_include_unconfirmed,
+        show_player_heads,
+        player_head_render_head,
+        player_head_render_label,
+        player_head_size,
+        resource_highlight,
+        resource_highlight_opacity,
+        territory_opacity,
+        defense_highlight,
+        map_intel_enabled,
+        show_resource_icons,
+        show_territory_ornaments,
+        hq_crown_style,
+        cooldown_display,
+        hq_crown_scale,
+        war_outline,
+        manual_sr_scalar,
+        auto_sr_scalar_enabled,
+        show_leaderboard_sr_gain,
+        show_leaderboard_sr_value,
+        show_leaderboard_territory_count,
+        show_leaderboard_online,
+        heat_mode_enabled,
+        heat_live_source,
+        heat_history_basis,
+        heat_selected_season_id,
+        readable_font,
+        show_minimap,
+        name_color,
+        tag_color,
+        label_scale_master,
+        label_scale_static,
+        label_scale_static_name,
+        label_scale_dynamic,
+        label_scale_icons,
+        show_debug_info,
+    } = settings_signals;
     let reduced_motion = prefers_reduced_motion();
-    let hq_crown_scale: RwSignal<f64> = RwSignal::new(clamp_hq_crown_scale(saved.hq_crown_scale));
-    let war_outline = WarOutlineControls::new(saved.war_outline);
-    let manual_sr_scalar: RwSignal<f64> =
-        RwSignal::new(season_scalar::clamp_manual_scalar(saved.manual_sr_scalar));
-    let auto_sr_scalar_enabled: RwSignal<bool> = RwSignal::new(saved.auto_sr_scalar_enabled);
-    let show_leaderboard_sr_gain: RwSignal<bool> = RwSignal::new(saved.show_leaderboard_sr_gain);
-    let show_leaderboard_sr_value: RwSignal<bool> = RwSignal::new(saved.show_leaderboard_sr_value);
-    let name_color: RwSignal<NameColor> = RwSignal::new(saved.name_color);
-    let tag_color: RwSignal<NameColor> = RwSignal::new(saved.tag_color);
-    let readable_font: RwSignal<bool> = RwSignal::new(saved.readable_font);
-    let show_minimap: RwSignal<bool> = RwSignal::new(saved.show_minimap);
-    let label_scale_master: RwSignal<f64> =
-        RwSignal::new(clamp_label_scale_master(saved.label_scale_master));
-    let label_scale_static: RwSignal<f64> =
-        RwSignal::new(clamp_label_scale_group(saved.label_scale_static));
-    let label_scale_static_name: RwSignal<f64> = RwSignal::new(clamp_label_scale_group(
-        saved
-            .label_scale_static_name
-            .unwrap_or(saved.label_scale_static),
-    ));
-    let label_scale_dynamic: RwSignal<f64> =
-        RwSignal::new(clamp_label_scale_group(saved.label_scale_dynamic));
-    let label_scale_icons: RwSignal<f64> =
-        RwSignal::new(clamp_label_scale_group(saved.label_scale_icons));
     let sidebar_width: RwSignal<f64> = RwSignal::new(clamp_sidebar_width(migrate_sidebar_width(
         saved.sidebar_width,
     )));
@@ -1203,23 +1514,13 @@ pub fn MapPage() -> impl IntoView {
     let war_panel_open: RwSignal<bool> = RwSignal::new(saved.war_panel_open);
     let war_panel_width: RwSignal<f64> =
         RwSignal::new(clamp_war_panel_width(saved.war_panel_width));
-    let show_war_panel: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
-    let show_war_markers: RwSignal<bool> = RwSignal::new(saved.show_war_markers);
-    let activity_include_unconfirmed = RwSignal::new(saved.activity_include_unconfirmed);
-    let show_player_heads: RwSignal<bool> = RwSignal::new(saved.show_player_heads);
-    let player_head_render_head: RwSignal<bool> = RwSignal::new(saved.player_head_render_head);
-    let player_head_render_label: RwSignal<bool> = RwSignal::new(saved.player_head_render_label);
-    let player_head_size: RwSignal<f64> =
-        RwSignal::new(clamp_player_head_size(saved.player_head_size));
     let sidebar_transient: RwSignal<bool> = RwSignal::new(false);
     let sidebar_ready: RwSignal<bool> = RwSignal::new(false);
     let sidebar_loaded: RwSignal<bool> = RwSignal::new(saved.sidebar_open);
     let sidebar_index: RwSignal<usize> = RwSignal::new(0);
     let sidebar_items: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
-    let reset_settings_trigger: RwSignal<u64> = RwSignal::new(0);
     let keybind_help_open: RwSignal<bool> = RwSignal::new(false);
     let show_settings: RwSignal<bool> = RwSignal::new(false);
-    let show_debug_info: RwSignal<bool> = RwSignal::new(saved.show_debug_info);
     // Live-first boot: defer non-essential work (tiles/history checks/icons)
     // until we have initial territory data and the first frame has had a chance to commit.
     let deferred_boot_ready: RwSignal<bool> = RwSignal::new(false);
@@ -1235,15 +1536,7 @@ pub fn MapPage() -> impl IntoView {
     let detail_return_guild: RwSignal<Option<String>> = RwSignal::new(None);
     let guild_online_data: RwSignal<HashMap<String, GuildOnlineInfo>> =
         RwSignal::new(HashMap::new());
-    let show_leaderboard_territory_count: RwSignal<bool> =
-        RwSignal::new(saved.show_leaderboard_territory_count);
-    let show_leaderboard_online: RwSignal<bool> = RwSignal::new(saved.show_leaderboard_online);
     let leaderboard_sort_by_sr: RwSignal<bool> = RwSignal::new(saved.leaderboard_sort_by_sr);
-    let heat_mode_enabled: RwSignal<bool> = RwSignal::new(saved.heat_mode_enabled);
-    let heat_live_source: RwSignal<HeatLiveSource> = RwSignal::new(saved.heat_live_source);
-    let heat_history_basis: RwSignal<HeatHistoryBasis> = RwSignal::new(saved.heat_history_basis);
-    let heat_selected_season_id: RwSignal<Option<i32>> =
-        RwSignal::new(saved.heat_selected_season_id);
     let heat_entries_by_territory: RwSignal<HashMap<String, u64>> = RwSignal::new(HashMap::new());
     let heat_fallback_applied: RwSignal<bool> = RwSignal::new(false);
     let heat_window_label: RwSignal<String> = RwSignal::new(String::new());
@@ -1450,7 +1743,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(SidebarTransient(sidebar_transient));
     provide_context(SidebarIndex(sidebar_index));
     provide_context(SidebarItems(sidebar_items));
-    provide_context(ResetSettingsTrigger(reset_settings_trigger));
+    provide_context(settings_store);
     provide_context(ShowSettings(show_settings));
     provide_context(ShowDebugInfo(show_debug_info));
     provide_context(CurrentMode(map_mode));
@@ -1588,81 +1881,6 @@ pub fn MapPage() -> impl IntoView {
     provide_context(HeatFallbackApplied(heat_fallback_applied));
     provide_context(HeatWindowLabel(heat_window_label));
     provide_context(HeatMetaState(heat_meta));
-
-    Effect::new(move || {
-        if reset_settings_trigger.get() == 0 {
-            return;
-        }
-
-        let defaults = SettingsV2::default();
-        show_connections.set(defaults.show_connections);
-        abbreviate_names.set(defaults.abbreviate_names);
-        show_countdown.set(defaults.show_countdown);
-        show_granular_map_time.set(defaults.granular_map_time);
-        show_compound_map_time.set(defaults.compound_map_time);
-        show_names.set(defaults.show_names);
-        show_claim_labels.set(defaults.show_claim_labels);
-        show_far_zoom_territory_tags.set(defaults.show_far_zoom_territory_tags);
-        thick_cooldown_borders.set(defaults.thick_cooldown_borders);
-        bold_connections.set(defaults.bold_connections);
-        connection_style.set(defaults.connection_style);
-        connection_opacity_scale.set(clamp_connection_opacity_scale(
-            defaults.connection_opacity_scale,
-        ));
-        connection_solid_opacity.set(clamp_connection_solid_opacity(
-            defaults.connection_solid_opacity,
-        ));
-        connection_thickness_scale.set(clamp_connection_thickness_scale(
-            defaults.connection_thickness_scale,
-        ));
-        resource_highlight.set(defaults.resource_highlight);
-        resource_highlight_opacity.set(clamp_resource_highlight_opacity(
-            defaults.resource_highlight_opacity,
-        ));
-        territory_opacity.set(clamp_territory_opacity(defaults.territory_fill_opacity));
-        defense_highlight.set(defaults.defense_highlight);
-        map_intel_enabled.set(defaults.map_intel_enabled);
-        show_resource_icons.set(defaults.show_resource_icons);
-        show_territory_ornaments.set(defaults.show_territory_ornaments);
-        hq_crown_style.set(defaults.hq_crown_style);
-        cooldown_display.set(defaults.cooldown_display);
-        hq_crown_scale.set(clamp_hq_crown_scale(defaults.hq_crown_scale));
-        war_outline.set(defaults.war_outline);
-        manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
-            defaults.manual_sr_scalar,
-        ));
-        auto_sr_scalar_enabled.set(defaults.auto_sr_scalar_enabled);
-        show_leaderboard_sr_gain.set(defaults.show_leaderboard_sr_gain);
-        show_leaderboard_sr_value.set(defaults.show_leaderboard_sr_value);
-        show_leaderboard_territory_count.set(defaults.show_leaderboard_territory_count);
-        show_leaderboard_online.set(defaults.show_leaderboard_online);
-        leaderboard_sort_by_sr.set(defaults.leaderboard_sort_by_sr);
-        heat_mode_enabled.set(defaults.heat_mode_enabled);
-        heat_live_source.set(defaults.heat_live_source);
-        heat_history_basis.set(defaults.heat_history_basis);
-        heat_selected_season_id.set(defaults.heat_selected_season_id);
-        readable_font.set(defaults.readable_font);
-        show_minimap.set(defaults.show_minimap);
-        show_war_panel.set(defaults.show_war_queue);
-        show_war_markers.set(defaults.show_war_markers);
-        activity_include_unconfirmed.set(defaults.activity_include_unconfirmed);
-        show_player_heads.set(defaults.show_player_heads);
-        player_head_render_head.set(defaults.player_head_render_head);
-        player_head_render_label.set(defaults.player_head_render_label);
-        player_head_size.set(clamp_player_head_size(defaults.player_head_size));
-        name_color.set(defaults.name_color);
-        tag_color.set(defaults.tag_color);
-        label_scale_master.set(clamp_label_scale_master(defaults.label_scale_master));
-        label_scale_static.set(clamp_label_scale_group(defaults.label_scale_static));
-        label_scale_static_name.set(clamp_label_scale_group(
-            defaults
-                .label_scale_static_name
-                .unwrap_or(defaults.label_scale_static),
-        ));
-        label_scale_dynamic.set(clamp_label_scale_group(defaults.label_scale_dynamic));
-        label_scale_icons.set(clamp_label_scale_group(defaults.label_scale_icons));
-        show_debug_info.set(defaults.show_debug_info);
-    });
 
     Effect::new(move || {
         if resource_highlight.get() && defense_highlight.get_untracked() {
@@ -1898,6 +2116,21 @@ pub fn MapPage() -> impl IntoView {
             });
         }
     });
+    // Once the server's seasons are known, a saved season it no longer has, however it came
+    // back (load, Undo, Redo), becomes Latest; the history takes that as never chosen.
+    Effect::new(move || {
+        let selected = heat_selected_season_id.get();
+        let corrected = heat_meta.with(|meta| {
+            meta.as_ref()
+                .map(|meta| normalize_heat_selected_season_id(meta, selected))
+        });
+        if let Some(corrected) = corrected
+            && corrected != selected
+        {
+            heat_selected_season_id.set(corrected);
+            settings_store.absorb("heat_selected_season_id");
+        }
+    });
     // History heat fetch throttling state (leading + trailing calls).
     let heat_history_refresh_timeout =
         Rc::new(RefCell::new(None::<gloo_timers::callback::Timeout>));
@@ -1920,14 +2153,10 @@ pub fn MapPage() -> impl IntoView {
             wasm_bindgen_futures::spawn_local(async move {
                 match heat::fetch_heat_meta().await {
                     Ok(meta) => {
-                        let selected_before = heat_selected_season_id.get_untracked();
-                        let selected_after =
-                            normalize_heat_selected_season_id(&meta, selected_before);
+                        let selected = heat_selected_season_id.get_untracked();
                         heat_meta.set(Some(meta));
-                        if selected_after != selected_before {
-                            heat_selected_season_id.set(selected_after);
-                        } else if selected_before.is_none() {
-                            // No valid season id to set; refresh so season mode can fall back server-side.
+                        // A season corrected below refreshes as it changes; Latest asks now.
+                        if selected.is_none() {
                             request_heat_refresh(None);
                         }
                     }
@@ -2151,73 +2380,12 @@ pub fn MapPage() -> impl IntoView {
     // Persist settings to localStorage on any change
     Effect::new(move || {
         let settings = SettingsV2 {
-            defaults_version: SETTINGS_DEFAULTS_VERSION,
-            show_connections: show_connections.get(),
-            abbreviate_names: abbreviate_names.get(),
-            show_countdown: show_countdown.get(),
-            granular_map_time: show_granular_map_time.get(),
-            compound_map_time: show_compound_map_time.get(),
-            show_names: show_names.get(),
-            show_claim_labels: show_claim_labels.get(),
-            show_far_zoom_territory_tags: show_far_zoom_territory_tags.get(),
-            thick_cooldown_borders: thick_cooldown_borders.get(),
-            bold_connections: bold_connections.get(),
-            connection_style: connection_style.get(),
-            connection_opacity_scale: clamp_connection_opacity_scale(
-                connection_opacity_scale.get(),
-            ),
-            connection_solid_opacity: clamp_connection_solid_opacity(
-                connection_solid_opacity.get(),
-            ),
-            connection_thickness_scale: clamp_connection_thickness_scale(
-                connection_thickness_scale.get(),
-            ),
             sidebar_open: sidebar_open.get(),
             war_panel_open: war_panel_open.get(),
             war_panel_width: clamp_war_panel_width(war_panel_width.get()),
-            show_war_queue: show_war_panel.get(),
-            show_war_markers: show_war_markers.get(),
-            activity_include_unconfirmed: activity_include_unconfirmed.get(),
-            show_player_heads: show_player_heads.get(),
-            player_head_render_head: player_head_render_head.get(),
-            player_head_render_label: player_head_render_label.get(),
-            player_head_size: clamp_player_head_size(player_head_size.get()),
-            resource_highlight: resource_highlight.get(),
-            resource_highlight_opacity: clamp_resource_highlight_opacity(
-                resource_highlight_opacity.get(),
-            ),
-            territory_opacity: None,
-            territory_fill_opacity: clamp_territory_opacity(territory_opacity.get()),
-            defense_highlight: defense_highlight.get(),
-            map_intel_enabled: map_intel_enabled.get(),
-            show_resource_icons: show_resource_icons.get(),
-            show_territory_ornaments: show_territory_ornaments.get(),
-            hq_crown_style: hq_crown_style.get(),
-            cooldown_display: cooldown_display.get(),
-            hq_crown_scale: clamp_hq_crown_scale(hq_crown_scale.get()),
-            war_outline: war_outline.get(),
-            manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
-            auto_sr_scalar_enabled: auto_sr_scalar_enabled.get(),
-            show_leaderboard_sr_gain: show_leaderboard_sr_gain.get(),
-            show_leaderboard_sr_value: show_leaderboard_sr_value.get(),
-            show_leaderboard_territory_count: show_leaderboard_territory_count.get(),
-            show_leaderboard_online: show_leaderboard_online.get(),
             leaderboard_sort_by_sr: leaderboard_sort_by_sr.get(),
-            heat_mode_enabled: heat_mode_enabled.get(),
-            heat_live_source: heat_live_source.get(),
-            heat_history_basis: heat_history_basis.get(),
-            heat_selected_season_id: heat_selected_season_id.get(),
-            readable_font: readable_font.get(),
-            show_minimap: show_minimap.get(),
-            name_color: name_color.get(),
-            tag_color: tag_color.get(),
-            label_scale_master: clamp_label_scale_master(label_scale_master.get()),
-            label_scale_static: clamp_label_scale_group(label_scale_static.get()),
-            label_scale_static_name: Some(clamp_label_scale_group(label_scale_static_name.get())),
-            label_scale_dynamic: clamp_label_scale_group(label_scale_dynamic.get()),
-            label_scale_icons: clamp_label_scale_group(label_scale_icons.get()),
             sidebar_width: clamp_sidebar_width(sidebar_width.get()),
-            show_debug_info: show_debug_info.get(),
+            ..settings_signals.read()
         };
         let _ = gloo_storage::LocalStorage::set("sequoia_settings_v2", &settings);
     });
@@ -2449,6 +2617,20 @@ pub fn MapPage() -> impl IntoView {
                     || e.default_prevented()
                     || war_room.handle_stray_key(&e)
                 {
+                    return;
+                }
+                // Undo and redo a settings change while the menu is open. A text field keeps
+                // its own undo.
+                if show_settings.get_untracked()
+                    && let Some(redo) = settings_undo_key(&e)
+                    && !edits_text(e.target())
+                {
+                    e.prevent_default();
+                    if redo {
+                        settings_store.redo();
+                    } else {
+                        settings_store.undo();
+                    }
                     return;
                 }
                 let key = e.key();
@@ -4341,10 +4523,9 @@ mod tests {
             season_fallback_days: 60,
         };
 
-        assert_eq!(
-            normalize_heat_selected_season_id(&meta, Some(999)),
-            Some(31)
-        );
+        assert_eq!(normalize_heat_selected_season_id(&meta, Some(999)), None);
+        // Latest stays Latest, following the next season when it starts.
+        assert_eq!(normalize_heat_selected_season_id(&meta, None), None);
     }
 
     #[test]
@@ -4402,5 +4583,63 @@ mod tests {
         assert!(!drag.moved_to(500.0 + SHEET_DISMISS_DRAG_PX).dismisses());
         assert!(drag.moved_to(501.0 + SHEET_DISMISS_DRAG_PX).dismisses());
         assert_eq!(drag.moved_to(530.0).pointer_id, 7);
+    }
+
+    #[test]
+    fn every_saved_setting_is_named_for_undo_and_every_name_is_saved() {
+        use crate::settings_history::{LABELS, NOT_SETTINGS};
+        let saved = serde_json::to_value(super::SettingsV2::default()).unwrap();
+        let saved = saved.as_object().unwrap();
+        // Undo names a saved object's fields one by one, as its controls show them.
+        let mut paths = Vec::new();
+        for (key, value) in saved {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    paths.extend(fields.keys().map(|field| format!("{key}.{field}")));
+                }
+                _ => paths.push(key.clone()),
+            }
+        }
+        for path in &paths {
+            assert!(
+                NOT_SETTINGS.contains(&path.as_str())
+                    || LABELS.iter().any(|(named, _)| named == path),
+                "{path} has no name for Undo"
+            );
+        }
+        for (key, _) in LABELS {
+            assert!(paths.iter().any(|path| path == key), "{key} is not saved");
+        }
+    }
+
+    #[test]
+    fn settings_written_back_read_back_the_same() {
+        use super::{SettingsSignals, SettingsV2, WarOutline, WarOutlineStyle};
+        let chosen = SettingsV2 {
+            show_names: true,
+            territory_fill_opacity: 0.63,
+            resource_highlight: true,
+            war_outline: WarOutline {
+                style: WarOutlineStyle::Dashed,
+                width: 1.75,
+                opacity: 0.45,
+                ..WarOutline::default()
+            },
+            label_scale_static_name: Some(1.35),
+            heat_selected_season_id: Some(30),
+            manual_sr_scalar: 2.25,
+            ..SettingsV2::default()
+        };
+        for settings in [SettingsV2::default(), chosen] {
+            let signals = SettingsSignals::new(&settings);
+            let snapshot = signals.snapshot();
+            let other = SettingsSignals::new(&SettingsV2::default());
+            other.apply_snapshot(snapshot.clone());
+            assert_eq!(other.snapshot(), snapshot);
+            assert_eq!(
+                serde_json::to_value(signals.read()).unwrap(),
+                serde_json::to_value(&settings).unwrap()
+            );
+        }
     }
 }

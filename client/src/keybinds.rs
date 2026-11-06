@@ -249,6 +249,9 @@ pub(crate) fn KeybindHelp() -> impl IntoView {
                 </div>
                 <ul>{rows}</ul>
                 <p class="keybind-help-note">"Ignored while typing. Esc leaves a text field."</p>
+                <p class="keybind-help-note">
+                    "With Settings open, Ctrl+Z undoes a settings change and Ctrl+Shift+Z or Ctrl+Y redoes it (Cmd on a Mac)."
+                </p>
             </div>
         </dialog>
     }

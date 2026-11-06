@@ -16,31 +16,29 @@ use crate::app::{
     CONNECTION_SOLID_OPACITY_MIN, CONNECTION_THICKNESS_SCALE_MAX, CONNECTION_THICKNESS_SCALE_MIN,
     ConnectionOpacityScale, ConnectionSolidOpacity, ConnectionStyle, ConnectionStyleSetting,
     ConnectionThicknessScale, CooldownDisplay, CooldownDisplaySetting, CurrentMode,
-    DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_SOLID_OPACITY,
-    DEFAULT_CONNECTION_THICKNESS_SCALE, DEFAULT_LABEL_SCALE_GROUP, DEFAULT_LABEL_SCALE_MASTER,
-    DEFAULT_LABEL_SCALE_STATIC_NAME, DEFAULT_LABEL_SCALE_STATIC_TAG, DefenseHighlight,
-    HQ_CROWN_SCALE_MAX, HQ_CROWN_SCALE_MIN, HeatFallbackApplied, HeatHistoryBasis,
-    HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting, HeatMetaState, HeatModeEnabled,
-    HeatSelectedSeasonId, HeatWindowLabel, HqCrownScale, HqCrownStyle, HqCrownStyleSetting,
-    IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN, LABEL_SCALE_MASTER_MAX,
-    LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons, LabelScaleMaster, LabelScaleStatic,
-    LabelScaleStaticName, ManualSrScalar, MapIntelModeEnabled, MapMode, NameColor,
-    NameColorSetting, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN, PlayerHeadRenderHead,
-    PlayerHeadRenderLabel, PlayerHeadSize, RESOURCE_HIGHLIGHT_OPACITY_MAX,
-    RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont, ResetSettingsTrigger, ResourceHighlight,
-    ResourceHighlightOpacity, ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo,
-    ShowFarZoomTerritoryTags, ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain,
-    ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads,
-    ShowResourceIcons, ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel,
-    TERRITORY_OPACITY_MAX, TERRITORY_OPACITY_MIN, TagColorSetting, TerritoryOpacity,
-    ThickCooldownBorders, WAR_OUTLINE_OPACITY_MAX, WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_WIDTH_MAX,
-    WAR_OUTLINE_WIDTH_MIN, WarFeedVisible, WarOutlineColor, WarOutlineControls, WarOutlineStyle,
+    DefenseHighlight, HQ_CROWN_SCALE_MAX, HQ_CROWN_SCALE_MIN, HeatFallbackApplied,
+    HeatHistoryBasis, HeatHistoryBasisSetting, HeatLiveSource, HeatLiveSourceSetting,
+    HeatMetaState, HeatModeEnabled, HeatSelectedSeasonId, HeatWindowLabel, HqCrownScale,
+    HqCrownStyle, HqCrownStyleSetting, IsMobile, LABEL_SCALE_GROUP_MAX, LABEL_SCALE_GROUP_MIN,
+    LABEL_SCALE_MASTER_MAX, LABEL_SCALE_MASTER_MIN, LabelScaleDynamic, LabelScaleIcons,
+    LabelScaleMaster, LabelScaleStatic, LabelScaleStaticName, ManualSrScalar, MapIntelModeEnabled,
+    MapMode, NameColor, NameColorSetting, PLAYER_HEAD_SIZE_MAX, PLAYER_HEAD_SIZE_MIN,
+    PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize, RESOURCE_HIGHLIGHT_OPACITY_MAX,
+    RESOURCE_HIGHLIGHT_OPACITY_MIN, ReadableFont, ResourceHighlight, ResourceHighlightOpacity,
+    ShowClaimLabels, ShowCompoundMapTime, ShowCountdown, ShowDebugInfo, ShowFarZoomTerritoryTags,
+    ShowGranularMapTime, ShowLeaderboardOnline, ShowLeaderboardSrGain, ShowLeaderboardSrValue,
+    ShowLeaderboardTerritoryCount, ShowMinimap, ShowNames, ShowPlayerHeads, ShowResourceIcons,
+    ShowSettings, ShowTerritoryOrnaments, ShowWarMarkers, ShowWarPanel, TERRITORY_OPACITY_MAX,
+    TERRITORY_OPACITY_MIN, TagColorSetting, TerritoryOpacity, ThickCooldownBorders,
+    WAR_OUTLINE_OPACITY_MAX, WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_WIDTH_MAX, WAR_OUTLINE_WIDTH_MIN,
+    WarFeedVisible, WarOutlineColor, WarOutlineControls, WarOutlineStyle,
     clamp_connection_opacity_scale, clamp_connection_solid_opacity,
     clamp_connection_thickness_scale, clamp_hq_crown_scale, clamp_label_scale_group,
     clamp_label_scale_master, clamp_player_head_size, clamp_resource_highlight_opacity,
     clamp_territory_opacity, clamp_war_outline_opacity, clamp_war_outline_width,
 };
 use crate::season_scalar::clamp_manual_scalar;
+use crate::settings_history::SettingsStore;
 use crate::territory::ClientTerritoryMap;
 use crate::ui::PanelNav;
 
@@ -168,6 +166,7 @@ fn slug(label: &str) -> String {
 /// The settings view: everyday groups first, then the two collapsed sections.
 #[component]
 pub(crate) fn SettingsPanel() -> impl IntoView {
+    let settings_store: SettingsStore = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let ShowSettings(show_settings) = expect_context();
     let AbbreviateNames(abbreviate_names) = expect_context();
@@ -264,12 +263,15 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
         <div class="settings-panel">
             <PanelNav back=("Back from settings", Callback::new(move |()| show_settings.set(false)))>
                 <h2 class="settings-title">"Settings"</h2>
+                <span class="settings-notice" role="status">{move || settings_store.notice()}</span>
+                <SettingsUndoRedo />
             </PanelNav>
 
             <SettingsSection title="Map">
                 <SettingsSlider
                     label="Territory opacity"
                     value=territory_opacity
+                    keys=&["territory_fill_opacity"]
                     min=TERRITORY_OPACITY_MIN
                     max=TERRITORY_OPACITY_MAX
                     step=0.01
@@ -280,6 +282,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     label="Overlay"
                     hint="Shortcuts P, D and I"
                     name="settings-overlay"
+                    keys=&["resource_highlight", "defense_highlight", "map_intel_enabled"]
                     options=vec![
                         (Overlay::Off, Signal::stored("Off")),
                         (Overlay::Resources, Signal::stored("Resources")),
@@ -293,6 +296,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     <SettingsSlider
                         label="Resource opacity"
                         value=resource_highlight_opacity
+                        keys=&["resource_highlight_opacity"]
                         min=RESOURCE_HIGHLIGHT_OPACITY_MIN
                         max=RESOURCE_HIGHLIGHT_OPACITY_MAX
                         step=0.05
@@ -300,25 +304,26 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                         format=percent
                     />
                 </Show>
-                <SettingsSwitch label="Heat Map" hint="Color territories by how often they change hands" active=heat_mode_enabled />
+                <SettingsSwitch label="Heat Map" keys=&["heat_mode_enabled"] hint="Color territories by how often they change hands" active=heat_mode_enabled />
                 <Show when=move || heat_mode_enabled.get()>
                     <HeatOptions />
                 </Show>
-                <SettingsSwitch label="Connections" shortcut="C" active=show_connections />
-                <SettingsSwitch label="Resource Icons" active=show_resource_icons />
-                <SettingsSwitch label="Corner Ornaments" hint="Decorative corners in the guild color" active=show_territory_ornaments />
+                <SettingsSwitch label="Connections" shortcut="C" keys=&["show_connections"] active=show_connections />
+                <SettingsSwitch label="Resource Icons" keys=&["show_resource_icons"] active=show_resource_icons />
+                <SettingsSwitch label="Corner Ornaments" keys=&["show_territory_ornaments"] hint="Decorative corners in the guild color" active=show_territory_ornaments />
                 // The minimap is never drawn on a phone.
                 <Show when=move || !is_mobile.get()>
-                    <SettingsSwitch label="Minimap" shortcut="M" active=show_minimap />
+                    <SettingsSwitch label="Minimap" shortcut="M" keys=&["show_minimap"] active=show_minimap />
                 </Show>
             </SettingsSection>
 
             <SettingsSection title="Labels">
-                <SettingsSwitch label="Territory Names" shortcut="N" active=show_names />
-                <SettingsSwitch label="Abbreviate Names" shortcut="A" hint="Cascading Basins becomes CB" active=abbreviate_names />
+                <SettingsSwitch label="Territory Names" shortcut="N" keys=&["show_names"] active=show_names />
+                <SettingsSwitch label="Abbreviate Names" shortcut="A" keys=&["abbreviate_names"] hint="Cascading Basins becomes CB" active=abbreviate_names />
                 <SettingsChoice
                     label="When zoomed out"
                     name="settings-zoomed-out"
+                    keys=&["show_claim_labels", "show_far_zoom_territory_tags"]
                     options=vec![
                         (ZoomedOutLabels::GuildNames, Signal::stored("Guild names")),
                         (ZoomedOutLabels::TerritoryTags, Signal::stored("Tags")),
@@ -327,13 +332,14 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     selected=zoomed_out
                     on_select=set_zoomed_out
                 />
-                <SettingsSwitch label="Readable Font" shortcut="F" hint="Plain text instead of the pixel font" active=readable_font />
-                <SettingsColorRow label="Territory name color" color=name_color />
-                <SettingsColorRow label="Guild tag color" color=tag_color />
+                <SettingsSwitch label="Readable Font" shortcut="F" keys=&["readable_font"] hint="Plain text instead of the pixel font" active=readable_font />
+                <SettingsColorRow label="Territory name color" color=name_color keys=&["name_color"] />
+                <SettingsColorRow label="Guild tag color" color=tag_color keys=&["tag_color"] />
                 <SettingsChoice
                     label="HQ crown"
                     hint="Fill hides the owner when zoomed out"
                     name="settings-hq-crown"
+                    keys=&["hq_crown_style"]
                     options=vec![
                         (HqCrownStyle::NameBelow, Signal::stored("Name below")),
                         (HqCrownStyle::Compact, Signal::stored("Compact")),
@@ -345,6 +351,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSlider
                     label="Crown size"
                     value=hq_crown_scale
+                    keys=&["hq_crown_scale"]
                     min=HQ_CROWN_SCALE_MIN
                     max=HQ_CROWN_SCALE_MAX
                     step=0.1
@@ -357,6 +364,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsChoice
                     label="Time held"
                     name="settings-time-held"
+                    keys=&["granular_map_time", "compound_map_time"]
                     options=vec![
                         (TimeHeld::Off, time_held_off_label),
                         (TimeHeld::Compact, Signal::stored("3h05m")),
@@ -365,12 +373,13 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     selected=time_held
                     on_select=set_time_held
                 />
-                <SettingsSwitch label="Cooldown Countdown" shortcut="T" hint="Time left on a new capture's 10-minute cooldown" active=show_countdown />
-                <SettingsSwitch label="Thick Cooldown Borders" active=thick_cooldown_borders />
+                <SettingsSwitch label="Cooldown Countdown" shortcut="T" keys=&["show_countdown"] hint="Time left on a new capture's 10-minute cooldown" active=show_countdown />
+                <SettingsSwitch label="Thick Cooldown Borders" keys=&["thick_cooldown_borders"] active=thick_cooldown_borders />
                 <SettingsChoice
                     label="Cooldown"
                     hint="Fill runs red to green over the cooldown. Heat and highlights keep the bar"
                     name="settings-cooldown-display"
+                    keys=&["cooldown_display"]
                     options=vec![
                         (CooldownDisplay::Bar, Signal::stored("Bar")),
                         (CooldownDisplay::Fill, Signal::stored("Fill")),
@@ -384,16 +393,18 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
             // panels themselves follow. For everyone else these would be dead toggles.
             <Show when=move || war_feed_visible.get()>
                 <SettingsSection title="War">
-                    <SettingsSwitch label="War Panel" hint="Queued territories, wars and members" active=show_war_panel />
-                    <SettingsSwitch label="War Markers" hint="Countdowns and war clocks on territories" active=show_war_markers />
+                    <SettingsSwitch label="War Panel" keys=&["show_war_queue"] hint="Queued territories, wars and members" active=show_war_panel />
+                    <SettingsSwitch label="War Markers" keys=&["show_war_markers"] hint="Countdowns and war clocks on territories" active=show_war_markers />
                     <SettingsSwitch
                         label="Unconfirmed Activity"
+                        keys=&["activity_include_unconfirmed"]
                         hint="Recent activity also lists cancelled queues and attacks without a confirmed capture"
                         active=activity_include_unconfirmed
                     />
                     <SettingsChoice
                         label="War outline"
                         name="settings-war-outline-style"
+                        keys=&["war_outline.style"]
                         options=vec![
                             (WarOutlineStyle::Dashed, Signal::stored("Dashed")),
                             (WarOutlineStyle::Solid, Signal::stored("Solid")),
@@ -405,6 +416,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                         label="Outline color"
                         hint="Urgency warms over the last three minutes"
                         name="settings-war-outline-color"
+                        keys=&["war_outline.color"]
                         options=vec![
                             (WarOutlineColor::Stage, Signal::stored("Stage")),
                             (WarOutlineColor::Urgency, Signal::stored("Urgency")),
@@ -412,10 +424,11 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                         selected=war_outline.color
                         on_select=Callback::new(move |color| war_outline.color.set(color))
                     />
-                    <SettingsSwitch label="Queue Progress" hint="The outline shows the queue time left" active=war_outline.progress />
+                    <SettingsSwitch label="Queue Progress" keys=&["war_outline.progress"] hint="The outline shows the queue time left" active=war_outline.progress />
                     <SettingsSlider
                         label="Outline width"
                         value=war_outline.width
+                        keys=&["war_outline.width"]
                         min=WAR_OUTLINE_WIDTH_MIN
                         max=WAR_OUTLINE_WIDTH_MAX
                         step=0.25
@@ -425,26 +438,27 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     <SettingsSlider
                         label="Outline opacity"
                         value=war_outline.opacity
+                        keys=&["war_outline.opacity"]
                         min=WAR_OUTLINE_OPACITY_MIN
                         max=WAR_OUTLINE_OPACITY_MAX
                         step=0.05
                         clamp=clamp_war_outline_opacity
                         format=percent
                     />
-                    <SettingsSwitch label="Teammate Heads" active=show_player_heads />
+                    <SettingsSwitch label="Teammate Heads" keys=&["show_player_heads"] active=show_player_heads />
                     <Show when=move || show_player_heads.get()>
-                        <SettingsSwitch label="Show Faces" hint="A dot when off" nested=true active=player_head_render_head />
-                        <SettingsSwitch label="Show Names" hint="Hidden when zoomed far out" nested=true active=player_head_render_label />
+                        <SettingsSwitch label="Show Faces" keys=&["player_head_render_head"] hint="A dot when off" nested=true active=player_head_render_head />
+                        <SettingsSwitch label="Show Names" hint="Hidden when zoomed far out" keys=&["player_head_render_label"] nested=true active=player_head_render_label />
                     </Show>
                 </SettingsSection>
             </Show>
 
             <SettingsSection title="Leaderboard">
-                <SettingsSwitch label="Territories" active=show_leaderboard_territory_count />
-                <SettingsSwitch label="Online Members" active=show_leaderboard_online />
-                <SettingsSwitch label="SR Rate" hint="Estimated SR per hour; per 5 minutes in history" active=show_leaderboard_sr_gain />
-                <SettingsSwitch label="Season Rating" hint="Always shown when sorted by rating" active=show_leaderboard_sr_value />
-                <SettingsSwitch label="Estimate SR Scalar" hint="From season data when available" active=auto_sr_scalar_enabled />
+                <SettingsSwitch label="Territories" keys=&["show_leaderboard_territory_count"] active=show_leaderboard_territory_count />
+                <SettingsSwitch label="Online Members" keys=&["show_leaderboard_online"] active=show_leaderboard_online />
+                <SettingsSwitch label="SR Rate" keys=&["show_leaderboard_sr_gain"] hint="Estimated SR per hour; per 5 minutes in history" active=show_leaderboard_sr_gain />
+                <SettingsSwitch label="Season Rating" keys=&["show_leaderboard_sr_value"] hint="Always shown when sorted by rating" active=show_leaderboard_sr_value />
+                <SettingsSwitch label="Estimate SR Scalar" keys=&["auto_sr_scalar_enabled"] hint="From season data when available" active=auto_sr_scalar_enabled />
                 <SettingsScalarRow scalar=manual_sr_scalar />
             </SettingsSection>
 
@@ -453,6 +467,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSlider
                     label="Overall"
                     value=label_scale_master
+                    keys=&["label_scale_master"]
                     min=LABEL_SCALE_MASTER_MIN
                     max=LABEL_SCALE_MASTER_MAX
                     step=0.05
@@ -462,6 +477,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSlider
                     label="Guild tags"
                     value=label_scale_static_tag
+                    keys=&["label_scale_static"]
                     min=LABEL_SCALE_GROUP_MIN
                     max=LABEL_SCALE_GROUP_MAX
                     step=0.05
@@ -471,6 +487,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSlider
                     label="Territory names"
                     value=label_scale_static_name
+                    keys=&["label_scale_static_name"]
                     min=LABEL_SCALE_GROUP_MIN
                     max=LABEL_SCALE_GROUP_MAX
                     step=0.05
@@ -480,6 +497,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSlider
                     label="Timers"
                     value=label_scale_dynamic
+                    keys=&["label_scale_dynamic"]
                     min=LABEL_SCALE_GROUP_MIN
                     max=LABEL_SCALE_GROUP_MAX
                     step=0.05
@@ -489,6 +507,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSlider
                     label="Icons"
                     value=label_scale_icons
+                    keys=&["label_scale_icons"]
                     min=LABEL_SCALE_GROUP_MIN
                     max=LABEL_SCALE_GROUP_MAX
                     step=0.05
@@ -497,13 +516,13 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 />
                 <SettingsResetButton
                     label="Reset label sizes"
-                    on_reset=Callback::new(move |()| {
-                        label_scale_master.set(DEFAULT_LABEL_SCALE_MASTER);
-                        label_scale_static_tag.set(DEFAULT_LABEL_SCALE_STATIC_TAG);
-                        label_scale_static_name.set(DEFAULT_LABEL_SCALE_STATIC_NAME);
-                        label_scale_dynamic.set(DEFAULT_LABEL_SCALE_GROUP);
-                        label_scale_icons.set(DEFAULT_LABEL_SCALE_GROUP);
-                    })
+                    keys=&[
+                        "label_scale_master",
+                        "label_scale_static",
+                        "label_scale_static_name",
+                        "label_scale_dynamic",
+                        "label_scale_icons",
+                    ]
                 />
 
                 <div class="settings-subhead">"Connections"</div>
@@ -511,6 +530,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     label="Style"
                     hint="Classic is the original soft look"
                     name="settings-connection-style"
+                    keys=&["connection_style"]
                     options=vec![
                         (ConnectionStyle::Classic, Signal::stored("Classic")),
                         (ConnectionStyle::White, Signal::stored("Solid white")),
@@ -521,6 +541,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 />
                 <SettingsSwitch
                     label="Bold Connections"
+                    keys=&["bold_connections"]
                     shortcut="B"
                     hint="Wider lines; classic lines also take the guild color"
                     active=bold_connections
@@ -532,6 +553,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                             <SettingsSlider
                                 label="Opacity"
                                 value=connection_solid_opacity
+                                keys=&["connection_solid_opacity"]
                                 min=CONNECTION_SOLID_OPACITY_MIN
                                 max=CONNECTION_SOLID_OPACITY_MAX
                                 step=0.05
@@ -544,6 +566,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     <SettingsSlider
                         label="Opacity"
                         value=connection_opacity_scale
+                        keys=&["connection_opacity_scale"]
                         min=CONNECTION_OPACITY_SCALE_MIN
                         max=CONNECTION_OPACITY_SCALE_MAX
                         step=0.05
@@ -554,6 +577,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <SettingsSlider
                     label="Thickness"
                     value=connection_thickness_scale
+                    keys=&["connection_thickness_scale"]
                     min=CONNECTION_THICKNESS_SCALE_MIN
                     max=CONNECTION_THICKNESS_SCALE_MAX
                     step=0.05
@@ -562,13 +586,13 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 />
                 <SettingsResetButton
                     label="Reset connection style"
-                    on_reset=Callback::new(move |()| {
-                        connection_style.set(ConnectionStyle::Classic);
-                        bold_connections.set(false);
-                        connection_opacity_scale.set(DEFAULT_CONNECTION_OPACITY_SCALE);
-                        connection_solid_opacity.set(DEFAULT_CONNECTION_SOLID_OPACITY);
-                        connection_thickness_scale.set(DEFAULT_CONNECTION_THICKNESS_SCALE);
-                    })
+                    keys=&[
+                        "connection_style",
+                        "bold_connections",
+                        "connection_opacity_scale",
+                        "connection_solid_opacity",
+                        "connection_thickness_scale",
+                    ]
                 />
 
                 <Show when=war_heads_visible>
@@ -576,6 +600,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     <SettingsSlider
                         label="Head size"
                         value=player_head_size
+                        keys=&["player_head_size"]
                         min=PLAYER_HEAD_SIZE_MIN
                         max=PLAYER_HEAD_SIZE_MAX
                         step=1.0
@@ -586,7 +611,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
             </SettingsDisclosure>
 
             <SettingsDisclosure title="Advanced" hint="Diagnostics">
-                <SettingsSwitch label="Diagnostics" hint="API status and territory data sources" active=show_debug_info />
+                <SettingsSwitch label="Diagnostics" keys=&["show_debug_info"] hint="API status and territory data sources" active=show_debug_info />
                 <div class="settings-row settings-info">
                     <span class="settings-row-label">"Territories loaded"</span>
                     <span class="settings-value">{move || territory_count.get()}</span>
@@ -646,27 +671,92 @@ fn SettingsSwitch(
     /// Indents the row under the setting it depends on.
     #[prop(optional)]
     nested: bool,
+    /// The saved settings the row shows, which its reset puts back.
+    keys: &'static [&'static str],
 ) -> impl IntoView {
     let hint_id = hint.map(|_| format!("settings-hint-{}", slug(label)));
     view! {
+        <div class="settings-line" class:settings-row-nested=nested>
+            <button
+                type="button"
+                role="switch"
+                class="settings-row settings-switch"
+                aria-label=label
+                aria-checked=move || active.get().to_string()
+                aria-describedby=hint_id.clone()
+                on:click=move |_| active.update(|value| *value = !*value)
+            >
+                <span class="settings-row-text">
+                    <span class="settings-row-label">
+                        {label}
+                        {shortcut.map(|key| view! { <kbd class="settings-kbd" aria-hidden="true">{key}</kbd> })}
+                    </span>
+                    {hint.map(|hint| view! { <span class="settings-row-hint" id=hint_id.clone()>{hint}</span> })}
+                </span>
+                <span class="settings-switch-track" aria-hidden="true"></span>
+            </button>
+            <SettingsDefault label=label keys=keys />
+        </div>
+    }
+}
+
+/// Puts the settings of one row back to their defaults, leaving every other setting. Shown
+/// only while one of them differs, in a column of its own at the row's end.
+#[component]
+fn SettingsDefault(label: &'static str, keys: &'static [&'static str]) -> impl IntoView {
+    let store: SettingsStore = expect_context();
+    let title = format!("Reset {label} to default");
+    view! {
         <button
             type="button"
-            role="switch"
-            class="settings-row settings-switch"
-            class:settings-row-nested=nested
-            aria-label=label
-            aria-checked=move || active.get().to_string()
-            aria-describedby=hint_id.clone()
-            on:click=move |_| active.update(|value| *value = !*value)
+            class="settings-default"
+            title=title.clone()
+            aria-label=title
+            disabled=move || !store.differs(keys)
+            on:click=move |_| store.reset(keys)
         >
-            <span class="settings-row-text">
-                <span class="settings-row-label">
-                    {label}
-                    {shortcut.map(|key| view! { <kbd class="settings-kbd" aria-hidden="true">{key}</kbd> })}
-                </span>
-                {hint.map(|hint| view! { <span class="settings-row-hint" id=hint_id.clone()>{hint}</span> })}
-            </span>
-            <span class="settings-switch-track" aria-hidden="true"></span>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+            </svg>
+        </button>
+    }
+}
+
+/// Undo and Redo for the settings, named for what they would change.
+#[component]
+fn SettingsUndoRedo() -> impl IntoView {
+    let store: SettingsStore = expect_context();
+    let title = |verb: &str, label: Option<String>| match label {
+        Some(label) => format!("{verb} {label}"),
+        None => format!("Nothing to {}", verb.to_lowercase()),
+    };
+    view! {
+        <button
+            type="button"
+            class="ui-button ui-icon-button settings-history-button"
+            title=move || title("Undo", store.undo_label())
+            aria-label=move || title("Undo", store.undo_label())
+            disabled=move || store.undo_label().is_none()
+            on:click=move |_| store.undo()
+        >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 14 4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+            </svg>
+        </button>
+        <button
+            type="button"
+            class="ui-button ui-icon-button settings-history-button"
+            title=move || title("Redo", store.redo_label())
+            aria-label=move || title("Redo", store.redo_label())
+            disabled=move || store.redo_label().is_none()
+            on:click=move |_| store.redo()
+        >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m15 14 5-5-5-5" />
+                <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+            </svg>
         </button>
     }
 }
@@ -682,6 +772,8 @@ fn SettingsChoice<T>(
     #[prop(into)] selected: Signal<T>,
     on_select: Callback<T>,
     #[prop(optional)] hint: Option<&'static str>,
+    /// The saved settings the choice shows, which its reset puts back.
+    keys: &'static [&'static str],
 ) -> impl IntoView
 where
     T: Copy + PartialEq + Send + Sync + 'static,
@@ -690,10 +782,13 @@ where
     let labelled_by = label_id.clone();
     view! {
         <div class="settings-row settings-choice" role="radiogroup" aria-labelledby=labelled_by>
-            <span class="settings-row-text">
-                <span class="settings-row-label" id=label_id>{label}</span>
-                {hint.map(|hint| view! { <span class="settings-row-hint">{hint}</span> })}
-            </span>
+            <div class="settings-choice-head">
+                <span class="settings-row-text">
+                    <span class="settings-row-label" id=label_id>{label}</span>
+                    {hint.map(|hint| view! { <span class="settings-row-hint">{hint}</span> })}
+                </span>
+                <SettingsDefault label=label keys=keys />
+            </div>
             <div class="settings-segments">
                 {options
                     .into_iter()
@@ -716,6 +811,21 @@ where
     }
 }
 
+/// The keys a range input moves by.
+fn is_range_key(key: &str) -> bool {
+    matches!(
+        key,
+        "ArrowLeft"
+            | "ArrowRight"
+            | "ArrowUp"
+            | "ArrowDown"
+            | "PageUp"
+            | "PageDown"
+            | "Home"
+            | "End"
+    )
+}
+
 /// A labelled range input. Dragging writes through live; the shown value uses `format`.
 #[component]
 fn SettingsSlider(
@@ -726,8 +836,17 @@ fn SettingsSlider(
     step: f64,
     clamp: fn(f64) -> f64,
     format: fn(f64) -> String,
+    /// The saved setting the slider shows, which its reset puts back.
+    keys: &'static [&'static str],
 ) -> impl IntoView {
     let slider_ref = NodeRef::<leptos::html::Input>::new();
+    let input_id = format!("settings-slider-{}", slug(label));
+    let label_for = input_id.clone();
+    // How far along the track the value is, for the filled part of the track.
+    let filled = move || {
+        let share = ((clamp(value.get()) - min) / (max - min)).clamp(0.0, 1.0);
+        format!("{share:.4}")
+    };
     let dragging: RwSignal<bool> = RwSignal::new(false);
 
     // Outside changes (reset, other tabs of the menu) move the thumb, but not mid-drag.
@@ -745,8 +864,28 @@ fn SettingsSlider(
             .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
             .and_then(|input| input.value().trim().parse::<f64>().ok())
     };
+    // One adjustment, one Undo step: a drag from press to release, or the range keys from
+    // the first press to the last release however long they are held, whatever pauses it has
+    // on the way. Other keys (Shift, say) neither start nor end it.
+    let store: SettingsStore = expect_context();
+    let adjusting = StoredValue::new(false);
+    let keys_held = StoredValue::new(Vec::<String>::new());
+    let begin = move || {
+        if !adjusting.get_value() {
+            adjusting.set_value(true);
+            store.begin_adjustment();
+        }
+    };
+    let finish = move || {
+        if adjusting.try_get_value() == Some(true) {
+            adjusting.set_value(false);
+            store.end_adjustment();
+        }
+    };
+    on_cleanup(finish);
     let on_input = move |e: leptos::ev::Event| {
         if let Some(parsed) = read(&e) {
+            begin();
             dragging.set(true);
             value.set(clamp(parsed));
         }
@@ -756,25 +895,60 @@ fn SettingsSlider(
             value.set(clamp(parsed));
         }
         dragging.set(false);
+        if keys_held.with_value(Vec::is_empty) {
+            finish();
+        }
+    };
+    let on_keydown = move |e: leptos::ev::KeyboardEvent| {
+        let key = e.key();
+        if is_range_key(&key) {
+            keys_held.update_value(|held| {
+                if !held.contains(&key) {
+                    held.push(key);
+                }
+            });
+            begin();
+        }
+    };
+    let on_keyup = move |e: leptos::ev::KeyboardEvent| {
+        let key = e.key();
+        let released = keys_held.try_update_value(|held| {
+            let before = held.len();
+            held.retain(|down| *down != key);
+            before != held.len() && held.is_empty()
+        });
+        if released == Some(true) {
+            finish();
+        }
+    };
+    let on_blur = move |_: leptos::ev::FocusEvent| {
+        keys_held.update_value(Vec::clear);
+        finish();
     };
 
     view! {
-        <label class="settings-slider">
-            <span class="settings-slider-label">{label}</span>
+        <div class="settings-slider">
+            <label class="settings-slider-label" for=label_for>{label}</label>
             <input
                 node_ref=slider_ref
+                id=input_id
                 type="range"
                 class="timeline-slider"
                 min=min
                 max=max
                 step=step
                 value=format!("{:.2}", clamp(value.get_untracked()))
+                style:--tl-filled=filled
                 aria-valuetext=move || format(value.get())
                 on:input=on_input
                 on:change=on_change
+                on:keydown=on_keydown
+                on:keyup=on_keyup
+                on:blur=on_blur
             />
             <span class="settings-value" aria-hidden="true">{move || format(value.get())}</span>
-        </label>
+            <SettingsDefault label=label keys=keys />
+        </div>
     }
 }
 
@@ -788,7 +962,11 @@ const NAME_COLOR_OPTIONS: &[(NameColor, &str, &str)] = &[
 
 /// A row of color swatch buttons for one label color.
 #[component]
-fn SettingsColorRow(label: &'static str, color: RwSignal<NameColor>) -> impl IntoView {
+fn SettingsColorRow(
+    label: &'static str,
+    color: RwSignal<NameColor>,
+    keys: &'static [&'static str],
+) -> impl IntoView {
     let label_id = format!("settings-color-{}", slug(label));
     let labelled_by = label_id.clone();
     view! {
@@ -812,6 +990,7 @@ fn SettingsColorRow(label: &'static str, color: RwSignal<NameColor>) -> impl Int
                     })
                     .collect_view()}
             </div>
+            <SettingsDefault label=label keys=keys />
         </div>
     }
 }
@@ -877,13 +1056,14 @@ fn SettingsScalarRow(scalar: RwSignal<f64>) -> impl IntoView {
     };
 
     view! {
-        <label class="settings-row settings-number">
-            <span class="settings-row-text">
+        <div class="settings-row settings-number">
+            <label class="settings-row-text" for="settings-manual-sr-scalar">
                 <span class="settings-row-label">"Manual SR Scalar"</span>
                 <span class="settings-row-hint">"Used when estimating is off or unavailable"</span>
-            </span>
+            </label>
             <input
                 node_ref=input_ref
+                id="settings-manual-sr-scalar"
                 type="number"
                 class="seq-input"
                 min="0.05"
@@ -895,24 +1075,26 @@ fn SettingsScalarRow(scalar: RwSignal<f64>) -> impl IntoView {
                 on:blur=move |_| commit()
                 on:keydown=on_keydown
             />
-        </label>
+            <SettingsDefault label="Manual SR Scalar" keys=&["manual_sr_scalar"] />
+        </div>
     }
 }
 
 /// How long "Reset all" waits for its confirming second press.
 const RESET_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Puts every setting back to its default, on a second press within a few seconds.
+/// Puts every setting back to its default, on a second press within a few seconds. Undo
+/// brings them all back.
 #[component]
 fn SettingsResetAll() -> impl IntoView {
-    let ResetSettingsTrigger(reset_settings_trigger) = expect_context();
+    let store: SettingsStore = expect_context();
     let armed = RwSignal::new(false);
     // Only the latest arming may disarm; an older timer is stale.
     let arming = StoredValue::new(0u32);
     let on_click = move |_| {
         if armed.get_untracked() {
             armed.set(false);
-            reset_settings_trigger.update(|value| *value = value.saturating_add(1));
+            store.reset_all();
             return;
         }
         armed.set(true);
@@ -947,12 +1129,19 @@ fn SettingsResetAll() -> impl IntoView {
     }
 }
 
-/// A small right-aligned button that resets one group of values; the label names the group.
+/// A small right-aligned button that resets one group of settings; the label names the group.
+/// It is unavailable while the whole group is at its defaults.
 #[component]
-fn SettingsResetButton(label: &'static str, on_reset: Callback<()>) -> impl IntoView {
+fn SettingsResetButton(label: &'static str, keys: &'static [&'static str]) -> impl IntoView {
+    let store: SettingsStore = expect_context();
     view! {
         <div class="settings-reset-row">
-            <button type="button" class="ui-button settings-reset" on:click=move |_| on_reset.run(())>
+            <button
+                type="button"
+                class="ui-button settings-reset"
+                disabled=move || !store.differs(keys)
+                on:click=move |_| store.reset(keys)
+            >
                 {label}
             </button>
         </div>
@@ -997,16 +1186,27 @@ fn HeatOptions() -> impl IntoView {
 
     view! {
         <div class="settings-row-nested settings-heat">
-            <SettingsChoice
-                label="Heat period"
-                name="settings-heat-period"
-                options=vec![
-                    (true, Signal::stored("Season")),
-                    (false, Signal::stored("All-time")),
-                ]
-                selected=season_wide
-                on_select=set_season_wide
-            />
+            // Each mode keeps its own period, and its reset only that one.
+            {move || {
+                let keys: &'static [&'static str] = if is_history() {
+                    &["heat_history_basis"]
+                } else {
+                    &["heat_live_source"]
+                };
+                view! {
+                    <SettingsChoice
+                        label="Heat period"
+                        name="settings-heat-period"
+                        keys=keys
+                        options=vec![
+                            (true, Signal::stored("Season")),
+                            (false, Signal::stored("All-time")),
+                        ]
+                        selected=season_wide
+                        on_select=set_season_wide
+                    />
+                }
+            }}
             <Show when=move || season_wide.get()>
                 <SettingsHeatSeasonRow season_id=season_id meta=meta />
             </Show>
@@ -1041,10 +1241,10 @@ fn SettingsHeatSeasonRow(
     };
 
     view! {
-        <label class="settings-row settings-number">
-            <span class="settings-row-label">"Season"</span>
-            <select class="seq-input" on:change=on_change>
-                <option value="latest" selected=move || season_id.get().is_none()>
+        <div class="settings-row settings-number">
+            <label class="settings-row-label" for="settings-heat-season">"Season"</label>
+            <select id="settings-heat-season" class="seq-input" on:change=on_change>
+                <option value="latest" prop:selected=move || season_id.get().is_none()>
                     "Latest"
                 </option>
                 {move || {
@@ -1057,7 +1257,7 @@ fn SettingsHeatSeasonRow(
                                     view! {
                                         <option
                                             value=season_id_value.to_string()
-                                            selected=move || season_id.get() == Some(season_id_value)
+                                            prop:selected=move || season_id.get() == Some(season_id_value)
                                         >
                                             {format!("Season {season_id_value}")}
                                         </option>
@@ -1068,7 +1268,8 @@ fn SettingsHeatSeasonRow(
                         .unwrap_or_default()
                 }}
             </select>
-        </label>
+            <SettingsDefault label="Season" keys=&["heat_selected_season_id"] />
+        </div>
     }
 }
 
