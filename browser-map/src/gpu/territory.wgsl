@@ -13,7 +13,7 @@ struct Viewport {
     cooldown: vec2<f32>,
     // Instance indices of the hovered and selected territories, -1 for none.
     interaction: vec4<i32>,
-    // x: the territory overlay's opacity, 0 to 1.
+    // The territory opacity: x fades the resting fill and border, y firms them toward opaque.
     territory: vec4<f32>,
 };
 
@@ -332,11 +332,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let zoom_fill_boost = smoothstep(0.40, 0.12, vp.scale) * 0.24;
     // The opacity setting fades the resting guild fill (cooldown Fill and Heat included) and,
-    // to a floor that keeps boundaries and guild colour, the resting border. Hover and
-    // selection lift, war stages, HQ brackets, the capture flash, the cooldown bar and
-    // resource or defense overlays (which have their own opacity) keep full strength.
-    let opacity = clamp(vp.territory.x, 0.0, 1.0);
-    let border_alpha = in.state.y * mix(0.4, 1.0, opacity);
+    // to a floor that keeps boundaries and guild colour, the resting border, or firms both
+    // toward opaque. Hover and selection lift, war stages, HQ brackets, the capture flash,
+    // the cooldown bar and resource or defense overlays (which have their own opacity) keep
+    // their own strength.
+    let fade = clamp(vp.territory.x, 0.0, 1.0);
+    let solid = clamp(vp.territory.y, 0.0, 1.0);
+    let border_alpha = mix(in.state.y * mix(0.4, 1.0, fade), 1.0, solid);
     let flags = in.state.z;
     let reference_rel_secs = vp.cooldown.x;
     let cooldown_flags = u32(vp.cooldown.y + 0.5);
@@ -417,9 +419,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Border alpha (state-dependent)
     var b_alpha: f32;
     if is_selected {
-        b_alpha = 0.85;
+        b_alpha = max(0.85, border_alpha);
     } else if is_hovered {
-        b_alpha = 0.75;
+        b_alpha = max(0.75, border_alpha);
     } else {
         b_alpha = border_alpha;
     }
@@ -471,8 +473,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // the resting fill, so hover and selection still add their lift on top of it.
         resting_fill = max(resting_fill, 0.5);
     }
-    let fill_opacity = select(opacity, 1.0, has_overlay);
-    var f_alpha = min(resting_fill * fill_opacity + fill_alpha - in.state.x, 1.0);
+    let fill_opacity = select(fade, 1.0, has_overlay);
+    let fill_solid = select(solid, 0.0, has_overlay);
+    resting_fill = mix(resting_fill * fill_opacity, 1.0, fill_solid);
+    let lifted = resting_fill + fill_alpha - in.state.x;
+    var f_alpha = min(lifted, 1.0);
+    // Hover and selection lift that a firmed fill has no room to show shifts its colour
+    // instead: lighter, or darker on a pale guild colour.
+    let lift_to = select(vec3<f32>(1.0), vec3<f32>(0.0), dot(fill_color, vec3<f32>(0.299, 0.587, 0.114)) > 0.7);
+    fill_color = mix(fill_color, lift_to, (lifted - f_alpha) * fill_solid);
     var cooldown_strip_mix: f32 = 0.0;
     var cooldown_strip_color: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
 
@@ -527,7 +536,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Blend border and fill with anti-aliased transition
-    var border_color = base_color;
+    // A firmed fill would hide the guild's own border, so the resting border darkens with it;
+    // hovered and selected borders keep the guild's colour.
+    let edge_base = base_color * select(1.0 - 0.4 * solid, 1.0, is_hovered || is_selected);
+    var border_color = edge_base;
     if is_at_war || is_pending_war {
         // Layered: the guild's colour keeps the outer band, a dark seam parts it from the
         // narrower stage layer inside, so a stage in the guild's own hue still reads.
@@ -555,7 +567,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
         }
         let strength = min(on * war_strength, 1.0);
-        border_color = mix(base_color, base_color * 0.25, seam_t * (1.0 - stage_t) * strength);
+        border_color = mix(edge_base, base_color * 0.25, seam_t * (1.0 - stage_t) * strength);
         border_color = mix(border_color, stage_color, stage_t * strength);
     }
     if is_headquarters {

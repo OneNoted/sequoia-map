@@ -272,7 +272,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                     value=territory_opacity
                     min=TERRITORY_OPACITY_MIN
                     max=TERRITORY_OPACITY_MAX
-                    step=0.05
+                    step=0.01
                     clamp=clamp_territory_opacity
                     format=percent
                 />
