@@ -38,7 +38,9 @@ use sequoia_map_engine::overlay_sizing::{
 use sequoia_map_engine::scene::{
     LABEL_VISIBILITY_MIN_SCALE, NextRefresh, Rebuild, TIMER_VISIBILITY_MIN_SCALE,
 };
-use sequoia_map_engine::settings::{NameColor, RenderSettings, WarOutlineColor, WarOutlineStyle};
+use sequoia_map_engine::settings::{
+    GUILD_FILL_ALPHA, NameColor, RenderSettings, WarOutlineColor, WarOutlineStyle,
+};
 use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap, is_sequoia_guild};
 use sequoia_map_engine::time_format::write_hms;
 use sequoia_map_engine::viewport::Viewport;
@@ -108,13 +110,13 @@ struct ViewportUniform {
     /// territory shader reads them. Kept here rather than in the instances, so a change of
     /// hover or selection rewrites this uniform instead of every territory instance.
     interaction: [i32; 4],
-    /// The territory overlay's opacity (see `RenderSettings::territory_opacity`), then
-    /// padding. Only the territory shader reads it.
+    /// How the territory opacity fades or firms the resting fill and border (see
+    /// `RenderSettings::territory_fill`), then padding. Only the territory shader reads it.
     territory: [f32; 4],
 }
 
 const NO_INTERACTION: [i32; 4] = [NO_INSTANCE, NO_INSTANCE, 0, 0];
-/// The territory overlay at full strength: the minimap's overview, and the default.
+/// The territory overlay as it has always been drawn: the minimap's overview, and the default.
 const FULL_TERRITORY: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
 
 /// Cooling territories show the fill instead of the bar.
@@ -621,11 +623,11 @@ fn downsample_rgba8_level(src: &[u8], src_w: u32, src_h: u32) -> (u32, u32, Vec<
 /// Pixels a WebGPU image upload copies into WASM memory at a time.
 const UPLOAD_BAND_BYTES: usize = 1 << 20;
 
-/// Uploads `image` to `texture`, `size` from the origin. WebGL2 copies it straight from the
-/// browser's buffer. On WebGPU that copy throws once the device is lost, and wgpu turns the
-/// exception into a panic that wedges the map before the loss can be recovered, so the pixels
-/// go through `write_texture`, which a lost device ignores, a band of rows at a time to keep
-/// their copy in WASM memory small. With `premultiplied_alpha`, the texture holds colour
+/// Uploads `image` to `texture`, `size` from the origin. WebGL2 (`webgl`, the canvas's context)
+/// copies it straight from the browser's buffer. On WebGPU that copy throws once the device is
+/// lost, and wgpu turns the exception into a panic that wedges the map before the loss can be
+/// recovered, so the pixels go through `write_texture`, which a lost device ignores, a band of
+/// rows at a time to keep their copy in WASM memory small. With `premultiplied_alpha`, the texture holds colour
 /// multiplied by alpha, as filtering needs: averaging straight colour with transparent texels
 /// darkens it.
 pub(super) fn upload_image_data(
@@ -633,10 +635,18 @@ pub(super) fn upload_image_data(
     texture: &wgpu::Texture,
     image: web_sys::ImageData,
     size: wgpu::Extent3d,
-    webgl: bool,
+    webgl: Option<&web_sys::WebGl2RenderingContext>,
     premultiplied_alpha: bool,
 ) {
-    if webgl {
+    if let Some(gl) = webgl {
+        // WebGL2 has image uploads ignore the row length and image height that buffer uploads
+        // set, and wgpu leaves both at the last buffer upload's. Ladybird applies them anyway
+        // and refuses the upload, which left its terrain blank. wgpu runs queued uploads first
+        // at the next submit, so the ones queued so far run now, and this one runs with both
+        // back at their defaults.
+        queue.submit(None);
+        gl.pixel_storei(web_sys::WebGl2RenderingContext::UNPACK_ROW_LENGTH, 0);
+        gl.pixel_storei(web_sys::WebGl2RenderingContext::UNPACK_IMAGE_HEIGHT, 0);
         queue.copy_external_image_to_texture(
             &wgpu::CopyExternalImageSourceInfo {
                 source: wgpu::ExternalImageSource::ImageData(image),
@@ -1229,6 +1239,8 @@ pub struct GpuRenderer {
     tile_sampler: wgpu::Sampler,
     tile_mips: mipmaps::MipChain,
     tile_textures: HashMap<usize, TileTexture>,
+    /// The WebGL2 context image uploads go through (see `upload_image_data`); none on WebGPU.
+    webgl_context: Option<web_sys::WebGl2RenderingContext>,
     tile_upload_canvas: Option<HtmlCanvasElement>,
     tile_upload_ctx: Option<CanvasRenderingContext2d>,
     tile_upload_canvas_size: (u32, u32),
@@ -1466,6 +1478,11 @@ impl GpuRenderer {
             Some(surface) => surface,
             None => create_surface(canvas.clone())?,
         };
+        // The context wgpu made the surface on; asking again returns it.
+        let webgl_context = webgl
+            .then(|| canvas.get_context("webgl2").ok().flatten())
+            .flatten()
+            .and_then(|context| context.dyn_into::<web_sys::WebGl2RenderingContext>().ok());
 
         let mut surface_config = surface
             .get_default_config(&adapter, width, height)
@@ -1843,13 +1860,13 @@ impl GpuRenderer {
                 ],
             });
 
-        // Trilinear: minified tiles read their mip chain, so a pan does not change which few
-        // of many texels a pixel shows. tile.wgsl keeps magnified texels square-edged.
+        // Every pixel shows one texel, unblended. Minified tiles take it from the mip level
+        // nearest their size, so a pan does not change which few of many texels a pixel shows.
         let tile_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("tile-sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
@@ -2146,6 +2163,7 @@ impl GpuRenderer {
             tile_sampler,
             tile_mips,
             tile_textures: HashMap::new(),
+            webgl_context,
             tile_upload_canvas: None,
             tile_upload_ctx: None,
             tile_upload_canvas_size: (0, 0),
@@ -3224,14 +3242,14 @@ impl GpuRenderer {
             // tile in WASM memory, which would grow for good to hold one (see
             // `upload_image_data`). Uploading the <img> itself instead makes browsers decode
             // the file again, as straight alpha, synchronously: slower than this draw and
-            // read-back. Tiles are stored premultiplied, so the mip levels and the sampler
-            // filter colour and coverage together.
+            // read-back. Tiles are stored premultiplied, so the mip levels average colour and
+            // coverage together.
             upload_image_data(
                 &self.queue,
                 &texture,
                 image_data,
                 size,
-                self.capabilities.webgl2,
+                self.webgl_context.as_ref(),
                 true,
             );
             self.tile_mips.generate(&self.device, &self.queue, &texture);
@@ -3327,7 +3345,7 @@ impl GpuRenderer {
                 let fill_alpha = if has_overlay {
                     settings.overlay_fill_alpha()
                 } else {
-                    0.26
+                    GUILD_FILL_ALPHA
                 };
 
                 let is_headquarters = ct
@@ -4485,7 +4503,10 @@ impl GpuRenderer {
                 resolution: [w, h],
                 cooldown: self.cooldown_uniform(frame),
                 interaction: self.interaction(frame),
-                territory: [frame.settings.territory_opacity(), 0.0, 0.0, 0.0],
+                territory: {
+                    let (fade, solid) = frame.settings.territory_fill();
+                    [fade, solid, 0.0, 0.0]
+                },
             }]),
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
@@ -4846,7 +4867,7 @@ impl GpuRenderer {
         let overlay = self.overlay_renderer.get_or_insert_with(|| {
             GpuOverlayRenderer::new(
                 &self.device,
-                self.capabilities.webgl2,
+                self.webgl_context.clone(),
                 self.surface_config.format,
                 &self.viewport_bind_group_layout,
                 &Self::quad_vertex_layout(),

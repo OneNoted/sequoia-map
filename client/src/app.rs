@@ -467,7 +467,7 @@ pub(crate) use sequoia_map_engine::settings::{
 
 use gloo_storage::Storage;
 
-const SETTINGS_DEFAULTS_VERSION: u32 = 3;
+const SETTINGS_DEFAULTS_VERSION: u32 = 4;
 /// The outline every save wrote before defaults version 3 unless the member changed it.
 const PREVIOUS_DEFAULT_WAR_OUTLINE: WarOutline = WarOutline {
     style: WarOutlineStyle::Dashed,
@@ -526,8 +526,12 @@ struct SettingsV2 {
     resource_highlight: bool,
     #[serde(default = "default_resource_highlight_opacity")]
     resource_highlight_opacity: f64,
+    /// What the fade-only slider of defaults version 3 saved: a share of the resting fill's
+    /// strength, 0 to 1. Read once into `territory_fill_opacity` and never written again.
+    #[serde(default, skip_serializing)]
+    territory_opacity: Option<f64>,
     #[serde(default = "default_territory_opacity")]
-    territory_opacity: f64,
+    territory_fill_opacity: f64,
     #[serde(default)]
     defense_highlight: bool,
     #[serde(default)]
@@ -769,10 +773,12 @@ const fn default_territory_opacity() -> f64 {
     DEFAULT_TERRITORY_OPACITY
 }
 
-/// The overlay as it has always been drawn; also fills in saved settings that predate it.
-pub(crate) const DEFAULT_TERRITORY_OPACITY: f64 = 1.0;
+/// The resting guild fill's opacity, the overlay as it has always been drawn; also fills in
+/// saved settings that predate it.
+pub(crate) const DEFAULT_TERRITORY_OPACITY: f64 = 0.26;
 /// At 0 the guild fill is gone and borders keep a floor (see the renderer).
 pub(crate) const TERRITORY_OPACITY_MIN: f64 = 0.0;
+/// Fully opaque.
 pub(crate) const TERRITORY_OPACITY_MAX: f64 = 1.0;
 
 pub(crate) fn clamp_territory_opacity(value: f64) -> f64 {
@@ -851,7 +857,8 @@ impl Default for SettingsV2 {
             player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
             resource_highlight: false,
             resource_highlight_opacity: default_resource_highlight_opacity(),
-            territory_opacity: DEFAULT_TERRITORY_OPACITY,
+            territory_opacity: None,
+            territory_fill_opacity: DEFAULT_TERRITORY_OPACITY,
             defense_highlight: false,
             map_intel_enabled: false,
             show_resource_icons: true,
@@ -910,6 +917,14 @@ impl SettingsV2 {
         // other saved outline is a choice and stays.
         if self.defaults_version < 3 && self.war_outline == PREVIOUS_DEFAULT_WAR_OUTLINE {
             self.war_outline = WarOutline::default();
+        }
+
+        // The same look: a share of the old strength is that share of its opacity.
+        if self.defaults_version < 4
+            && let Some(share) = self.territory_opacity.take()
+        {
+            self.territory_fill_opacity =
+                clamp_territory_opacity(share.clamp(0.0, 1.0) * DEFAULT_TERRITORY_OPACITY);
         }
 
         self.defaults_version = SETTINGS_DEFAULTS_VERSION;
@@ -1000,7 +1015,8 @@ impl From<LegacySettings> for SettingsV2 {
             player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
             resource_highlight: value.resource_highlight,
             resource_highlight_opacity: default_resource_highlight_opacity(),
-            territory_opacity: DEFAULT_TERRITORY_OPACITY,
+            territory_opacity: None,
+            territory_fill_opacity: DEFAULT_TERRITORY_OPACITY,
             defense_highlight: value.defense_highlight,
             map_intel_enabled: value.map_intel_enabled,
             show_resource_icons: value.show_resource_icons,
@@ -1148,7 +1164,7 @@ pub fn MapPage() -> impl IntoView {
         clamp_resource_highlight_opacity(saved.resource_highlight_opacity),
     );
     let territory_opacity: RwSignal<f64> =
-        RwSignal::new(clamp_territory_opacity(saved.territory_opacity));
+        RwSignal::new(clamp_territory_opacity(saved.territory_fill_opacity));
     let defense_highlight: RwSignal<bool> = RwSignal::new(saved.defense_highlight);
     let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
     let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
@@ -1603,7 +1619,7 @@ pub fn MapPage() -> impl IntoView {
         resource_highlight_opacity.set(clamp_resource_highlight_opacity(
             defaults.resource_highlight_opacity,
         ));
-        territory_opacity.set(clamp_territory_opacity(defaults.territory_opacity));
+        territory_opacity.set(clamp_territory_opacity(defaults.territory_fill_opacity));
         defense_highlight.set(defaults.defense_highlight);
         map_intel_enabled.set(defaults.map_intel_enabled);
         show_resource_icons.set(defaults.show_resource_icons);
@@ -2170,7 +2186,8 @@ pub fn MapPage() -> impl IntoView {
             resource_highlight_opacity: clamp_resource_highlight_opacity(
                 resource_highlight_opacity.get(),
             ),
-            territory_opacity: clamp_territory_opacity(territory_opacity.get()),
+            territory_opacity: None,
+            territory_fill_opacity: clamp_territory_opacity(territory_opacity.get()),
             defense_highlight: defense_highlight.get(),
             map_intel_enabled: map_intel_enabled.get(),
             show_resource_icons: show_resource_icons.get(),
@@ -3670,21 +3687,64 @@ mod tests {
     }
 
     #[test]
-    fn territory_opacity_starts_at_full_strength_and_keeps_a_saved_choice() {
+    fn territory_opacity_starts_at_the_usual_look_and_keeps_a_saved_choice() {
         let unset: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(unset.territory_opacity, DEFAULT_TERRITORY_OPACITY);
-        assert_eq!(SettingsV2::default().territory_opacity, 1.0);
+        assert_eq!(
+            unset.with_current_defaults().territory_fill_opacity,
+            DEFAULT_TERRITORY_OPACITY
+        );
+        assert_eq!(
+            SettingsV2::default().territory_fill_opacity,
+            DEFAULT_TERRITORY_OPACITY
+        );
+        assert_eq!(
+            DEFAULT_TERRITORY_OPACITY as f32,
+            sequoia_map_engine::settings::DEFAULT_TERRITORY_OPACITY
+        );
 
         let saved = SettingsV2 {
-            territory_opacity: 0.35,
+            territory_fill_opacity: 0.9,
             ..SettingsV2::default()
         };
         let round_trip: SettingsV2 =
             serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-        assert_eq!(round_trip.territory_opacity, 0.35);
+        assert_eq!(
+            round_trip.with_current_defaults().territory_fill_opacity,
+            0.9
+        );
         assert_eq!(clamp_territory_opacity(f64::NAN), DEFAULT_TERRITORY_OPACITY);
         assert_eq!(clamp_territory_opacity(-0.5), TERRITORY_OPACITY_MIN);
         assert_eq!(clamp_territory_opacity(3.0), TERRITORY_OPACITY_MAX);
+        assert_eq!(TERRITORY_OPACITY_MAX, 1.0);
+    }
+
+    #[test]
+    fn a_faded_overlay_saved_by_the_fade_only_slider_keeps_its_look() {
+        let faded: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "defaults_version": 3,
+            "territory_opacity": 0.5,
+            "show_minimap": false,
+        }))
+        .unwrap();
+        let migrated = faded.with_current_defaults();
+        assert_eq!(
+            migrated.territory_fill_opacity,
+            0.5 * DEFAULT_TERRITORY_OPACITY
+        );
+        assert!(!migrated.show_minimap);
+        let written = serde_json::to_value(&migrated).unwrap();
+        assert!(written.get("territory_opacity").is_none());
+        assert_eq!(written["defaults_version"], SETTINGS_DEFAULTS_VERSION);
+
+        let full: SettingsV2 = serde_json::from_value(serde_json::json!({
+            "defaults_version": 3,
+            "territory_opacity": 1.0,
+        }))
+        .unwrap();
+        assert_eq!(
+            full.with_current_defaults().territory_fill_opacity,
+            DEFAULT_TERRITORY_OPACITY
+        );
     }
 
     #[test]

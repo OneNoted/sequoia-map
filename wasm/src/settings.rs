@@ -174,9 +174,9 @@ pub struct RenderSettings {
     pub defense_highlight: bool,
     /// Added to every territory fill alpha.
     pub fill_alpha_boost: f32,
-    /// How strongly the territory overlay covers the terrain, 0 to 1 (see
-    /// [`RenderSettings::territory_opacity`]). Read from the frame's uniforms, so changing it
-    /// rebuilds no layer.
+    /// The resting guild fill's opacity, 0 to 1, the overlay as it has always been drawn at
+    /// [`DEFAULT_TERRITORY_OPACITY`] (see [`RenderSettings::territory_fill`]). Read from the
+    /// frame's uniforms, so changing it rebuilds no layer.
     pub territory_opacity: f32,
 
     // Connection lines.
@@ -227,8 +227,10 @@ pub const RESOURCE_HIGHLIGHT_OPACITY_MAX: f32 = 0.90;
 pub const DEFAULT_RESOURCE_HIGHLIGHT_OPACITY: f32 = 0.45;
 /// Defense tiers keep the fixed overlay alpha.
 const DEFENSE_HIGHLIGHT_OPACITY: f32 = 0.34;
+/// The resting guild fill's alpha at close zoom.
+pub const GUILD_FILL_ALPHA: f32 = 0.26;
 /// The overlay as it has always been drawn.
-pub const DEFAULT_TERRITORY_OPACITY: f32 = 1.0;
+pub const DEFAULT_TERRITORY_OPACITY: f32 = GUILD_FILL_ALPHA;
 
 /// User label size multipliers. Each group is multiplied by the master scale.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -284,15 +286,30 @@ impl RenderSettings {
         }
     }
 
-    /// The resting guild fill and border's share of their full strength, clamped to 0 to 1.
-    /// Hover and selection, war stages, HQ brackets, resource and defense overlays and labels
-    /// keep their full strength, so the map stays readable with the overlay faded.
+    /// The territory opacity clamped to 0 to 1.
     pub fn territory_opacity(&self) -> f32 {
         if self.territory_opacity.is_finite() {
             self.territory_opacity.clamp(0.0, 1.0)
         } else {
             DEFAULT_TERRITORY_OPACITY
         }
+    }
+
+    /// How the territory opacity applies to the resting guild fill and border, as
+    /// `(fade, solid)`. Below the default, `fade` scales them toward nothing; above it,
+    /// `solid` takes them toward fully opaque, reached at 1. At the default they are `(1, 0)`,
+    /// the overlay as it has always been drawn. Hover and selection, war stages, HQ brackets,
+    /// resource and defense overlays and labels keep their own strength. With resources or
+    /// defense highlighted the fill only fades, so the highlighted territories still stand
+    /// out.
+    pub fn territory_fill(&self) -> (f32, f32) {
+        let opacity = self.territory_opacity();
+        let solid = if self.resource_highlight || self.defense_highlight {
+            0.0
+        } else {
+            ((opacity - DEFAULT_TERRITORY_OPACITY) / (1.0 - DEFAULT_TERRITORY_OPACITY)).max(0.0)
+        };
+        ((opacity / DEFAULT_TERRITORY_OPACITY).min(1.0), solid)
     }
 
     /// Whether cooling territories show [`CooldownDisplay::Fill`]: chosen, and the fill is
@@ -441,20 +458,38 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn territory_opacity_rebuilds_no_layer_and_stays_in_range() {
+    fn territory_opacity_rebuilds_no_layer_and_fades_or_firms_the_fill() {
         assert_eq!(after(|s| s.territory_opacity = 0.3), Rebuild::NONE);
-        let opacity = |value| {
+        let fill = |value| {
             RenderSettings {
                 territory_opacity: value,
                 ..settings()
             }
-            .territory_opacity()
+            .territory_fill()
         };
-        assert_eq!(opacity(0.3), 0.3);
-        assert_eq!(opacity(-1.0), 0.0);
-        assert_eq!(opacity(4.0), 1.0);
-        assert_eq!(opacity(f32::NAN), DEFAULT_TERRITORY_OPACITY);
-        assert_eq!(settings().territory_opacity(), 1.0);
+        assert_eq!(settings().territory_fill(), (1.0, 0.0));
+        assert_eq!(fill(DEFAULT_TERRITORY_OPACITY / 2.0), (0.5, 0.0));
+        assert_eq!(fill(0.0), (0.0, 0.0));
+        assert_eq!(fill(-1.0), (0.0, 0.0));
+        assert_eq!(fill(1.0), (1.0, 1.0));
+        assert_eq!(fill(4.0), (1.0, 1.0));
+        let (fade, solid) = fill(0.63);
+        assert_eq!(fade, 1.0);
+        assert!((solid - 0.5).abs() < 1e-6);
+        assert_eq!(fill(f32::NAN), (1.0, 0.0));
+
+        let highlighted = |resource_highlight, defense_highlight, value| {
+            RenderSettings {
+                resource_highlight,
+                defense_highlight,
+                territory_opacity: value,
+                ..settings()
+            }
+            .territory_fill()
+        };
+        assert_eq!(highlighted(true, false, 1.0), (1.0, 0.0));
+        assert_eq!(highlighted(false, true, 1.0), (1.0, 0.0));
+        assert_eq!(highlighted(true, false, 0.13), (0.5, 0.0));
     }
 
     #[test]

@@ -53,22 +53,8 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     return out;
 }
 
-// Terrain stays sharp and steady as it moves. Where a texel spans more than a pixel, the
-// sample point holds the texel's middle and crosses into the next texel only within half a
-// pixel of their edge: square texels with a one-pixel blend between them, so an edge slides
-// with a sub-pixel pan instead of jumping a whole pixel. Where many texels share a pixel, the
-// trilinear sampler reads their average from the mip chain instead of whichever one the
-// pixel centre lands on.
+// The mip level one sharper than the footprint alone picks: minified terrain keeps its detail.
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let size = vec2<f32>(textureDimensions(tile_texture, 0));
-    let texel = in.uv * size;
-    let texels_per_pixel = max(fwidth(texel), vec2<f32>(1e-6));
-    let edge = floor(texel + 0.5);
-    let blended = edge + clamp((texel - edge) / texels_per_pixel, vec2<f32>(-0.5), vec2<f32>(0.5));
-    let uv = select(in.uv, blended / size, texels_per_pixel < vec2<f32>(1.0));
-    // A mip level sharper than the footprint alone picks: minified terrain keeps its
-    // detail, at a little of the averaging that keeps it steady.
-    let sharpen = 0.5;
-    return textureSampleGrad(tile_texture, tile_sampler, uv, dpdx(in.uv) * sharpen, dpdy(in.uv) * sharpen);
+    return textureSampleGrad(tile_texture, tile_sampler, in.uv, dpdx(in.uv) * 0.5, dpdy(in.uv) * 0.5);
 }
