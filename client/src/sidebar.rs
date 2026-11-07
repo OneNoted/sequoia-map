@@ -39,6 +39,11 @@ use sequoia_browser_map::{BrowserMap, MapCamera};
 /// Newer than this, the live feed counts as working.
 const LIVE_FRESH_SECS: i64 = 120;
 
+/// How long a guild's territory list waits for its online members when nothing says how many
+/// there will be, so they take their place above it instead of pushing it down. A slower answer
+/// gives the list back to the reader.
+const GUILD_LIST_HOLD: std::time::Duration = std::time::Duration::from_millis(2000);
+
 fn format_confidence(confidence: f32) -> String {
     format!("{:.0}%", (confidence.clamp(0.0, 1.0) * 100.0))
 }
@@ -862,15 +867,23 @@ fn GuildPanel() -> impl IntoView {
     let GuildOnlineData(guild_online_data) = expect_context();
 
     let answer = RwSignal::new(GuildAnswer::Waiting);
+    let hold_over = RwSignal::new(false);
     let request_nonce = StoredValue::new(0u64);
 
     Effect::new(move || {
         let nonce = request_nonce.get_value().wrapping_add(1);
         request_nonce.set_value(nonce);
         answer.set(GuildAnswer::Waiting);
+        hold_over.set(false);
         let Some(name) = selected_guild.get() else {
             return;
         };
+        wasm_bindgen_futures::spawn_local(async move {
+            gloo_timers::future::sleep(GUILD_LIST_HOLD).await;
+            if request_nonce.try_get_value() == Some(nonce) {
+                hold_over.set(true);
+            }
+        });
         wasm_bindgen_futures::spawn_local(async move {
             let url = format!("/api/guild/{}", crate::encode_uri_component(&name));
             let detail = match gloo_net::http::Request::get(&url).send().await {
@@ -937,6 +950,12 @@ fn GuildPanel() -> impl IntoView {
         }
     });
     let unavailable = move || answer.with(|answer| matches!(answer, GuildAnswer::Unavailable));
+    // With a count the members' rows are held above the list, so it can show at once.
+    let list_placed = move || {
+        expected_online().is_some()
+            || hold_over.get()
+            || answer.with(|answer| !matches!(answer, GuildAnswer::Waiting))
+    };
     // Until the details arrive, each figure waits in its place rather than the panel growing.
     let fact =
         move |pick: fn(&GuildFacts) -> String| move || answer.with(|answer| answer.figure(pick));
@@ -958,10 +977,17 @@ fn GuildPanel() -> impl IntoView {
                     </h2>
                 </header>
                 <div class="tcard-owner">
-                    <span class="tcard-tag">
-                        "[" {move || prefix().unwrap_or_else(|| "\u{2026}".to_string())} "]"
-                        {move || (!unavailable()).then(|| view! { " \u{00b7} Lv. " {fact(|facts| facts.level.to_string())} })}
-                    </span>
+                    // A tag nobody can supply any more is left out rather than shown as waiting.
+                    {move || {
+                        let prefix = prefix();
+                        let unavailable = unavailable();
+                        (prefix.is_some() || !unavailable).then(|| view! {
+                            <span class="tcard-tag">
+                                "[" {prefix.unwrap_or_else(|| "\u{2026}".to_string())} "]"
+                                {(!unavailable).then(|| view! { " \u{00b7} Lv. " {fact(|facts| facts.level.to_string())} })}
+                            </span>
+                        })
+                    }}
                     {move || if unavailable() {
                         view! { <span class="tcard-tag" role="status">"Guild details are unavailable"</span> }.into_any()
                     } else {
@@ -986,7 +1012,11 @@ fn GuildPanel() -> impl IntoView {
                     let in_place = ours && viewer_has_war_access.get();
                     let list = answer.with(|answer| match answer {
                         GuildAnswer::Waiting => {
-                            let held = expected_online().filter(|&held| held > 0)?;
+                            // Without a count, one row says the members are on their way.
+                            let held = expected_online().unwrap_or(1);
+                            if held == 0 {
+                                return None;
+                            }
                             Some(view! {
                                 <ul class="sb-members" class:mrows=in_place aria-hidden="true">
                                     {(0..held).map(|_| if in_place {
@@ -1036,8 +1066,8 @@ fn GuildPanel() -> impl IntoView {
                         </section>
                     })
                 }}
-                <Show when=move || guild_territories.with(|owned| !owned.is_empty())>
-                    <section class="tcard-section" aria-label="Territories">
+                <Show when=move || list_placed() && guild_territories.with(|owned| !owned.is_empty())>
+                    <section class="tcard-section panel-reveal" aria-label="Territories">
                         <h3 class="tcard-section-title">"Territories"</h3>
                         <ul class="sb-territories">
                             <For
