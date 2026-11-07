@@ -1435,6 +1435,7 @@
 
 /* The two bars: controls stay quiet until hovered, pressed, opened or focused. */
 .sb-bar .ui-button {
+  min-width: var(--sb-bar-control);
   min-height: var(--sb-bar-control);
   padding: 0 8px;
   border-color: transparent;
