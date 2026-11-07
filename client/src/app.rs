@@ -1176,7 +1176,7 @@ pub fn MapPage() -> impl IntoView {
             let mut next_sleep_secs = GUILD_ONLINE_POLL_INTERVAL_SECS;
             match gloo_net::http::Request::get(&url).send().await {
                 Ok(resp) if resp.ok() => {
-                    // The server asks sooner when this answer lacks ratings it may soon have.
+                    // The server asks sooner when a better answer is due, such as ratings it could not place.
                     if let Some(retry_after) = resp
                         .headers()
                         .get("retry-after")

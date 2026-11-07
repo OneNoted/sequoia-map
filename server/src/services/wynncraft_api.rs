@@ -379,13 +379,17 @@ fn fresh_guild_seasons(
     (age < ttl_secs).then(|| cached.seasons.clone())
 }
 
+/// Whether a cached leaderboard is past its TTL, so that a refresh is due behind it.
+pub fn season_leaderboard_expired(cached: &CachedSeasonLeaderboard, now: DateTime<Utc>) -> bool {
+    now.signed_duration_since(cached.fetched_at).num_seconds() >= SEASON_LEADERBOARD_CACHE_TTL_SECS
+}
+
 fn fresh_season_leaderboard(
     cached: Option<&CachedSeasonLeaderboard>,
     now: DateTime<Utc>,
 ) -> Option<CachedSeasonLeaderboard> {
     let cached = cached?;
-    let age = now.signed_duration_since(cached.fetched_at).num_seconds();
-    (age < SEASON_LEADERBOARD_CACHE_TTL_SECS).then(|| cached.clone())
+    (!season_leaderboard_expired(cached, now)).then(|| cached.clone())
 }
 
 fn fresh_map_intel_summary(

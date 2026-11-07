@@ -675,11 +675,19 @@ pub async fn get_guilds_online(
                 .map(|leaderboard| leaderboard.season_id),
         )
         .max();
-    // Without a season Wynncraft vouches for, no rating can be called this season's. The next
-    // batch asks Wynncraft again, so the client need not wait a whole poll for its ratings.
-    let Some(current_season) = current_season else {
-        let mut headers = HeaderMap::new();
+    // With no season to rate, or on an expired leaderboard whose refresh is now running, a
+    // better answer is due as soon as Wynncraft is asked again, so the client need not wait a
+    // whole poll for it.
+    let mut headers = HeaderMap::new();
+    if current_season.is_none()
+        || leaderboard.as_ref().is_some_and(|leaderboard| {
+            wynncraft_api::season_leaderboard_expired(leaderboard, Utc::now())
+        })
+    {
         headers.insert(header::RETRY_AFTER, HeaderValue::from_static("15"));
+    }
+    // Without a season Wynncraft vouches for, no rating can be called this season's.
+    let Some(current_season) = current_season else {
         return Ok((headers, Json(result)));
     };
     resolve_season_ratings(&mut result, leaderboard.as_ref(), current_season);
@@ -712,7 +720,7 @@ pub async fn get_guilds_online(
         }
     }
 
-    Ok((HeaderMap::new(), Json(result)))
+    Ok((headers, Json(result)))
 }
 
 fn parse_guilds_online_names(raw_names: &str) -> Vec<String> {
