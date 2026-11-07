@@ -564,13 +564,13 @@ pub struct GuildOnlineEntry {
 pub async fn get_guilds_online(
     State(state): State<AppState>,
     Query(query): Query<GuildsOnlineQuery>,
-) -> Result<Json<HashMap<String, GuildOnlineEntry>>, StatusCode> {
+) -> Result<(HeaderMap, Json<HashMap<String, GuildOnlineEntry>>), StatusCode> {
     state.observability.record_guilds_online_request();
 
     let guild_names = parse_guilds_online_names(&query.names);
 
     if guild_names.is_empty() {
-        return Ok(Json(HashMap::new()));
+        return Ok((HeaderMap::new(), Json(HashMap::new())));
     }
 
     if guild_names.len() > MAX_GUILDS_ONLINE_BATCH {
@@ -675,9 +675,12 @@ pub async fn get_guilds_online(
                 .map(|leaderboard| leaderboard.season_id),
         )
         .max();
-    // Without a season Wynncraft vouches for, no rating can be called this season's.
+    // Without a season Wynncraft vouches for, no rating can be called this season's. The next
+    // batch asks Wynncraft again, so the client need not wait a whole poll for its ratings.
     let Some(current_season) = current_season else {
-        return Ok(Json(result));
+        let mut headers = HeaderMap::new();
+        headers.insert(header::RETRY_AFTER, HeaderValue::from_static("15"));
+        return Ok((headers, Json(result)));
     };
     resolve_season_ratings(&mut result, leaderboard.as_ref(), current_season);
 
@@ -709,7 +712,7 @@ pub async fn get_guilds_online(
         }
     }
 
-    Ok(Json(result))
+    Ok((HeaderMap::new(), Json(result)))
 }
 
 fn parse_guilds_online_names(raw_names: &str) -> Vec<String> {

@@ -1176,6 +1176,17 @@ pub fn MapPage() -> impl IntoView {
             let mut next_sleep_secs = GUILD_ONLINE_POLL_INTERVAL_SECS;
             match gloo_net::http::Request::get(&url).send().await {
                 Ok(resp) if resp.ok() => {
+                    // The server asks sooner when this answer lacks ratings it may soon have.
+                    if let Some(retry_after) = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|secs| secs.trim().parse::<u64>().ok())
+                    {
+                        next_sleep_secs = retry_after.clamp(
+                            GUILD_ONLINE_ERROR_RETRY_SECS,
+                            GUILD_ONLINE_POLL_INTERVAL_SECS,
+                        );
+                    }
                     if let Ok(raw) = resp.json::<HashMap<String, serde_json::Value>>().await {
                         guild_online_data.set(parse_online_response(raw));
                     }
