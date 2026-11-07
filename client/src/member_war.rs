@@ -159,15 +159,18 @@ fn answer<T>(load: Load<T>, wrap: fn(T) -> Answer) -> Load<Answer> {
 #[derive(Clone)]
 struct Fetched {
     load: Load<Answer>,
-    /// When it was asked for. An answer is about the moment it was read, which is no earlier
-    /// than this, so its age counts the wait for it too: a late or resumed delivery does not
-    /// make it newer.
+    /// When it arrived, which orders it against other answers and decides its refresh.
     at: f64,
+    /// When it was asked for. What it says was read no earlier than this, so the age of
+    /// moment-to-moment facts (an open mod session) counts from here: a late or resumed
+    /// delivery does not make them newer.
+    asked_at: f64,
     /// A refresh of this answer failed transiently; it is still shown, marked as not current.
     outdated: bool,
 }
 
-/// Keeps `load`, the answer to `ask` asked at `asked_at`. An outage keeps what was `shown`,
+/// Keeps `load`, the answer to `ask` asked at `asked_at` and arriving at `now`. An outage keeps
+/// what was `shown`,
 /// marked as not current. A refusal, a name gone from the roster or a season that ended is an
 /// answer and replaces it.
 fn store_answer(
@@ -175,6 +178,7 @@ fn store_answer(
     ask: Ask,
     load: Load<Answer>,
     asked_at: f64,
+    now: f64,
     shown: bool,
 ) {
     if shown
@@ -188,7 +192,8 @@ fn store_answer(
         ask,
         Fetched {
             load,
-            at: asked_at,
+            at: now,
+            asked_at,
             outdated: false,
         },
     );
@@ -261,7 +266,7 @@ fn mod_session_in(
     let Load::Ready(Answer::Roster(roster)) = &fetched.load else {
         return None;
     };
-    if fetched.outdated || now - fetched.at > MOD_SESSION_TRUSTED_MS {
+    if fetched.outdated || now - fetched.asked_at > MOD_SESSION_TRUSTED_MS {
         return None;
     }
     roster
@@ -392,6 +397,7 @@ impl MemberWar {
                     Fetched {
                         load: Load::Pending,
                         at: now_ms(),
+                        asked_at: now_ms(),
                         outdated: false,
                     },
                 );
@@ -422,7 +428,7 @@ impl MemberWar {
                 _ => {}
             }
             this.entries
-                .update(|entries| store_answer(entries, ask, load, asked_at, shown));
+                .update(|entries| store_answer(entries, ask, load, asked_at, now_ms(), shown));
         });
     }
 
@@ -448,6 +454,7 @@ impl MemberWar {
                 *fetched = Fetched {
                     load: Load::Failed(failure),
                     at: now_ms(),
+                    asked_at: now_ms(),
                     outdated: false,
                 };
             }
@@ -468,6 +475,7 @@ impl MemberWar {
                     *fetched = Fetched {
                         load: Load::Failed(failure),
                         at: now_ms(),
+                        asked_at: now_ms(),
                         outdated: false,
                     };
                 }
@@ -1269,6 +1277,7 @@ mod tests {
         Fetched {
             load: Load::Ready(load),
             at,
+            asked_at: at,
             outdated: false,
         }
     }
@@ -1438,16 +1447,47 @@ mod tests {
         });
         let mut entries = HashMap::new();
         let asked_at = 1_000.0;
+        // Delivered, or resumed, long after it was asked: the session it lists is that old.
+        let delivered = asked_at + MOD_SESSION_TRUSTED_MS + 1.0;
         store_answer(
             &mut entries,
             Ask::Roster,
             Load::Ready(answer),
             asked_at,
+            delivered,
             false,
         );
-        // Delivered, or resumed, long after it was asked: the session it lists is that old.
-        let delivered = asked_at + MOD_SESSION_TRUSTED_MS + 1.0;
         assert_eq!(mod_session_in(&entries, "GaztheCat", delivered), None);
         assert!(mod_session_in(&entries, "GaztheCat", asked_at + 1.0).is_some());
+    }
+
+    #[test]
+    fn a_standing_that_arrives_after_the_roster_shows_its_rank_whenever_it_was_asked() {
+        let mut entries = HashMap::new();
+        let standing = Answer::Standing(MemberStanding {
+            uuid: "66efb975-31b4-499e-9b46-a34980edd8ee".into(),
+            username: "GaztheCat".into(),
+            guild_rank: Some("chief".into()),
+            ranks: synced(Some("Druid")),
+        });
+        let (_, roster_read) = roster(Some("Sapling"), 0.0);
+        // The standing is asked first and arrives last; the roster's rank is an older cached one.
+        store_answer(
+            &mut entries,
+            Ask::Roster,
+            roster_read.load,
+            200.0,
+            300.0,
+            false,
+        );
+        store_answer(
+            &mut entries,
+            Ask::Standing(key("GaztheCat")),
+            Load::Ready(standing),
+            100.0,
+            400.0,
+            false,
+        );
+        assert_eq!(progression_in(&entries, "GaztheCat"), Some(rank("Druid")));
     }
 }
