@@ -4073,7 +4073,6 @@ a.tcard-guild:focus-visible {
   padding: 0 2px;
   border: 0;
   background: none;
-  font-family: var(--font-body);
   cursor: pointer;
 }
 .mrow-place-go:hover,
@@ -4293,11 +4292,12 @@ a.tcard-guild:focus-visible {
 .mwar-custom input[aria-invalid="true"] { border-color: rgba(255, 138, 138, 0.7); }
 
 /* The Minecraft face, as on seqwawa.com: names, ranks, headings, short labels and the compact
-   map controls. Prose, places and numbers keep Inter and JetBrains Mono for reading, except in
-   a member's expanded detail, which is in the Minecraft face throughout. */
+   map controls. Prose, places and numbers keep Inter and JetBrains Mono for reading, except on
+   an online member's row and its expanded detail, which are in the Minecraft face throughout. */
 .war-member-name,
 .mrow-name,
 .mrow-rank,
+.mrow-place,
 .sb-member-name,
 .sb-member-rank,
 .player-dialog-status,
