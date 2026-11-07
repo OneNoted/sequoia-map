@@ -16,8 +16,7 @@ use super::http_util::{
 };
 
 use crate::config::{
-    GUILD_CACHE_TTL_SECS, MAX_GUILD_CACHE_ENTRIES, guilds_online_cache_ttl_secs,
-    guilds_online_max_concurrency,
+    MAX_GUILD_CACHE_ENTRIES, guilds_online_cache_ttl_secs, guilds_online_max_concurrency,
 };
 use crate::services::season_data::{self, SeasonDataError};
 use crate::services::season_race::{self, SeasonRaceError};
@@ -483,21 +482,26 @@ pub async fn get_guild(
     Path(raw_name): Path<String>,
 ) -> Result<Response, StatusCode> {
     let name = normalize_guild_name(&raw_name)?.to_owned();
-    let data = guild_payload(&state, name).await?;
+    // The panel lists who is online, so it is held no longer than the online counts are.
+    let data = guild_payload(&state, name, guilds_online_cache_ttl_secs()).await?;
     Ok(json_bytes_response(
         Bytes::from(data),
-        "public, max-age=300",
+        "public, max-age=60",
         None,
     ))
 }
 
-/// Wynncraft's guild payload, from the guild cache while it is fresh.
-pub(crate) async fn guild_payload(state: &AppState, name: String) -> Result<String, StatusCode> {
+/// Wynncraft's guild payload, from the guild cache while it is at most `max_age_secs` old.
+pub(crate) async fn guild_payload(
+    state: &AppState,
+    name: String,
+    max_age_secs: i64,
+) -> Result<String, StatusCode> {
     if let Some(cached) = state.guild_cache.get(&name) {
         let age = Utc::now()
             .signed_duration_since(cached.fetched_at)
             .num_seconds();
-        if age < GUILD_CACHE_TTL_SECS {
+        if age < max_age_secs {
             return Ok(cached.data.clone());
         }
     }

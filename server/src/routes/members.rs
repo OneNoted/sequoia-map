@@ -250,7 +250,12 @@ async fn sequoia_roster(
     super::war_access::war_access(state, headers)
         .await
         .into_result()?;
-    let payload = super::api::guild_payload(state, config::SEQUOIA_GUILD_NAME.to_string()).await?;
+    let payload = super::api::guild_payload(
+        state,
+        config::SEQUOIA_GUILD_NAME.to_string(),
+        config::GUILD_CACHE_TTL_SECS,
+    )
+    .await?;
     serde_json::from_str(&payload).map_err(|_| StatusCode::BAD_GATEWAY)
 }
 
