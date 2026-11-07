@@ -20,10 +20,10 @@ use super::{
     whereabouts,
 };
 use crate::app::{
-    IsMobile, PeekTerritory, ShowWarPanel, SidebarOpen, WarPanelOpen, WarPanelWidth,
-    clamp_war_panel_width,
+    IsMobile, PeekTerritory, SidebarOpen, WarPanelOpen, WarPanelWidth, clamp_war_panel_width,
 };
 use crate::format::{local_time, local_time_seconds};
+use crate::settings::{self, ViewerSettings};
 use crate::territory::ClientTerritoryMap;
 use crate::territory_card::{QueueOrigin, original_timer};
 use crate::ui_icons::class_icon_url;
@@ -40,7 +40,7 @@ const MEMBER_PREVIEW: usize = 6;
 #[component]
 pub(crate) fn WarRoomHud() -> impl IntoView {
     let room = expect_context::<WarRoom>();
-    let ShowWarPanel(show_panel) = expect_context();
+    let show_panel = expect_context::<ViewerSettings>().value(settings::WAR_PANEL);
     let IsMobile(is_mobile) = expect_context();
     let camera = expect_context::<BrowserMap>().camera();
     let visible = Memo::new(move |_| show_panel.get() && room.board.with(Option::is_some));

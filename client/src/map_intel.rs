@@ -10,7 +10,8 @@ use sequoia_shared::{
     GatheringNodeMarker, MapActivityMarker, MapIntelOverlay as MapIntelPayload, WorldEventMarker,
 };
 
-use crate::app::{IsMobile, MapIntelModeEnabled, SidebarOpen, SidebarWidth, canvas_dimensions};
+use crate::app::{IsMobile, SidebarOpen, SidebarWidth, canvas_dimensions};
+use crate::settings::{Overlay, ViewerSettings};
 use crate::viewport::Viewport;
 use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::overlay::{SiteLabel, SiteLabels};
@@ -376,7 +377,8 @@ impl NodeShape {
 
 #[component]
 pub(crate) fn MapIntelOverlay() -> impl IntoView {
-    let MapIntelModeEnabled(enabled) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let enabled = Memo::new(move |_| settings.with(|s| s.overlay == Overlay::Intel));
     let map = expect_context::<BrowserMap>();
     let camera = map.camera();
     let pointer = map.pointer();

@@ -10,21 +10,20 @@ use sequoia_shared::{
 };
 
 use crate::app::{
-    AutoSrScalarEnabled, CurrentMode, DetailReturnGuild, GuildColorStore, GuildOnlineData,
-    HeatEntriesByTerritory, HeatModeEnabled, HistoryAvailable, HistoryBoundsSignal,
-    HistoryBufferModeActive, HistoryBufferedUpdates, HistoryFetchNonce,
-    HistoryLegacyGeometryActive, HistoryMapTime, HistorySeasonLeaderboard,
+    CurrentMode, DetailReturnGuild, GuildColorStore, GuildOnlineData, HeatEntriesByTerritory,
+    HistoryAvailable, HistoryBoundsSignal, HistoryBufferModeActive, HistoryBufferedUpdates,
+    HistoryFetchNonce, HistoryLegacyGeometryActive, HistoryMapTime, HistorySeasonLeaderboard,
     HistorySeasonScalarSample, HistoryTimestamp, IsMobile, LastLiveSeq, LeaderboardSortBySr,
-    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapMode, NeedsLiveResync,
-    PlaybackActive, Selected, SelectedGuild, ShowDebugInfo, ShowLeaderboardOnline,
-    ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowSettings,
-    SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient, TerritoryGeometryStore,
+    LiveHandoffResyncCount, LiveSeasonScalarSample, MapMode, NeedsLiveResync, PlaybackActive,
+    Selected, SelectedGuild, ShowSettings, SidebarIndex, SidebarItems, SidebarOpen,
+    SidebarTransient, TerritoryGeometryStore,
 };
 use crate::colors::rgba_css;
 use crate::format::{compact, rate, since};
 use crate::history;
 use crate::keybinds::KeybindHelp;
 use crate::season_scalar::{EffectiveScalar, ScalarSource, effective_scalar};
+use crate::settings::{self, ViewerSettings};
 use crate::settings_menu::SettingsPanel;
 use crate::territory::ClientTerritoryMap;
 use crate::territory_card::{
@@ -204,7 +203,7 @@ fn HistoryWhen() -> impl IntoView {
 #[component]
 fn SearchBar() -> impl IntoView {
     let search_query: RwSignal<String> = expect_context();
-    let ShowDebugInfo(show_debug_info) = expect_context();
+    let show_debug_info = expect_context::<ViewerSettings>().value(settings::DIAGNOSTICS);
 
     view! {
         <div class="sb-search">
@@ -435,10 +434,11 @@ fn LeaderboardPanel() -> impl IntoView {
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
     let CurrentMode(mode) = expect_context();
-    let ShowLeaderboardSrGain(show_leaderboard_sr_gain) = expect_context();
-    let ShowLeaderboardSrValue(show_leaderboard_sr_value) = expect_context();
-    let ShowLeaderboardTerritoryCount(show_leaderboard_territory_count) = expect_context();
-    let ShowLeaderboardOnline(show_leaderboard_online) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let show_leaderboard_sr_gain = settings.value(settings::LEADERBOARD_SR_RATE);
+    let show_leaderboard_sr_value = settings.value(settings::LEADERBOARD_SEASON_RATING);
+    let show_leaderboard_territory_count = settings.value(settings::LEADERBOARD_TERRITORIES);
+    let show_leaderboard_online = settings.value(settings::LEADERBOARD_ONLINE);
     let GuildOnlineData(guild_online_data) = expect_context();
     let HistorySeasonLeaderboard(history_sr_leaderboard) = expect_context();
     let LeaderboardSortBySr(sort_by_sr) = expect_context();
@@ -626,8 +626,9 @@ fn LeaderboardPanel() -> impl IntoView {
 /// The SR scalar in use, for passive SR figures.
 fn scalar_state() -> Memo<EffectiveScalar> {
     let CurrentMode(mode) = expect_context();
-    let ManualSrScalar(manual_sr_scalar) = expect_context();
-    let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let manual_sr_scalar = settings.value(settings::MANUAL_SR_SCALAR);
+    let auto_sr_scalar_enabled = settings.value(settings::ESTIMATE_SR_SCALAR);
     let LiveSeasonScalarSample(live_scalar_sample) = expect_context();
     let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
     Memo::new(move |_| {
@@ -1017,9 +1018,10 @@ fn DetailPanel() -> impl IntoView {
     let tick: RwSignal<i64> = expect_context();
     let CurrentMode(mode) = expect_context();
     let HistoryMapTime(history_map_time) = expect_context();
-    let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let heat_mode_enabled = settings.value(settings::HEAT_MAP);
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
-    let ShowDebugInfo(show_debug_info) = expect_context();
+    let show_debug_info = expect_context::<ViewerSettings>().value(settings::DIAGNOSTICS);
     let camera = expect_context::<BrowserMap>().camera();
     let tower_state: crate::tower::TowerState = expect_context();
     let scalar_state = scalar_state();
@@ -1302,7 +1304,8 @@ fn SidebarToolbar() -> impl IntoView {
     let TerritoryGeometryStore(geo_store) = expect_context();
     let GuildColorStore(guild_color_store) = expect_context();
     let IsMobile(is_mobile) = expect_context();
-    let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let heat_mode_enabled = settings.value(settings::HEAT_MAP);
 
     // A healthy feed shows nothing; only connecting and reconnecting get a lamp.
     let status_text = Memo::new(move |_| match connection.get() {
@@ -1370,7 +1373,7 @@ fn SidebarToolbar() -> impl IntoView {
                         data-mode="heat"
                         aria-pressed=move || heat_mode_enabled.get().to_string()
                         title=move || if heat_mode_enabled.get() { "Disable heat map" } else { "Enable heat map" }
-                        on:click=move |_| heat_mode_enabled.update(|on| *on = !*on)
+                        on:click=move |_| settings.toggle(settings::HEAT_MAP)
                     >"Heat"</button>
                 </div>
             </Show>
