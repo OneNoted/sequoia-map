@@ -16,7 +16,7 @@ use crate::app::{
 };
 use crate::settings::{self, *};
 use crate::territory::ClientTerritoryMap;
-use crate::ui::PanelNav;
+use crate::ui::{PanelNav, disclosure_toggled};
 
 fn percent(value: f64) -> String {
     format!("{:.0}%", value * 100.0)
@@ -378,7 +378,8 @@ fn SettingsSection(title: &'static str, children: Children) -> impl IntoView {
 }
 
 /// A collapsed group for fine-tuning. Native `<details>`, so Enter, Space and taps work
-/// without extra code; it starts closed every time the menu opens.
+/// without extra code; it starts closed every time the menu opens, and opening it brings what it
+/// reveals into view as the sidebar's other disclosures do.
 #[component]
 fn SettingsDisclosure(
     title: &'static str,
@@ -386,7 +387,7 @@ fn SettingsDisclosure(
     children: Children,
 ) -> impl IntoView {
     view! {
-        <details class="settings-disclosure">
+        <details class="settings-disclosure" on:toggle=move |event| { disclosure_toggled(&event); }>
             <summary>
                 <span class="settings-row-text">
                     <span class="settings-disclosure-title">{title}</span>

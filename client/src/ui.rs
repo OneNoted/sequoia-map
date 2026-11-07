@@ -37,6 +37,17 @@ fn scroll_padding_top(element: &web_sys::Element) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// A `<details>` toggle: one that opened brings what it reveals into view. Says whether it is
+/// now open.
+pub(crate) fn disclosure_toggled(event: &web_sys::Event) -> bool {
+    let element: web_sys::HtmlDetailsElement = event_target(event);
+    let opened = element.open();
+    if opened {
+        reveal_soon(element.into());
+    }
+    opened
+}
+
 /// A `<details>` whose open state is held by `open`, so it survives its parent being rebuilt.
 /// Opening it brings what it reveals into view.
 #[component]
@@ -50,14 +61,7 @@ pub(crate) fn Disclosure(
         <details
             class=format!("tcard-disclosure {class}")
             prop:open=move || open.get()
-            on:toggle=move |event| {
-                let element: web_sys::HtmlDetailsElement = event_target(&event);
-                let opened = element.open();
-                open.set(opened);
-                if opened {
-                    reveal_soon(element.into());
-                }
-            }
+            on:toggle=move |event| open.set(disclosure_toggled(&event))
         >
             <summary>{summary}</summary>
             {children()}
