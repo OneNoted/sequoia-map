@@ -33,6 +33,8 @@ pub(crate) struct ViewerSettings {
     adjusting: RwSignal<u32>,
     /// What the last Undo or Redo changed, numbered so a stale dismissal leaves a newer one.
     notice: RwSignal<Option<(u32, String)>>,
+    /// The last notice's number; never reused, even once that notice is gone.
+    notices: StoredValue<u32>,
 }
 
 impl ViewerSettings {
@@ -49,6 +51,7 @@ impl ViewerSettings {
             history: RwSignal::new(History::new(settings)),
             adjusting: RwSignal::new(0),
             notice: RwSignal::new(None),
+            notices: StoredValue::new(0),
         }
     }
 
@@ -239,12 +242,9 @@ impl ViewerSettings {
     }
 
     fn announce(self, text: String) {
-        self.notice.update(|notice| {
-            let serial = notice
-                .as_ref()
-                .map_or(0, |(serial, _)| serial.wrapping_add(1));
-            *notice = Some((serial, text));
-        });
+        let serial = self.notices.get_value().wrapping_add(1);
+        self.notices.set_value(serial);
+        self.notice.set(Some((serial, text)));
     }
 }
 
@@ -386,5 +386,22 @@ mod tests {
         assert_eq!(now(settings).overlay, Overlay::Intel);
         toggle(Overlay::Intel);
         assert_eq!(now(settings).overlay, Overlay::Off);
+    }
+
+    #[test]
+    fn a_dismissal_left_from_an_earlier_notice_leaves_a_newer_one() {
+        let settings = owner(Settings::default());
+        settings.edit(TERRITORY_NAMES, true);
+        settings.edit(MINIMAP, true);
+        settings.undo();
+        let (first, _) = settings.notice().expect("a notice");
+        settings.dismiss_notice(first);
+        assert_eq!(settings.notice(), None);
+        settings.undo();
+        let (second, text) = settings.notice().expect("a newer notice");
+        assert_ne!(second, first);
+        assert_eq!(text, "Undid Territory Names");
+        settings.dismiss_notice(first);
+        assert_eq!(settings.notice().map(|(serial, _)| serial), Some(second));
     }
 }

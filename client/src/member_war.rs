@@ -159,9 +159,39 @@ fn answer<T>(load: Load<T>, wrap: fn(T) -> Answer) -> Load<Answer> {
 #[derive(Clone)]
 struct Fetched {
     load: Load<Answer>,
+    /// When it was asked for. An answer is about the moment it was read, which is no earlier
+    /// than this, so its age counts the wait for it too: a late or resumed delivery does not
+    /// make it newer.
     at: f64,
     /// A refresh of this answer failed transiently; it is still shown, marked as not current.
     outdated: bool,
+}
+
+/// Keeps `load`, the answer to `ask` asked at `asked_at`. An outage keeps what was `shown`,
+/// marked as not current. A refusal, a name gone from the roster or a season that ended is an
+/// answer and replaces it.
+fn store_answer(
+    entries: &mut HashMap<Ask, Fetched>,
+    ask: Ask,
+    load: Load<Answer>,
+    asked_at: f64,
+    shown: bool,
+) {
+    if shown
+        && matches!(load, Load::Failed(Failure::Unavailable))
+        && let Some(previous) = entries.get_mut(&ask)
+    {
+        previous.outdated = true;
+        return;
+    }
+    entries.insert(
+        ask,
+        Fetched {
+            load,
+            at: asked_at,
+            outdated: false,
+        },
+    );
 }
 
 /// What to do about an entry when it is looked at.
@@ -370,6 +400,7 @@ impl MemberWar {
         let generation = self.generation.get_value();
         let epoch = self.member_epoch(ask.member());
         let this = *self;
+        let asked_at = now_ms();
         wasm_bindgen_futures::spawn_local(async move {
             let load = ask.fetch().await;
             if this.generation.try_get_value() != Some(generation) {
@@ -390,25 +421,8 @@ impl MemberWar {
                 }
                 _ => {}
             }
-            this.entries.update(|entries| {
-                // An outage keeps what was shown, marked as not current. A refusal, a name gone
-                // from the roster or a season that ended is an answer and replaces it.
-                if shown
-                    && matches!(load, Load::Failed(Failure::Unavailable))
-                    && let Some(previous) = entries.get_mut(&ask)
-                {
-                    previous.outdated = true;
-                    return;
-                }
-                entries.insert(
-                    ask,
-                    Fetched {
-                        load,
-                        at: now_ms(),
-                        outdated: false,
-                    },
-                );
-            });
+            this.entries
+                .update(|entries| store_answer(entries, ask, load, asked_at, shown));
         });
     }
 
@@ -1409,5 +1423,31 @@ mod tests {
             mod_session_text(&["1.10.13".into(), "1.10.14".into()]),
             "Sequoia mod 1.10.13, 1.10.14"
         );
+    }
+
+    #[test]
+    fn a_late_answer_keeps_its_age_from_when_it_was_asked() {
+        let answer = Answer::Roster(MemberRosterRoles {
+            stale: false,
+            roles: Default::default(),
+            progression: Default::default(),
+            mod_sessions: Some(std::collections::BTreeMap::from([(
+                "GaztheCat".to_string(),
+                vec!["1.10.14".to_string()],
+            )])),
+        });
+        let mut entries = HashMap::new();
+        let asked_at = 1_000.0;
+        store_answer(
+            &mut entries,
+            Ask::Roster,
+            Load::Ready(answer),
+            asked_at,
+            false,
+        );
+        // Delivered, or resumed, long after it was asked: the session it lists is that old.
+        let delivered = asked_at + MOD_SESSION_TRUSTED_MS + 1.0;
+        assert_eq!(mod_session_in(&entries, "GaztheCat", delivered), None);
+        assert!(mod_session_in(&entries, "GaztheCat", asked_at + 1.0).is_some());
     }
 }
