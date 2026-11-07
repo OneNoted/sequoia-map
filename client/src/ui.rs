@@ -37,7 +37,9 @@ pub(crate) fn clear_top(scroller: &web_sys::Element) -> f64 {
         .query_selector(".sb-head")
         .ok()
         .flatten()
-        .map_or(top, |head| head.get_bounding_client_rect().bottom().max(top))
+        .map_or(top, |head| {
+            head.get_bounding_client_rect().bottom().max(top)
+        })
 }
 
 /// A `<details>` toggle: one that opened brings what it reveals into view. Says whether it is
