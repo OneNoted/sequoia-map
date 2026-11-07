@@ -206,6 +206,25 @@ pub async fn cached_guild_seasons(state: &AppState) -> HashMap<String, GuildSeas
     }
 }
 
+/// Season definitions without waiting on Wynncraft: whatever is cached, with a refresh started
+/// behind it once that has expired. Only an empty cache waits for one.
+pub async fn guild_seasons_without_waiting(
+    state: &AppState,
+) -> HashMap<String, GuildSeasonDefinition> {
+    let Some(cached) = state.guild_seasons_cache.read().await.clone() else {
+        return cached_guild_seasons(state).await;
+    };
+    let expired =
+        fresh_guild_seasons(Some(&cached), Utc::now(), guild_seasons_cache_ttl_secs()).is_none();
+    if expired && state.guild_seasons_fetch_lock.try_lock().is_ok() {
+        let state = state.clone();
+        tokio::spawn(async move {
+            cached_guild_seasons(&state).await;
+        });
+    }
+    cached.seasons
+}
+
 pub async fn cached_latest_guild_season_leaderboard(
     state: &AppState,
 ) -> Result<Option<CachedSeasonLeaderboard>, String> {
