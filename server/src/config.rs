@@ -54,7 +54,8 @@ pub const SEASON_LEADERBOARD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const MAP_INTEL_CACHE_TTL_SECS: i64 = 60; // shortest public map endpoint cache
 pub const DEFAULT_GUILDS_ONLINE_CACHE_TTL_SECS: i64 = 120; // 2 minutes
 pub const DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS: i64 = 130; // season definitions are near-static
-pub const DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY: usize = 8;
+/// The map asks for its 20 largest guilds at once; one wave of requests answers them all.
+pub const DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY: usize = 20;
 pub const DEFAULT_SEASON_RATING_CONTENDER_COUNT: usize = 10;
 pub const MAX_GUILD_CACHE_ENTRIES: usize = 64;
 pub const SSE_KEEPALIVE_SECS: u64 = 15;

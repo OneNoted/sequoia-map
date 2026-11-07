@@ -600,55 +600,56 @@ pub async fn get_guilds_online(
             .record_guilds_online_cache_misses(cache_misses);
     }
 
-    if !to_fetch.is_empty() {
-        let max_concurrency = guilds_online_max_concurrency().clamp(1, MAX_GUILDS_ONLINE_BATCH);
+    let max_concurrency = guilds_online_max_concurrency().clamp(1, MAX_GUILDS_ONLINE_BATCH);
+    let fetch_missing = stream::iter(to_fetch.into_iter().map(|name| {
+        let state = state.clone();
+        async move {
+            let url = match guild_details_url(&name) {
+                Ok(url) => url,
+                Err(_) => return (name, None, true),
+            };
 
-        let fetched = stream::iter(to_fetch.into_iter().map(|name| {
-            let state = state.clone();
-            async move {
-                let url = match guild_details_url(&name) {
-                    Ok(url) => url,
-                    Err(_) => return (name, None, true),
-                };
+            let resp = match state.http_client.get(url).send().await {
+                Ok(resp) if resp.status().is_success() => resp,
+                _ => return (name, None, true),
+            };
 
-                let resp = match state.http_client.get(url).send().await {
-                    Ok(resp) if resp.status().is_success() => resp,
-                    _ => return (name, None, true),
-                };
+            let data = match resp.text().await {
+                Ok(data) => data,
+                Err(_) => return (name, None, true),
+            };
 
-                let data = match resp.text().await {
-                    Ok(data) => data,
-                    Err(_) => return (name, None, true),
-                };
-
-                let entry = parse_guild_online_entry(&data);
-                let entry_missing = entry.is_none();
-                cache_guild_payload(&state, name.clone(), data);
-                (name, entry, entry_missing)
-            }
-        }))
-        .buffer_unordered(max_concurrency)
-        .collect::<Vec<_>>()
-        .await;
-
-        let mut upstream_errors = 0_u64;
-        for (name, entry, errored) in fetched {
-            if let Some(entry) = entry {
-                result.insert(name, entry);
-            }
-            if errored {
-                upstream_errors += 1;
-            }
+            let entry = parse_guild_online_entry(&data);
+            let entry_missing = entry.is_none();
+            cache_guild_payload(&state, name.clone(), data);
+            (name, entry, entry_missing)
         }
+    }))
+    .buffer_unordered(max_concurrency)
+    .collect::<Vec<_>>();
+    // A leaderboard refresh is two more upstream requests; they need not wait for the guilds.
+    let (fetched, leaderboard) = tokio::join!(
+        fetch_missing,
+        wynncraft_api::cached_latest_guild_season_leaderboard(&state)
+    );
 
-        if upstream_errors > 0 {
-            state
-                .observability
-                .record_guilds_online_upstream_errors(upstream_errors);
+    let mut upstream_errors = 0_u64;
+    for (name, entry, errored) in fetched {
+        if let Some(entry) = entry {
+            result.insert(name, entry);
+        }
+        if errored {
+            upstream_errors += 1;
         }
     }
 
-    match wynncraft_api::cached_latest_guild_season_leaderboard(&state).await {
+    if upstream_errors > 0 {
+        state
+            .observability
+            .record_guilds_online_upstream_errors(upstream_errors);
+    }
+
+    match leaderboard {
         Ok(Some(leaderboard)) => apply_leaderboard_ratings(&mut result, &leaderboard),
         Ok(None) => {}
         Err(error) => {
@@ -696,7 +697,7 @@ fn parse_guilds_online_names(raw_names: &str) -> Vec<String> {
 fn parse_guild_online_entry(json_str: &str) -> Option<GuildOnlineEntry> {
     let val: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let online = val.get("online")?.as_u64()? as u32;
-    let season_rating = val
+    let latest_season = val
         .get("seasonRanks")
         .and_then(|v| v.as_object())
         .and_then(|ranks| {
@@ -705,17 +706,21 @@ fn parse_guild_online_entry(json_str: &str) -> Option<GuildOnlineEntry> {
                 .filter_map(|(k, v)| k.parse::<i32>().ok().map(|id| (id, v)))
                 .max_by_key(|(id, _)| *id)
         })
-        .and_then(|(_, v)| v.get("rating").and_then(|r| r.as_i64()));
+        .and_then(|(id, v)| v.get("rating").and_then(|r| r.as_i64()).map(|r| (id, r)));
     Some(GuildOnlineEntry {
         online,
-        season_rating,
+        season_rating: latest_season.map(|(_, rating)| rating),
         season_rank: None,
-        season_id: None,
-        season_rating_source: season_rating.map(|_| GuildSeasonRatingSource::Live),
+        season_id: latest_season.map(|(id, _)| id),
+        season_rating_source: latest_season.map(|_| GuildSeasonRatingSource::Live),
         season_rating_sampled_at: None,
     })
 }
 
+/// The season leaderboard over the guild endpoint's ratings. Wynncraft serves a guild's own
+/// rating at most two minutes old and the leaderboard at most ten, so a rating for the
+/// leaderboard's season, or a later one, stays. A rating from an earlier season is not this
+/// season's: the leaderboard's score replaces it, or nothing does.
 fn apply_leaderboard_ratings(
     result: &mut HashMap<String, GuildOnlineEntry>,
     leaderboard: &crate::state::CachedSeasonLeaderboard,
@@ -726,7 +731,19 @@ fn apply_leaderboard_ratings(
         .map(|entry| (entry.name.to_ascii_lowercase(), entry))
         .collect::<HashMap<_, _>>();
     for (guild_name, entry) in result.iter_mut() {
-        let Some(leaderboard_entry) = by_name.get(&guild_name.to_ascii_lowercase()) else {
+        let listed = by_name.get(&guild_name.to_ascii_lowercase());
+        match entry.season_id {
+            Some(season_id) if season_id > leaderboard.season_id => continue,
+            Some(season_id) if season_id == leaderboard.season_id => {
+                entry.season_rank = listed.map(|listed| listed.rank);
+                continue;
+            }
+            _ => {}
+        }
+        let Some(leaderboard_entry) = listed else {
+            entry.season_rating = None;
+            entry.season_id = None;
+            entry.season_rating_source = None;
             continue;
         };
         entry.season_rating = Some(leaderboard_entry.score);
@@ -861,11 +878,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        GuildOnlineEntry, GuildSeasonRatingSource, StatusCode, apply_snapshot_fallback,
-        guild_details_url, if_none_match_matches, normalize_guild_name, parse_guild_online_entry,
-        parse_guilds_online_names,
+        GuildOnlineEntry, GuildSeasonRatingSource, StatusCode, apply_leaderboard_ratings,
+        apply_snapshot_fallback, guild_details_url, if_none_match_matches, normalize_guild_name,
+        parse_guild_online_entry, parse_guilds_online_names,
     };
-    use crate::state::AppState;
+    use crate::state::{AppState, CachedSeasonLeaderboard, CachedSeasonLeaderboardEntry};
     use sequoia_shared::{SeasonScalarCurrent, SeasonScalarSample};
     use sqlx::postgres::PgPoolOptions;
 
@@ -925,11 +942,95 @@ mod tests {
         let entry = parse_guild_online_entry(payload).expect("guild payload should parse");
         assert_eq!(entry.online, 14);
         assert_eq!(entry.season_rating, Some(12000));
+        assert_eq!(entry.season_id, Some(31));
         assert_eq!(
             entry.season_rating_source,
             Some(GuildSeasonRatingSource::Live)
         );
         assert!(entry.season_rating_sampled_at.is_none());
+    }
+
+    #[test]
+    fn leaderboard_replaces_only_ratings_from_an_earlier_season() {
+        let live = |rating: i64, season_id: i32| {
+            let payload = format!(
+                r#"{{"online": 3, "seasonRanks": {{"{season_id}": {{"rating": {rating}}}}}}}"#
+            );
+            parse_guild_online_entry(&payload).expect("guild payload should parse")
+        };
+        let mut result = HashMap::from([
+            ("Sequoia".to_string(), live(4_205_390, 33)),
+            ("Eden".to_string(), live(21_000_000, 32)),
+            ("Shades".to_string(), live(90_000, 32)),
+            ("Cirrus".to_string(), live(1_200, 34)),
+            (
+                "Northbound".to_string(),
+                parse_guild_online_entry(r#"{"online": 0}"#).expect("guild payload should parse"),
+            ),
+        ]);
+        let fetched_at = Utc::now();
+        let listed = |rank: u32, name: &str, score: i64| CachedSeasonLeaderboardEntry {
+            rank,
+            name: name.to_string(),
+            uuid: String::new(),
+            prefix: String::new(),
+            score,
+        };
+        let leaderboard = CachedSeasonLeaderboard {
+            season_id: 33,
+            entries: vec![
+                listed(1, "Eden", 5_100_000),
+                listed(2, "sequoia", 4_204_627),
+                listed(9, "Cirrus", 700_000),
+                listed(12, "Northbound", 300_000),
+            ],
+            fetched_at,
+        };
+
+        apply_leaderboard_ratings(&mut result, &leaderboard);
+
+        let sequoia = &result["Sequoia"];
+        assert_eq!(sequoia.season_rating, Some(4_205_390));
+        assert_eq!(sequoia.season_rank, Some(2));
+        assert_eq!(sequoia.season_id, Some(33));
+        assert_eq!(
+            sequoia.season_rating_source,
+            Some(GuildSeasonRatingSource::Live)
+        );
+
+        let eden = &result["Eden"];
+        assert_eq!(eden.season_rating, Some(5_100_000));
+        assert_eq!(eden.season_rank, Some(1));
+        assert_eq!(eden.season_id, Some(33));
+        assert_eq!(
+            eden.season_rating_source,
+            Some(GuildSeasonRatingSource::Leaderboard)
+        );
+        assert_eq!(eden.season_rating_sampled_at, Some(fetched_at.to_rfc3339()));
+
+        let shades = &result["Shades"];
+        assert_eq!(
+            shades.season_rating, None,
+            "last season's rating is not this season's"
+        );
+        assert_eq!(shades.season_id, None);
+        assert_eq!(shades.season_rating_source, None);
+
+        let cirrus = &result["Cirrus"];
+        assert_eq!(
+            cirrus.season_rating,
+            Some(1_200),
+            "a newer season than the leaderboard's"
+        );
+        assert_eq!(cirrus.season_rank, None);
+        assert_eq!(cirrus.season_id, Some(34));
+
+        let northbound = &result["Northbound"];
+        assert_eq!(northbound.season_rating, Some(300_000));
+        assert_eq!(
+            northbound.season_rating_source,
+            Some(GuildSeasonRatingSource::Leaderboard)
+        );
     }
 
     #[test]
