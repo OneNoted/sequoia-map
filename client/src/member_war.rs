@@ -90,6 +90,9 @@ impl<T> Load<T> {
 
 /// How long current standing (ranks, roles) is shown before the next look asks again.
 const CURRENT_REFRESH_MS: f64 = 60_000.0;
+/// The oldest roster read whose open mod sessions are still shown: a session is a fact about
+/// the moment it was read, so an old read says nothing about now.
+const MOD_SESSION_TRUSTED_MS: f64 = 3.0 * CURRENT_REFRESH_MS;
 /// The same for a record over a period.
 const RECORD_REFRESH_MS: f64 = 5.0 * 60_000.0;
 
@@ -214,6 +217,29 @@ fn progression_in(entries: &HashMap<Ask, Fetched>, username: &str) -> Option<Pro
         (Some((_, own)), None) => own,
         (None, None) => None,
     }
+}
+
+/// The versions a member's open Sequoia mod sessions reported (empty when none could tell), if
+/// the latest roster read lists one and is current at `now`: refreshed without fault and recent.
+/// `None` is no evidence either way.
+fn mod_session_in(
+    entries: &HashMap<Ask, Fetched>,
+    username: &str,
+    now: f64,
+) -> Option<Vec<String>> {
+    let fetched = entries.get(&Ask::Roster)?;
+    let Load::Ready(Answer::Roster(roster)) = &fetched.load else {
+        return None;
+    };
+    if fetched.outdated || now - fetched.at > MOD_SESSION_TRUSTED_MS {
+        return None;
+    }
+    roster
+        .mod_sessions
+        .as_ref()?
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(username))
+        .map(|(_, versions)| versions.clone())
 }
 
 #[derive(Clone, Copy)]
@@ -501,6 +527,12 @@ impl MemberWar {
         Some(label)
     }
 
+    /// The member's open Sequoia mod session, from [`mod_session_in`] over the roster read.
+    pub fn mod_session(&self, username: &str) -> Option<Vec<String>> {
+        self.entries
+            .with(|entries| mod_session_in(entries, username, now_ms()))
+    }
+
     /// The highest insignia on the roster feed, for a compact row.
     pub fn roster_insignia(&self, username: &str) -> Option<WarRole> {
         let Some(Load::Ready(Answer::Roster(roster))) = self.load(&Ask::Roster) else {
@@ -542,6 +574,13 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
         Memo::new(move |_| war.progression(&username))
     };
     let minute = minute_clock();
+    let mod_session = {
+        let username = username.clone();
+        Memo::new(move |_| {
+            let _minute = minute.get();
+            war.mod_session(&username)
+        })
+    };
     Effect::new(move || {
         let _minute = minute.get();
         war.ensure_roster();
@@ -582,9 +621,15 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
     let (accessible, tooltip) = {
         let (username, rank_label) = (username.clone(), rank_label.clone());
         let in_game = format!("In-game rank: {rank_label}");
-        let accessible = Memo::new(move |_| match progression.get() {
-            Some(rank) => format!("{username}, {}, in-game {rank_label}", rank.label),
-            None => format!("{username}, {rank_label}"),
+        let accessible = Memo::new(move |_| {
+            let who = match progression.get() {
+                Some(rank) => format!("{username}, {}, in-game {rank_label}", rank.label),
+                None => format!("{username}, {rank_label}"),
+            };
+            match mod_session.get() {
+                Some(versions) => format!("{who}, {}", mod_session_text(&versions)),
+                None => who,
+            }
         });
         let tooltip =
             Memo::new(move |_| progression.with(Option::is_some).then(|| in_game.clone()));
@@ -606,6 +651,7 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
                 >
                     <img class="mrow-face" src=face alt="" width="16" height="16" loading="lazy" />
                     <span class="mrow-name">{name}</span>
+                    {move || mod_session.get().map(|versions| view! { <ModMark versions /> })}
                     {move || insignia.get().map(|role| view! { <RoleArt role /> })}
                     {move || match progression.get() {
                         Some(rank) => view! { <RankTitle rank class="mrow-rank" /> }.into_any(),
@@ -618,7 +664,7 @@ pub(crate) fn MemberRow(username: String, rank_label: String, server: String) ->
             </div>
             <Show when=move || open.get()>
                 <div class="mrow-detail" id=detail_id.clone() >
-                    <MemberDetail username=username.clone() />
+                    <MemberDetail username=username.clone() mod_session />
                 </div>
             </Show>
         </li>
@@ -778,9 +824,32 @@ fn minute_clock() -> Memo<i64> {
     Memo::new(move |_| tick.get() / 60)
 }
 
-/// The expanded row: roles, the period, the record and the playercard.
+/// "Sequoia mod 1.10.14", or without a version when the sessions could not tell.
+fn mod_session_text(versions: &[String]) -> String {
+    if versions.is_empty() {
+        "Sequoia mod connected".to_string()
+    } else {
+        format!("Sequoia mod {}", versions.join(", "))
+    }
+}
+
+/// A small leaf beside a member who has the Sequoia mod connected now. Members without one show
+/// nothing: no session is not proof they do not use it.
 #[component]
-fn MemberDetail(username: String) -> impl IntoView {
+fn ModMark(versions: Vec<String>) -> impl IntoView {
+    view! {
+        <span class="mrow-mod" title=mod_session_text(&versions) aria-hidden="true">
+            <svg viewBox="0 0 12 12" width="10" height="10">
+                <path d="M1.5 10.5C1.5 5 5 1.5 10.5 1.5C10.5 7 7 10.5 1.5 10.5Z" fill="currentColor" />
+                <path d="M1.5 10.5 7 5" fill="none" stroke="var(--color-abyss)" stroke-width="1.1" stroke-linecap="round" />
+            </svg>
+        </span>
+    }
+}
+
+/// The expanded row: roles, the period, the record, the playercard and the mod in use.
+#[component]
+fn MemberDetail(username: String, mod_session: Memo<Option<Vec<String>>>) -> impl IntoView {
     let war = expect_context::<MemberWar>();
     {
         let username = username.clone();
@@ -797,7 +866,12 @@ fn MemberDetail(username: String) -> impl IntoView {
         <WarRoles username=username.clone() />
         <PeriodPicker />
         <RecordView username=username.clone() />
-        <PlayercardLink username class="mwar-profile" />
+        <div class="mwar-foot">
+            <PlayercardLink username class="mwar-profile" />
+            {move || mod_session.get().map(|versions| view! {
+                <span class="mwar-mod">{mod_session_text(&versions)}</span>
+            })}
+        </div>
     }
 }
 
@@ -1211,6 +1285,7 @@ mod tests {
                 .map(|title| ("GaztheCat".to_string(), rank(title)))
                 .into_iter()
                 .collect(),
+            mod_sessions: None,
         });
         (Ask::Roster, read(answer, at))
     }
@@ -1290,5 +1365,49 @@ mod tests {
             "period=custom&from=2026-10-01&to=2026-10-14"
         );
         assert_eq!(Period::Season.query(), "period=season");
+    }
+
+    #[test]
+    fn a_mod_session_shows_only_from_a_current_roster_read() {
+        let sessions = std::collections::BTreeMap::from([(
+            "GaztheCat".to_string(),
+            vec!["1.10.14".to_string()],
+        )]);
+        let read_at = |at: f64, outdated: bool, sessions| {
+            let answer = Answer::Roster(MemberRosterRoles {
+                stale: false,
+                roles: Default::default(),
+                progression: Default::default(),
+                mod_sessions: sessions,
+            });
+            HashMap::from([(
+                Ask::Roster,
+                Fetched {
+                    outdated,
+                    ..read(answer, at)
+                },
+            )])
+        };
+        let fresh = read_at(1_000.0, false, Some(sessions.clone()));
+        assert_eq!(
+            mod_session_in(&fresh, "gazthecat", 2_000.0),
+            Some(vec!["1.10.14".to_string()])
+        );
+        assert_eq!(mod_session_in(&fresh, "Someone", 2_000.0), None);
+        let old = 1_000.0 + MOD_SESSION_TRUSTED_MS + 1.0;
+        assert_eq!(mod_session_in(&fresh, "GaztheCat", old), None);
+        let outdated = read_at(1_000.0, true, Some(sessions));
+        assert_eq!(mod_session_in(&outdated, "GaztheCat", 2_000.0), None);
+        let unasked = read_at(1_000.0, false, None);
+        assert_eq!(mod_session_in(&unasked, "GaztheCat", 2_000.0), None);
+    }
+
+    #[test]
+    fn a_mod_session_names_its_versions_when_known() {
+        assert_eq!(mod_session_text(&[]), "Sequoia mod connected");
+        assert_eq!(
+            mod_session_text(&["1.10.13".into(), "1.10.14".into()]),
+            "Sequoia mod 1.10.13, 1.10.14"
+        );
     }
 }

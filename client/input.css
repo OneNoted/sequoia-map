@@ -4031,6 +4031,12 @@ a.tcard-guild:focus-visible {
   height: 14px;
   image-rendering: pixelated;
 }
+/* The Sequoia mod connected now: a quiet leaf that never crowds the name. */
+.mrow-mod {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: rgba(80, 200, 120, 0.85);
+}
 /* A long title gives way first by wrapping between its words, so the IGN keeps its room. */
 .mrow-rank {
   flex: 0 3 auto;
@@ -4253,6 +4259,16 @@ a.tcard-guild:focus-visible {
 .mwar-value[data-state="unavailable"],
 .mwar-value[data-state="off-season"] { color: var(--color-text-secondary); }
 .mwar-profile { justify-self: start; }
+.mwar-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.mwar-mod {
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
 .mwar-glance {
   font-size: 0.76rem;
   color: var(--color-text-primary);
