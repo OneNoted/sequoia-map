@@ -4182,7 +4182,6 @@ a.tcard-guild:focus-visible {
   border-radius: 3px;
   background: var(--color-deep);
   color: var(--color-text-primary);
-  font-family: var(--font-mono);
   font-size: 0.74rem;
   color-scheme: dark;
 }
@@ -4215,9 +4214,10 @@ a.tcard-guild:focus-visible {
   font-size: 0.8rem;
   color: var(--color-text-secondary);
 }
+/* The pixel face reads smaller than the mono one it replaced; a full size keeps each figure
+   above its label. */
 .mwar-stats dd {
-  font-family: var(--font-mono);
-  font-size: 0.92rem;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-primary);
 }
@@ -4252,10 +4252,7 @@ a.tcard-guild:focus-visible {
   white-space: nowrap;
 }
 .mwar-guild { color: var(--color-text-secondary); }
-.mwar-value {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
+.mwar-value { font-variant-numeric: tabular-nums; }
 .mwar-value[data-state="unavailable"],
 .mwar-value[data-state="off-season"] { color: var(--color-text-secondary); }
 .mwar-profile { justify-self: start; }
@@ -4296,7 +4293,8 @@ a.tcard-guild:focus-visible {
 .mwar-custom input[aria-invalid="true"] { border-color: rgba(255, 138, 138, 0.7); }
 
 /* The Minecraft face, as on seqwawa.com: names, ranks, headings, short labels and the compact
-   map controls. Prose, places and numbers keep Inter and JetBrains Mono for reading. */
+   map controls. Prose, places and numbers keep Inter and JetBrains Mono for reading, except in
+   a member's expanded detail, which is in the Minecraft face throughout. */
 .war-member-name,
 .mrow-name,
 .mrow-rank,
@@ -4317,7 +4315,8 @@ a.tcard-guild:focus-visible {
 .sb-online,
 .mwar-periods,
 .mc-action,
-.sb-mode {
+.sb-mode,
+.mrow-detail {
   font-family: var(--font-display);
   font-weight: 400;
 }
