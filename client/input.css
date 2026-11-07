@@ -1602,7 +1602,8 @@
 .sb-live[data-working="true"] .sb-live-state { color: var(--accent-live); }
 
 /* Every view's first row: Back, the view's actions or title, Close. It stays in place while
-   the view scrolls, so leaving is always one press away. */
+   the view scrolls, so leaving is always one press away. Back's chevron starts on the gutter,
+   in line with the view's content. */
 .sb-nav {
   position: sticky;
   top: 0;
@@ -1613,6 +1614,7 @@
   padding: 8px calc(var(--sb-gutter) - var(--sb-bar-inset)) 6px;
   background: var(--color-deep);
 }
+.sb-bar .sb-nav-back { padding-left: var(--sb-bar-inset); }
 .sb-nav-middle {
   flex: 1;
   min-width: 0;
@@ -2229,14 +2231,16 @@
 .settings-panel > :not(.sb-nav) {
   margin-inline: calc(var(--sb-gutter) - 10px);
 }
+/* The menu's heading, after a rule that sets it apart from Back. */
 .settings-title {
-  margin-right: auto;
+  margin: 0 auto 0 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--color-border-subtle);
   font-family: var(--font-display);
-  font-size: 0.986rem;
+  font-size: 1rem;
   font-weight: 400;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--color-text-secondary);
+  line-height: 18px;
+  color: var(--color-text-primary);
 }
 .settings-section-title,
 .settings-subhead {
@@ -4289,6 +4293,7 @@ a.tcard-guild:focus-visible {
    an online member's row and its expanded detail, which are in the Minecraft face throughout. */
 .war-member-name,
 .guild-name,
+.sb-nav-back,
 .mrow-name,
 .mrow-rank,
 .mrow-place,
