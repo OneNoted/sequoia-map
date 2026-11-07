@@ -23,7 +23,7 @@ use sequoia_shared::war_board::RosterMember;
 use crate::auth::nmsr_face;
 use crate::format::since;
 use crate::navbar::CurrentViewer;
-use crate::war_room::{ClassIcon, MapFocus, WarRoom};
+use crate::war_room::{ClassIcon, MapFocus, MemberSpot, WarRoom};
 
 /// The window a record is asked for. Custom days are `YYYY-MM-DD`, both inclusive.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -705,11 +705,7 @@ fn MemberPlace(
         Some(member) => {
             let warring = member.is_warring();
             let place = crate::war_room::whereabouts(&member);
-            let target = member
-                .territory()
-                .map(|territory| LookAt::Territory(territory.to_string()))
-                .or_else(|| member.position().map(LookAt::Position));
-            match target {
+            match focus_map.spot(&member) {
                 Some(target) => {
                     let title = format!("Show {place} on the map");
                     view! {
@@ -720,8 +716,8 @@ fn MemberPlace(
                             title=title.clone()
                             aria-label=title
                             on:click=move |_| match &target {
-                                LookAt::Territory(name) => focus_map.look_at_territory(name),
-                                LookAt::Position(position) => focus_map.position(*position),
+                                MemberSpot::Territory(name) => focus_map.look_at_territory(name),
+                                MemberSpot::Position(position) => focus_map.position(*position),
                             }
                         >
                             {place}
@@ -734,11 +730,6 @@ fn MemberPlace(
         }
         None => view! { <span class="mrow-place">{server.clone()}</span> }.into_any(),
     }
-}
-
-enum LookAt {
-    Territory(String),
-    Position((f64, f64)),
 }
 
 /// A progression rank's label in a lifted shade of its Discord colour, so dark roles stay
