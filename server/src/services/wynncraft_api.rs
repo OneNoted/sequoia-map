@@ -9,7 +9,7 @@ use sequoia_shared::{
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::config::{
     MAP_INTEL_CACHE_TTL_SECS, SEASON_LEADERBOARD_CACHE_TTL_SECS, WYNNCRAFT_GUILD_SEASONS_URL,
@@ -252,14 +252,56 @@ pub async fn cached_latest_guild_season_leaderboard(
             return Ok(Some(cached));
         }
     }
+    refresh_season_leaderboard(state).await
+}
 
-    let Some(season_id) = latest_guild_season_leaderboard_id(&state.http_client).await? else {
-        return Ok(None);
+/// Fetches the latest season leaderboard into the cache. The caller holds
+/// `season_leaderboard_fetch_lock`. A failed or empty fetch empties the cache, so an expired
+/// leaderboard outlives no refresh attempt.
+async fn refresh_season_leaderboard(
+    state: &AppState,
+) -> Result<Option<CachedSeasonLeaderboard>, String> {
+    let leaderboard = match latest_guild_season_leaderboard_id(&state.http_client).await {
+        Ok(Some(season_id)) => fetch_guild_season_leaderboard(&state.http_client, season_id, 1000)
+            .await
+            .map(Some),
+        other => other.map(|_| None),
     };
-    let leaderboard = fetch_guild_season_leaderboard(&state.http_client, season_id, 1000).await?;
-    let mut cached = state.season_leaderboard_cache.write().await;
-    *cached = Some(leaderboard.clone());
-    Ok(Some(leaderboard))
+    if let Ok(Some(leaderboard)) = &leaderboard {
+        debug!(
+            season_id = leaderboard.season_id,
+            entries = leaderboard.entries.len(),
+            "season leaderboard refreshed"
+        );
+    }
+    *state.season_leaderboard_cache.write().await = leaderboard.clone().ok().flatten();
+    leaderboard
+}
+
+/// The season leaderboard without waiting on Wynncraft: an expired copy, with its own
+/// observation time, is used while one refresh runs behind it. Only an empty cache waits.
+pub async fn season_leaderboard_without_waiting(
+    state: &AppState,
+) -> Result<Option<CachedSeasonLeaderboard>, String> {
+    let Some(cached) = state.season_leaderboard_cache.read().await.clone() else {
+        return cached_latest_guild_season_leaderboard(state).await;
+    };
+    let expired = fresh_season_leaderboard(Some(&cached), Utc::now()).is_none();
+    if expired
+        && let Ok(refresh_guard) = state.season_leaderboard_fetch_lock.clone().try_lock_owned()
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let cached = state.season_leaderboard_cache.read().await.clone();
+            if fresh_season_leaderboard(cached.as_ref(), Utc::now()).is_none()
+                && let Err(error) = refresh_season_leaderboard(&state).await
+            {
+                warn!(error = %error, "background season leaderboard refresh failed");
+            }
+            drop(refresh_guard);
+        });
+    }
+    Ok(Some(cached))
 }
 
 pub async fn cached_map_intel_summary(state: &AppState) -> Result<MapIntelSummary, String> {
@@ -1018,5 +1060,31 @@ mod tests {
         let before_ttl = "2026-03-01T00:02:09Z".parse::<DateTime<Utc>>().unwrap();
         assert!(fresh_guild_seasons(Some(&cached), at_ttl, 130).is_none());
         assert!(fresh_guild_seasons(Some(&cached), before_ttl, 130).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_expired_leaderboard_is_used_while_its_refresh_runs() {
+        let state = AppState::new(None);
+        let fetched_at =
+            Utc::now() - chrono::Duration::seconds(SEASON_LEADERBOARD_CACHE_TTL_SECS + 5);
+        let observed_at = fetched_at - chrono::Duration::seconds(310);
+        *state.season_leaderboard_cache.write().await = Some(CachedSeasonLeaderboard {
+            season_id: 33,
+            entries: Vec::new(),
+            fetched_at,
+            observed_at,
+        });
+        let _refresh = state.season_leaderboard_fetch_lock.lock().await;
+
+        let leaderboard = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            season_leaderboard_without_waiting(&state),
+        )
+        .await
+        .expect("an expired leaderboard does not wait for the refresh in flight")
+        .unwrap()
+        .unwrap();
+        assert_eq!(leaderboard.season_id, 33);
+        assert_eq!(leaderboard.observed_at, observed_at);
     }
 }

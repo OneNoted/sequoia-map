@@ -642,7 +642,7 @@ pub async fn get_guilds_online(
     // Leaderboard and season refreshes are more upstream requests; they need not wait for the guilds.
     let (fetched, leaderboard, seasons) = tokio::join!(
         fetch_missing,
-        wynncraft_api::cached_latest_guild_season_leaderboard(&state),
+        wynncraft_api::season_leaderboard_without_waiting(&state),
         wynncraft_api::guild_seasons_without_waiting(&state)
     );
 
