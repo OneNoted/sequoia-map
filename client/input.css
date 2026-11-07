@@ -53,10 +53,11 @@
     --sb-gutter: 20px;
     --sb-control: 30px;
     --sb-radius: 4px;
-    /* The navigation row and the bar under each view use one smaller, quiet control, set
-       just outside the gutter so its labels and icons meet it. */
+    /* Each view's head and the bar under it use one smaller, quiet control, set just outside
+       the gutter so its labels and icons meet it. The head pads it by --sb-head-pad. */
     --sb-bar-control: 26px;
     --sb-bar-inset: 6px;
+    --sb-head-pad: 6px;
     /* The owning guild's colour, set by a sidebar view or a map card. It is defined here,
        not on the card, so a view's colour reaches the cards inside it. A guild with no
        territories keeps this neutral edge. */
@@ -1378,11 +1379,11 @@
   animation: peek-card-enter 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* Sidebar (client/src/sidebar.rs, client/src/ui.rs). Every view uses the same gutter,
-   navigation row and controls; components only add what is particular to them. Any touch
+/* Sidebar (client/src/sidebar.rs, client/src/ui.rs). Every view uses the same gutter, head
+   and controls; components only add what is particular to them. Any touch
    input gets the touch size, including a touch laptop whose primary pointer is a mouse. */
 @media (any-pointer: coarse), (max-width: 767px) {
-  :root { --sb-control: 44px; --sb-bar-control: 44px; --sb-bar-inset: 10px; }
+  :root { --sb-control: 44px; --sb-bar-control: 44px; --sb-bar-inset: 10px; --sb-head-pad: 2px; }
 }
 @media (max-width: 767px) {
   :root { --sb-gutter: 14px; }
@@ -1462,15 +1463,15 @@
   box-shadow: -4px 0 20px rgba(0,0,0,0.4), inset 1px 0 0 rgba(168,85,247,0.04);
 }
 
-/* Keyboard scrolling and revealed content stop short of the sticky navigation row. The
-   scrollbar's room is kept in every view, so a short view's header ends where a long one's does. */
+/* Keyboard scrolling and revealed content stop short of the sticky head. The scrollbar's room
+   is kept in every view, so a short view's head ends where a long one's does. */
 .sb-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
-  scroll-padding-top: calc(var(--sb-control) + 18px);
+  scroll-padding-top: calc(var(--sb-bar-control) + 2 * var(--sb-head-pad));
 }
 
 .sb-search {
@@ -1604,28 +1605,56 @@
 .sb-live[data-working="true"] .sb-live-tip { border-color: rgba(var(--accent-live-rgb),0.42); }
 .sb-live[data-working="true"] .sb-live-state { color: var(--accent-live); }
 
-/* Every view's first row: Back, then the view's actions or status and Close at the end. It
-   stays in place while the view scrolls, so leaving is always one press away, and keeps one
-   height whatever it holds. Back's chevron starts on the gutter, in line with the content. */
-.sb-nav {
+/* Every view's head is one row: Back, the title, the view's actions or status, Close. It stays
+   in place while the view scrolls, so leaving is always one press away, and is one control
+   tall even where it holds none, so typing a search leaves the title where it was. The
+   content's gutter holds Back's chevron, or the title where there is no Back. */
+.sb-head {
+  --guild-mark-size: 16px;
   position: sticky;
   top: 0;
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 2px;
-  min-height: calc(var(--sb-bar-control) + 14px);
-  padding: 8px calc(var(--sb-gutter) - var(--sb-bar-inset)) 6px;
+  gap: 6px;
+  min-height: calc(var(--sb-bar-control) + 2 * var(--sb-head-pad));
+  padding: var(--sb-head-pad) calc(var(--sb-gutter) - var(--sb-bar-inset));
   background: var(--color-deep);
 }
 .sb-bar .sb-nav-back { padding-left: var(--sb-bar-inset); }
-.sb-nav-middle {
-  flex: 1;
+.sb-head-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+}
+.sb-head-title:first-child { padding-left: var(--sb-bar-inset); }
+.sb-head-title > .tcard-head { flex: 1; }
+/* The actions give up room before the title does; of them, only a settings notice can. */
+.sb-head-actions {
+  flex: 0 1000 auto;
   min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 2px;
+}
+/* A long name takes a second line rather than losing its end; with touch controls, two lines
+   are as tall as the row already is. */
+.sb-view-title,
+.sb-head .tcard-name {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .sb-panel { border-bottom: 1px solid var(--color-border-subtle); }
@@ -1633,34 +1662,10 @@
 /* The leaderboard and search results. */
 .sb-list-section { border-bottom: 1px solid var(--color-border-subtle); }
 .sb-list-count {
+  padding-right: var(--sb-bar-inset);
   font-family: var(--font-mono);
   font-size: 0.754rem;
   color: var(--color-text-secondary);
-}
-.sb-sorts {
-  display: flex;
-  gap: 4px;
-}
-.sb-sort {
-  min-width: var(--sb-bar-control);
-  min-height: var(--sb-bar-control);
-  padding: 0 8px;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  font-size: 0.8rem;
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-}
-.sb-sort:hover { color: var(--color-text-primary); }
-.sb-sort[aria-pressed="true"] {
-  background: rgba(245,197,66,0.1);
-  color: var(--color-gold);
-}
-.sb-sort[data-sort="sr"][aria-pressed="true"] {
-  background: rgba(var(--accent-live-rgb),0.1);
-  color: var(--accent-live);
 }
 .sb-list {
   list-style: none;
@@ -1877,12 +1882,14 @@
 .sb-bar .sb-mode:hover { color: var(--color-gold-light); }
 .sb-bar .sb-mode[aria-pressed="true"] { color: var(--color-gold); }
 .sb-bar .sb-mode[data-mode="heat"][aria-pressed="true"] { color: #f58c32; }
+.sb-bar .sb-mode[data-sort="sr"][aria-pressed="true"] { color: var(--accent-live); }
+/* Just under the word, however tall the touch target around it. */
 .sb-bar .sb-mode[aria-pressed="true"]::after {
   content: "";
   position: absolute;
   left: 8px;
   right: 8px;
-  bottom: 1px;
+  bottom: calc(50% - 0.75em - 3px);
   height: 2px;
   border-radius: 1px;
   background: currentColor;
@@ -2212,7 +2219,7 @@
   border-bottom: 1px solid var(--color-border-subtle);
 }
 /* Rows pad themselves by 10px, so their text meets the gutter. */
-.settings-panel > :not(.sb-nav, .sb-view-head) {
+.settings-panel > :not(.sb-head) {
   margin-inline: calc(var(--sb-gutter) - 10px);
 }
 .settings-section-title,
@@ -3543,22 +3550,6 @@ a.tcard-guild:focus-visible {
 
 .tcard-sidebar-tail { padding-top: 0; }
 
-/* Every sidebar view's title sits the same distance under its navigation row, in one size and
-   line: a guild's or territory's card head, or the other views' title row. */
-.sb-view-head {
-  display: flex;
-  align-items: center;
-  padding: 2px var(--sb-gutter) 8px;
-}
-.sb-view-title,
-.tcard-sidebar .tcard-name {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: 1.2rem;
-  font-weight: 400;
-  line-height: 1.3;
-  color: var(--color-text-primary);
-}
 .tcard-sidebar .tcard-owner { font-size: 0.95rem; }
 .tcard-sidebar .tcard-stats dd { font-size: 0.92rem; }
 .tcard-sidebar .tcard-resources { font-size: 0.88rem; }
@@ -4282,7 +4273,6 @@ a.tcard-guild:focus-visible {
 .war-member-name,
 .guild-name,
 .sb-nav-back,
-.sb-sort,
 .mrow-name,
 .mrow-rank,
 .mrow-place,

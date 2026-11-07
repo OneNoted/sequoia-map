@@ -1,9 +1,9 @@
-//! Controls every sidebar view shares: its navigation row and title, disclosures, and bringing
-//! newly opened content into view inside the sidebar.
+//! Controls every sidebar view shares: its head, disclosures, and bringing newly opened
+//! content into view inside the sidebar.
 
 use leptos::prelude::*;
 
-/// The sidebar's scrolling body. Its `scroll-padding-top` leaves room for the sticky nav row.
+/// The sidebar's scrolling body. Its `scroll-padding-top` leaves room for the sticky head.
 pub(crate) const SCROLLER: &str = "[data-sidebar-scroll]";
 
 /// Scrolls the sidebar just enough to show the bottom of `element`, never so far that its top
@@ -15,7 +15,7 @@ pub(crate) fn reveal(element: &web_sys::Element) {
     };
     let view = scroller.get_bounding_client_rect();
     let target = element.get_bounding_client_rect();
-    let top = view.top() + scroll_padding_top(&scroller);
+    let top = clear_top(&scroller);
     let hidden_below = target.bottom() - view.bottom();
     if hidden_below <= 0.0 || target.top() < top || target.top() > view.bottom() {
         return;
@@ -29,12 +29,15 @@ pub(crate) fn reveal_soon(element: web_sys::Element) {
     request_animation_frame(move || reveal(&element));
 }
 
-pub(crate) fn scroll_padding_top(element: &web_sys::Element) -> f64 {
-    web_sys::window()
-        .and_then(|window| window.get_computed_style(element).ok().flatten())
-        .and_then(|style| style.get_property_value("scroll-padding-top").ok())
-        .and_then(|value| value.trim_end_matches("px").parse().ok())
-        .unwrap_or(0.0)
+/// Where the scroller's content comes out from under the open view's sticky head, which a long
+/// title can make taller.
+pub(crate) fn clear_top(scroller: &web_sys::Element) -> f64 {
+    let top = scroller.get_bounding_client_rect().top();
+    scroller
+        .query_selector(".sb-head")
+        .ok()
+        .flatten()
+        .map_or(top, |head| head.get_bounding_client_rect().bottom().max(top))
 }
 
 /// A `<details>` toggle: one that opened brings what it reveals into view. Says whether it is
@@ -88,19 +91,22 @@ pub(crate) fn MapPinIcon() -> impl IntoView {
     }
 }
 
-/// The row at the top of every sidebar view: Back on the left, the view's own actions or status
-/// and Close on the right. It stays in place while the view scrolls, and is as tall whatever it
-/// holds, so the title under it never moves between views.
+/// The head of every sidebar view, one row that stays in place while the view scrolls: Back,
+/// the view's title, its own actions or status, and Close. Each view fills only what it has, so
+/// the row is only as tall as its title and controls.
 #[component]
-pub(crate) fn PanelNav(
+pub(crate) fn ViewHead(
     /// What Back does, and what it says it goes back to.
     #[prop(optional)]
     back: Option<(&'static str, Callback<()>)>,
+    /// The view's heading: an `h2`, after its owner's swatch for a guild or territory.
+    #[prop(into)]
+    title: ViewFn,
     #[prop(optional)] close: Option<(&'static str, Callback<()>)>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     view! {
-        <div class="sb-nav sb-bar">
+        <div class="sb-head sb-bar">
             {back.map(|(title, back)| view! {
                 <button type="button" class="ui-button sb-nav-back" title=title aria-label=title on:click=move |_| back.run(())>
                     // The face's own chevron, so it sits on the same pixels as the word.
@@ -108,26 +114,13 @@ pub(crate) fn PanelNav(
                     <span>"Back"</span>
                 </button>
             })}
-            <div class="sb-nav-middle">{children.map(|children| children())}</div>
+            <div class="sb-head-title">{move || title.run()}</div>
+            {children.map(|children| view! { <div class="sb-head-actions">{children()}</div> })}
             {close.map(|(title, close)| view! {
                 <button type="button" class="ui-button ui-icon-button" title=title aria-label=title on:click=move |_| close.run(())>
                     <CloseIcon />
                 </button>
             })}
-        </div>
-    }
-}
-
-/// A view's title, under its navigation row: in the same place and type in every view. A
-/// guild's and a territory's are their card heads, which share its place and type.
-#[component]
-pub(crate) fn ViewTitle(
-    #[prop(optional)] id: Option<&'static str>,
-    children: Children,
-) -> impl IntoView {
-    view! {
-        <div class="sb-view-head">
-            <h2 class="sb-view-title" id=id>{children()}</h2>
         </div>
     }
 }
