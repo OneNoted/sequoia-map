@@ -9,6 +9,7 @@ mod member_war;
 mod navbar;
 mod playback;
 mod players;
+mod poll;
 mod precision_scrub;
 mod season_scalar;
 mod settings;

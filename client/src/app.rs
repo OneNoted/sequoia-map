@@ -174,7 +174,6 @@ const FIRST_PROBE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(
 /// How often an open map re-checks the session behind the war feed.
 const VIEWER_PROBE_REFRESH: std::time::Duration = std::time::Duration::from_secs(300);
 const GUILD_ONLINE_POLL_INTERVAL_SECS: u64 = 120;
-const GUILD_ONLINE_BOOTSTRAP_RETRY_SECS: u64 = 3;
 const GUILD_ONLINE_ERROR_RETRY_SECS: u64 = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,6 +298,7 @@ use crate::history;
 use crate::keybinds::{KeybindHelpOpen, Shortcut};
 use crate::map_intel::MapIntelOverlay;
 use crate::navbar::{CurrentViewer, SiteNavbar};
+use crate::poll::PollGate;
 use crate::season_scalar;
 use crate::settings::{self, Layout, Overlay, ViewerSettings};
 use crate::sidebar::{OpenEntry, Sidebar, SidebarEntry};
@@ -1083,25 +1083,26 @@ pub fn MapPage() -> impl IntoView {
     });
 
     // Poll shared server-side scalar estimate while in live mode.
+    let estimate_sr_scalar = settings.value(settings::ESTIMATE_SR_SCALAR);
+    let mut scalar_gate =
+        PollGate::new(move || map_mode.get() == MapMode::Live && estimate_sr_scalar.get());
     wasm_bindgen_futures::spawn_local(async move {
         loop {
-            if map_mode.get_untracked() == MapMode::Live
-                && settings.get_untracked(settings::ESTIMATE_SR_SCALAR)
-            {
-                match season_scalar::fetch_current_scalar_sample().await {
-                    Ok(sample) => live_season_scalar_sample.set(sample),
-                    Err(e) => {
-                        web_sys::console::warn_1(
-                            &format!("season scalar fetch failed: {e}").into(),
-                        );
-                    }
+            scalar_gate.open().await;
+            match season_scalar::fetch_current_scalar_sample().await {
+                Ok(sample) => live_season_scalar_sample.set(sample),
+                Err(e) => {
+                    web_sys::console::warn_1(&format!("season scalar fetch failed: {e}").into());
                 }
             }
-            gloo_timers::future::sleep(std::time::Duration::from_secs(60)).await;
+            scalar_gate.sleep(std::time::Duration::from_secs(60)).await;
         }
     });
 
     // Poll guild online data (online counts + season ratings) while in live mode.
+    let mut online_gate = PollGate::new(move || {
+        map_mode.get() == MapMode::Live && territories.with(|map| !map.is_empty())
+    });
     wasm_bindgen_futures::spawn_local(async move {
         fn parse_online_response(
             raw: HashMap<String, serde_json::Value>,
@@ -1157,39 +1158,35 @@ pub fn MapPage() -> impl IntoView {
         }
 
         loop {
-            let mut next_sleep_secs = GUILD_ONLINE_POLL_INTERVAL_SECS;
-            if map_mode.get_untracked() == MapMode::Live {
-                let map = territories.get_untracked();
-                let mut guild_counts: HashMap<String, usize> = HashMap::new();
+            online_gate.open().await;
+            let mut guild_counts: HashMap<String, usize> = HashMap::new();
+            territories.with_untracked(|map| {
                 for ct in map.values() {
                     *guild_counts
                         .entry(ct.territory.guild.name.clone())
                         .or_default() += 1;
                 }
-                let mut sorted: Vec<_> = guild_counts.into_iter().collect();
-                sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                sorted.truncate(20);
-                let names: Vec<String> = sorted.into_iter().map(|(name, _)| name).collect();
-                if !names.is_empty() {
-                    let query = encoded_names_query(names);
-                    let url = format!("/api/guilds/online?names={query}");
-                    match gloo_net::http::Request::get(&url).send().await {
-                        Ok(resp) if resp.ok() => {
-                            if let Ok(raw) = resp.json::<HashMap<String, serde_json::Value>>().await
-                            {
-                                guild_online_data.set(parse_online_response(raw));
-                            }
-                        }
-                        _ => {
-                            next_sleep_secs = GUILD_ONLINE_ERROR_RETRY_SECS;
-                        }
+            });
+            let mut sorted: Vec<_> = guild_counts.into_iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            sorted.truncate(20);
+            let names: Vec<String> = sorted.into_iter().map(|(name, _)| name).collect();
+            let query = encoded_names_query(names);
+            let url = format!("/api/guilds/online?names={query}");
+            let mut next_sleep_secs = GUILD_ONLINE_POLL_INTERVAL_SECS;
+            match gloo_net::http::Request::get(&url).send().await {
+                Ok(resp) if resp.ok() => {
+                    if let Ok(raw) = resp.json::<HashMap<String, serde_json::Value>>().await {
+                        guild_online_data.set(parse_online_response(raw));
                     }
-                } else {
-                    // Territories may not be hydrated yet right after boot/reload.
-                    next_sleep_secs = GUILD_ONLINE_BOOTSTRAP_RETRY_SECS;
+                }
+                _ => {
+                    next_sleep_secs = GUILD_ONLINE_ERROR_RETRY_SECS;
                 }
             }
-            gloo_timers::future::sleep(std::time::Duration::from_secs(next_sleep_secs)).await;
+            online_gate
+                .sleep(std::time::Duration::from_secs(next_sleep_secs))
+                .await;
         }
     });
 
