@@ -16,7 +16,7 @@ use crate::app::{
 };
 use crate::settings::{self, *};
 use crate::territory::ClientTerritoryMap;
-use crate::ui::{PanelNav, disclosure_toggled};
+use crate::ui::{ViewHead, disclosure_toggled};
 
 fn percent(value: f64) -> String {
     format!("{:.0}%", value * 100.0)
@@ -66,11 +66,13 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
 
     view! {
         <div class="settings-panel">
-            <PanelNav back=("Back from settings", Callback::new(move |()| show_settings.set(false)))>
-                <h2 class="settings-title">"Settings"</h2>
+            <ViewHead
+                back=("Back from settings", Callback::new(move |()| show_settings.set(false)))
+                title=|| view! { <h2 class="sb-view-title">"Settings"</h2> }
+            >
                 <SettingsNotice />
                 <SettingsUndoRedo />
-            </PanelNav>
+            </ViewHead>
 
             <SettingsSection title="Map">
                 <SettingsSlider

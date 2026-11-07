@@ -1,5 +1,5 @@
 //! The sidebar: search, the guild leaderboard, a guild, a territory, settings and the toolbar.
-//! Every view opens with the same navigation row and uses the same gutters, headings and
+//! Every view opens with the same one-row head and uses the same gutters, headings and
 //! controls, so moving between them changes the content and not the layout.
 
 use leptos::prelude::*;
@@ -31,7 +31,7 @@ use crate::territory_card::{
     territory_resource_rows, treasury,
 };
 use crate::tower::TowerCalculator;
-use crate::ui::{Disclosure, MapPinIcon, PanelNav, SCROLLER};
+use crate::ui::{Disclosure, MapPinIcon, SCROLLER, ViewHead, clear_top};
 use crate::war_room::ActivityDisclosure;
 use sequoia_browser_map::live_feed::ConnectionStatus;
 use sequoia_browser_map::{BrowserMap, MapCamera};
@@ -175,12 +175,13 @@ pub fn Sidebar() -> impl IntoView {
         };
 
         // Keep keyboard-focused rows visible by adjusting only the sidebar's
-        // internal vertical scroll position (never root page scroll).
+        // internal vertical scroll position (never root page scroll), below the sticky head.
         let scroll_rect = scroll_el.get_bounding_client_rect();
         let item_rect = item_el.get_bounding_client_rect();
         let current_top = scroll_el.scroll_top();
-        if item_rect.top() < scroll_rect.top() {
-            let delta = (item_rect.top() - scroll_rect.top()).floor() as i32;
+        let top = clear_top(&scroll_el);
+        if item_rect.top() < top {
+            let delta = (item_rect.top() - top).floor() as i32;
             scroll_el.set_scroll_top(current_top + delta);
         } else if item_rect.bottom() > scroll_rect.bottom() {
             let delta = (item_rect.bottom() - scroll_rect.bottom()).ceil() as i32;
@@ -209,12 +210,33 @@ pub fn Sidebar() -> impl IntoView {
             View::Search
         }
     });
+    // Every view shares one scroller. Opening a view, or another guild or territory in one,
+    // starts at its header; anything that only updates the open view keeps the reader's place.
+    let entry = Memo::new(move |_| {
+        let view = shown.get();
+        let subject = match view {
+            View::Guild => selected_guild.get(),
+            View::Territory => selected.get(),
+            View::Settings | View::Leaderboard | View::Search => None,
+        };
+        (view, subject)
+    });
+    let scroller = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |opened: Option<(View, Option<String>)>| {
+        let current = entry.get();
+        if opened.is_some_and(|opened| opened != current)
+            && let Some(scroller) = scroller.get_untracked()
+        {
+            scroller.set_scroll_top(0);
+        }
+        current
+    });
 
     view! {
         <div class="sidebar-inner" class:sidebar-animate=move || sidebar_open.get() style:display=move || if sidebar_open.get() { "flex" } else { "none" }>
             <HistoryWhen />
             <SearchBar />
-            <div data-sidebar-scroll="" class="sb-scroll scrollbar-thin">
+            <div data-sidebar-scroll="" class="sb-scroll scrollbar-thin" node_ref=scroller>
                 {move || {
                     let view = shown.get();
                     if !matches!(view, View::Leaderboard | View::Search) {
@@ -443,10 +465,9 @@ fn SearchResults() -> impl IntoView {
 
     view! {
         <section class="sb-list-section" aria-label="Search results">
-            <div class="sb-list-head">
-                <h2 class="sb-list-title">"Search Results"</h2>
-                <span class="sb-list-count">{move || format!("{} found", filtered.with(Vec::len))}</span>
-            </div>
+            <ViewHead title=|| view! { <h2 class="sb-view-title">"Search Results"</h2> }>
+                <span class="sb-list-count" role="status">{move || format!("{} found", filtered.with(Vec::len))}</span>
+            </ViewHead>
             <ul class="sb-list">
                 <For
                     each=move || filtered.get()
@@ -590,7 +611,7 @@ fn LeaderboardPanel() -> impl IntoView {
     let is_empty = Memo::new(move |_| territories.with(|map| map.is_empty()));
     let sort_button = move |by_sr: bool, label: &'static str| {
         view! {
-            <button type="button" class="sb-sort" data-sort=if by_sr { "sr" } else { "territories" } aria-pressed=move || (sort_by_sr.get() == by_sr).to_string() on:click=move |_| sort_by_sr.set(by_sr)>
+            <button type="button" class="ui-button sb-mode" data-sort=if by_sr { "sr" } else { "territories" } aria-pressed=move || (sort_by_sr.get() == by_sr).to_string() on:click=move |_| sort_by_sr.set(by_sr)>
                 {label}
             </button>
         }
@@ -598,13 +619,12 @@ fn LeaderboardPanel() -> impl IntoView {
 
     view! {
         <section class="sb-list-section" aria-labelledby="sb-top-guilds">
-            <div class="sb-list-head">
-                <h2 class="sb-list-title" id="sb-top-guilds">"Top Guilds"</h2>
-                <div class="sb-sorts" role="group" aria-label="Sort guilds by">
+            <ViewHead title=|| view! { <h2 class="sb-view-title" id="sb-top-guilds">"Top Guilds"</h2> }>
+                <div class="sb-modes" role="group" aria-label="Sort guilds by">
                     {sort_button(false, "Territories")}
                     {sort_button(true, "SR")}
                 </div>
-            </div>
+            </ViewHead>
             <Show
                 when=move || !is_empty.get()
                 fallback=|| view! {
@@ -962,20 +982,24 @@ fn GuildPanel() -> impl IntoView {
 
     view! {
         <div class="sb-panel panel-reveal" style:--tcard-guild=move || guild_color().map(guild_css)>
-            <PanelNav close=("Close guild", close) />
+            <ViewHead
+                title=move || view! {
+                    <header class="tcard-head">
+                        <span class="guild-mark" aria-hidden="true" />
+                        <h2 class="tcard-name guild-name">
+                            {move || {
+                                let name = selected_guild.get().unwrap_or_default();
+                                let url = crate::guild_stats_url(&name);
+                                view! {
+                                    <a class="tcard-name-link" href=url target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">{name}</a>
+                                }
+                            }}
+                        </h2>
+                    </header>
+                }
+                close=("Close guild", close)
+            />
             <article class="tcard tcard-sidebar" aria-busy=move || answer.with(|answer| matches!(answer, GuildAnswer::Waiting)).to_string()>
-                <header class="tcard-head">
-                    <span class="guild-mark" aria-hidden="true" />
-                    <h2 class="tcard-name guild-name">
-                        {move || {
-                            let name = selected_guild.get().unwrap_or_default();
-                            let url = crate::guild_stats_url(&name);
-                            view! {
-                                <a class="tcard-name-link" href=url target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">{name}</a>
-                            }
-                        }}
-                    </h2>
-                </header>
                 <div class="tcard-owner">
                     // A tag nobody can supply any more is left out rather than shown as waiting.
                     {move || {
@@ -1286,11 +1310,17 @@ fn DetailPanel() -> impl IntoView {
 
     view! {
         <div class="sb-panel panel-reveal tcard-detail" style:--tcard-guild=move || info.with(|info| info.as_ref().map(|info| guild_css(info.color)))>
-            <PanelNav back=("Back to guild", back) close=("Close details", close)>
+            <ViewHead
+                back=("Back to guild", back)
+                title=move || info.with(|info| info.as_ref().map(|info| view! {
+                    <TerritoryHead name=info.name.clone() hq=info.runtime.as_ref().and_then(|runtime| runtime.headquarters) == Some(true) heading=true />
+                }))
+                close=("Close details", close)
+            >
                 <button type="button" class="ui-button ui-icon-button sb-show-on-map" aria-label="Show on map" title="Show on map" on:click=show_on_map>
                     <MapPinIcon />
                 </button>
-            </PanelNav>
+            </ViewHead>
             {move || info.get().map(|info| {
                 let runtime = info.runtime.clone();
                 let acquired = info.acquired;
@@ -1302,7 +1332,6 @@ fn DetailPanel() -> impl IntoView {
                 let connections = info.connections;
                 view! {
                     <article class="tcard tcard-sidebar">
-                        <TerritoryHead name=info.name.clone() hq=runtime.as_ref().and_then(|runtime| runtime.headquarters) == Some(true) heading=true />
                         <div class="tcard-owner">
                             <a class="tcard-guild" href=crate::guild_stats_url(&info.guild_name) target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">
                                 {info.guild_name.clone()}
