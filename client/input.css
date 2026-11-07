@@ -1601,9 +1601,9 @@
 .sb-live[data-working="true"] .sb-live-tip { border-color: rgba(var(--accent-live-rgb),0.42); }
 .sb-live[data-working="true"] .sb-live-state { color: var(--accent-live); }
 
-/* Every view's first row: Back, the view's actions or title, Close. It stays in place while
-   the view scrolls, so leaving is always one press away. Back's chevron starts on the gutter,
-   in line with the view's content. */
+/* Every view's first row: Back, then the view's actions or status and Close at the end. It
+   stays in place while the view scrolls, so leaving is always one press away, and keeps one
+   height whatever it holds. Back's chevron starts on the gutter, in line with the content. */
 .sb-nav {
   position: sticky;
   top: 0;
@@ -1611,6 +1611,7 @@
   display: flex;
   align-items: center;
   gap: 2px;
+  min-height: calc(var(--sb-bar-control) + 14px);
   padding: 8px calc(var(--sb-gutter) - var(--sb-bar-inset)) 6px;
   background: var(--color-deep);
 }
@@ -1628,27 +1629,6 @@
 
 /* The leaderboard and search results. */
 .sb-list-section { border-bottom: 1px solid var(--color-border-subtle); }
-.sb-list-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 14px var(--sb-gutter) 8px;
-}
-.sb-list-title {
-  font-family: var(--font-display);
-  font-size: 0.986rem;
-  font-weight: 400;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--color-text-secondary);
-}
-.sb-list-title::before {
-  content: "\25C6";
-  margin-right: 6px;
-  font-size: 0.812rem;
-  color: var(--color-gold);
-}
 .sb-list-count {
   font-family: var(--font-mono);
   font-size: 0.754rem;
@@ -1659,13 +1639,14 @@
   gap: 4px;
 }
 .sb-sort {
-  padding: 2px 8px;
+  min-width: var(--sb-bar-control);
+  min-height: var(--sb-bar-control);
+  padding: 0 8px;
   border: 0;
   border-radius: 3px;
   background: transparent;
   color: var(--color-text-secondary);
-  font-family: var(--font-mono);
-  font-size: 0.754rem;
+  font-size: 0.8rem;
   cursor: pointer;
   transition: color 0.15s, background 0.15s;
 }
@@ -2228,19 +2209,8 @@
   border-bottom: 1px solid var(--color-border-subtle);
 }
 /* Rows pad themselves by 10px, so their text meets the gutter. */
-.settings-panel > :not(.sb-nav) {
+.settings-panel > :not(.sb-nav, .sb-view-head) {
   margin-inline: calc(var(--sb-gutter) - 10px);
-}
-/* The menu's heading, after a rule that sets it apart from Back. */
-.settings-title {
-  margin: 0 auto 0 4px;
-  padding-left: 12px;
-  border-left: 1px solid var(--color-border-subtle);
-  font-family: var(--font-display);
-  font-size: 1rem;
-  font-weight: 400;
-  line-height: 18px;
-  color: var(--color-text-primary);
 }
 .settings-section-title,
 .settings-subhead {
@@ -3570,7 +3540,22 @@ a.tcard-guild:focus-visible {
 
 .tcard-sidebar-tail { padding-top: 0; }
 
-.tcard-sidebar .tcard-name { font-size: 1.2rem; }
+/* Every sidebar view's title sits the same distance under its navigation row, in one size and
+   line: a guild's or territory's card head, or the other views' title row. */
+.sb-view-head {
+  display: flex;
+  align-items: center;
+  padding: 2px var(--sb-gutter) 8px;
+}
+.sb-view-title,
+.tcard-sidebar .tcard-name {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  font-weight: 400;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+}
 .tcard-sidebar .tcard-owner { font-size: 0.95rem; }
 .tcard-sidebar .tcard-stats dd { font-size: 0.92rem; }
 .tcard-sidebar .tcard-resources { font-size: 0.88rem; }
@@ -4294,6 +4279,7 @@ a.tcard-guild:focus-visible {
 .war-member-name,
 .guild-name,
 .sb-nav-back,
+.sb-sort,
 .mrow-name,
 .mrow-rank,
 .mrow-place,

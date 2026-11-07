@@ -31,7 +31,7 @@ use crate::territory_card::{
     territory_resource_rows, treasury,
 };
 use crate::tower::TowerCalculator;
-use crate::ui::{Disclosure, MapPinIcon, PanelNav, SCROLLER};
+use crate::ui::{Disclosure, MapPinIcon, PanelNav, SCROLLER, ViewTitle, scroll_padding_top};
 use crate::war_room::ActivityDisclosure;
 use sequoia_browser_map::live_feed::ConnectionStatus;
 use sequoia_browser_map::{BrowserMap, MapCamera};
@@ -175,12 +175,13 @@ pub fn Sidebar() -> impl IntoView {
         };
 
         // Keep keyboard-focused rows visible by adjusting only the sidebar's
-        // internal vertical scroll position (never root page scroll).
+        // internal vertical scroll position (never root page scroll), below the sticky nav row.
         let scroll_rect = scroll_el.get_bounding_client_rect();
         let item_rect = item_el.get_bounding_client_rect();
         let current_top = scroll_el.scroll_top();
-        if item_rect.top() < scroll_rect.top() {
-            let delta = (item_rect.top() - scroll_rect.top()).floor() as i32;
+        let top = scroll_rect.top() + scroll_padding_top(&scroll_el);
+        if item_rect.top() < top {
+            let delta = (item_rect.top() - top).floor() as i32;
             scroll_el.set_scroll_top(current_top + delta);
         } else if item_rect.bottom() > scroll_rect.bottom() {
             let delta = (item_rect.bottom() - scroll_rect.bottom()).ceil() as i32;
@@ -443,10 +444,10 @@ fn SearchResults() -> impl IntoView {
 
     view! {
         <section class="sb-list-section" aria-label="Search results">
-            <div class="sb-list-head">
-                <h2 class="sb-list-title">"Search Results"</h2>
-                <span class="sb-list-count">{move || format!("{} found", filtered.with(Vec::len))}</span>
-            </div>
+            <PanelNav>
+                <span class="sb-list-count" role="status">{move || format!("{} found", filtered.with(Vec::len))}</span>
+            </PanelNav>
+            <ViewTitle>"Search Results"</ViewTitle>
             <ul class="sb-list">
                 <For
                     each=move || filtered.get()
@@ -598,13 +599,13 @@ fn LeaderboardPanel() -> impl IntoView {
 
     view! {
         <section class="sb-list-section" aria-labelledby="sb-top-guilds">
-            <div class="sb-list-head">
-                <h2 class="sb-list-title" id="sb-top-guilds">"Top Guilds"</h2>
+            <PanelNav>
                 <div class="sb-sorts" role="group" aria-label="Sort guilds by">
                     {sort_button(false, "Territories")}
                     {sort_button(true, "SR")}
                 </div>
-            </div>
+            </PanelNav>
+            <ViewTitle id="sb-top-guilds">"Top Guilds"</ViewTitle>
             <Show
                 when=move || !is_empty.get()
                 fallback=|| view! {

@@ -1,5 +1,5 @@
-//! Controls every sidebar view shares: its navigation row, disclosures, and bringing newly
-//! opened content into view inside the sidebar.
+//! Controls every sidebar view shares: its navigation row and title, disclosures, and bringing
+//! newly opened content into view inside the sidebar.
 
 use leptos::prelude::*;
 
@@ -29,7 +29,7 @@ pub(crate) fn reveal_soon(element: web_sys::Element) {
     request_animation_frame(move || reveal(&element));
 }
 
-fn scroll_padding_top(element: &web_sys::Element) -> f64 {
+pub(crate) fn scroll_padding_top(element: &web_sys::Element) -> f64 {
     web_sys::window()
         .and_then(|window| window.get_computed_style(element).ok().flatten())
         .and_then(|style| style.get_property_value("scroll-padding-top").ok())
@@ -88,8 +88,9 @@ pub(crate) fn MapPinIcon() -> impl IntoView {
     }
 }
 
-/// The row at the top of every sidebar view: Back on the left, Close on the right, and the
-/// view's own actions or title between. It stays in place while the view scrolls.
+/// The row at the top of every sidebar view: Back on the left, the view's own actions or status
+/// and Close on the right. It stays in place while the view scrolls, and is as tall whatever it
+/// holds, so the title under it never moves between views.
 #[component]
 pub(crate) fn PanelNav(
     /// What Back does, and what it says it goes back to.
@@ -113,6 +114,20 @@ pub(crate) fn PanelNav(
                     <CloseIcon />
                 </button>
             })}
+        </div>
+    }
+}
+
+/// A view's title, under its navigation row: in the same place and type in every view. A
+/// guild's and a territory's are their card heads, which share its place and type.
+#[component]
+pub(crate) fn ViewTitle(
+    #[prop(optional)] id: Option<&'static str>,
+    children: Children,
+) -> impl IntoView {
+    view! {
+        <div class="sb-view-head">
+            <h2 class="sb-view-title" id=id>{children()}</h2>
         </div>
     }
 }
