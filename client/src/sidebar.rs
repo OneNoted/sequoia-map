@@ -210,12 +210,33 @@ pub fn Sidebar() -> impl IntoView {
             View::Search
         }
     });
+    // Every view shares one scroller. Opening a view, or another guild or territory in one,
+    // starts at its header; anything that only updates the open view keeps the reader's place.
+    let entry = Memo::new(move |_| {
+        let view = shown.get();
+        let subject = match view {
+            View::Guild => selected_guild.get(),
+            View::Territory => selected.get(),
+            View::Settings | View::Leaderboard | View::Search => None,
+        };
+        (view, subject)
+    });
+    let scroller = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |opened: Option<(View, Option<String>)>| {
+        let current = entry.get();
+        if opened.is_some_and(|opened| opened != current)
+            && let Some(scroller) = scroller.get_untracked()
+        {
+            scroller.set_scroll_top(0);
+        }
+        current
+    });
 
     view! {
         <div class="sidebar-inner" class:sidebar-animate=move || sidebar_open.get() style:display=move || if sidebar_open.get() { "flex" } else { "none" }>
             <HistoryWhen />
             <SearchBar />
-            <div data-sidebar-scroll="" class="sb-scroll scrollbar-thin">
+            <div data-sidebar-scroll="" class="sb-scroll scrollbar-thin" node_ref=scroller>
                 {move || {
                     let view = shown.get();
                     if !matches!(view, View::Leaderboard | View::Search) {
