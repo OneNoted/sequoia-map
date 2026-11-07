@@ -48,8 +48,7 @@ struct RawLeaderboardEntry {
     uuid: String,
     #[serde(default)]
     prefix: String,
-    #[serde(default)]
-    score: i64,
+    score: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,16 +123,29 @@ struct RawGatheringNode {
     level: Option<i32>,
 }
 
-/// When Wynncraft produced an answer: now, less the age its CDN reports holding it.
+/// When Wynncraft produced an answer: now, less the age its CDN reports holding it. An answer
+/// without a usable `Age` is taken as produced now, as an uncached answer is.
 pub(crate) fn observed_at(response: &reqwest::Response) -> DateTime<Utc> {
-    let age_secs = response
+    let now = Utc::now();
+    response
         .headers()
         .get(reqwest::header::AGE)
         .and_then(|age| age.to_str().ok())
-        .and_then(|age| age.trim().parse::<i64>().ok())
-        .unwrap_or(0)
-        .max(0);
-    Utc::now() - chrono::Duration::seconds(age_secs)
+        .and_then(|age| age.trim().parse::<u32>().ok())
+        .and_then(|age| now.checked_sub_signed(chrono::Duration::seconds(i64::from(age))))
+        .unwrap_or(now)
+}
+
+/// The season that has begun most recently, by Wynncraft's published season windows.
+pub fn latest_begun_season(
+    seasons: &HashMap<String, GuildSeasonDefinition>,
+    now: DateTime<Utc>,
+) -> Option<i32> {
+    seasons
+        .iter()
+        .filter(|(_, season)| season.start_date.is_some_and(|start| start <= now))
+        .filter_map(|(season_id, _)| season_id.parse::<i32>().ok())
+        .max()
 }
 
 pub async fn fetch_guild_seasons(
@@ -730,12 +742,13 @@ async fn fetch_guild_season_leaderboard(
             if entry.name.trim().is_empty() {
                 return None;
             }
+            // A row without a score says nothing about the guild's rating, not that it is 0.
             Some(CachedSeasonLeaderboardEntry {
                 rank,
                 name: entry.name,
                 uuid: entry.uuid,
                 prefix: entry.prefix,
-                score: entry.score,
+                score: entry.score?,
             })
         })
         .collect::<Vec<_>>();
@@ -752,6 +765,24 @@ async fn fetch_guild_season_leaderboard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_latest_begun_season_ignores_announced_ones() {
+        let now = Utc::now();
+        let season = |start_days: i64| GuildSeasonDefinition {
+            start_date: Some(now + chrono::Duration::days(start_days)),
+            end_date: None,
+            territory_holding_sr_per_hour: None,
+            sr_per_war: None,
+        };
+        let seasons = HashMap::from([
+            ("32".to_string(), season(-60)),
+            ("33".to_string(), season(-10)),
+            ("34".to_string(), season(20)),
+        ]);
+        assert_eq!(latest_begun_season(&seasons, now), Some(33));
+        assert_eq!(latest_begun_season(&HashMap::new(), now), None);
+    }
 
     fn activity(name: &str, level: i32, rewards: Vec<RawMapReward>) -> RawMapActivity {
         RawMapActivity {
