@@ -820,6 +820,33 @@ impl GuildFacts {
     }
 }
 
+/// Where the guild endpoint's answer for the selected guild stands.
+#[derive(Clone, PartialEq)]
+enum GuildAnswer {
+    Waiting,
+    Ready(GuildFacts),
+    Unavailable,
+}
+
+impl GuildAnswer {
+    fn facts(&self) -> Option<&GuildFacts> {
+        match self {
+            Self::Ready(facts) => Some(facts),
+            Self::Waiting | Self::Unavailable => None,
+        }
+    }
+
+    /// One figure: an ellipsis while it is on its way, a dash when it is missing.
+    fn figure(&self, pick: impl FnOnce(&GuildFacts) -> String) -> String {
+        match self {
+            Self::Waiting => return "\u{2026}".to_string(),
+            Self::Ready(facts) => Some(pick(facts)).filter(|figure| !figure.is_empty()),
+            Self::Unavailable => None,
+        }
+        .unwrap_or_else(|| "\u{2013}".to_string())
+    }
+}
+
 #[component]
 fn GuildPanel() -> impl IntoView {
     let SelectedGuild(selected_guild) = expect_context();
@@ -832,16 +859,15 @@ fn GuildPanel() -> impl IntoView {
     let tick: RwSignal<i64> = expect_context();
     let crate::app::WarFeedVisible(viewer_has_war_access) = expect_context();
 
-    // `None` while the guild's details are on their way.
-    let facts: RwSignal<Option<GuildFacts>> = RwSignal::new(None);
-    let failed = RwSignal::new(false);
+    let GuildOnlineData(guild_online_data) = expect_context();
+
+    let answer = RwSignal::new(GuildAnswer::Waiting);
     let request_nonce = StoredValue::new(0u64);
 
     Effect::new(move || {
         let nonce = request_nonce.get_value().wrapping_add(1);
         request_nonce.set_value(nonce);
-        facts.set(None);
-        failed.set(false);
+        answer.set(GuildAnswer::Waiting);
         let Some(name) = selected_guild.get() else {
             return;
         };
@@ -855,21 +881,34 @@ fn GuildPanel() -> impl IntoView {
             if request_nonce.try_get_value() != Some(nonce) {
                 return;
             }
-            match detail {
-                Some(json) => facts.set(Some(GuildFacts::from_json(&json))),
-                None => failed.set(true),
-            }
+            answer.set(match detail {
+                Some(json) => GuildAnswer::Ready(GuildFacts::from_json(&json)),
+                None => GuildAnswer::Unavailable,
+            });
         });
     });
 
-    let guild_color = Memo::new(move |_| {
+    // The map already knows a guild that holds territory, so its colour and tag show at once.
+    let on_map = Memo::new(move |_| {
         let name = selected_guild.get()?;
         territories.with(|map| {
             map.values()
                 .find(|ct| ct.territory.guild.name == name)
-                .map(|ct| ct.guild_color)
+                .map(|ct| (ct.guild_color, ct.territory.guild.prefix.clone()))
         })
     });
+    let guild_color = move || on_map.with(|guild| guild.as_ref().map(|(color, _)| *color));
+    let prefix = move || {
+        on_map
+            .with(|guild| guild.as_ref().map(|(_, prefix)| prefix.clone()))
+            .or_else(|| answer.with(|answer| answer.facts().map(|facts| facts.prefix.clone())))
+    };
+    // Rows held for the members the leaderboard last counted online, so the list fills its
+    // place when the details arrive instead of pushing the territories down.
+    let expected_online = move || {
+        let name = selected_guild.get()?;
+        guild_online_data.with(|data| data.get(&name).map(|info| info.online as usize))
+    };
     let guild_territories = Memo::new(move |_| {
         let name = selected_guild.get().unwrap_or_default();
         let mut owned: Vec<String> = territories.with(|map| {
@@ -897,15 +936,15 @@ fn GuildPanel() -> impl IntoView {
             sidebar_open.set(true);
         }
     });
+    let unavailable = move || answer.with(|answer| matches!(answer, GuildAnswer::Unavailable));
     // Until the details arrive, each figure waits in its place rather than the panel growing.
-    let fact = move |pick: fn(&GuildFacts) -> String| {
-        move || facts.with(|facts| facts.as_ref().map_or_else(|| "\u{2026}".to_string(), pick))
-    };
+    let fact =
+        move |pick: fn(&GuildFacts) -> String| move || answer.with(|answer| answer.figure(pick));
 
     view! {
-        <div class="sb-panel panel-reveal" style:--tcard-guild=move || guild_color.get().map(guild_css)>
+        <div class="sb-panel panel-reveal" style:--tcard-guild=move || guild_color().map(guild_css)>
             <PanelNav close=("Close guild", close) />
-            <article class="tcard tcard-sidebar" aria-busy=move || (facts.with(Option::is_none) && !failed.get()).to_string()>
+            <article class="tcard tcard-sidebar" aria-busy=move || answer.with(|answer| matches!(answer, GuildAnswer::Waiting)).to_string()>
                 <header class="tcard-head">
                     <span class="guild-mark" aria-hidden="true" />
                     <h2 class="tcard-name guild-name">
@@ -919,47 +958,59 @@ fn GuildPanel() -> impl IntoView {
                     </h2>
                 </header>
                 <div class="tcard-owner">
-                    {move || facts.with(|facts| facts.as_ref().map(|facts| view! {
-                        <span class="tcard-tag">"[" {facts.prefix.clone()} "] \u{00b7} Lv. " {facts.level}</span>
-                        <span class="sb-online"><span aria-hidden="true">{"\u{25CF}"}</span>{facts.online} " online"</span>
-                    }))}
-                    {move || failed.get().then(|| view! { <span class="tcard-tag" role="status">"Guild details are unavailable"</span> })}
+                    <span class="tcard-tag">
+                        "[" {move || prefix().unwrap_or_else(|| "\u{2026}".to_string())} "]"
+                        {move || (!unavailable()).then(|| view! { " \u{00b7} Lv. " {fact(|facts| facts.level.to_string())} })}
+                    </span>
+                    {move || if unavailable() {
+                        view! { <span class="tcard-tag" role="status">"Guild details are unavailable"</span> }.into_any()
+                    } else {
+                        view! {
+                            <span class="sb-online"><span aria-hidden="true">{"\u{25CF}"}</span>{fact(|facts| facts.online.to_string())} " online"</span>
+                        }
+                        .into_any()
+                    }}
                 </div>
                 <dl class="tcard-stats tcard-stats-wide">
                     <div><dt>"Territories"</dt><dd class="sb-gold">{move || guild_territories.with(Vec::len)}</dd></div>
                     <div><dt>"Members"</dt><dd>{fact(|facts| facts.members.to_string())}</dd></div>
                     <div><dt>"Wars"</dt><dd>{fact(|facts| facts.wars.to_string())}</dd></div>
                     <div><dt>"Season rating"</dt><dd class="tcard-sr">{fact(|facts| facts.season_rating.map_or_else(|| "\u{2013}".to_string(), |(season, rating)| format!("S{season}: {}", compact(rating))))}</dd></div>
-                    <div class="tcard-stat-span"><dt>"Created"</dt><dd>{move || facts.with(|facts| facts.as_ref().map_or_else(|| "\u{2026}".to_string(), |facts| since(&facts.created, tick.get())))}</dd></div>
+                    <div class="tcard-stat-span"><dt>"Created"</dt><dd>{move || answer.with(|answer| answer.figure(|facts| since(&facts.created, tick.get())))}</dd></div>
                 </dl>
-                {move || facts.with(|facts| {
-                    let facts = facts.as_ref()?;
-                    if facts.online_members.is_empty() {
-                        return None;
-                    }
+                {move || {
                     // Playercards only cover our own roster, so every other guild keeps
                     // linking out to Wynncraft.
-                    let ours = facts.prefix.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX);
-                    let members = facts.online_members.clone();
+                    let ours = prefix().is_some_and(|prefix| prefix.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX));
                     // Members open each other's war records in place; everyone else links out.
-                    if ours && viewer_has_war_access.get() {
-                        return Some(view! {
-                            <section class="tcard-section" aria-label="Online members">
-                                <h3 class="tcard-section-title">"Online members"</h3>
-                                <ul class="sb-members mrows">
-                                    {members.into_iter().map(|member| view! {
-                                        <crate::member_war::MemberRow username=member.username rank_label=member.rank_label server=member.server />
+                    let in_place = ours && viewer_has_war_access.get();
+                    let list = answer.with(|answer| match answer {
+                        GuildAnswer::Waiting => {
+                            let held = expected_online().filter(|&held| held > 0)?;
+                            Some(view! {
+                                <ul class="sb-members" class:mrows=in_place aria-hidden="true">
+                                    {(0..held).map(|_| if in_place {
+                                        view! { <li class="mrow"><div class="mrow-line"><span class="mrow-rank">{"\u{2026}"}</span></div></li> }.into_any()
+                                    } else {
+                                        // The name's line sets a row's height, so a held row keeps one.
+                                        view! { <li><span class="sb-member-rank">{"\u{2026}"}</span><span class="sb-member-name">{"\u{a0}"}</span></li> }.into_any()
                                     }).collect_view()}
                                 </ul>
-                            </section>
+                            }
+                            .into_any())
                         }
-                        .into_any());
-                    }
-                    Some(view! {
-                        <section class="tcard-section" aria-label="Online members">
-                            <h3 class="tcard-section-title">"Online members"</h3>
-                            <ul class="sb-members">
-                                {members.into_iter().map(|member| {
+                        GuildAnswer::Ready(facts) if facts.online_members.is_empty() => None,
+                        GuildAnswer::Ready(facts) if in_place => Some(view! {
+                            <ul class="sb-members mrows panel-reveal">
+                                {facts.online_members.iter().cloned().map(|member| view! {
+                                    <crate::member_war::MemberRow username=member.username rank_label=member.rank_label server=member.server />
+                                }).collect_view()}
+                            </ul>
+                        }
+                        .into_any()),
+                        GuildAnswer::Ready(facts) => Some(view! {
+                            <ul class="sb-members panel-reveal">
+                                {facts.online_members.iter().cloned().map(|member| {
                                     let (url, title) = if ours {
                                         (crate::player_card_url(&member.username), "Open Sequoia playercard")
                                     } else {
@@ -974,10 +1025,17 @@ fn GuildPanel() -> impl IntoView {
                                     }
                                 }).collect_view()}
                             </ul>
+                        }
+                        .into_any()),
+                        GuildAnswer::Unavailable => None,
+                    })?;
+                    Some(view! {
+                        <section class="tcard-section" aria-label="Online members">
+                            <h3 class="tcard-section-title">"Online members"</h3>
+                            {list}
                         </section>
-                    }
-                    .into_any())
-                })}
+                    })
+                }}
                 <Show when=move || guild_territories.with(|owned| !owned.is_empty())>
                     <section class="tcard-section" aria-label="Territories">
                         <h3 class="tcard-section-title">"Territories"</h3>
