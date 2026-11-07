@@ -26,6 +26,7 @@ use crate::format::{local_time, local_time_seconds};
 use crate::settings::{self, ViewerSettings};
 use crate::territory::ClientTerritoryMap;
 use crate::territory_card::{QueueOrigin, original_timer};
+use crate::ui::CloseIcon;
 use crate::ui_icons::class_icon_url;
 
 /// At or below this viewport height (CSS pixels) the side panel would crowd the map, so the
@@ -98,7 +99,7 @@ fn WarRoomHeader(#[prop(optional)] on_close: Option<Callback<()>>) -> impl IntoV
             </Show>
             {on_close.map(|close| view! {
                 <button type="button" class="ui-button ui-icon-button war-icon-button" aria-label="Close war panel" on:click=move |_| close.run(())>
-                    "\u{00D7}"
+                    <CloseIcon />
                 </button>
             })}
         </div>

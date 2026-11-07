@@ -23,7 +23,7 @@ use super::{Anchor, MapFocus, WarRoom, clock_text, whereabouts};
 use crate::app::IsMobile;
 use crate::member_war::{MemberGlance, MemberWar, PlayercardLink, RankTitle};
 use crate::territory::ClientTerritoryMap;
-use crate::ui::MapPinIcon;
+use crate::ui::{CloseIcon, MapPinIcon};
 
 const FACE_PX: u32 = 64;
 /// Space between the popover and the name it belongs to, and kept clear of the window edge.
@@ -374,7 +374,7 @@ fn PlayerDialogContent(
                 <p class="player-dialog-status" data-state=move || status.get().1>{move || status.get().0}</p>
             </div>
             <button type="button" class="ui-button ui-icon-button war-icon-button" aria-label="Close" on:click=move |_| on_close.run(())>
-                "\u{00D7}"
+                <CloseIcon />
             </button>
         </div>
         <dl class="player-dialog-facts">

@@ -566,8 +566,6 @@
 
 .war-icon-button {
   background: var(--color-deep);
-  font-size: 1.15rem;
-  line-height: 1;
 }
 
 .war-section + .war-section {
