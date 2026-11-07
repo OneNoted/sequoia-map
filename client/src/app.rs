@@ -210,6 +210,10 @@ pub(crate) struct HistoryTimestamp(pub RwSignal<Option<i64>>);
 /// is on the map. `None` while the live map is still drawn.
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryMapTime(pub RwSignal<Option<i64>>);
+/// The time the drawn territories show, which timers and held-for figures count against:
+/// History's once its state is on the map, the live clock otherwise.
+#[derive(Clone, Copy)]
+pub(crate) struct MapClock(pub Memo<i64>);
 /// The History bar's measured height in CSS pixels; 0 until it has been laid out.
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryBarHeight(pub RwSignal<f64>);
@@ -538,7 +542,6 @@ pub fn MapPage() -> impl IntoView {
             },
         })
     });
-    // Timers count against the time of the territories drawn, not a seek still loading.
     let map_clock = Memo::new(move |_| match map_mode.get() {
         MapMode::History => history_map_time.get().unwrap_or_else(|| tick.get()),
         MapMode::Live => tick.get(),
@@ -594,6 +597,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(CurrentMode(map_mode));
     provide_context(HistoryTimestamp(history_timestamp));
     provide_context(HistoryMapTime(history_map_time));
+    provide_context(MapClock(map_clock));
     provide_context(HistoryBarHeight(history_bar_height));
     provide_context(PlaybackActive(playback_active));
     provide_context(PlaybackSpeed(playback_speed));
@@ -2381,18 +2385,12 @@ fn Tooltip() -> impl IntoView {
     let Hovered(hovered) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let pointer = expect_context::<BrowserMap>().pointer();
-    let tick: RwSignal<i64> = expect_context();
-    let CurrentMode(mode) = expect_context();
-    let HistoryMapTime(history_map_time) = expect_context();
+    let MapClock(map_clock) = expect_context();
     let heat_mode_enabled = expect_context::<ViewerSettings>().value(settings::HEAT_MAP);
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
 
     let tooltip_info = Memo::new(move |_| {
-        let reference_secs = if mode.get() == MapMode::History {
-            history_map_time.get().unwrap_or_else(|| tick.get())
-        } else {
-            tick.get()
-        };
+        let reference_secs = map_clock.get();
         let name = hovered.get()?;
         let map = territories.get();
         let ct = map.get(&name)?;
@@ -2501,9 +2499,8 @@ fn Tooltip() -> impl IntoView {
 fn TerritoryPeekCard() -> impl IntoView {
     let PeekTerritory(peek_territory) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let tick: RwSignal<i64> = expect_context();
+    let MapClock(map_clock) = expect_context();
     let CurrentMode(mode) = expect_context();
-    let HistoryMapTime(history_map_time) = expect_context();
     let HistoryBarHeight(history_bar_height) = expect_context();
     let Selected(selected) = expect_context();
     let DetailReturnGuild(detail_return_guild) = expect_context();
@@ -2513,11 +2510,7 @@ fn TerritoryPeekCard() -> impl IntoView {
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
 
     let peek_info = Memo::new(move |_| {
-        let reference_secs = if mode.get() == MapMode::History {
-            history_map_time.get().unwrap_or_else(|| tick.get())
-        } else {
-            tick.get()
-        };
+        let reference_secs = map_clock.get();
         let name = peek_territory.get()?;
         let map = territories.get();
         let ct = map.get(&name)?;

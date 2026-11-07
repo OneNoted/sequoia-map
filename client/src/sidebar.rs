@@ -14,8 +14,8 @@ use crate::app::{
     HistoryAvailable, HistoryBoundsSignal, HistoryBufferModeActive, HistoryBufferedUpdates,
     HistoryFetchNonce, HistoryLegacyGeometryActive, HistoryMapTime, HistorySeasonLeaderboard,
     HistorySeasonScalarSample, HistoryTimestamp, IsMobile, LastLiveSeq, LeaderboardSortBySr,
-    LiveHandoffResyncCount, LiveSeasonScalarSample, MapMode, NeedsLiveResync, PlaybackActive,
-    Selected, SelectedGuild, ShowSettings, SidebarIndex, SidebarItems, SidebarOpen,
+    LiveHandoffResyncCount, LiveSeasonScalarSample, MapClock, MapMode, NeedsLiveResync,
+    PlaybackActive, Selected, SelectedGuild, ShowSettings, SidebarIndex, SidebarItems, SidebarOpen,
     SidebarTransient, TerritoryGeometryStore,
 };
 use crate::colors::rgba_css;
@@ -1015,9 +1015,6 @@ fn DetailPanel() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let IsMobile(is_mobile) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let tick: RwSignal<i64> = expect_context();
-    let CurrentMode(mode) = expect_context();
-    let HistoryMapTime(history_map_time) = expect_context();
     let settings = expect_context::<ViewerSettings>();
     let heat_mode_enabled = settings.value(settings::HEAT_MAP);
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
@@ -1034,13 +1031,7 @@ fn DetailPanel() -> impl IntoView {
         queue_details_open.set(false);
     });
 
-    let now = Memo::new(move |_| {
-        if mode.get() == MapMode::History {
-            history_map_time.get().unwrap_or_else(|| tick.get())
-        } else {
-            tick.get()
-        }
-    });
+    let MapClock(now) = expect_context();
 
     // Guild-aware connection counts — only recomputes when territories/selection change, not every tick
     let guild_counts = Memo::new(move |_| {
