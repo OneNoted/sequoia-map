@@ -67,6 +67,17 @@ pub(crate) enum Failure {
 }
 
 impl Failure {
+    /// Why a war record is not shown, the same in the full record and at a glance.
+    fn explanation(self) -> &'static str {
+        match self {
+            Self::Unavailable => "War record unavailable",
+            Self::NoSeason => "No published season is running",
+            Self::NotOnRoster => "Not on the current Sequoia roster",
+            Self::Denied => "War records are for Sequoia members ranked Sprite or higher",
+            Self::Invalid => "This period can't be shown",
+        }
+    }
+
     fn of(status: u16) -> Self {
         match status {
             400 => Self::Invalid,
@@ -1026,7 +1037,7 @@ fn RecordView(username: String) -> impl IntoView {
         let username = username.clone();
         move |_| war.ensure_record(&username, &war.period.get_untracked())
     };
-    let retry = move |_| war.retry_record(&username, &war.period.get_untracked());
+    let retry = Callback::new(move |()| war.retry_record(&username, &war.period.get_untracked()));
     view! {
         <div class="mwar-record" aria-busy=move || busy.get().to_string() aria-live="polite">
             {move || outdated.get().then(|| view! {
@@ -1035,19 +1046,7 @@ fn RecordView(username: String) -> impl IntoView {
                     <button type="button" class="ui-text-action" on:click=refresh.clone()>"Retry"</button>
                 </p>
             })}
-            {move || match failure.get() {
-                Some(Failure::NoSeason) => Some(view! { <p class="mwar-quiet">"No published season is running"</p> }.into_any()),
-                Some(Failure::NotOnRoster) => Some(view! { <p class="mwar-quiet">"No longer on the Sequoia roster"</p> }.into_any()),
-                Some(Failure::Denied) => Some(view! { <p class="mwar-quiet">"War records are for Sequoia members ranked Sprite or higher"</p> }.into_any()),
-                Some(Failure::Invalid) => Some(view! { <p class="mwar-quiet">"This period can't be shown"</p> }.into_any()),
-                Some(Failure::Unavailable) => Some(view! {
-                    <p class="mwar-quiet">
-                        "War record unavailable "
-                        <button type="button" class="ui-text-action" on:click=retry.clone()>"Retry"</button>
-                    </p>
-                }.into_any()),
-                None => None,
-            }}
+            {move || failure.get().map(|failure| view! { <p class="mwar-quiet"><RecordFailure failure retry /></p> })}
             {move || (shown.with(Option::is_none) && busy.get()).then(|| view! { <p class="mwar-quiet">"Loading war record"</p> })}
             {move || shown.get().map(|period| view! { <RecordBody period now=tick.get_untracked() /> })}
         </div>
@@ -1192,6 +1191,18 @@ fn attribution(by_guild: &[sequoia_shared::member_war::GuildWarTotals]) -> Optio
     Some(format!("Wars by guild at the time: {}", parts.join(", ")))
 }
 
+/// Why a war record is not shown, with Retry where asking again could help.
+#[component]
+fn RecordFailure(failure: Failure, retry: Callback<()>) -> impl IntoView {
+    view! {
+        {failure.explanation()}
+        {(failure == Failure::Unavailable).then(|| view! {
+            " "
+            <button type="button" class="ui-text-action" on:click=move |_| retry.run(())>"Retry"</button>
+        })}
+    }
+}
+
 /// The war popover's compact line: roles and the last 7 days.
 #[component]
 pub(crate) fn MemberGlance(username: String) -> impl IntoView {
@@ -1213,6 +1224,10 @@ pub(crate) fn MemberGlance(username: String) -> impl IntoView {
         let username = username.clone();
         Memo::new(move |_| war.record(&username, &Period::Week))
     };
+    let retry = {
+        let username = username.clone();
+        Callback::new(move |()| war.retry_record(&username, &Period::Week))
+    };
     view! {
         <WarRoles username=username.clone() />
         <p class="mwar-glance">
@@ -1220,11 +1235,10 @@ pub(crate) fn MemberGlance(username: String) -> impl IntoView {
                 Some(Load::Ready(period)) => {
                     let totals = period.record.totals;
                     let note = if outdated.get() { ", could not refresh" } else { "" };
-                    format!("7 days: {}{note}", summary(&totals))
+                    format!("7 days: {}{note}", summary(&totals)).into_any()
                 }
-                Some(Load::Failed(Failure::NotOnRoster)) => "Not on the current Sequoia roster".to_string(),
-                Some(Load::Failed(_)) => "War record unavailable".to_string(),
-                Some(Load::Pending) | None => "7 days: loading".to_string(),
+                Some(Load::Failed(failure)) => view! { <RecordFailure failure retry /> }.into_any(),
+                Some(Load::Pending) | None => "7 days: loading".into_any(),
             }}
         </p>
     }
