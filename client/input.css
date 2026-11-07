@@ -1630,13 +1630,14 @@
 }
 .sb-head-title:first-child { padding-left: var(--sb-bar-inset); }
 .sb-head-title > .tcard-head { flex: 1; }
-/* The actions give up room before the title does; of them, only a settings notice can. */
-.sb-head-actions {
+/* A status (a search's count, a settings notice) gives up its room before the title does.
+   Nothing else in the row shrinks: every control keeps its whole target. */
+.sb-head > [role="status"] {
   flex: 0 1000 auto;
   min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* A long name takes a second line rather than losing its end; with touch controls, two lines
    are as tall as the row already is. */
@@ -2493,14 +2494,10 @@ button.settings-row:hover {
 }
 /* What the last Undo or Redo changed, beside the buttons. */
 .settings-notice {
-  min-width: 0;
-  overflow: hidden;
   padding-right: 4px;
   font-family: var(--font-body);
   font-size: 0.74rem;
   color: var(--color-gold-light);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .settings-disclosure {
   margin-top: 12px;

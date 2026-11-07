@@ -117,7 +117,8 @@ pub(crate) fn ViewHead(
                 </button>
             })}
             <div class="sb-head-title">{move || title.run()}</div>
-            {children.map(|children| view! { <div class="sb-head-actions">{children()}</div> })}
+            // Items of the row itself, so no box around them can shrink narrower than they are.
+            {children.map(|children| children())}
             {close.map(|(title, close)| view! {
                 <button type="button" class="ui-button ui-icon-button" title=title aria-label=title on:click=move |_| close.run(())>
                     <CloseIcon />
