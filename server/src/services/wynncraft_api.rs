@@ -185,7 +185,11 @@ pub async fn cached_guild_seasons(state: &AppState) -> HashMap<String, GuildSeas
             return seasons;
         }
     }
+    refresh_guild_seasons(state).await
+}
 
+/// Fetches the season definitions into the cache. The caller holds `guild_seasons_fetch_lock`.
+async fn refresh_guild_seasons(state: &AppState) -> HashMap<String, GuildSeasonDefinition> {
     match fetch_guild_seasons(&state.http_client).await {
         Ok(seasons) => {
             let mut cached = state.guild_seasons_cache.write().await;
@@ -216,10 +220,16 @@ pub async fn guild_seasons_without_waiting(
     };
     let expired =
         fresh_guild_seasons(Some(&cached), Utc::now(), guild_seasons_cache_ttl_secs()).is_none();
-    if expired && state.guild_seasons_fetch_lock.try_lock().is_ok() {
+    // One refresh at a time: while it runs, requests keep the cached definitions.
+    if expired && let Ok(refresh_guard) = state.guild_seasons_fetch_lock.clone().try_lock_owned() {
         let state = state.clone();
         tokio::spawn(async move {
-            cached_guild_seasons(&state).await;
+            let ttl_secs = guild_seasons_cache_ttl_secs();
+            let cached = state.guild_seasons_cache.read().await.clone();
+            if fresh_guild_seasons(cached.as_ref(), Utc::now(), ttl_secs).is_none() {
+                refresh_guild_seasons(&state).await;
+            }
+            drop(refresh_guard);
         });
     }
     cached.seasons
