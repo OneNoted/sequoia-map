@@ -11,6 +11,7 @@ mod playback;
 mod players;
 mod precision_scrub;
 mod season_scalar;
+mod settings;
 mod settings_menu;
 mod sidebar;
 mod site_nav;

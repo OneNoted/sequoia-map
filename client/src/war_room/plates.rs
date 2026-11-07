@@ -8,7 +8,7 @@ use sequoia_browser_map::overlay::{PlateLabel, WarPlate, WarPlates};
 use sequoia_shared::war_board::{FrontStage, Outcome, WarBoard, WarFront};
 
 use super::{WarRoom, ending};
-use crate::app::ShowWarMarkers;
+use crate::settings::{self, ViewerSettings};
 use crate::territory::ClientTerritoryMap;
 
 /// One plate per front and per recent outcome, anchored on the territory's top edge; fighting
@@ -60,7 +60,7 @@ fn measured_health(front: &WarFront) -> Option<f32> {
 #[component]
 pub(super) fn WarPlatesLayer() -> impl IntoView {
     let room = expect_context::<WarRoom>();
-    let ShowWarMarkers(show_markers) = expect_context();
+    let show_markers = expect_context::<ViewerSettings>().value(settings::WAR_MARKERS);
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let map = expect_context::<BrowserMap>();
     Effect::new(move || {

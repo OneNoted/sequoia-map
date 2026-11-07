@@ -206,6 +206,46 @@ fn pending_dash(uv: vec2<f32>, size_px: vec2<f32>, border_width: f32) -> f32 {
     return 1.0 - smoothstep(half_dash - 0.5, half_dash + 0.5, from_centre);
 }
 
+// A cooling territory's corners: the border near each runs in dashes, in screen pixels so
+// the rhythm holds at every zoom. The corner's own dash bends round it, then come up to two
+// more, and a gap before the plain border resumes. Returns the dash, the gap and how many
+// gaps; no gaps on a territory too small to show them.
+fn cooldown_corner_dashes(size_px: vec2<f32>, border_width: f32) -> vec3<f32> {
+    let dash = max(border_width, 3.0);
+    let gap = max(border_width * 0.8, 2.5);
+    let short_side = min(size_px.x, size_px.y);
+    // Each corner's dashes take at most a third of a side, so every edge keeps a plain middle.
+    var gaps = clamp(floor((short_side / 3.0 - border_width) / (dash + gap)), 0.0, 3.0);
+    if short_side < 12.0 {
+        gaps = 0.0;
+    }
+    return vec3<f32>(dash, gap, gaps);
+}
+
+// How far from its corner the last gap ends.
+fn cooldown_corner_reach(dashes: vec3<f32>, border_width: f32) -> f32 {
+    return border_width + dashes.x + dashes.z * (dashes.x + dashes.y) - dashes.x;
+}
+
+// 1.0 on a dash, 0.0 in a gap, along the border near a cooling territory's corners; 1.0
+// elsewhere. Distance to the nearest gap's centre is continuous from one period to the next,
+// so a dash's ends are anti-aliased like any other edge.
+fn cooldown_corner_dash(uv: vec2<f32>, size_px: vec2<f32>, border_width: f32, feather: f32) -> f32 {
+    let dashes = cooldown_corner_dashes(size_px, border_width);
+    let dash = dashes.x;
+    let gap = dashes.y;
+    let period = dash + gap;
+    let px = uv * size_px;
+    let along = max(min(px.x, size_px.x - px.x), min(px.y, size_px.y - px.y));
+    // From the first gap's centre; the gaps' centres are whole periods on from it.
+    let from_first_gap = along - (border_width + dash) - gap * 0.5;
+    if dashes.z < 1.0 || from_first_gap < -period * 0.5 || from_first_gap > (dashes.z - 0.5) * period {
+        return 1.0;
+    }
+    let from_gap_centre = abs(fract(from_first_gap / period + 0.5) - 0.5) * period;
+    return smoothstep(gap * 0.5 - feather, gap * 0.5 + feather, from_gap_centre);
+}
+
 // Where a border pixel sits along the outline, clockwise from the top-left corner, 0 to 1.
 fn perimeter_position(uv: vec2<f32>, size_px: vec2<f32>) -> f32 {
     let px = uv * size_px;
@@ -406,15 +446,33 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let device_px = fwidth(in.uv * in.size_px);
     let feather = min(0.5 * max(device_px.x, device_px.y), 1.0);
 
+    // While a territory cools its corners run in dashes, whichever way the cooldown itself is
+    // shown; a war stage's outline has the corners while it lasts. The dashes are firmer and
+    // at least 3px wide, so they read at an ordinary zoom over a guild's usual thin border.
+    // Only the border line itself changes: the bevel and the cooldown bar keep their places.
+    var line_width = border_width;
+    var corner_dash = 1.0;
+    var in_cooling_corner = false;
+    if cooldown_frac > 0.0 && !(is_pending_war || is_at_war) {
+        let corner_width = max(border_width, 3.0);
+        let dashes = cooldown_corner_dashes(in.size_px, corner_width);
+        let reach = cooldown_corner_reach(dashes, corner_width);
+        if dashes.z >= 1.0 && dx <= reach && dy <= reach {
+            line_width = corner_width;
+            corner_dash = cooldown_corner_dash(in.uv, in.size_px, corner_width, feather);
+            in_cooling_corner = true;
+        }
+    }
+
     // Outer edge AA: fade alpha at territory boundary
     let outer_x = smoothstep(-feather, feather, dx);
     let outer_y = smoothstep(-feather, feather, dy);
     let outer_aa = outer_x * outer_y;
 
     // Inner edge: border→fill transition
-    let border_tx = smoothstep(border_width + feather, border_width - feather, dx);
-    let border_ty = smoothstep(border_width + feather, border_width - feather, dy);
-    let border_t = max(border_tx, border_ty);
+    let border_tx = smoothstep(line_width + feather, line_width - feather, dx);
+    let border_ty = smoothstep(line_width + feather, line_width - feather, dy);
+    let border_t = max(border_tx, border_ty) * corner_dash;
 
     // Border alpha (state-dependent)
     var b_alpha: f32;
@@ -427,6 +485,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     if is_headquarters {
         b_alpha = max(b_alpha, 0.88);
+    }
+    if in_cooling_corner {
+        b_alpha = max(b_alpha, 0.95);
     }
     if is_at_war || is_pending_war {
         b_alpha = max(b_alpha, war_opacity);

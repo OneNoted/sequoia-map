@@ -287,21 +287,52 @@
   animation: hud-slide-up 0.18s ease-out both;
 }
 
-/* Custom timeline slider */
+/* Every range input on the map: a thin track and a small knob. The thumb's box stays
+   --tl-thumb wide, which is what the pointer grabs and what History's rails measure
+   (client/src/timeline.rs); the knob drawn in it is smaller, and grows while held. */
+@property --tl-dot {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 4px;
+}
+@property --tl-halo {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 0px;
+}
 .timeline-slider {
-  /* The thumb's diameter, which History's rails also read (client/src/timeline.rs). */
   --tl-thumb: 14px;
+  --tl-track: 4px;
+  /* The knob's radius, the dark ring round it, and the soft halo outside that. */
+  --tl-dot: 4px;
+  --tl-halo: 0px;
+  --tl-knob: var(--color-gold);
+  --tl-halo-color: rgba(245, 197, 66, 0.22);
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
   cursor: pointer;
   background: transparent;
   height: 20px;
+  transition: --tl-dot 0.12s ease, --tl-halo 0.12s ease;
+}
+
+.timeline-slider:hover,
+.timeline-slider:focus-visible,
+.tl-scrub:hover .timeline-slider {
+  --tl-dot: 5px;
+  --tl-halo: 3px;
+}
+
+.timeline-slider:active,
+.tl-scrub-held .timeline-slider {
+  --tl-dot: 5px;
+  --tl-halo: 5px;
 }
 
 .timeline-slider::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
+  height: var(--tl-track);
+  border-radius: 999px;
   background: #282c3e;
   box-shadow: inset 0 1px 2px rgba(0,0,0,0.3);
 }
@@ -310,40 +341,38 @@
   -webkit-appearance: none;
   width: var(--tl-thumb);
   height: var(--tl-thumb);
-  border-radius: 50%;
-  background: #f5c542;
+  margin-top: calc((var(--tl-track) - var(--tl-thumb)) / 2);
   border: none;
-  margin-top: -5px;
-  box-shadow: 0 0 8px rgba(245,197,66,0.3);
-  transition: box-shadow 0.15s ease;
-}
-
-.timeline-slider:hover::-webkit-slider-thumb,
-.tl-scrub:hover .timeline-slider::-webkit-slider-thumb {
-  box-shadow: 0 0 14px rgba(245,197,66,0.5);
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    var(--tl-knob) 0 var(--tl-dot),
+    var(--color-deep) calc(var(--tl-dot) + 0.5px) calc(var(--tl-dot) + 1.5px),
+    var(--tl-halo-color) calc(var(--tl-dot) + 2px) calc(var(--tl-dot) + 1.5px + var(--tl-halo)),
+    transparent calc(var(--tl-dot) + 2px + var(--tl-halo))
+  );
 }
 
 .timeline-slider::-moz-range-track {
-  height: 4px;
-  border-radius: 2px;
+  height: var(--tl-track);
+  border: none;
+  border-radius: 999px;
   background: #282c3e;
   box-shadow: none;
-  border: none;
 }
 
 .timeline-slider::-moz-range-thumb {
   width: var(--tl-thumb);
   height: var(--tl-thumb);
+  border: none;
   border-radius: 50%;
-  background: #f5c542;
-  border: 1px solid rgba(0, 0, 0, 0.2);
-  box-shadow: none;
-  transition: border-color 0.15s ease;
-}
-
-.timeline-slider:hover::-moz-range-thumb,
-.tl-scrub:hover .timeline-slider::-moz-range-thumb {
-  border-color: rgba(0, 0, 0, 0.35);
+  background: radial-gradient(
+    circle,
+    var(--tl-knob) 0 var(--tl-dot),
+    var(--color-deep) calc(var(--tl-dot) + 0.5px) calc(var(--tl-dot) + 1.5px),
+    var(--tl-halo-color) calc(var(--tl-dot) + 2px) calc(var(--tl-dot) + 1.5px + var(--tl-halo)),
+    transparent calc(var(--tl-dot) + 2px + var(--tl-halo))
+  );
   box-shadow: none;
 }
 
@@ -360,28 +389,29 @@
 
 .timeline-overview-slider {
   --tl-thumb: 10px;
+  --tl-track: 3px;
+  --tl-dot: 3px;
+  --tl-knob: var(--color-gold-light);
   position: relative;
   z-index: 1;
   height: 18px;
 }
 
-.timeline-overview-slider::-webkit-slider-runnable-track {
-  height: 3px;
-  background: #202432;
+.timeline-overview-slider:hover,
+.timeline-overview-slider:focus-visible,
+.tl-scrub:hover .timeline-overview-slider,
+.timeline-overview-slider:active,
+.tl-scrub-held .timeline-overview-slider {
+  --tl-dot: 3.5px;
+  --tl-halo: 1.5px;
 }
 
-.timeline-overview-slider::-webkit-slider-thumb {
-  margin-top: -3.5px;
-  background: #ffd966;
+.timeline-overview-slider::-webkit-slider-runnable-track {
+  background: #202432;
 }
 
 .timeline-overview-slider::-moz-range-track {
-  height: 3px;
   background: #202432;
-}
-
-.timeline-overview-slider::-moz-range-thumb {
-  background: #ffd966;
 }
 
 /* Sidebar wrapper — closed by default (off-screen right), class toggle for open */
@@ -2101,11 +2131,9 @@
 }
 .tl-scrub .timeline-slider { pointer-events: none; }
 .tl-scrub-held { cursor: grabbing; }
-.tl-scrub-fine .timeline-slider::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.5), 0 0 10px rgba(168, 85, 247, 0.35);
-}
-.tl-scrub-fine .timeline-slider::-moz-range-thumb {
-  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.5), 0 0 10px rgba(168, 85, 247, 0.35);
+.tl-scrub-fine .timeline-slider {
+  --tl-halo-color: rgba(168, 85, 247, 0.6);
+  --tl-halo: 5px;
 }
 .timeline-bar:has(.tl-scrub-cue) { z-index: 91; }
 .tl-scrub-cue {
@@ -2375,7 +2403,16 @@ button.settings-row:hover {
   flex: 1;
   min-width: 0;
   margin: 0;
-  accent-color: var(--color-gold);
+  /* The track fills to the knob's centre: --tl-filled is the value's share of the range. */
+  --tl-at: calc(var(--tl-thumb) / 2 + (100% - var(--tl-thumb)) * var(--tl-filled, 0));
+}
+.settings-slider input::-webkit-slider-runnable-track {
+  background: linear-gradient(to right, rgba(245,197,66,0.5) 0 var(--tl-at), #282c3e var(--tl-at));
+}
+.settings-slider input::-moz-range-progress {
+  height: var(--tl-track);
+  border-radius: 999px;
+  background: rgba(245,197,66,0.5);
 }
 .settings-value {
   flex: 0 0 auto;
@@ -2425,6 +2462,63 @@ button.settings-row:hover {
   padding: 4px 9px;
   font-family: var(--font-mono);
   font-size: 0.719rem;
+}
+.settings-reset:disabled,
+.settings-history-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+/* A switch and its reset side by side; the reset keeps the column every row ends in. */
+.settings-line {
+  display: flex;
+  align-items: center;
+}
+.settings-line > .settings-row {
+  flex: 1;
+  min-width: 0;
+}
+.settings-line > .settings-default {
+  margin-right: 10px;
+}
+.settings-choice-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+/* Reset one setting to its default: present only while it differs, in a column of its own. */
+.settings-default {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.settings-default:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-gold);
+}
+.settings-default:disabled {
+  visibility: hidden;
+}
+/* What the last Undo or Redo changed, beside the buttons. */
+.settings-notice {
+  min-width: 0;
+  overflow: hidden;
+  padding-right: 4px;
+  font-family: var(--font-body);
+  font-size: 0.74rem;
+  color: var(--color-gold-light);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .settings-disclosure {
   margin-top: 12px;
@@ -2485,6 +2579,7 @@ button.settings-row:hover {
 }
 .settings-row:focus-visible,
 .settings-reset:focus-visible,
+.settings-default:focus-visible,
 .settings-swatch:focus-visible,
 .settings-disclosure > summary:focus-visible,
 .settings-segment input:focus-visible + span,
@@ -2524,15 +2619,18 @@ button.settings-row:hover {
   .settings-segment span { padding: 10px 4px; }
   .settings-swatch { width: 26px; height: 26px; }
   .settings-swatches { gap: 8px; }
-  /* Label and value on one line, a full-width track under them. */
+  .settings-default { width: 30px; height: 30px; }
+  /* Label, value and reset on one line, a full-width track under them. */
   .settings-slider {
     display: grid;
-    grid-template-columns: 1fr auto;
-    grid-template-areas: "label value" "track track";
-    row-gap: 4px;
+    grid-template-columns: 1fr auto auto;
+    grid-template-areas: "label value reset" "track track track";
+    column-gap: 6px;
+    row-gap: 2px;
   }
   .settings-slider-label { grid-area: label; }
   .settings-slider .settings-value { grid-area: value; }
+  .settings-slider .settings-default { grid-area: reset; }
   .settings-slider input { grid-area: track; width: 100%; }
 }
 @media (max-width: 359px) {
@@ -2627,12 +2725,14 @@ button.settings-row:hover {
   .keybind-help-row { font-size: 0.86rem; padding: 4px 0; }
 }
 
-/* Mobile timeline — larger slider thumbs */
+/* Phones: a larger box for a finger to take, around a knob only a little larger. */
 @media (max-width: 767px) {
-  .timeline-slider { --tl-thumb: 24px; }
-  .timeline-slider::-webkit-slider-thumb { margin-top: -10px; }
-  .timeline-slider::-webkit-slider-runnable-track { height: 6px; }
-  .timeline-slider::-moz-range-track { height: 6px; }
+  .timeline-slider { --tl-thumb: 24px; --tl-dot: 5px; }
+  .timeline-slider:hover,
+  .timeline-slider:focus-visible,
+  .tl-scrub:hover .timeline-slider { --tl-dot: 5.5px; --tl-halo: 3px; }
+  .timeline-slider:active,
+  .tl-scrub-held .timeline-slider { --tl-dot: 6px; --tl-halo: 6px; }
 }
 
 /* Desktop: hide mobile-only elements */
@@ -3931,6 +4031,12 @@ a.tcard-guild:focus-visible {
   height: 14px;
   image-rendering: pixelated;
 }
+/* The Sequoia mod connected now: a quiet leaf that never crowds the name. */
+.mrow-mod {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: rgba(80, 200, 120, 0.85);
+}
 /* A long title gives way first by wrapping between its words, so the IGN keeps its room. */
 .mrow-rank {
   flex: 0 3 auto;
@@ -3967,7 +4073,6 @@ a.tcard-guild:focus-visible {
   padding: 0 2px;
   border: 0;
   background: none;
-  font-family: var(--font-body);
   cursor: pointer;
 }
 .mrow-place-go:hover,
@@ -4076,7 +4181,6 @@ a.tcard-guild:focus-visible {
   border-radius: 3px;
   background: var(--color-deep);
   color: var(--color-text-primary);
-  font-family: var(--font-mono);
   font-size: 0.74rem;
   color-scheme: dark;
 }
@@ -4109,9 +4213,10 @@ a.tcard-guild:focus-visible {
   font-size: 0.8rem;
   color: var(--color-text-secondary);
 }
+/* The pixel face reads smaller than the mono one it replaced; a full size keeps each figure
+   above its label. */
 .mwar-stats dd {
-  font-family: var(--font-mono);
-  font-size: 0.92rem;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
   color: var(--color-text-primary);
 }
@@ -4146,13 +4251,20 @@ a.tcard-guild:focus-visible {
   white-space: nowrap;
 }
 .mwar-guild { color: var(--color-text-secondary); }
-.mwar-value {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
+.mwar-value { font-variant-numeric: tabular-nums; }
 .mwar-value[data-state="unavailable"],
 .mwar-value[data-state="off-season"] { color: var(--color-text-secondary); }
 .mwar-profile { justify-self: start; }
+.mwar-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.mwar-mod {
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
 .mwar-glance {
   font-size: 0.76rem;
   color: var(--color-text-primary);
@@ -4180,10 +4292,12 @@ a.tcard-guild:focus-visible {
 .mwar-custom input[aria-invalid="true"] { border-color: rgba(255, 138, 138, 0.7); }
 
 /* The Minecraft face, as on seqwawa.com: names, ranks, headings, short labels and the compact
-   map controls. Prose, places and numbers keep Inter and JetBrains Mono for reading. */
+   map controls. Prose, places and numbers keep Inter and JetBrains Mono for reading, except on
+   an online member's row and its expanded detail, which are in the Minecraft face throughout. */
 .war-member-name,
 .mrow-name,
 .mrow-rank,
+.mrow-place,
 .sb-member-name,
 .sb-member-rank,
 .player-dialog-status,
@@ -4201,7 +4315,8 @@ a.tcard-guild:focus-visible {
 .sb-online,
 .mwar-periods,
 .mc-action,
-.sb-mode {
+.sb-mode,
+.mrow-detail {
   font-family: var(--font-display);
   font-weight: 400;
 }
