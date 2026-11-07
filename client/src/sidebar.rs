@@ -33,8 +33,8 @@ use crate::territory_card::{
 use crate::tower::TowerCalculator;
 use crate::ui::{Disclosure, MapPinIcon, PanelNav, SCROLLER};
 use crate::war_room::ActivityDisclosure;
-use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
+use sequoia_browser_map::{BrowserMap, MapCamera};
 
 /// Newer than this, the live feed counts as working.
 const LIVE_FRESH_SECS: i64 = 120;
@@ -78,6 +78,67 @@ fn live_source_display_label(source: &str) -> Option<&'static str> {
 /// A guild's colour as the swatch and card edges use it.
 fn guild_css((r, g, b): (u8, u8, u8)) -> String {
     rgba_css(r, g, b, 0.9)
+}
+
+/// What a row in the search results or the leaderboard stands for. A click and Enter both open
+/// it through [`OpenEntry`], so they cannot disagree about what the row is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarEntry {
+    Territory(String),
+    Guild(String),
+}
+
+/// Opens a sidebar row. Built from context while a component is set up, so it can run from
+/// event handlers.
+#[derive(Clone, Copy)]
+pub(crate) struct OpenEntry {
+    territories: RwSignal<ClientTerritoryMap>,
+    camera: MapCamera,
+    mode: RwSignal<MapMode>,
+    selected: RwSignal<Option<String>>,
+    selected_guild: RwSignal<Option<String>>,
+    detail_return_guild: RwSignal<Option<String>>,
+    sidebar_open: RwSignal<bool>,
+}
+
+impl OpenEntry {
+    pub fn from_context() -> Self {
+        let CurrentMode(mode) = expect_context();
+        let Selected(selected) = expect_context();
+        let SelectedGuild(selected_guild) = expect_context();
+        let DetailReturnGuild(detail_return_guild) = expect_context();
+        let SidebarOpen(sidebar_open) = expect_context();
+        Self {
+            territories: expect_context(),
+            camera: expect_context::<BrowserMap>().camera(),
+            mode,
+            selected,
+            selected_guild,
+            detail_return_guild,
+            sidebar_open,
+        }
+    }
+
+    /// A territory opens its detail with the map on it; a guild opens its panel. Enter can
+    /// reach a row while the sidebar is closed, and on the live map the sidebar opens to show it.
+    pub fn run(&self, entry: &SidebarEntry) {
+        match entry {
+            SidebarEntry::Territory(name) => {
+                self.detail_return_guild.set(None);
+                self.selected.set(Some(name.clone()));
+                if let Some(region) = self
+                    .territories
+                    .with_untracked(|map| map.get(name).map(|ct| ct.territory.location.clone()))
+                {
+                    self.camera.focus(&region);
+                }
+            }
+            SidebarEntry::Guild(name) => self.selected_guild.set(Some(name.clone())),
+        }
+        if self.mode.get_untracked() == MapMode::Live && !self.sidebar_open.get_untracked() {
+            self.sidebar_open.set(true);
+        }
+    }
 }
 
 /// Sidebar with search, leaderboard, detail panel, and stats.
@@ -331,9 +392,7 @@ fn LiveDataBadge() -> impl IntoView {
 fn SearchResults() -> impl IntoView {
     let search_query: RwSignal<String> = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let Selected(selected) = expect_context();
-    let DetailReturnGuild(detail_return_guild) = expect_context();
-    let camera = expect_context::<BrowserMap>().camera();
+    let open_entry = OpenEntry::from_context();
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
 
@@ -365,8 +424,12 @@ fn SearchResults() -> impl IntoView {
 
     // Sync sidebar items for keyboard navigation
     Effect::new(move || {
-        let items: Vec<String> =
-            filtered.with(|found| found.iter().map(|(name, ..)| name.clone()).collect());
+        let items: Vec<SidebarEntry> = filtered.with(|found| {
+            found
+                .iter()
+                .map(|(name, ..)| SidebarEntry::Territory(name.clone()))
+                .collect()
+        });
         if items != sidebar_items.get_untracked() {
             sidebar_index.set(0);
         }
@@ -391,14 +454,8 @@ fn SearchResults() -> impl IntoView {
                             let name = name.clone();
                             move |_| filtered.with(|found| found.iter().position(|(found, ..)| *found == name))
                         });
-                        let open = name.clone();
-                        let on_click = move |_| {
-                            detail_return_guild.set(None);
-                            selected.set(Some(open.clone()));
-                            if let Some(region) = territories.with_untracked(|map| map.get(&open).map(|ct| ct.territory.location.clone())) {
-                                camera.focus(&region);
-                            }
-                        };
+                        let entry = SidebarEntry::Territory(name.clone());
+                        let on_click = move |_| open_entry.run(&entry);
                         view! {
                             <li data-sidebar-idx=move || index.get().map(|index| index.to_string()) class="sb-row" class:sb-row-focused=move || index.get() == Some(sidebar_index.get()) on:click=on_click>
                                 <span class="sb-swatch" style:--swatch=guild_css(color) aria-hidden="true" />
@@ -430,7 +487,7 @@ struct GuildRow {
 #[component]
 fn LeaderboardPanel() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let SelectedGuild(selected_guild) = expect_context();
+    let open_entry = OpenEntry::from_context();
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
     let CurrentMode(mode) = expect_context();
@@ -512,10 +569,13 @@ fn LeaderboardPanel() -> impl IntoView {
         sorted
     });
 
-    // Sync sidebar items for keyboard navigation (guild names for leaderboard)
+    // Sync sidebar items for keyboard navigation
     Effect::new(move || {
-        let items: Vec<String> =
-            leaderboard.with(|rows| rows.iter().map(|row| row.name.clone()).collect());
+        let items: Vec<SidebarEntry> = leaderboard.with(|rows| {
+            rows.iter()
+                .map(|row| SidebarEntry::Guild(row.name.clone()))
+                .collect()
+        });
         if items != sidebar_items.get_untracked() {
             sidebar_index.set(0);
         }
@@ -579,7 +639,7 @@ fn LeaderboardPanel() -> impl IntoView {
                                 format!("{}/h", rate(row.passive_sr_per_hour))
                             };
                             let rating = row.season_rating.map(compact);
-                            let open = row.name.clone();
+                            let entry = SidebarEntry::Guild(row.name.clone());
                             let online_name = row.name.clone();
                             let podium = match rank {
                                 1 => "text-gold-gradient",
@@ -596,7 +656,7 @@ fn LeaderboardPanel() -> impl IntoView {
                                     class:sb-row-focused=move || sidebar_index.get() == index
                                     style:--swatch=guild_css(row.color)
                                     style:--row-delay=format!("{}ms", rank * 30)
-                                    on:click=move |_| selected_guild.set(Some(open.clone()))
+                                    on:click=move |_| open_entry.run(&entry)
                                 >
                                     <span class=format!("sb-rank {podium}")>{rank}</span>
                                     <span class="sb-swatch" aria-hidden="true" />

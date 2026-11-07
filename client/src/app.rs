@@ -117,7 +117,7 @@ pub(crate) struct SidebarTransient(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct SidebarIndex(pub RwSignal<usize>);
 #[derive(Clone, Copy)]
-pub(crate) struct SidebarItems(pub RwSignal<Vec<String>>);
+pub(crate) struct SidebarItems(pub RwSignal<Vec<SidebarEntry>>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowSettings(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -301,7 +301,7 @@ use crate::map_intel::MapIntelOverlay;
 use crate::navbar::{CurrentViewer, SiteNavbar};
 use crate::season_scalar;
 use crate::settings::{self, Layout, Overlay, ViewerSettings};
-use crate::sidebar::Sidebar;
+use crate::sidebar::{OpenEntry, Sidebar, SidebarEntry};
 use crate::territory::{ClientTerritoryMap, from_snapshot};
 use crate::territory_card::{
     DefenseValue, ResourceRow, ResourceTable, TerritoryHead, TerritoryWar, TreasuryValue, cooldown,
@@ -410,7 +410,7 @@ pub fn MapPage() -> impl IntoView {
     let sidebar_ready: RwSignal<bool> = RwSignal::new(false);
     let sidebar_loaded: RwSignal<bool> = RwSignal::new(layout.sidebar_open);
     let sidebar_index: RwSignal<usize> = RwSignal::new(0);
-    let sidebar_items: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
+    let sidebar_items: RwSignal<Vec<SidebarEntry>> = RwSignal::new(Vec::new());
     let keybind_help_open: RwSignal<bool> = RwSignal::new(false);
     let show_settings: RwSignal<bool> = RwSignal::new(false);
     // Live-first boot: defer non-essential work (tiles/history checks/icons)
@@ -715,6 +715,7 @@ pub fn MapPage() -> impl IntoView {
     provide_context(PeekTerritory(peek_territory));
     provide_context(SelectedGuild(selected_guild));
     provide_context(DetailReturnGuild(detail_return_guild));
+    let open_entry = OpenEntry::from_context();
     provide_context(GuildOnlineData(guild_online_data));
     provide_context(LeaderboardSortBySr(leaderboard_sort_by_sr));
     provide_context(HeatEntriesByTerritory(heat_entries_by_territory));
@@ -1661,27 +1662,11 @@ pub fn MapPage() -> impl IntoView {
                         }
                     }
                     Shortcut::OpenListItem => {
-                        let items = sidebar_items.get_untracked();
-                        let idx = sidebar_index.get_untracked();
-                        if let Some(name) = items.get(idx) {
-                            let map = territories.get_untracked();
-                            let has_active_search = !search_query.get_untracked().trim().is_empty();
-                            if has_active_search {
-                                // Search results are territory names.
-                                detail_return_guild.set(None);
-                                selected.set(Some(name.clone()));
-                                if let Some(ct) = map.get(name) {
-                                    camera.focus(&ct.territory.location);
-                                }
-                            } else {
-                                // Guild name (from leaderboard) — open guild panel
-                                selected_guild.set(Some(name.clone()));
-                            }
-                            if map_mode.get_untracked() == MapMode::Live
-                                && !sidebar_open.get_untracked()
-                            {
-                                sidebar_open.set(true);
-                            }
+                        let index = sidebar_index.get_untracked();
+                        if let Some(entry) =
+                            sidebar_items.with_untracked(|items| items.get(index).cloned())
+                        {
+                            open_entry.run(&entry);
                         }
                     }
                     Shortcut::PanLeft => {
