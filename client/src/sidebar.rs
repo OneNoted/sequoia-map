@@ -1066,8 +1066,9 @@ fn GuildPanel() -> impl IntoView {
                         </section>
                     })
                 }}
-                <Show when=move || list_placed() && guild_territories.with(|owned| !owned.is_empty())>
-                    <section class="tcard-section panel-reveal" aria-label="Territories">
+                // A waiting list keeps its room, so neither it nor a phone's sheet moves when it shows.
+                <Show when=move || guild_territories.with(|owned| !owned.is_empty())>
+                    <section class="tcard-section sb-territories-section" data-held=move || (!list_placed()).to_string() aria-label="Territories">
                         <h3 class="tcard-section-title">"Territories"</h3>
                         <ul class="sb-territories">
                             <For

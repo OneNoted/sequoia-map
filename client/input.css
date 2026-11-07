@@ -3485,6 +3485,10 @@ a.tcard-guild:focus-visible {
 
 .tcard-section { margin-top: 14px; }
 
+/* A guild's territories wait unseen in their place until the members above them have theirs. */
+.sb-territories-section[data-held="true"] { visibility: hidden; }
+.sb-territories-section[data-held="false"] { animation: panel-reveal 0.25s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
 .tcard-section-title {
   font-size: 0.86rem;
   font-weight: 600;
