@@ -1296,6 +1296,7 @@
 }
 
 /* --- Mobile bottom sheet layout --- */
+/* One height whatever the view holds, so moving between views never moves the sheet's header. */
 @media (max-width: 767px) {
   .sidebar-wrapper {
     top: auto;
@@ -1303,8 +1304,8 @@
     bottom: 0;
     left: 0;
     width: 100%;
-    max-height: 70vh;
-    max-height: 70dvh;
+    height: 70vh;
+    height: 70dvh;
     padding-bottom: env(safe-area-inset-bottom, 0px);
     transform: translateY(100%);
     display: flex;
@@ -1461,11 +1462,13 @@
   box-shadow: -4px 0 20px rgba(0,0,0,0.4), inset 1px 0 0 rgba(168,85,247,0.04);
 }
 
-/* Keyboard scrolling and revealed content stop short of the sticky navigation row. */
+/* Keyboard scrolling and revealed content stop short of the sticky navigation row. The
+   scrollbar's room is kept in every view, so a short view's header ends where a long one's does. */
 .sb-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   scroll-padding-top: calc(var(--sb-control) + 18px);
 }
