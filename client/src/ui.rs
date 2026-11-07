@@ -94,8 +94,8 @@ pub(crate) fn MapPinIcon() -> impl IntoView {
 }
 
 /// The head of every sidebar view, one row that stays in place while the view scrolls: Back,
-/// the view's title, its own actions or status, and Close. Each view fills only what it has, so
-/// the row is only as tall as its title and controls.
+/// the view's title, its own actions or status, and Close. Each view fills only what it has. The
+/// row is one control tall, and taller only for a name long enough to take a second line.
 #[component]
 pub(crate) fn ViewHead(
     /// What Back does, and what it says it goes back to.
