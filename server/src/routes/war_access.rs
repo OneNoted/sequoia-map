@@ -509,6 +509,7 @@ mod tests {
                         crate::state::CachedGuild {
                             data: format!(r#"{{"members":{{"chief":{{"EpicPuppy613":{{"uuid":"{MEMBER}"}}}}}}}}"#),
                             fetched_at: Utc::now(),
+                            observed_at: Utc::now(),
                         },
                     );
                     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

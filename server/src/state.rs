@@ -233,6 +233,8 @@ pub struct AppState {
 pub struct CachedGuild {
     pub data: String,
     pub fetched_at: DateTime<Utc>,
+    /// When Wynncraft produced `data`, which its CDN may have held before `fetched_at`.
+    pub observed_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -307,6 +309,8 @@ pub struct CachedSeasonLeaderboard {
     pub season_id: i32,
     pub entries: Vec<CachedSeasonLeaderboardEntry>,
     pub fetched_at: DateTime<Utc>,
+    /// When Wynncraft produced `entries`, which its CDN may have held before `fetched_at`.
+    pub observed_at: DateTime<Utc>,
 }
 
 /// Wynncraft season definitions. Near-static, so this is cached to keep the

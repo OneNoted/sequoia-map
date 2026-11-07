@@ -910,6 +910,7 @@ mod tests {
                         data: r#"{"members":{"chief":{"EpicPuppy613":{"uuid":"ee860b7c-9a1d-49cf-9f19-ab673ba0f23b"}}}}"#
                             .to_string(),
                         fetched_at: Utc::now(),
+                        observed_at: Utc::now(),
                     },
                 );
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");

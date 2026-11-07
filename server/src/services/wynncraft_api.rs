@@ -124,6 +124,18 @@ struct RawGatheringNode {
     level: Option<i32>,
 }
 
+/// When Wynncraft produced an answer: now, less the age its CDN reports holding it.
+pub(crate) fn observed_at(response: &reqwest::Response) -> DateTime<Utc> {
+    let age_secs = response
+        .headers()
+        .get(reqwest::header::AGE)
+        .and_then(|age| age.to_str().ok())
+        .and_then(|age| age.trim().parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
+    Utc::now() - chrono::Duration::seconds(age_secs)
+}
+
 pub async fn fetch_guild_seasons(
     client: &reqwest::Client,
 ) -> Result<HashMap<String, GuildSeasonDefinition>, String> {
@@ -697,14 +709,16 @@ async fn fetch_guild_season_leaderboard(
     result_limit: u16,
 ) -> Result<CachedSeasonLeaderboard, String> {
     let url = format!("{WYNNCRAFT_LEADERBOARDS_URL}/guildSeason{season_id}");
-    let raw_entries = client
+    let response = client
         .get(url)
         .query(&[("resultLimit", result_limit)])
         .send()
         .await
         .map_err(|e| format!("season leaderboard request failed: {e}"))?
         .error_for_status()
-        .map_err(|e| format!("season leaderboard status: {e}"))?
+        .map_err(|e| format!("season leaderboard status: {e}"))?;
+    let observed_at = observed_at(&response);
+    let raw_entries = response
         .json::<HashMap<String, RawLeaderboardEntry>>()
         .await
         .map_err(|e| format!("season leaderboard decode failed: {e}"))?;
@@ -731,6 +745,7 @@ async fn fetch_guild_season_leaderboard(
         season_id,
         entries,
         fetched_at: Utc::now(),
+        observed_at,
     })
 }
 
