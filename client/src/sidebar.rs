@@ -458,7 +458,7 @@ fn SearchResults() -> impl IntoView {
                         let on_click = move |_| open_entry.run(&entry);
                         view! {
                             <li data-sidebar-idx=move || index.get().map(|index| index.to_string()) class="sb-row" class:sb-row-focused=move || index.get() == Some(sidebar_index.get()) on:click=on_click>
-                                <span class="sb-swatch" style:--swatch=guild_css(color) aria-hidden="true" />
+                                <span class="guild-mark" style:--swatch=guild_css(color) aria-hidden="true" />
                                 <span class="sb-row-text">
                                     <span class="sb-row-name">{name}</span>
                                     <span class="sb-row-sub">{guild}</span>
@@ -659,8 +659,8 @@ fn LeaderboardPanel() -> impl IntoView {
                                     on:click=move |_| open_entry.run(&entry)
                                 >
                                     <span class=format!("sb-rank {podium}")>{rank}</span>
-                                    <span class="sb-swatch" aria-hidden="true" />
-                                    <span class="sb-row-name">{row.name}</span>
+                                    <span class="guild-mark" aria-hidden="true" />
+                                    <span class="sb-row-name guild-name">{row.name}</span>
                                     <span class="sb-row-tag">"[" {row.prefix} "]"</span>
                                     {move || show_leaderboard_sr_gain.get().then(|| view! { <span class="sb-chip sb-chip-rate">{sr_badge.clone()}</span> })}
                                     {move || (sort_by_sr.get() || show_leaderboard_sr_value.get()).then(|| rating.clone().map(|rating| view! { <span class="sb-chip sb-chip-rating">{rating}</span> }))}
@@ -907,8 +907,8 @@ fn GuildPanel() -> impl IntoView {
             <PanelNav close=("Close guild", close) />
             <article class="tcard tcard-sidebar" aria-busy=move || (facts.with(Option::is_none) && !failed.get()).to_string()>
                 <header class="tcard-head">
-                    <span class="tcard-swatch" aria-hidden="true" />
-                    <h2 class="tcard-name">
+                    <span class="guild-mark" aria-hidden="true" />
+                    <h2 class="tcard-name guild-name">
                         {move || {
                             let name = selected_guild.get().unwrap_or_default();
                             let url = crate::guild_stats_url(&name);
@@ -991,7 +991,7 @@ fn GuildPanel() -> impl IntoView {
                                     view! {
                                         <li>
                                             <button type="button" class="sb-territory" title=title on:click=move |_| open_territory.run(open.clone())>
-                                                <span class="sb-swatch" aria-hidden="true" />
+                                                <span class="guild-mark" aria-hidden="true" />
                                                 <span class="sb-row-name">{territory}</span>
                                             </button>
                                         </li>

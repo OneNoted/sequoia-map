@@ -50,7 +50,7 @@ pub(crate) fn TerritoryHead(
     };
     view! {
         <header class="tcard-head">
-            <span class="tcard-swatch" aria-hidden="true" />
+            <span class="guild-mark" aria-hidden="true" />
             {name}
             {hq.then(|| view! { <span class="tcard-hq" title="Headquarters">"HQ"</span> })}
         </header>

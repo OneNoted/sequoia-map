@@ -1694,16 +1694,19 @@
 .sb-row-focused { box-shadow: inset 2px 0 0 var(--color-gold); }
 .sb-row-podium,
 .sb-guild-row.sb-row-focused { box-shadow: inset 2px 0 0 var(--swatch); }
-.sb-swatch {
+/* A guild's colour beside a name: the leaderboard, search results, a guild's territories and
+   every card's head. Only its size changes with where it is, through --guild-mark-size. */
+.guild-mark {
   flex-shrink: 0;
-  width: 14px;
-  height: 14px;
+  width: var(--guild-mark-size, 14px);
+  height: var(--guild-mark-size, 14px);
   border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 3px;
+  border-radius: calc(var(--guild-mark-size, 14px) / 5);
   background: var(--swatch, var(--tcard-guild));
   box-shadow: inset 1px 1px 0 rgba(255,255,255,0.06), inset -1px -1px 0 rgba(0,0,0,0.3);
 }
-.sb-guild-row .sb-swatch { width: 16px; height: 16px; }
+.sb-guild-row { --guild-mark-size: 16px; }
+.sb-guild-row .guild-name { font-size: 1rem; }
 .sb-rank {
   flex-shrink: 0;
   width: 26px;
@@ -1859,11 +1862,7 @@
 }
 .sb-territory:hover,
 .sb-territory:focus-visible { background: var(--color-surface-hover); }
-.sb-territory .sb-swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-}
+.sb-territory { --guild-mark-size: 10px; }
 .sb-territory .sb-row-name {
   font-family: inherit;
   font-size: inherit;
@@ -3200,6 +3199,7 @@ button.settings-row:hover {
    numbers are tabular mono; only the territory name uses the pixel face. */
 .tcard {
   --tcard-rule: rgba(58, 63, 92, 0.55);
+  --guild-mark-size: 12px;
   color: var(--color-text-primary);
   font-family: var(--font-body);
 }
@@ -3209,15 +3209,6 @@ button.settings-row:hover {
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-.tcard-swatch {
-  flex-shrink: 0;
-  width: 12px;
-  height: 12px;
-  border-radius: 2px;
-  background: var(--tcard-guild);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
 }
 
 .tcard-name {
@@ -3249,7 +3240,7 @@ button.settings-row:hover {
   align-items: baseline;
   gap: 6px;
   min-width: 0;
-  margin: 1px 0 0 20px;
+  margin: 1px 0 0 calc(var(--guild-mark-size) + 8px);
   font-size: 0.84rem;
 }
 
@@ -3565,14 +3556,14 @@ a.tcard-guild:focus-visible {
 /* The sidebar's guild and territory views: the same card, in the sidebar's gutter. The guild
    colour shows in the swatch beside the name; no stripe runs down the panel. */
 .tcard-sidebar {
+  --guild-mark-size: 16px;
   padding: 2px var(--sb-gutter) 16px;
 }
 
 .tcard-sidebar-tail { padding-top: 0; }
 
 .tcard-sidebar .tcard-name { font-size: 1.2rem; }
-.tcard-sidebar .tcard-swatch { width: 14px; height: 14px; }
-.tcard-sidebar .tcard-owner { margin-left: 22px; font-size: 0.95rem; }
+.tcard-sidebar .tcard-owner { font-size: 0.95rem; }
 .tcard-sidebar .tcard-stats dd { font-size: 0.92rem; }
 .tcard-sidebar .tcard-resources { font-size: 0.88rem; }
 
@@ -4293,6 +4284,7 @@ a.tcard-guild:focus-visible {
    map controls. Prose, places and numbers keep Inter and JetBrains Mono for reading, except on
    an online member's row and its expanded detail, which are in the Minecraft face throughout. */
 .war-member-name,
+.guild-name,
 .mrow-name,
 .mrow-rank,
 .mrow-place,
