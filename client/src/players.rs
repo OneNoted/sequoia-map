@@ -17,10 +17,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlImageElement;
 
-use crate::app::{
-    CurrentMode, MapMode, PlayerHeadRenderHead, PlayerHeadRenderLabel, PlayerHeadSize,
-    ShowPlayerHeads, WarControllerData, WarFeedVisible, clamp_player_head_size,
-};
+use crate::app::{CurrentMode, MapMode, WarControllerData, WarFeedVisible};
+use crate::settings::{self, ViewerSettings, clamp_player_head_size};
 use crate::territory::ClientTerritoryMap;
 use crate::viewport::Viewport;
 use sequoia_browser_map::BrowserMap;
@@ -172,10 +170,11 @@ fn image_ready(image: &HtmlImageElement) -> bool {
 
 #[component]
 pub(crate) fn PlayerHeadsOverlay() -> impl IntoView {
-    let ShowPlayerHeads(show_heads) = expect_context();
-    let PlayerHeadRenderHead(render_head) = expect_context();
-    let PlayerHeadRenderLabel(render_label) = expect_context();
-    let PlayerHeadSize(head_size) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let show_heads = settings.value(settings::TEAMMATE_HEADS);
+    let render_head = settings.value(settings::TEAMMATE_FACES);
+    let render_label = settings.value(settings::TEAMMATE_NAMES);
+    let head_size = settings.value(settings::HEAD_SIZE);
     let WarControllerData(warcontroller_state) = expect_context();
     let WarFeedVisible(war_feed_visible) = expect_context();
     let CurrentMode(map_mode) = expect_context();

@@ -435,6 +435,29 @@ impl MapFocus {
             z + POSITION_CONTEXT_WORLD,
         ));
     }
+
+    /// Where the map can show `member`, from [`member_spot`] over the territories drawn.
+    pub fn spot(&self, member: &RosterMember) -> Option<MemberSpot> {
+        self.territories.with(|map| member_spot(member, map))
+    }
+}
+
+/// Where the map can show a member.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MemberSpot {
+    Territory(String),
+    Position((f64, f64)),
+}
+
+/// The territory a member is in when the map has it, otherwise the position they reported.
+/// Every row and detail that offers to show a member asks this; how each moves the map is its
+/// own.
+pub(crate) fn member_spot(member: &RosterMember, map: &ClientTerritoryMap) -> Option<MemberSpot> {
+    member
+        .territory()
+        .filter(|territory| map.contains_key(*territory))
+        .map(|territory| MemberSpot::Territory(territory.to_string()))
+        .or_else(|| member.position().map(MemberSpot::Position))
 }
 
 /// Square colour for a Wynncraft difficulty tier, light green through dark red. Deliberately
@@ -600,6 +623,53 @@ mod tests {
             })),
             "Location unknown"
         );
+    }
+
+    #[test]
+    fn a_member_is_shown_in_a_drawn_territory_or_else_at_their_position() {
+        let map = map();
+        let member = |presence| RosterMember {
+            username: "x".into(),
+            class: None,
+            presence,
+        };
+        let online = |territory: Option<&str>, position| {
+            member(Presence::Online {
+                territory: territory.map(str::to_string),
+                position,
+            })
+        };
+        assert_eq!(
+            member_spot(
+                &member(Presence::Warring {
+                    territory: "Ragni".into()
+                }),
+                &map
+            ),
+            Some(MemberSpot::Territory("Ragni".into()))
+        );
+        assert_eq!(
+            member_spot(&online(Some("Detlas"), Some((250.0, 50.0))), &map),
+            Some(MemberSpot::Territory("Detlas".into()))
+        );
+        assert_eq!(
+            member_spot(&online(None, Some((150.0, 50.0))), &map),
+            Some(MemberSpot::Position((150.0, 50.0)))
+        );
+        assert_eq!(
+            member_spot(&online(Some("Nowhere"), Some((150.0, 50.0))), &map),
+            Some(MemberSpot::Position((150.0, 50.0)))
+        );
+        assert_eq!(
+            member_spot(
+                &member(Presence::Warring {
+                    territory: "Nowhere".into()
+                }),
+                &map
+            ),
+            None
+        );
+        assert_eq!(member_spot(&online(None, None), &map), None);
     }
 
     #[test]

@@ -71,6 +71,12 @@ pub struct MemberRosterRoles {
     pub roles: std::collections::BTreeMap<String, Vec<WarRole>>,
     #[serde(default)]
     pub progression: std::collections::BTreeMap<String, ProgressionRank>,
+    /// Members with a Sequoia mod session open when asked, matched to the roster by UUID, and
+    /// the mod versions their sessions reported (empty when none could tell). `None` when the
+    /// backend could not be asked. A name missing from a map that is present has no open
+    /// session at that moment, which is not proof they do not use the mod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mod_sessions: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }
 
 /// What the rank-profile feed says about this player.

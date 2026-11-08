@@ -29,6 +29,11 @@ use crate::services::season_data::{self, SeasonWindowSource};
 use crate::state::{AppState, CachedRankRoles, RankedProfile};
 
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
+/// The backend answers connected sessions from memory; a slow answer is not worth holding the
+/// roster for.
+const CONNECTED_MEMBERS_TIMEOUT: Duration = Duration::from_secs(2);
+/// Longest mod version shown; the mod reports its own, unchecked.
+const MOD_VERSION_MAX_CHARS: usize = 32;
 const PROGRESSION_RANK: &str = "progression_rank";
 const ROSTER_RANKS: [&str; 6] = [
     "owner",
@@ -63,12 +68,19 @@ async fn get_roster_roles(State(state): State<AppState>, headers: HeaderMap) -> 
         Ok(roster) => roster,
         Err(status) => return status.into_response(),
     };
-    let Some(feed) = rank_roles(&state).await else {
+    let (feed, connected) = tokio::join!(rank_roles(&state), connected_members(&state));
+    let Some(feed) = feed else {
         return StatusCode::BAD_GATEWAY.into_response();
     };
     let mut roles = BTreeMap::new();
     let mut progression = BTreeMap::new();
+    let mut mod_sessions = connected.as_ref().map(|_| BTreeMap::new());
     for entry in roster_entries(&roster) {
+        if let (Some(connected), Some(sessions)) = (&connected, &mut mod_sessions)
+            && let Some(versions) = connected.get(&entry.uuid.to_ascii_lowercase())
+        {
+            sessions.insert(entry.username.clone(), versions.clone());
+        }
         if let Some(held) = feed.roles.get(&entry.uuid) {
             roles.insert(entry.username.clone(), held.clone());
         }
@@ -82,7 +94,68 @@ async fn get_roster_roles(State(state): State<AppState>, headers: HeaderMap) -> 
         stale: feed.stale || !is_fresh(&feed, Utc::now()),
         roles,
         progression,
+        mod_sessions,
     })
+}
+
+#[derive(Deserialize)]
+struct ConnectedMembersBody {
+    members: Vec<ConnectedMember>,
+}
+
+#[derive(Deserialize)]
+struct ConnectedMember {
+    minecraft_uuid: String,
+    #[serde(default)]
+    mod_versions: Vec<String>,
+}
+
+/// The backend's guild members with a mod session open now, by lowercase UUID, with the versions
+/// worth showing. `None` when the backend could not be asked; asked fresh for every roster read.
+async fn connected_members(state: &AppState) -> Option<HashMap<String, Vec<String>>> {
+    let mut request = state
+        .http_client
+        .get(config::connected_members_url()?)
+        .timeout(CONNECTED_MEMBERS_TIMEOUT);
+    if let Some(token) = config::sequoia_backend_internal_token() {
+        request = request.bearer_auth(token);
+    }
+    let body = request
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json::<ConnectedMembersBody>()
+        .await
+        .ok()?;
+    Some(
+        body.members
+            .into_iter()
+            .map(|member| {
+                let mut versions: Vec<String> = member
+                    .mod_versions
+                    .into_iter()
+                    .filter_map(|version| shown_mod_version(&version))
+                    .collect();
+                versions.sort();
+                versions.dedup();
+                (member.minecraft_uuid.to_ascii_lowercase(), versions)
+            })
+            .collect(),
+    )
+}
+
+/// A reported mod version as shown, or `None` for one that is not a plain version string.
+fn shown_mod_version(reported: &str) -> Option<String> {
+    let version = reported.trim();
+    let plain = !version.is_empty()
+        && version.chars().count() <= MOD_VERSION_MAX_CHARS
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
+        && !version.eq_ignore_ascii_case("unknown");
+    plain.then(|| version.to_string())
 }
 
 /// `GET /api/members/{username}`: who they are now.
@@ -177,7 +250,12 @@ async fn sequoia_roster(
     super::war_access::war_access(state, headers)
         .await
         .into_result()?;
-    let payload = super::api::guild_payload(state, config::SEQUOIA_GUILD_NAME.to_string()).await?;
+    let payload = super::api::guild_payload(
+        state,
+        config::SEQUOIA_GUILD_NAME.to_string(),
+        config::GUILD_CACHE_TTL_SECS,
+    )
+    .await?;
     serde_json::from_str(&payload).map_err(|_| StatusCode::BAD_GATEWAY)
 }
 
@@ -694,6 +772,18 @@ mod tests {
             .route(
                 "/internal/war-points/players/{uuid}",
                 get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+            )
+            .route(
+                "/internal/connected-members",
+                get(|| async {
+                    axum::Json(serde_json::json!({"members": [
+                        {"minecraft_uuid": "EE860B7C-9A1D-49CF-9F19-AB673BA0F23B",
+                         "minecraft_username": "epicpuppy613",
+                         "mod_versions": ["1.10.14", "unknown", "<b>1.0</b>", "1.10.14"]},
+                        {"minecraft_uuid": "22222222-2222-2222-2222-222222222222",
+                         "minecraft_username": "NotInTheGuildNow", "mod_versions": ["1.10.14"]}
+                    ]}))
+                }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -820,6 +910,7 @@ mod tests {
                         data: r#"{"members":{"chief":{"EpicPuppy613":{"uuid":"ee860b7c-9a1d-49cf-9f19-ab673ba0f23b"}}}}"#
                             .to_string(),
                         fetched_at: Utc::now(),
+                        observed_at: Utc::now(),
                     },
                 );
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -853,9 +944,38 @@ mod tests {
                     assert_eq!(header("cache-control").as_deref(), Some("private, no-store"), "{path}");
                     assert_eq!(header("vary").as_deref(), Some("Cookie"), "{path}");
                 }
+                let roster: MemberRosterRoles = client
+                    .get(format!("http://{addr}/api/members"))
+                    .header("cookie", "seq_session=member")
+                    .send()
+                    .await
+                    .expect("request")
+                    .json()
+                    .await
+                    .expect("roster");
+                assert_eq!(
+                    roster.mod_sessions,
+                    Some(BTreeMap::from([(
+                        "EpicPuppy613".to_string(),
+                        vec!["1.10.14".to_string()]
+                    )])),
+                    "matched by UUID under the roster's own spelling, with only plain versions"
+                );
             });
             },
         );
+    }
+
+    #[test]
+    fn only_plain_mod_versions_are_shown() {
+        assert_eq!(shown_mod_version(" 1.10.14 ").as_deref(), Some("1.10.14"));
+        assert_eq!(
+            shown_mod_version("1.11.0-beta.2+fabric").as_deref(),
+            Some("1.11.0-beta.2+fabric")
+        );
+        for hidden in ["", "unknown", "UNKNOWN", "1.0 <b>", &"9".repeat(33)] {
+            assert_eq!(shown_mod_version(hidden), None, "{hidden:?}");
+        }
     }
 
     #[test]

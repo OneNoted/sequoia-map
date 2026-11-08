@@ -1,5 +1,5 @@
 //! The sidebar: search, the guild leaderboard, a guild, a territory, settings and the toolbar.
-//! Every view opens with the same navigation row and uses the same gutters, headings and
+//! Every view opens with the same one-row head and uses the same gutters, headings and
 //! controls, so moving between them changes the content and not the layout.
 
 use leptos::prelude::*;
@@ -10,21 +10,20 @@ use sequoia_shared::{
 };
 
 use crate::app::{
-    AutoSrScalarEnabled, CurrentMode, DetailReturnGuild, GuildColorStore, GuildOnlineData,
-    HeatEntriesByTerritory, HeatModeEnabled, HistoryAvailable, HistoryBoundsSignal,
-    HistoryBufferModeActive, HistoryBufferedUpdates, HistoryFetchNonce,
-    HistoryLegacyGeometryActive, HistoryMapTime, HistorySeasonLeaderboard,
+    CurrentMode, DetailReturnGuild, GuildColorStore, GuildOnlineData, HeatEntriesByTerritory,
+    HistoryAvailable, HistoryBoundsSignal, HistoryBufferModeActive, HistoryBufferedUpdates,
+    HistoryFetchNonce, HistoryLegacyGeometryActive, HistoryMapTime, HistorySeasonLeaderboard,
     HistorySeasonScalarSample, HistoryTimestamp, IsMobile, LastLiveSeq, LeaderboardSortBySr,
-    LiveHandoffResyncCount, LiveSeasonScalarSample, ManualSrScalar, MapMode, NeedsLiveResync,
-    PlaybackActive, Selected, SelectedGuild, ShowDebugInfo, ShowLeaderboardOnline,
-    ShowLeaderboardSrGain, ShowLeaderboardSrValue, ShowLeaderboardTerritoryCount, ShowSettings,
-    SidebarIndex, SidebarItems, SidebarOpen, SidebarTransient, TerritoryGeometryStore,
+    LiveHandoffResyncCount, LiveSeasonScalarSample, MapClock, MapMode, NeedsLiveResync,
+    PlaybackActive, Selected, SelectedGuild, ShowSettings, SidebarIndex, SidebarItems, SidebarOpen,
+    SidebarTransient, TerritoryGeometryStore,
 };
 use crate::colors::rgba_css;
 use crate::format::{compact, rate, since};
 use crate::history;
 use crate::keybinds::KeybindHelp;
 use crate::season_scalar::{EffectiveScalar, ScalarSource, effective_scalar};
+use crate::settings::{self, ViewerSettings};
 use crate::settings_menu::SettingsPanel;
 use crate::territory::ClientTerritoryMap;
 use crate::territory_card::{
@@ -32,13 +31,18 @@ use crate::territory_card::{
     territory_resource_rows, treasury,
 };
 use crate::tower::TowerCalculator;
-use crate::ui::{Disclosure, MapPinIcon, PanelNav, SCROLLER};
+use crate::ui::{Disclosure, MapPinIcon, SCROLLER, ViewHead, clear_top};
 use crate::war_room::ActivityDisclosure;
-use sequoia_browser_map::BrowserMap;
 use sequoia_browser_map::live_feed::ConnectionStatus;
+use sequoia_browser_map::{BrowserMap, MapCamera};
 
 /// Newer than this, the live feed counts as working.
 const LIVE_FRESH_SECS: i64 = 120;
+
+/// How long a guild's territory list waits for its online members when nothing says how many
+/// there will be, so they take their place above it instead of pushing it down. A slower answer
+/// gives the list back to the reader.
+const GUILD_LIST_HOLD: std::time::Duration = std::time::Duration::from_millis(2000);
 
 fn format_confidence(confidence: f32) -> String {
     format!("{:.0}%", (confidence.clamp(0.0, 1.0) * 100.0))
@@ -81,6 +85,67 @@ fn guild_css((r, g, b): (u8, u8, u8)) -> String {
     rgba_css(r, g, b, 0.9)
 }
 
+/// What a row in the search results or the leaderboard stands for. A click and Enter both open
+/// it through [`OpenEntry`], so they cannot disagree about what the row is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarEntry {
+    Territory(String),
+    Guild(String),
+}
+
+/// Opens a sidebar row. Built from context while a component is set up, so it can run from
+/// event handlers.
+#[derive(Clone, Copy)]
+pub(crate) struct OpenEntry {
+    territories: RwSignal<ClientTerritoryMap>,
+    camera: MapCamera,
+    mode: RwSignal<MapMode>,
+    selected: RwSignal<Option<String>>,
+    selected_guild: RwSignal<Option<String>>,
+    detail_return_guild: RwSignal<Option<String>>,
+    sidebar_open: RwSignal<bool>,
+}
+
+impl OpenEntry {
+    pub fn from_context() -> Self {
+        let CurrentMode(mode) = expect_context();
+        let Selected(selected) = expect_context();
+        let SelectedGuild(selected_guild) = expect_context();
+        let DetailReturnGuild(detail_return_guild) = expect_context();
+        let SidebarOpen(sidebar_open) = expect_context();
+        Self {
+            territories: expect_context(),
+            camera: expect_context::<BrowserMap>().camera(),
+            mode,
+            selected,
+            selected_guild,
+            detail_return_guild,
+            sidebar_open,
+        }
+    }
+
+    /// A territory opens its detail with the map on it; a guild opens its panel. Enter can
+    /// reach a row while the sidebar is closed, and on the live map the sidebar opens to show it.
+    pub fn run(&self, entry: &SidebarEntry) {
+        match entry {
+            SidebarEntry::Territory(name) => {
+                self.detail_return_guild.set(None);
+                self.selected.set(Some(name.clone()));
+                if let Some(region) = self
+                    .territories
+                    .with_untracked(|map| map.get(name).map(|ct| ct.territory.location.clone()))
+                {
+                    self.camera.focus(&region);
+                }
+            }
+            SidebarEntry::Guild(name) => self.selected_guild.set(Some(name.clone())),
+        }
+        if self.mode.get_untracked() == MapMode::Live && !self.sidebar_open.get_untracked() {
+            self.sidebar_open.set(true);
+        }
+    }
+}
+
 /// Sidebar with search, leaderboard, detail panel, and stats.
 #[component]
 pub fn Sidebar() -> impl IntoView {
@@ -110,12 +175,13 @@ pub fn Sidebar() -> impl IntoView {
         };
 
         // Keep keyboard-focused rows visible by adjusting only the sidebar's
-        // internal vertical scroll position (never root page scroll).
+        // internal vertical scroll position (never root page scroll), below the sticky head.
         let scroll_rect = scroll_el.get_bounding_client_rect();
         let item_rect = item_el.get_bounding_client_rect();
         let current_top = scroll_el.scroll_top();
-        if item_rect.top() < scroll_rect.top() {
-            let delta = (item_rect.top() - scroll_rect.top()).floor() as i32;
+        let top = clear_top(&scroll_el);
+        if item_rect.top() < top {
+            let delta = (item_rect.top() - top).floor() as i32;
             scroll_el.set_scroll_top(current_top + delta);
         } else if item_rect.bottom() > scroll_rect.bottom() {
             let delta = (item_rect.bottom() - scroll_rect.bottom()).ceil() as i32;
@@ -144,12 +210,33 @@ pub fn Sidebar() -> impl IntoView {
             View::Search
         }
     });
+    // Every view shares one scroller. Opening a view, or another guild or territory in one,
+    // starts at its header; anything that only updates the open view keeps the reader's place.
+    let entry = Memo::new(move |_| {
+        let view = shown.get();
+        let subject = match view {
+            View::Guild => selected_guild.get(),
+            View::Territory => selected.get(),
+            View::Settings | View::Leaderboard | View::Search => None,
+        };
+        (view, subject)
+    });
+    let scroller = NodeRef::<leptos::html::Div>::new();
+    Effect::new(move |opened: Option<(View, Option<String>)>| {
+        let current = entry.get();
+        if opened.is_some_and(|opened| opened != current)
+            && let Some(scroller) = scroller.get_untracked()
+        {
+            scroller.set_scroll_top(0);
+        }
+        current
+    });
 
     view! {
         <div class="sidebar-inner" class:sidebar-animate=move || sidebar_open.get() style:display=move || if sidebar_open.get() { "flex" } else { "none" }>
             <HistoryWhen />
             <SearchBar />
-            <div data-sidebar-scroll="" class="sb-scroll scrollbar-thin">
+            <div data-sidebar-scroll="" class="sb-scroll scrollbar-thin" node_ref=scroller>
                 {move || {
                     let view = shown.get();
                     if !matches!(view, View::Leaderboard | View::Search) {
@@ -204,7 +291,7 @@ fn HistoryWhen() -> impl IntoView {
 #[component]
 fn SearchBar() -> impl IntoView {
     let search_query: RwSignal<String> = expect_context();
-    let ShowDebugInfo(show_debug_info) = expect_context();
+    let show_debug_info = expect_context::<ViewerSettings>().value(settings::DIAGNOSTICS);
 
     view! {
         <div class="sb-search">
@@ -332,9 +419,7 @@ fn LiveDataBadge() -> impl IntoView {
 fn SearchResults() -> impl IntoView {
     let search_query: RwSignal<String> = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let Selected(selected) = expect_context();
-    let DetailReturnGuild(detail_return_guild) = expect_context();
-    let camera = expect_context::<BrowserMap>().camera();
+    let open_entry = OpenEntry::from_context();
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
 
@@ -366,8 +451,12 @@ fn SearchResults() -> impl IntoView {
 
     // Sync sidebar items for keyboard navigation
     Effect::new(move || {
-        let items: Vec<String> =
-            filtered.with(|found| found.iter().map(|(name, ..)| name.clone()).collect());
+        let items: Vec<SidebarEntry> = filtered.with(|found| {
+            found
+                .iter()
+                .map(|(name, ..)| SidebarEntry::Territory(name.clone()))
+                .collect()
+        });
         if items != sidebar_items.get_untracked() {
             sidebar_index.set(0);
         }
@@ -376,10 +465,9 @@ fn SearchResults() -> impl IntoView {
 
     view! {
         <section class="sb-list-section" aria-label="Search results">
-            <div class="sb-list-head">
-                <h2 class="sb-list-title">"Search Results"</h2>
-                <span class="sb-list-count">{move || format!("{} found", filtered.with(Vec::len))}</span>
-            </div>
+            <ViewHead title=|| view! { <h2 class="sb-view-title">"Search Results"</h2> }>
+                <span class="sb-list-count" role="status">{move || format!("{} found", filtered.with(Vec::len))}</span>
+            </ViewHead>
             <ul class="sb-list">
                 <For
                     each=move || filtered.get()
@@ -392,17 +480,11 @@ fn SearchResults() -> impl IntoView {
                             let name = name.clone();
                             move |_| filtered.with(|found| found.iter().position(|(found, ..)| *found == name))
                         });
-                        let open = name.clone();
-                        let on_click = move |_| {
-                            detail_return_guild.set(None);
-                            selected.set(Some(open.clone()));
-                            if let Some(region) = territories.with_untracked(|map| map.get(&open).map(|ct| ct.territory.location.clone())) {
-                                camera.focus(&region);
-                            }
-                        };
+                        let entry = SidebarEntry::Territory(name.clone());
+                        let on_click = move |_| open_entry.run(&entry);
                         view! {
                             <li data-sidebar-idx=move || index.get().map(|index| index.to_string()) class="sb-row" class:sb-row-focused=move || index.get() == Some(sidebar_index.get()) on:click=on_click>
-                                <span class="sb-swatch" style:--swatch=guild_css(color) aria-hidden="true" />
+                                <span class="guild-mark" style:--swatch=guild_css(color) aria-hidden="true" />
                                 <span class="sb-row-text">
                                     <span class="sb-row-name">{name}</span>
                                     <span class="sb-row-sub">{guild}</span>
@@ -431,14 +513,15 @@ struct GuildRow {
 #[component]
 fn LeaderboardPanel() -> impl IntoView {
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let SelectedGuild(selected_guild) = expect_context();
+    let open_entry = OpenEntry::from_context();
     let SidebarIndex(sidebar_index) = expect_context();
     let SidebarItems(sidebar_items) = expect_context();
     let CurrentMode(mode) = expect_context();
-    let ShowLeaderboardSrGain(show_leaderboard_sr_gain) = expect_context();
-    let ShowLeaderboardSrValue(show_leaderboard_sr_value) = expect_context();
-    let ShowLeaderboardTerritoryCount(show_leaderboard_territory_count) = expect_context();
-    let ShowLeaderboardOnline(show_leaderboard_online) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let show_leaderboard_sr_gain = settings.value(settings::LEADERBOARD_SR_RATE);
+    let show_leaderboard_sr_value = settings.value(settings::LEADERBOARD_SEASON_RATING);
+    let show_leaderboard_territory_count = settings.value(settings::LEADERBOARD_TERRITORIES);
+    let show_leaderboard_online = settings.value(settings::LEADERBOARD_ONLINE);
     let GuildOnlineData(guild_online_data) = expect_context();
     let HistorySeasonLeaderboard(history_sr_leaderboard) = expect_context();
     let LeaderboardSortBySr(sort_by_sr) = expect_context();
@@ -512,10 +595,13 @@ fn LeaderboardPanel() -> impl IntoView {
         sorted
     });
 
-    // Sync sidebar items for keyboard navigation (guild names for leaderboard)
+    // Sync sidebar items for keyboard navigation
     Effect::new(move || {
-        let items: Vec<String> =
-            leaderboard.with(|rows| rows.iter().map(|row| row.name.clone()).collect());
+        let items: Vec<SidebarEntry> = leaderboard.with(|rows| {
+            rows.iter()
+                .map(|row| SidebarEntry::Guild(row.name.clone()))
+                .collect()
+        });
         if items != sidebar_items.get_untracked() {
             sidebar_index.set(0);
         }
@@ -525,7 +611,7 @@ fn LeaderboardPanel() -> impl IntoView {
     let is_empty = Memo::new(move |_| territories.with(|map| map.is_empty()));
     let sort_button = move |by_sr: bool, label: &'static str| {
         view! {
-            <button type="button" class="sb-sort" data-sort=if by_sr { "sr" } else { "territories" } aria-pressed=move || (sort_by_sr.get() == by_sr).to_string() on:click=move |_| sort_by_sr.set(by_sr)>
+            <button type="button" class="ui-button sb-mode" data-sort=if by_sr { "sr" } else { "territories" } aria-pressed=move || (sort_by_sr.get() == by_sr).to_string() on:click=move |_| sort_by_sr.set(by_sr)>
                 {label}
             </button>
         }
@@ -533,13 +619,12 @@ fn LeaderboardPanel() -> impl IntoView {
 
     view! {
         <section class="sb-list-section" aria-labelledby="sb-top-guilds">
-            <div class="sb-list-head">
-                <h2 class="sb-list-title" id="sb-top-guilds">"Top Guilds"</h2>
-                <div class="sb-sorts" role="group" aria-label="Sort guilds by">
+            <ViewHead title=|| view! { <h2 class="sb-view-title" id="sb-top-guilds">"Top Guilds"</h2> }>
+                <div class="sb-modes" role="group" aria-label="Sort guilds by">
                     {sort_button(false, "Territories")}
                     {sort_button(true, "SR")}
                 </div>
-            </div>
+            </ViewHead>
             <Show
                 when=move || !is_empty.get()
                 fallback=|| view! {
@@ -579,7 +664,7 @@ fn LeaderboardPanel() -> impl IntoView {
                                 format!("{}/h", rate(row.passive_sr_per_hour))
                             };
                             let rating = row.season_rating.map(compact);
-                            let open = row.name.clone();
+                            let entry = SidebarEntry::Guild(row.name.clone());
                             let online_name = row.name.clone();
                             let podium = match rank {
                                 1 => "text-gold-gradient",
@@ -596,11 +681,11 @@ fn LeaderboardPanel() -> impl IntoView {
                                     class:sb-row-focused=move || sidebar_index.get() == index
                                     style:--swatch=guild_css(row.color)
                                     style:--row-delay=format!("{}ms", rank * 30)
-                                    on:click=move |_| selected_guild.set(Some(open.clone()))
+                                    on:click=move |_| open_entry.run(&entry)
                                 >
                                     <span class=format!("sb-rank {podium}")>{rank}</span>
-                                    <span class="sb-swatch" aria-hidden="true" />
-                                    <span class="sb-row-name">{row.name}</span>
+                                    <span class="guild-mark" aria-hidden="true" />
+                                    <span class="sb-row-name guild-name">{row.name}</span>
                                     <span class="sb-row-tag">"[" {row.prefix} "]"</span>
                                     {move || show_leaderboard_sr_gain.get().then(|| view! { <span class="sb-chip sb-chip-rate">{sr_badge.clone()}</span> })}
                                     {move || (sort_by_sr.get() || show_leaderboard_sr_value.get()).then(|| rating.clone().map(|rating| view! { <span class="sb-chip sb-chip-rating">{rating}</span> }))}
@@ -626,8 +711,9 @@ fn LeaderboardPanel() -> impl IntoView {
 /// The SR scalar in use, for passive SR figures.
 fn scalar_state() -> Memo<EffectiveScalar> {
     let CurrentMode(mode) = expect_context();
-    let ManualSrScalar(manual_sr_scalar) = expect_context();
-    let AutoSrScalarEnabled(auto_sr_scalar_enabled) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let manual_sr_scalar = settings.value(settings::MANUAL_SR_SCALAR);
+    let auto_sr_scalar_enabled = settings.value(settings::ESTIMATE_SR_SCALAR);
     let LiveSeasonScalarSample(live_scalar_sample) = expect_context();
     let HistorySeasonScalarSample(history_scalar_sample) = expect_context();
     Memo::new(move |_| {
@@ -759,6 +845,33 @@ impl GuildFacts {
     }
 }
 
+/// Where the guild endpoint's answer for the selected guild stands.
+#[derive(Clone, PartialEq)]
+enum GuildAnswer {
+    Waiting,
+    Ready(GuildFacts),
+    Unavailable,
+}
+
+impl GuildAnswer {
+    fn facts(&self) -> Option<&GuildFacts> {
+        match self {
+            Self::Ready(facts) => Some(facts),
+            Self::Waiting | Self::Unavailable => None,
+        }
+    }
+
+    /// One figure: an ellipsis while it is on its way, a dash when it is missing.
+    fn figure(&self, pick: impl FnOnce(&GuildFacts) -> String) -> String {
+        match self {
+            Self::Waiting => return "\u{2026}".to_string(),
+            Self::Ready(facts) => Some(pick(facts)).filter(|figure| !figure.is_empty()),
+            Self::Unavailable => None,
+        }
+        .unwrap_or_else(|| "\u{2013}".to_string())
+    }
+}
+
 #[component]
 fn GuildPanel() -> impl IntoView {
     let SelectedGuild(selected_guild) = expect_context();
@@ -771,19 +884,26 @@ fn GuildPanel() -> impl IntoView {
     let tick: RwSignal<i64> = expect_context();
     let crate::app::WarFeedVisible(viewer_has_war_access) = expect_context();
 
-    // `None` while the guild's details are on their way.
-    let facts: RwSignal<Option<GuildFacts>> = RwSignal::new(None);
-    let failed = RwSignal::new(false);
+    let GuildOnlineData(guild_online_data) = expect_context();
+
+    let answer = RwSignal::new(GuildAnswer::Waiting);
+    let hold_over = RwSignal::new(false);
     let request_nonce = StoredValue::new(0u64);
 
     Effect::new(move || {
         let nonce = request_nonce.get_value().wrapping_add(1);
         request_nonce.set_value(nonce);
-        facts.set(None);
-        failed.set(false);
+        answer.set(GuildAnswer::Waiting);
+        hold_over.set(false);
         let Some(name) = selected_guild.get() else {
             return;
         };
+        wasm_bindgen_futures::spawn_local(async move {
+            gloo_timers::future::sleep(GUILD_LIST_HOLD).await;
+            if request_nonce.try_get_value() == Some(nonce) {
+                hold_over.set(true);
+            }
+        });
         wasm_bindgen_futures::spawn_local(async move {
             let url = format!("/api/guild/{}", crate::encode_uri_component(&name));
             let detail = match gloo_net::http::Request::get(&url).send().await {
@@ -794,21 +914,34 @@ fn GuildPanel() -> impl IntoView {
             if request_nonce.try_get_value() != Some(nonce) {
                 return;
             }
-            match detail {
-                Some(json) => facts.set(Some(GuildFacts::from_json(&json))),
-                None => failed.set(true),
-            }
+            answer.set(match detail {
+                Some(json) => GuildAnswer::Ready(GuildFacts::from_json(&json)),
+                None => GuildAnswer::Unavailable,
+            });
         });
     });
 
-    let guild_color = Memo::new(move |_| {
+    // The map already knows a guild that holds territory, so its colour and tag show at once.
+    let on_map = Memo::new(move |_| {
         let name = selected_guild.get()?;
         territories.with(|map| {
             map.values()
                 .find(|ct| ct.territory.guild.name == name)
-                .map(|ct| ct.guild_color)
+                .map(|ct| (ct.guild_color, ct.territory.guild.prefix.clone()))
         })
     });
+    let guild_color = move || on_map.with(|guild| guild.as_ref().map(|(color, _)| *color));
+    let prefix = move || {
+        on_map
+            .with(|guild| guild.as_ref().map(|(_, prefix)| prefix.clone()))
+            .or_else(|| answer.with(|answer| answer.facts().map(|facts| facts.prefix.clone())))
+    };
+    // Rows held for the members the leaderboard last counted online, so the list fills its
+    // place when the details arrive instead of pushing the territories down.
+    let expected_online = move || {
+        let name = selected_guild.get()?;
+        guild_online_data.with(|data| data.get(&name).map(|info| info.online as usize))
+    };
     let guild_territories = Memo::new(move |_| {
         let name = selected_guild.get().unwrap_or_default();
         let mut owned: Vec<String> = territories.with(|map| {
@@ -836,69 +969,102 @@ fn GuildPanel() -> impl IntoView {
             sidebar_open.set(true);
         }
     });
-    // Until the details arrive, each figure waits in its place rather than the panel growing.
-    let fact = move |pick: fn(&GuildFacts) -> String| {
-        move || facts.with(|facts| facts.as_ref().map_or_else(|| "\u{2026}".to_string(), pick))
+    let unavailable = move || answer.with(|answer| matches!(answer, GuildAnswer::Unavailable));
+    // With a count the members' rows are held above the list, so it can show at once.
+    let list_placed = move || {
+        expected_online().is_some()
+            || hold_over.get()
+            || answer.with(|answer| !matches!(answer, GuildAnswer::Waiting))
     };
+    // Until the details arrive, each figure waits in its place rather than the panel growing.
+    let fact =
+        move |pick: fn(&GuildFacts) -> String| move || answer.with(|answer| answer.figure(pick));
 
     view! {
-        <div class="sb-panel panel-reveal" style:--tcard-guild=move || guild_color.get().map(guild_css)>
-            <PanelNav close=("Close guild", close) />
-            <article class="tcard tcard-sidebar" aria-busy=move || (facts.with(Option::is_none) && !failed.get()).to_string()>
-                <header class="tcard-head">
-                    <span class="tcard-swatch" aria-hidden="true" />
-                    <h2 class="tcard-name">
-                        {move || {
-                            let name = selected_guild.get().unwrap_or_default();
-                            let url = crate::guild_stats_url(&name);
-                            view! {
-                                <a class="tcard-name-link" href=url target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">{name}</a>
-                            }
-                        }}
-                    </h2>
-                </header>
+        <div class="sb-panel panel-reveal" style:--tcard-guild=move || guild_color().map(guild_css)>
+            <ViewHead
+                title=move || view! {
+                    <header class="tcard-head">
+                        <span class="guild-mark" aria-hidden="true" />
+                        <h2 class="tcard-name guild-name">
+                            {move || {
+                                let name = selected_guild.get().unwrap_or_default();
+                                let url = crate::guild_stats_url(&name);
+                                view! {
+                                    <a class="tcard-name-link" href=url target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">{name}</a>
+                                }
+                            }}
+                        </h2>
+                    </header>
+                }
+                close=("Close guild", close)
+            />
+            <article class="tcard tcard-sidebar" aria-busy=move || answer.with(|answer| matches!(answer, GuildAnswer::Waiting)).to_string()>
                 <div class="tcard-owner">
-                    {move || facts.with(|facts| facts.as_ref().map(|facts| view! {
-                        <span class="tcard-tag">"[" {facts.prefix.clone()} "] \u{00b7} Lv. " {facts.level}</span>
-                        <span class="sb-online"><span aria-hidden="true">{"\u{25CF}"}</span>{facts.online} " online"</span>
-                    }))}
-                    {move || failed.get().then(|| view! { <span class="tcard-tag" role="status">"Guild details are unavailable"</span> })}
+                    // A tag nobody can supply any more is left out rather than shown as waiting.
+                    {move || {
+                        let prefix = prefix();
+                        let unavailable = unavailable();
+                        (prefix.is_some() || !unavailable).then(|| view! {
+                            <span class="tcard-tag">
+                                "[" {prefix.unwrap_or_else(|| "\u{2026}".to_string())} "]"
+                                {(!unavailable).then(|| view! { " \u{00b7} Lv. " {fact(|facts| facts.level.to_string())} })}
+                            </span>
+                        })
+                    }}
+                    {move || if unavailable() {
+                        view! { <span class="tcard-tag" role="status">"Guild details are unavailable"</span> }.into_any()
+                    } else {
+                        view! {
+                            <span class="sb-online"><span aria-hidden="true">{"\u{25CF}"}</span>{fact(|facts| facts.online.to_string())} " online"</span>
+                        }
+                        .into_any()
+                    }}
                 </div>
                 <dl class="tcard-stats tcard-stats-wide">
                     <div><dt>"Territories"</dt><dd class="sb-gold">{move || guild_territories.with(Vec::len)}</dd></div>
                     <div><dt>"Members"</dt><dd>{fact(|facts| facts.members.to_string())}</dd></div>
                     <div><dt>"Wars"</dt><dd>{fact(|facts| facts.wars.to_string())}</dd></div>
                     <div><dt>"Season rating"</dt><dd class="tcard-sr">{fact(|facts| facts.season_rating.map_or_else(|| "\u{2013}".to_string(), |(season, rating)| format!("S{season}: {}", compact(rating))))}</dd></div>
-                    <div class="tcard-stat-span"><dt>"Created"</dt><dd>{move || facts.with(|facts| facts.as_ref().map_or_else(|| "\u{2026}".to_string(), |facts| since(&facts.created, tick.get())))}</dd></div>
+                    <div class="tcard-stat-span"><dt>"Created"</dt><dd>{move || answer.with(|answer| answer.figure(|facts| since(&facts.created, tick.get())))}</dd></div>
                 </dl>
-                {move || facts.with(|facts| {
-                    let facts = facts.as_ref()?;
-                    if facts.online_members.is_empty() {
-                        return None;
-                    }
+                {move || {
                     // Playercards only cover our own roster, so every other guild keeps
                     // linking out to Wynncraft.
-                    let ours = facts.prefix.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX);
-                    let members = facts.online_members.clone();
+                    let ours = prefix().is_some_and(|prefix| prefix.eq_ignore_ascii_case(crate::SEQUOIA_GUILD_PREFIX));
                     // Members open each other's war records in place; everyone else links out.
-                    if ours && viewer_has_war_access.get() {
-                        return Some(view! {
-                            <section class="tcard-section" aria-label="Online members">
-                                <h3 class="tcard-section-title">"Online members"</h3>
-                                <ul class="sb-members mrows">
-                                    {members.into_iter().map(|member| view! {
-                                        <crate::member_war::MemberRow username=member.username rank_label=member.rank_label server=member.server />
+                    let in_place = ours && viewer_has_war_access.get();
+                    let list = answer.with(|answer| match answer {
+                        GuildAnswer::Waiting => {
+                            // Without a count, one row says the members are on their way.
+                            let held = expected_online().unwrap_or(1);
+                            if held == 0 {
+                                return None;
+                            }
+                            Some(view! {
+                                <ul class="sb-members" class:mrows=in_place aria-hidden="true">
+                                    {(0..held).map(|_| if in_place {
+                                        view! { <li class="mrow"><div class="mrow-line"><span class="mrow-rank">{"\u{2026}"}</span></div></li> }.into_any()
+                                    } else {
+                                        // The name's line sets a row's height, so a held row keeps one.
+                                        view! { <li><span class="sb-member-rank">{"\u{2026}"}</span><span class="sb-member-name">{"\u{a0}"}</span></li> }.into_any()
                                     }).collect_view()}
                                 </ul>
-                            </section>
+                            }
+                            .into_any())
                         }
-                        .into_any());
-                    }
-                    Some(view! {
-                        <section class="tcard-section" aria-label="Online members">
-                            <h3 class="tcard-section-title">"Online members"</h3>
-                            <ul class="sb-members">
-                                {members.into_iter().map(|member| {
+                        GuildAnswer::Ready(facts) if facts.online_members.is_empty() => None,
+                        GuildAnswer::Ready(facts) if in_place => Some(view! {
+                            <ul class="sb-members mrows panel-reveal">
+                                {facts.online_members.iter().cloned().map(|member| view! {
+                                    <crate::member_war::MemberRow username=member.username rank_label=member.rank_label server=member.server />
+                                }).collect_view()}
+                            </ul>
+                        }
+                        .into_any()),
+                        GuildAnswer::Ready(facts) => Some(view! {
+                            <ul class="sb-members panel-reveal">
+                                {facts.online_members.iter().cloned().map(|member| {
                                     let (url, title) = if ours {
                                         (crate::player_card_url(&member.username), "Open Sequoia playercard")
                                     } else {
@@ -913,12 +1079,20 @@ fn GuildPanel() -> impl IntoView {
                                     }
                                 }).collect_view()}
                             </ul>
+                        }
+                        .into_any()),
+                        GuildAnswer::Unavailable => None,
+                    })?;
+                    Some(view! {
+                        <section class="tcard-section" aria-label="Online members">
+                            <h3 class="tcard-section-title">"Online members"</h3>
+                            {list}
                         </section>
-                    }
-                    .into_any())
-                })}
+                    })
+                }}
+                // A waiting list keeps its room, so neither it nor a phone's sheet moves when it shows.
                 <Show when=move || guild_territories.with(|owned| !owned.is_empty())>
-                    <section class="tcard-section" aria-label="Territories">
+                    <section class="tcard-section sb-territories-section" data-held=move || (!list_placed()).to_string() aria-label="Territories">
                         <h3 class="tcard-section-title">"Territories"</h3>
                         <ul class="sb-territories">
                             <For
@@ -930,7 +1104,7 @@ fn GuildPanel() -> impl IntoView {
                                     view! {
                                         <li>
                                             <button type="button" class="sb-territory" title=title on:click=move |_| open_territory.run(open.clone())>
-                                                <span class="sb-swatch" aria-hidden="true" />
+                                                <span class="guild-mark" aria-hidden="true" />
                                                 <span class="sb-row-name">{territory}</span>
                                             </button>
                                         </li>
@@ -1014,12 +1188,10 @@ fn DetailPanel() -> impl IntoView {
     let SidebarOpen(sidebar_open) = expect_context();
     let IsMobile(is_mobile) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let tick: RwSignal<i64> = expect_context();
-    let CurrentMode(mode) = expect_context();
-    let HistoryMapTime(history_map_time) = expect_context();
-    let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let heat_mode_enabled = settings.value(settings::HEAT_MAP);
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
-    let ShowDebugInfo(show_debug_info) = expect_context();
+    let show_debug_info = expect_context::<ViewerSettings>().value(settings::DIAGNOSTICS);
     let camera = expect_context::<BrowserMap>().camera();
     let tower_state: crate::tower::TowerState = expect_context();
     let scalar_state = scalar_state();
@@ -1032,13 +1204,7 @@ fn DetailPanel() -> impl IntoView {
         queue_details_open.set(false);
     });
 
-    let now = Memo::new(move |_| {
-        if mode.get() == MapMode::History {
-            history_map_time.get().unwrap_or_else(|| tick.get())
-        } else {
-            tick.get()
-        }
-    });
+    let MapClock(now) = expect_context();
 
     // Guild-aware connection counts — only recomputes when territories/selection change, not every tick
     let guild_counts = Memo::new(move |_| {
@@ -1144,11 +1310,17 @@ fn DetailPanel() -> impl IntoView {
 
     view! {
         <div class="sb-panel panel-reveal tcard-detail" style:--tcard-guild=move || info.with(|info| info.as_ref().map(|info| guild_css(info.color)))>
-            <PanelNav back=("Back to guild", back) close=("Close details", close)>
+            <ViewHead
+                back=("Back to guild", back)
+                title=move || info.with(|info| info.as_ref().map(|info| view! {
+                    <TerritoryHead name=info.name.clone() hq=info.runtime.as_ref().and_then(|runtime| runtime.headquarters) == Some(true) heading=true />
+                }))
+                close=("Close details", close)
+            >
                 <button type="button" class="ui-button ui-icon-button sb-show-on-map" aria-label="Show on map" title="Show on map" on:click=show_on_map>
                     <MapPinIcon />
                 </button>
-            </PanelNav>
+            </ViewHead>
             {move || info.get().map(|info| {
                 let runtime = info.runtime.clone();
                 let acquired = info.acquired;
@@ -1160,7 +1332,6 @@ fn DetailPanel() -> impl IntoView {
                 let connections = info.connections;
                 view! {
                     <article class="tcard tcard-sidebar">
-                        <TerritoryHead name=info.name.clone() hq=runtime.as_ref().and_then(|runtime| runtime.headquarters) == Some(true) heading=true />
                         <div class="tcard-owner">
                             <a class="tcard-guild" href=crate::guild_stats_url(&info.guild_name) target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">
                                 {info.guild_name.clone()}
@@ -1302,7 +1473,8 @@ fn SidebarToolbar() -> impl IntoView {
     let TerritoryGeometryStore(geo_store) = expect_context();
     let GuildColorStore(guild_color_store) = expect_context();
     let IsMobile(is_mobile) = expect_context();
-    let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let heat_mode_enabled = settings.value(settings::HEAT_MAP);
 
     // A healthy feed shows nothing; only connecting and reconnecting get a lamp.
     let status_text = Memo::new(move |_| match connection.get() {
@@ -1370,7 +1542,7 @@ fn SidebarToolbar() -> impl IntoView {
                         data-mode="heat"
                         aria-pressed=move || heat_mode_enabled.get().to_string()
                         title=move || if heat_mode_enabled.get() { "Disable heat map" } else { "Enable heat map" }
-                        on:click=move |_| heat_mode_enabled.update(|on| *on = !*on)
+                        on:click=move |_| settings.toggle(settings::HEAT_MAP)
                     >"Heat"</button>
                 </div>
             </Show>

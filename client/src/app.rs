@@ -26,7 +26,7 @@ pub(crate) fn clamp_war_panel_width(value: f64) -> f64 {
     value.clamp(WAR_PANEL_WIDTH_MIN, WAR_PANEL_WIDTH_MAX)
 }
 
-fn migrate_sidebar_width(value: f64) -> f64 {
+pub(crate) fn migrate_sidebar_width(value: f64) -> f64 {
     if (value - LEGACY_DEFAULT_SIDEBAR_WIDTH).abs() < f64::EPSILON {
         DEFAULT_SIDEBAR_WIDTH
     } else {
@@ -109,163 +109,6 @@ pub(crate) struct Hovered(pub RwSignal<Option<String>>);
 #[derive(Clone, Copy)]
 pub(crate) struct Selected(pub RwSignal<Option<String>>);
 #[derive(Clone, Copy)]
-pub(crate) struct AbbreviateNames(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowCountdown(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowGranularMapTime(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowCompoundMapTime(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowNames(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowClaimLabels(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowFarZoomTerritoryTags(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ThickCooldownBorders(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct BoldConnections(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ConnectionStyleSetting(pub RwSignal<ConnectionStyle>);
-/// Classic connection opacity, relative to the classic look.
-#[derive(Clone, Copy)]
-pub(crate) struct ConnectionOpacityScale(pub RwSignal<f64>);
-/// Opacity of solid connection lines.
-#[derive(Clone, Copy)]
-pub(crate) struct ConnectionSolidOpacity(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct ConnectionThicknessScale(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct ResourceHighlight(pub RwSignal<bool>);
-/// Base fill alpha of resource-highlighted territories, set by the settings slider.
-#[derive(Clone, Copy)]
-pub(crate) struct ResourceHighlightOpacity(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct TerritoryOpacity(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct DefenseHighlight(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct MapIntelModeEnabled(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowResourceIcons(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowTerritoryOrnaments(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct HqCrownStyleSetting(pub RwSignal<HqCrownStyle>);
-#[derive(Clone, Copy)]
-pub(crate) struct CooldownDisplaySetting(pub RwSignal<CooldownDisplay>);
-#[derive(Clone, Copy)]
-pub(crate) struct HqCrownScale(pub RwSignal<f64>);
-/// The war outline settings, one signal per control; saved together as one [`WarOutline`].
-#[derive(Clone, Copy)]
-pub(crate) struct WarOutlineControls {
-    pub style: RwSignal<WarOutlineStyle>,
-    pub color: RwSignal<WarOutlineColor>,
-    pub progress: RwSignal<bool>,
-    pub width: RwSignal<f64>,
-    pub opacity: RwSignal<f64>,
-}
-
-impl WarOutlineControls {
-    fn new(outline: WarOutline) -> Self {
-        let outline = outline.clamped();
-        Self {
-            style: RwSignal::new(outline.style),
-            color: RwSignal::new(outline.color),
-            progress: RwSignal::new(outline.progress),
-            width: RwSignal::new(f64::from(outline.width)),
-            opacity: RwSignal::new(f64::from(outline.opacity)),
-        }
-    }
-
-    fn get(self) -> WarOutline {
-        WarOutline {
-            style: self.style.get(),
-            color: self.color.get(),
-            progress: self.progress.get(),
-            width: self.width.get() as f32,
-            opacity: self.opacity.get() as f32,
-        }
-        .clamped()
-    }
-
-    fn set(self, outline: WarOutline) {
-        let outline = outline.clamped();
-        self.style.set(outline.style);
-        self.color.set(outline.color);
-        self.progress.set(outline.progress);
-        self.width.set(f64::from(outline.width));
-        self.opacity.set(f64::from(outline.opacity));
-    }
-}
-
-// Exact decimal twins of the renderer's `f32` outline bounds, so the sliders snap to their
-// steps.
-pub(crate) const WAR_OUTLINE_WIDTH_MIN: f64 = 0.5;
-pub(crate) const WAR_OUTLINE_WIDTH_MAX: f64 = 2.0;
-pub(crate) const WAR_OUTLINE_OPACITY_MIN: f64 = 0.3;
-pub(crate) const WAR_OUTLINE_OPACITY_MAX: f64 = 1.0;
-
-pub(crate) fn clamp_war_outline_width(value: f64) -> f64 {
-    if value.is_finite() {
-        value.clamp(WAR_OUTLINE_WIDTH_MIN, WAR_OUTLINE_WIDTH_MAX)
-    } else {
-        f64::from(WarOutline::default().width)
-    }
-}
-
-pub(crate) fn clamp_war_outline_opacity(value: f64) -> f64 {
-    if value.is_finite() {
-        value.clamp(WAR_OUTLINE_OPACITY_MIN, WAR_OUTLINE_OPACITY_MAX)
-    } else {
-        f64::from(WarOutline::default().opacity)
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ManualSrScalar(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct AutoSrScalarEnabled(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowLeaderboardSrGain(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowLeaderboardSrValue(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct NameColorSetting(pub RwSignal<NameColor>);
-#[derive(Clone, Copy)]
-pub(crate) struct TagColorSetting(pub RwSignal<NameColor>);
-#[derive(Clone, Copy)]
-pub(crate) struct ReadableFont(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowMinimap(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowWarPanel(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowWarMarkers(pub RwSignal<bool>);
-/// Whether Recent activity also lists cancelled queues and attacks without a confirmed
-/// capture. Off, its lists hold only confirmed captures and losses.
-#[derive(Clone, Copy)]
-pub(crate) struct ActivityIncludeUnconfirmed(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowPlayerHeads(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct PlayerHeadRenderHead(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct PlayerHeadRenderLabel(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct PlayerHeadSize(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct LabelScaleMaster(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct LabelScaleStatic(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct LabelScaleStaticName(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct LabelScaleDynamic(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
-pub(crate) struct LabelScaleIcons(pub RwSignal<f64>);
-#[derive(Clone, Copy)]
 pub(crate) struct SidebarOpen(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct SidebarWidth(pub RwSignal<f64>);
@@ -274,13 +117,9 @@ pub(crate) struct SidebarTransient(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct SidebarIndex(pub RwSignal<usize>);
 #[derive(Clone, Copy)]
-pub(crate) struct SidebarItems(pub RwSignal<Vec<String>>);
-#[derive(Clone, Copy)]
-pub(crate) struct ResetSettingsTrigger(pub RwSignal<u64>);
+pub(crate) struct SidebarItems(pub RwSignal<Vec<SidebarEntry>>);
 #[derive(Clone, Copy)]
 pub(crate) struct ShowSettings(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowDebugInfo(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct IsMobile(pub RwSignal<bool>);
 #[derive(Clone, Copy)]
@@ -303,19 +142,7 @@ pub(crate) struct GuildOnlineInfo {
 #[derive(Clone, Copy)]
 pub(crate) struct GuildOnlineData(pub RwSignal<HashMap<String, GuildOnlineInfo>>);
 #[derive(Clone, Copy)]
-pub(crate) struct ShowLeaderboardTerritoryCount(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct ShowLeaderboardOnline(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
 pub(crate) struct LeaderboardSortBySr(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct HeatModeEnabled(pub RwSignal<bool>);
-#[derive(Clone, Copy)]
-pub(crate) struct HeatLiveSourceSetting(pub RwSignal<HeatLiveSource>);
-#[derive(Clone, Copy)]
-pub(crate) struct HeatHistoryBasisSetting(pub RwSignal<HeatHistoryBasis>);
-#[derive(Clone, Copy)]
-pub(crate) struct HeatSelectedSeasonId(pub RwSignal<Option<i32>>);
 #[derive(Clone, Copy)]
 pub(crate) struct HeatEntriesByTerritory(pub RwSignal<HashMap<String, u64>>);
 /// How heat mode ranks capture counts, for its legend.
@@ -347,7 +174,6 @@ const FIRST_PROBE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(
 /// How often an open map re-checks the session behind the war feed.
 const VIEWER_PROBE_REFRESH: std::time::Duration = std::time::Duration::from_secs(300);
 const GUILD_ONLINE_POLL_INTERVAL_SECS: u64 = 120;
-const GUILD_ONLINE_BOOTSTRAP_RETRY_SECS: u64 = 3;
 const GUILD_ONLINE_ERROR_RETRY_SECS: u64 = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -375,20 +201,6 @@ fn should_wait_for_history_probe(history_is_available: bool, history_probe_nonce
     !history_is_available && history_probe_nonce == 0
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum HeatLiveSource {
-    Season,
-    AllTime,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum HeatHistoryBasis {
-    SeasonCumulative,
-    AllTimeCumulative,
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct CurrentMode(pub RwSignal<MapMode>);
 #[derive(Clone, Copy)]
@@ -397,6 +209,10 @@ pub(crate) struct HistoryTimestamp(pub RwSignal<Option<i64>>);
 /// is on the map. `None` while the live map is still drawn.
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryMapTime(pub RwSignal<Option<i64>>);
+/// The time the drawn territories show, which timers and held-for figures count against:
+/// History's once its state is on the map, the live clock otherwise.
+#[derive(Clone, Copy)]
+pub(crate) struct MapClock(pub Memo<i64>);
 /// The History bar's measured height in CSS pixels; 0 until it has been laid out.
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryBarHeight(pub RwSignal<f64>);
@@ -458,213 +274,6 @@ pub(crate) struct TerritoryGeometryStore(pub StoredValue<TerritoryGeometryMap>);
 #[derive(Clone, Copy)]
 pub(crate) struct GuildColorStore(pub StoredValue<GuildColorMap>);
 
-// Defined in the engine crate so the renderer can name it without depending on
-// the UI. Re-exported here to keep `crate::app::NameColor` paths working; its
-// serde form is PascalCase and is persisted in localStorage.
-pub(crate) use sequoia_map_engine::settings::{
-    CooldownDisplay, HqCrownStyle, NameColor, WarOutline, WarOutlineColor, WarOutlineStyle,
-};
-
-use gloo_storage::Storage;
-
-const SETTINGS_DEFAULTS_VERSION: u32 = 4;
-/// The outline every save wrote before defaults version 3 unless the member changed it.
-const PREVIOUS_DEFAULT_WAR_OUTLINE: WarOutline = WarOutline {
-    style: WarOutlineStyle::Dashed,
-    color: WarOutlineColor::Stage,
-    progress: false,
-    width: 1.0,
-    opacity: 0.88,
-};
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-struct SettingsV2 {
-    #[serde(default = "stale_settings_defaults_version")]
-    defaults_version: u32,
-    show_connections: bool,
-    abbreviate_names: bool,
-    show_countdown: bool,
-    granular_map_time: bool,
-    #[serde(default = "default_true")]
-    compound_map_time: bool,
-    show_names: bool,
-    #[serde(default)]
-    show_claim_labels: bool,
-    #[serde(default = "default_true")]
-    show_far_zoom_territory_tags: bool,
-    thick_cooldown_borders: bool,
-    bold_connections: bool,
-    #[serde(default)]
-    connection_style: ConnectionStyle,
-    #[serde(default = "default_connection_opacity_scale")]
-    connection_opacity_scale: f64,
-    #[serde(default = "default_connection_solid_opacity")]
-    connection_solid_opacity: f64,
-    #[serde(default = "default_connection_thickness_scale")]
-    connection_thickness_scale: f64,
-    sidebar_open: bool,
-    #[serde(default = "default_true")]
-    war_panel_open: bool,
-    #[serde(default = "default_war_panel_width")]
-    war_panel_width: f64,
-    /// The war panel; the key predates the panel's other contents.
-    #[serde(default = "default_true")]
-    show_war_queue: bool,
-    #[serde(default = "default_true")]
-    show_war_markers: bool,
-    #[serde(default)]
-    activity_include_unconfirmed: bool,
-    #[serde(default = "default_true")]
-    show_player_heads: bool,
-    #[serde(default = "default_true")]
-    player_head_render_head: bool,
-    #[serde(default)]
-    player_head_render_label: bool,
-    #[serde(default = "default_player_head_size")]
-    player_head_size: f64,
-    resource_highlight: bool,
-    #[serde(default = "default_resource_highlight_opacity")]
-    resource_highlight_opacity: f64,
-    /// What the fade-only slider of defaults version 3 saved: a share of the resting fill's
-    /// strength, 0 to 1. Read once into `territory_fill_opacity` and never written again.
-    #[serde(default, skip_serializing)]
-    territory_opacity: Option<f64>,
-    #[serde(default = "default_territory_opacity")]
-    territory_fill_opacity: f64,
-    #[serde(default)]
-    defense_highlight: bool,
-    #[serde(default)]
-    map_intel_enabled: bool,
-    #[serde(default = "default_true")]
-    show_resource_icons: bool,
-    #[serde(default = "default_true")]
-    show_territory_ornaments: bool,
-    #[serde(default, deserialize_with = "lenient_default")]
-    hq_crown_style: HqCrownStyle,
-    #[serde(default, deserialize_with = "lenient_default")]
-    cooldown_display: CooldownDisplay,
-    #[serde(default = "default_hq_crown_scale")]
-    hq_crown_scale: f64,
-    #[serde(default, deserialize_with = "lenient_war_outline")]
-    war_outline: WarOutline,
-    #[serde(default = "default_manual_sr_scalar")]
-    manual_sr_scalar: f64,
-    #[serde(default = "default_true")]
-    auto_sr_scalar_enabled: bool,
-    show_leaderboard_sr_gain: bool,
-    #[serde(default)]
-    show_leaderboard_sr_value: bool,
-    #[serde(default = "default_true")]
-    show_leaderboard_territory_count: bool,
-    #[serde(default = "default_true")]
-    show_leaderboard_online: bool,
-    leaderboard_sort_by_sr: bool,
-    #[serde(default)]
-    heat_mode_enabled: bool,
-    #[serde(default = "default_heat_live_source")]
-    heat_live_source: HeatLiveSource,
-    #[serde(default = "default_heat_history_basis")]
-    heat_history_basis: HeatHistoryBasis,
-    #[serde(default)]
-    heat_selected_season_id: Option<i32>,
-    #[serde(default)]
-    readable_font: bool,
-    /// Off unless chosen: a blob saved before the setting existed holds no choice.
-    #[serde(default)]
-    show_minimap: bool,
-    #[serde(default = "default_name_color")]
-    name_color: NameColor,
-    #[serde(default = "default_tag_color")]
-    tag_color: NameColor,
-    #[serde(default = "default_label_scale_master")]
-    label_scale_master: f64,
-    #[serde(default = "default_label_scale_static_tag")]
-    label_scale_static: f64,
-    #[serde(default)]
-    label_scale_static_name: Option<f64>,
-    #[serde(default = "default_label_scale_group")]
-    label_scale_dynamic: f64,
-    #[serde(default = "default_label_scale_group")]
-    label_scale_icons: f64,
-    #[serde(default = "default_sidebar_width")]
-    sidebar_width: f64,
-    #[serde(default)]
-    show_debug_info: bool,
-}
-
-const fn default_name_color() -> NameColor {
-    NameColor::Guild
-}
-
-const fn default_tag_color() -> NameColor {
-    NameColor::Guild
-}
-
-const fn stale_settings_defaults_version() -> u32 {
-    0
-}
-
-const fn default_heat_live_source() -> HeatLiveSource {
-    HeatLiveSource::AllTime
-}
-
-const fn default_heat_history_basis() -> HeatHistoryBasis {
-    HeatHistoryBasis::SeasonCumulative
-}
-
-const fn default_true() -> bool {
-    true
-}
-
-const fn default_manual_sr_scalar() -> f64 {
-    1.5
-}
-
-const fn default_connection_opacity_scale() -> f64 {
-    DEFAULT_CONNECTION_OPACITY_SCALE
-}
-
-const fn default_connection_solid_opacity() -> f64 {
-    DEFAULT_CONNECTION_SOLID_OPACITY
-}
-
-const fn default_connection_thickness_scale() -> f64 {
-    DEFAULT_CONNECTION_THICKNESS_SCALE
-}
-
-const fn default_resource_highlight_opacity() -> f64 {
-    DEFAULT_RESOURCE_HIGHLIGHT_OPACITY
-}
-
-const fn default_label_scale_master() -> f64 {
-    DEFAULT_LABEL_SCALE_MASTER
-}
-
-const fn default_label_scale_group() -> f64 {
-    DEFAULT_LABEL_SCALE_GROUP
-}
-
-const fn default_label_scale_static_tag() -> f64 {
-    DEFAULT_LABEL_SCALE_STATIC_TAG
-}
-
-const fn default_label_scale_static_name() -> f64 {
-    DEFAULT_LABEL_SCALE_STATIC_NAME
-}
-
-const fn default_war_panel_width() -> f64 {
-    DEFAULT_WAR_PANEL_WIDTH
-}
-
-const fn default_sidebar_width() -> f64 {
-    DEFAULT_SIDEBAR_WIDTH
-}
-
-const fn default_player_head_size() -> f64 {
-    DEFAULT_PLAYER_HEAD_SIZE
-}
-
 /// Whether the system asks for reduced motion, following changes while the page is open.
 fn prefers_reduced_motion() -> Signal<bool> {
     let query = web_sys::window()
@@ -683,392 +292,16 @@ fn prefers_reduced_motion() -> Signal<bool> {
     reduced.into()
 }
 
-/// A style this build does not know, saved by a newer one, falls back to the default
-/// rather than failing the whole settings blob.
-fn lenient_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned + Default,
-{
-    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
-    Ok(serde_json::from_value(value).unwrap_or_default())
-}
-
-/// Like [`lenient_default`]: an outline saved by a newer build falls back to the
-/// default rather than failing the whole settings blob.
-fn lenient_war_outline<'de, D>(deserializer: D) -> Result<WarOutline, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
-    Ok(serde_json::from_value::<WarOutline>(value)
-        .unwrap_or_default()
-        .clamped())
-}
-
-const fn default_hq_crown_scale() -> f64 {
-    DEFAULT_HQ_CROWN_SCALE
-}
-
-pub(crate) const DEFAULT_HQ_CROWN_SCALE: f64 = 1.0;
-// Exact decimal twins of the renderer's `f32` bounds, so the slider snaps to its steps.
-pub(crate) const HQ_CROWN_SCALE_MIN: f64 = 0.6;
-pub(crate) const HQ_CROWN_SCALE_MAX: f64 = 1.6;
-
-pub(crate) fn clamp_hq_crown_scale(value: f64) -> f64 {
-    if value.is_finite() {
-        value.clamp(HQ_CROWN_SCALE_MIN, HQ_CROWN_SCALE_MAX)
-    } else {
-        DEFAULT_HQ_CROWN_SCALE
-    }
-}
-
-pub(crate) const DEFAULT_LABEL_SCALE_MASTER: f64 = 1.0;
-pub(crate) const DEFAULT_LABEL_SCALE_GROUP: f64 = 1.0;
-pub(crate) const DEFAULT_LABEL_SCALE_STATIC_TAG: f64 = 1.0;
-pub(crate) const DEFAULT_LABEL_SCALE_STATIC_NAME: f64 = 1.0;
-pub(crate) const DEFAULT_CONNECTION_OPACITY_SCALE: f64 = 1.0;
-pub(crate) const DEFAULT_CONNECTION_THICKNESS_SCALE: f64 = 1.0;
-pub(crate) const CONNECTION_OPACITY_SCALE_MIN: f64 = 0.60;
-pub(crate) const CONNECTION_OPACITY_SCALE_MAX: f64 = 2.50;
-pub(crate) const DEFAULT_CONNECTION_SOLID_OPACITY: f64 = 1.0;
-pub(crate) const CONNECTION_SOLID_OPACITY_MIN: f64 = 0.20;
-pub(crate) const CONNECTION_SOLID_OPACITY_MAX: f64 = 1.0;
-pub(crate) const CONNECTION_THICKNESS_SCALE_MIN: f64 = 0.70;
-pub(crate) const CONNECTION_THICKNESS_SCALE_MAX: f64 = 2.50;
-// Exact decimal twins of the renderer's `f32` bounds, so the slider snaps to its steps.
-/// Initial and reset opacity; also fills in saved settings that predate the slider.
-pub(crate) const DEFAULT_RESOURCE_HIGHLIGHT_OPACITY: f64 = 0.45;
-/// Faintest highlight the slider allows; resources still read against the map.
-pub(crate) const RESOURCE_HIGHLIGHT_OPACITY_MIN: f64 = 0.15;
-/// Firmest highlight the slider allows, short of fully hiding the map tiles.
-pub(crate) const RESOURCE_HIGHLIGHT_OPACITY_MAX: f64 = 0.90;
-pub(crate) const LABEL_SCALE_MASTER_MIN: f64 = 1.0;
-pub(crate) const LABEL_SCALE_MASTER_MAX: f64 = 2.25;
-pub(crate) const LABEL_SCALE_GROUP_MIN: f64 = 0.60;
-pub(crate) const LABEL_SCALE_GROUP_MAX: f64 = 1.80;
-/// On-screen edge length of a teammate head, in CSS pixels. Screen-space rather than
-/// world-space on purpose: the head stays legible at every zoom, the way the map intel
-/// markers do, instead of shrinking to nothing when you zoom out to the whole province.
-pub(crate) const PLAYER_HEAD_SIZE_MIN: f64 = 8.0;
-pub(crate) const PLAYER_HEAD_SIZE_MAX: f64 = 48.0;
-pub(crate) const DEFAULT_PLAYER_HEAD_SIZE: f64 = 20.0;
-
-pub(crate) fn clamp_connection_opacity_scale(value: f64) -> f64 {
-    if value.is_nan() {
-        return DEFAULT_CONNECTION_OPACITY_SCALE;
-    }
-    value.clamp(CONNECTION_OPACITY_SCALE_MIN, CONNECTION_OPACITY_SCALE_MAX)
-}
-
-pub(crate) fn clamp_connection_solid_opacity(value: f64) -> f64 {
-    if value.is_nan() {
-        return DEFAULT_CONNECTION_SOLID_OPACITY;
-    }
-    value.clamp(CONNECTION_SOLID_OPACITY_MIN, CONNECTION_SOLID_OPACITY_MAX)
-}
-
-/// Guards `NaN` like the head size: a hand-edited blob must not hide the highlight.
-const fn default_territory_opacity() -> f64 {
-    DEFAULT_TERRITORY_OPACITY
-}
-
-/// The resting guild fill's opacity, the overlay as it has always been drawn; also fills in
-/// saved settings that predate it.
-pub(crate) const DEFAULT_TERRITORY_OPACITY: f64 = 0.26;
-/// At 0 the guild fill is gone and borders keep a floor (see the renderer).
-pub(crate) const TERRITORY_OPACITY_MIN: f64 = 0.0;
-/// Fully opaque.
-pub(crate) const TERRITORY_OPACITY_MAX: f64 = 1.0;
-
-pub(crate) fn clamp_territory_opacity(value: f64) -> f64 {
-    if value.is_finite() {
-        value.clamp(TERRITORY_OPACITY_MIN, TERRITORY_OPACITY_MAX)
-    } else {
-        DEFAULT_TERRITORY_OPACITY
-    }
-}
-
-pub(crate) fn clamp_resource_highlight_opacity(value: f64) -> f64 {
-    if value.is_nan() {
-        return DEFAULT_RESOURCE_HIGHLIGHT_OPACITY;
-    }
-    value.clamp(
-        RESOURCE_HIGHLIGHT_OPACITY_MIN,
-        RESOURCE_HIGHLIGHT_OPACITY_MAX,
-    )
-}
-
-pub(crate) fn clamp_connection_thickness_scale(value: f64) -> f64 {
-    if value.is_nan() {
-        return DEFAULT_CONNECTION_THICKNESS_SCALE;
-    }
-    value.clamp(
-        CONNECTION_THICKNESS_SCALE_MIN,
-        CONNECTION_THICKNESS_SCALE_MAX,
-    )
-}
-
-/// Unlike the other clamps this one guards `NaN`: the value reaches us from a persisted
-/// JSON blob a user can hand-edit, and a `NaN` size would silently draw nothing at all
-/// rather than being pinned to a bound.
-pub(crate) fn clamp_player_head_size(value: f64) -> f64 {
-    if value.is_nan() {
-        return DEFAULT_PLAYER_HEAD_SIZE;
-    }
-    value.clamp(PLAYER_HEAD_SIZE_MIN, PLAYER_HEAD_SIZE_MAX)
-}
-
-pub(crate) fn clamp_label_scale_master(value: f64) -> f64 {
-    value.clamp(LABEL_SCALE_MASTER_MIN, LABEL_SCALE_MASTER_MAX)
-}
-
-pub(crate) fn clamp_label_scale_group(value: f64) -> f64 {
-    value.clamp(LABEL_SCALE_GROUP_MIN, LABEL_SCALE_GROUP_MAX)
-}
-
-impl Default for SettingsV2 {
-    fn default() -> Self {
-        Self {
-            defaults_version: SETTINGS_DEFAULTS_VERSION,
-            show_connections: true,
-            abbreviate_names: true,
-            show_countdown: false,
-            granular_map_time: false,
-            compound_map_time: true,
-            show_names: false,
-            show_claim_labels: false,
-            show_far_zoom_territory_tags: true,
-            thick_cooldown_borders: true,
-            bold_connections: false,
-            connection_style: ConnectionStyle::Classic,
-            connection_opacity_scale: default_connection_opacity_scale(),
-            connection_solid_opacity: default_connection_solid_opacity(),
-            connection_thickness_scale: default_connection_thickness_scale(),
-            sidebar_open: false,
-            war_panel_open: true,
-            war_panel_width: default_war_panel_width(),
-            show_war_queue: true,
-            show_war_markers: true,
-            activity_include_unconfirmed: false,
-            show_player_heads: true,
-            player_head_render_head: true,
-            player_head_render_label: false,
-            player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
-            resource_highlight: false,
-            resource_highlight_opacity: default_resource_highlight_opacity(),
-            territory_opacity: None,
-            territory_fill_opacity: DEFAULT_TERRITORY_OPACITY,
-            defense_highlight: false,
-            map_intel_enabled: false,
-            show_resource_icons: true,
-            show_territory_ornaments: false,
-            hq_crown_style: HqCrownStyle::default(),
-            cooldown_display: CooldownDisplay::default(),
-            hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
-            war_outline: WarOutline::default(),
-            manual_sr_scalar: default_manual_sr_scalar(),
-            auto_sr_scalar_enabled: true,
-            show_leaderboard_sr_gain: false,
-            show_leaderboard_sr_value: false,
-            show_leaderboard_territory_count: true,
-            show_leaderboard_online: true,
-            leaderboard_sort_by_sr: false,
-            heat_mode_enabled: false,
-            heat_live_source: default_heat_live_source(),
-            heat_history_basis: default_heat_history_basis(),
-            heat_selected_season_id: None,
-            readable_font: false,
-            show_minimap: false,
-            name_color: default_name_color(),
-            tag_color: default_tag_color(),
-            label_scale_master: default_label_scale_master(),
-            label_scale_static: default_label_scale_static_tag(),
-            label_scale_static_name: Some(default_label_scale_static_name()),
-            label_scale_dynamic: default_label_scale_group(),
-            label_scale_icons: default_label_scale_group(),
-            sidebar_width: default_sidebar_width(),
-            show_debug_info: false,
-        }
-    }
-}
-
-impl SettingsV2 {
-    fn with_current_defaults(mut self) -> Self {
-        if self.defaults_version >= SETTINGS_DEFAULTS_VERSION {
-            return self;
-        }
-
-        if self.defaults_version < 1 {
-            let defaults = SettingsV2::default();
-            self.show_resource_icons = defaults.show_resource_icons;
-            self.show_territory_ornaments = defaults.show_territory_ornaments;
-            self.show_debug_info = defaults.show_debug_info;
-        }
-
-        if self.defaults_version < 2 {
-            let defaults = SettingsV2::default();
-            self.show_claim_labels = defaults.show_claim_labels;
-            self.show_far_zoom_territory_tags = defaults.show_far_zoom_territory_tags;
-        }
-
-        // Every save wrote the whole outline, so an outline still exactly at the old defaults
-        // cannot be told from one chosen to look like them; only that one moves, once. Any
-        // other saved outline is a choice and stays.
-        if self.defaults_version < 3 && self.war_outline == PREVIOUS_DEFAULT_WAR_OUTLINE {
-            self.war_outline = WarOutline::default();
-        }
-
-        // The same look: a share of the old strength is that share of its opacity.
-        if self.defaults_version < 4
-            && let Some(share) = self.territory_opacity.take()
-        {
-            self.territory_fill_opacity =
-                clamp_territory_opacity(share.clamp(0.0, 1.0) * DEFAULT_TERRITORY_OPACITY);
-        }
-
-        self.defaults_version = SETTINGS_DEFAULTS_VERSION;
-        self
-    }
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-struct LegacySettings {
-    show_connections: bool,
-    abbreviate_names: bool,
-    show_countdown: bool,
-    granular_map_time: bool,
-    #[serde(default = "default_true")]
-    compound_map_time: bool,
-    show_names: bool,
-    thick_cooldown_borders: bool,
-    readable_font: bool,
-    bold_connections: bool,
-    name_color: NameColor,
-    sidebar_open: bool,
-    resource_highlight: bool,
-    #[serde(default)]
-    defense_highlight: bool,
-    #[serde(default)]
-    map_intel_enabled: bool,
-    show_resource_icons: bool,
-    #[serde(default = "default_manual_sr_scalar")]
-    manual_sr_scalar: f64,
-    #[serde(default = "default_true")]
-    auto_sr_scalar_enabled: bool,
-    show_leaderboard_sr_gain: bool,
-}
-
-impl Default for LegacySettings {
-    fn default() -> Self {
-        Self {
-            show_connections: true,
-            abbreviate_names: true,
-            show_countdown: false,
-            granular_map_time: false,
-            compound_map_time: true,
-            show_names: false,
-            thick_cooldown_borders: true,
-            readable_font: false,
-            bold_connections: false,
-            name_color: NameColor::White,
-            sidebar_open: false,
-            resource_highlight: false,
-            defense_highlight: false,
-            map_intel_enabled: false,
-            show_resource_icons: false,
-            manual_sr_scalar: default_manual_sr_scalar(),
-            auto_sr_scalar_enabled: true,
-            show_leaderboard_sr_gain: false,
-        }
-    }
-}
-
-impl From<LegacySettings> for SettingsV2 {
-    fn from(value: LegacySettings) -> Self {
-        Self {
-            defaults_version: 0,
-            show_connections: value.show_connections,
-            abbreviate_names: value.abbreviate_names,
-            show_countdown: value.show_countdown,
-            granular_map_time: value.granular_map_time,
-            compound_map_time: value.compound_map_time,
-            show_names: value.show_names,
-            show_claim_labels: false,
-            show_far_zoom_territory_tags: true,
-            thick_cooldown_borders: value.thick_cooldown_borders,
-            bold_connections: value.bold_connections,
-            connection_style: ConnectionStyle::Classic,
-            connection_opacity_scale: default_connection_opacity_scale(),
-            connection_solid_opacity: default_connection_solid_opacity(),
-            connection_thickness_scale: default_connection_thickness_scale(),
-            sidebar_open: value.sidebar_open,
-            war_panel_open: true,
-            war_panel_width: default_war_panel_width(),
-            show_war_queue: true,
-            show_war_markers: true,
-            activity_include_unconfirmed: false,
-            show_player_heads: true,
-            player_head_render_head: true,
-            player_head_render_label: false,
-            player_head_size: DEFAULT_PLAYER_HEAD_SIZE,
-            resource_highlight: value.resource_highlight,
-            resource_highlight_opacity: default_resource_highlight_opacity(),
-            territory_opacity: None,
-            territory_fill_opacity: DEFAULT_TERRITORY_OPACITY,
-            defense_highlight: value.defense_highlight,
-            map_intel_enabled: value.map_intel_enabled,
-            show_resource_icons: value.show_resource_icons,
-            show_territory_ornaments: false,
-            hq_crown_style: HqCrownStyle::default(),
-            cooldown_display: CooldownDisplay::default(),
-            hq_crown_scale: DEFAULT_HQ_CROWN_SCALE,
-            war_outline: WarOutline::default(),
-            manual_sr_scalar: value.manual_sr_scalar,
-            auto_sr_scalar_enabled: value.auto_sr_scalar_enabled,
-            show_leaderboard_sr_gain: value.show_leaderboard_sr_gain,
-            show_leaderboard_sr_value: false,
-            show_leaderboard_territory_count: true,
-            show_leaderboard_online: true,
-            leaderboard_sort_by_sr: false,
-            heat_mode_enabled: false,
-            heat_live_source: default_heat_live_source(),
-            heat_history_basis: default_heat_history_basis(),
-            heat_selected_season_id: None,
-            readable_font: value.readable_font,
-            show_minimap: false,
-            name_color: value.name_color,
-            tag_color: default_tag_color(),
-            label_scale_master: default_label_scale_master(),
-            label_scale_static: default_label_scale_static_tag(),
-            label_scale_static_name: Some(default_label_scale_static_name()),
-            label_scale_dynamic: default_label_scale_group(),
-            label_scale_icons: default_label_scale_group(),
-            sidebar_width: default_sidebar_width(),
-            show_debug_info: false,
-        }
-    }
-}
-
-fn load_settings_v2() -> SettingsV2 {
-    if let Ok(saved) = gloo_storage::LocalStorage::get::<SettingsV2>("sequoia_settings_v2") {
-        return saved.with_current_defaults();
-    }
-    if let Ok(legacy) = gloo_storage::LocalStorage::get::<LegacySettings>("sequoia_settings") {
-        return SettingsV2::from(legacy).with_current_defaults();
-    }
-    SettingsV2::default()
-}
-
 use crate::colors::rgba_css;
 use crate::heat::{self, HeatFetchInput};
 use crate::history;
 use crate::keybinds::{KeybindHelpOpen, Shortcut};
 use crate::map_intel::MapIntelOverlay;
 use crate::navbar::{CurrentViewer, SiteNavbar};
+use crate::poll::PollGate;
 use crate::season_scalar;
-use crate::sidebar::Sidebar;
+use crate::settings::{self, Layout, Overlay, ViewerSettings};
+use crate::sidebar::{OpenEntry, Sidebar, SidebarEntry};
 use crate::territory::{ClientTerritoryMap, from_snapshot};
 use crate::territory_card::{
     DefenseValue, ResourceRow, ResourceTable, TerritoryHead, TerritoryWar, TreasuryValue, cooldown,
@@ -1081,7 +314,6 @@ use crate::war_room::{self, WarRoom, WarRoomInputs};
 use sequoia_browser_map::live_feed::{self, LiveFeed};
 use sequoia_browser_map::{BrowserMap, HeatLayer, MapCanvas, MapEvent, MapInputs};
 use sequoia_map_engine::heat::HeatScale;
-pub(crate) use sequoia_map_engine::settings::ConnectionStyle;
 use sequoia_map_engine::settings::{LabelScales, RenderSettings};
 
 fn format_heat_window_time(raw: &str) -> String {
@@ -1108,19 +340,45 @@ fn format_heat_window_label(heat: &HistoryHeat, mode: MapMode) -> String {
     )
 }
 
+/// `Some(false)` for Ctrl+Z (Cmd+Z), `Some(true)` for Ctrl+Shift+Z or Ctrl+Y.
+fn settings_undo_key(e: &web_sys::KeyboardEvent) -> Option<bool> {
+    if !(e.ctrl_key() || e.meta_key()) || e.alt_key() {
+        return None;
+    }
+    match e.key().to_ascii_lowercase().as_str() {
+        "z" => Some(e.shift_key()),
+        "y" if !e.shift_key() => Some(true),
+        _ => None,
+    }
+}
+
+/// Whether the key goes to a field the viewer types into.
+fn edits_text(target: Option<web_sys::EventTarget>) -> bool {
+    let Some(element) = target.and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+    else {
+        return false;
+    };
+    if element.is_content_editable() || element.tag_name() == "TEXTAREA" {
+        return true;
+    }
+    element
+        .dyn_into::<web_sys::HtmlInputElement>()
+        .is_ok_and(|input| {
+            !matches!(
+                input.type_().as_str(),
+                "range" | "radio" | "checkbox" | "button" | "submit" | "reset" | "color"
+            )
+        })
+}
+
+/// The saved season, or Latest (`None`, which the server reads as the newest season and so
+/// follows a new one) when the server no longer has the season saved.
 fn normalize_heat_selected_season_id(meta: &HistoryHeatMeta, selected: Option<i32>) -> Option<i32> {
-    let has_season = |season_id: i32| {
+    selected.filter(|season_id| {
         meta.seasons
             .iter()
-            .any(|window| window.season_id == season_id)
-    };
-    let latest_valid = meta
-        .latest_season_id
-        .filter(|season_id| has_season(*season_id));
-    match selected {
-        Some(season_id) if has_season(season_id) => Some(season_id),
-        _ => latest_valid,
-    }
+            .any(|window| window.season_id == *season_id)
+    })
 }
 #[component]
 pub fn App() -> impl IntoView {
@@ -1137,89 +395,24 @@ pub fn MapPage() -> impl IntoView {
     let search_query: RwSignal<String> = RwSignal::new(String::new());
     // Epoch-second tick — drives cooldown countdown updates across canvas, tooltip, sidebar
     let tick: RwSignal<i64> = RwSignal::new(chrono::Utc::now().timestamp());
-    let saved = load_settings_v2();
-    let show_connections: RwSignal<bool> = RwSignal::new(saved.show_connections);
-    let abbreviate_names: RwSignal<bool> = RwSignal::new(saved.abbreviate_names);
-    let show_countdown: RwSignal<bool> = RwSignal::new(saved.show_countdown);
-    let show_granular_map_time: RwSignal<bool> = RwSignal::new(saved.granular_map_time);
-    let show_compound_map_time: RwSignal<bool> = RwSignal::new(saved.compound_map_time);
-    let show_names: RwSignal<bool> = RwSignal::new(saved.show_names);
-    let show_claim_labels: RwSignal<bool> = RwSignal::new(saved.show_claim_labels);
-    let show_far_zoom_territory_tags: RwSignal<bool> =
-        RwSignal::new(saved.show_far_zoom_territory_tags);
-    let thick_cooldown_borders: RwSignal<bool> = RwSignal::new(saved.thick_cooldown_borders);
-    let bold_connections: RwSignal<bool> = RwSignal::new(saved.bold_connections);
-    let connection_style: RwSignal<ConnectionStyle> = RwSignal::new(saved.connection_style);
-    let connection_opacity_scale: RwSignal<f64> = RwSignal::new(clamp_connection_opacity_scale(
-        saved.connection_opacity_scale,
-    ));
-    let connection_solid_opacity: RwSignal<f64> = RwSignal::new(clamp_connection_solid_opacity(
-        saved.connection_solid_opacity,
-    ));
-    let connection_thickness_scale: RwSignal<f64> = RwSignal::new(
-        clamp_connection_thickness_scale(saved.connection_thickness_scale),
-    );
-    let resource_highlight: RwSignal<bool> = RwSignal::new(saved.resource_highlight);
-    let resource_highlight_opacity: RwSignal<f64> = RwSignal::new(
-        clamp_resource_highlight_opacity(saved.resource_highlight_opacity),
-    );
-    let territory_opacity: RwSignal<f64> =
-        RwSignal::new(clamp_territory_opacity(saved.territory_fill_opacity));
-    let defense_highlight: RwSignal<bool> = RwSignal::new(saved.defense_highlight);
-    let map_intel_enabled: RwSignal<bool> = RwSignal::new(saved.map_intel_enabled);
-    let show_resource_icons: RwSignal<bool> = RwSignal::new(saved.show_resource_icons);
-    let show_territory_ornaments: RwSignal<bool> = RwSignal::new(saved.show_territory_ornaments);
-    let hq_crown_style: RwSignal<HqCrownStyle> = RwSignal::new(saved.hq_crown_style);
-    let cooldown_display: RwSignal<CooldownDisplay> = RwSignal::new(saved.cooldown_display);
+    let (settings, layout) = ViewerSettings::load();
+    let heat_mode_enabled = settings.value(settings::HEAT_MAP);
+    let show_minimap = settings.value(settings::MINIMAP);
+    let heat_selected_season_id = settings.value(settings::HEAT_SEASON);
+    let heat_live_season = settings.value(settings::HEAT_LIVE_SEASON);
+    let heat_history_season = settings.value(settings::HEAT_HISTORY_SEASON);
     let reduced_motion = prefers_reduced_motion();
-    let hq_crown_scale: RwSignal<f64> = RwSignal::new(clamp_hq_crown_scale(saved.hq_crown_scale));
-    let war_outline = WarOutlineControls::new(saved.war_outline);
-    let manual_sr_scalar: RwSignal<f64> =
-        RwSignal::new(season_scalar::clamp_manual_scalar(saved.manual_sr_scalar));
-    let auto_sr_scalar_enabled: RwSignal<bool> = RwSignal::new(saved.auto_sr_scalar_enabled);
-    let show_leaderboard_sr_gain: RwSignal<bool> = RwSignal::new(saved.show_leaderboard_sr_gain);
-    let show_leaderboard_sr_value: RwSignal<bool> = RwSignal::new(saved.show_leaderboard_sr_value);
-    let name_color: RwSignal<NameColor> = RwSignal::new(saved.name_color);
-    let tag_color: RwSignal<NameColor> = RwSignal::new(saved.tag_color);
-    let readable_font: RwSignal<bool> = RwSignal::new(saved.readable_font);
-    let show_minimap: RwSignal<bool> = RwSignal::new(saved.show_minimap);
-    let label_scale_master: RwSignal<f64> =
-        RwSignal::new(clamp_label_scale_master(saved.label_scale_master));
-    let label_scale_static: RwSignal<f64> =
-        RwSignal::new(clamp_label_scale_group(saved.label_scale_static));
-    let label_scale_static_name: RwSignal<f64> = RwSignal::new(clamp_label_scale_group(
-        saved
-            .label_scale_static_name
-            .unwrap_or(saved.label_scale_static),
-    ));
-    let label_scale_dynamic: RwSignal<f64> =
-        RwSignal::new(clamp_label_scale_group(saved.label_scale_dynamic));
-    let label_scale_icons: RwSignal<f64> =
-        RwSignal::new(clamp_label_scale_group(saved.label_scale_icons));
-    let sidebar_width: RwSignal<f64> = RwSignal::new(clamp_sidebar_width(migrate_sidebar_width(
-        saved.sidebar_width,
-    )));
-    let sidebar_open: RwSignal<bool> = RwSignal::new(saved.sidebar_open);
-    let war_panel_open: RwSignal<bool> = RwSignal::new(saved.war_panel_open);
-    let war_panel_width: RwSignal<f64> =
-        RwSignal::new(clamp_war_panel_width(saved.war_panel_width));
-    let show_war_panel: RwSignal<bool> = RwSignal::new(saved.show_war_queue);
-    let show_war_markers: RwSignal<bool> = RwSignal::new(saved.show_war_markers);
-    let activity_include_unconfirmed = RwSignal::new(saved.activity_include_unconfirmed);
-    let show_player_heads: RwSignal<bool> = RwSignal::new(saved.show_player_heads);
-    let player_head_render_head: RwSignal<bool> = RwSignal::new(saved.player_head_render_head);
-    let player_head_render_label: RwSignal<bool> = RwSignal::new(saved.player_head_render_label);
-    let player_head_size: RwSignal<f64> =
-        RwSignal::new(clamp_player_head_size(saved.player_head_size));
+    let sidebar_width: RwSignal<f64> = RwSignal::new(layout.sidebar_width);
+    let sidebar_open: RwSignal<bool> = RwSignal::new(layout.sidebar_open);
+    let war_panel_open: RwSignal<bool> = RwSignal::new(layout.war_panel_open);
+    let war_panel_width: RwSignal<f64> = RwSignal::new(layout.war_panel_width);
     let sidebar_transient: RwSignal<bool> = RwSignal::new(false);
     let sidebar_ready: RwSignal<bool> = RwSignal::new(false);
-    let sidebar_loaded: RwSignal<bool> = RwSignal::new(saved.sidebar_open);
+    let sidebar_loaded: RwSignal<bool> = RwSignal::new(layout.sidebar_open);
     let sidebar_index: RwSignal<usize> = RwSignal::new(0);
-    let sidebar_items: RwSignal<Vec<String>> = RwSignal::new(Vec::new());
-    let reset_settings_trigger: RwSignal<u64> = RwSignal::new(0);
+    let sidebar_items: RwSignal<Vec<SidebarEntry>> = RwSignal::new(Vec::new());
     let keybind_help_open: RwSignal<bool> = RwSignal::new(false);
     let show_settings: RwSignal<bool> = RwSignal::new(false);
-    let show_debug_info: RwSignal<bool> = RwSignal::new(saved.show_debug_info);
     // Live-first boot: defer non-essential work (tiles/history checks/icons)
     // until we have initial territory data and the first frame has had a chance to commit.
     let deferred_boot_ready: RwSignal<bool> = RwSignal::new(false);
@@ -1235,15 +428,7 @@ pub fn MapPage() -> impl IntoView {
     let detail_return_guild: RwSignal<Option<String>> = RwSignal::new(None);
     let guild_online_data: RwSignal<HashMap<String, GuildOnlineInfo>> =
         RwSignal::new(HashMap::new());
-    let show_leaderboard_territory_count: RwSignal<bool> =
-        RwSignal::new(saved.show_leaderboard_territory_count);
-    let show_leaderboard_online: RwSignal<bool> = RwSignal::new(saved.show_leaderboard_online);
-    let leaderboard_sort_by_sr: RwSignal<bool> = RwSignal::new(saved.leaderboard_sort_by_sr);
-    let heat_mode_enabled: RwSignal<bool> = RwSignal::new(saved.heat_mode_enabled);
-    let heat_live_source: RwSignal<HeatLiveSource> = RwSignal::new(saved.heat_live_source);
-    let heat_history_basis: RwSignal<HeatHistoryBasis> = RwSignal::new(saved.heat_history_basis);
-    let heat_selected_season_id: RwSignal<Option<i32>> =
-        RwSignal::new(saved.heat_selected_season_id);
+    let leaderboard_sort_by_sr: RwSignal<bool> = RwSignal::new(layout.leaderboard_sort_by_sr);
     let heat_entries_by_territory: RwSignal<HashMap<String, u64>> = RwSignal::new(HashMap::new());
     let heat_fallback_applied: RwSignal<bool> = RwSignal::new(false);
     let heat_window_label: RwSignal<String> = RwSignal::new(String::new());
@@ -1313,48 +498,50 @@ pub fn MapPage() -> impl IntoView {
         tick,
     });
 
-    let render_settings = Memo::new(move |_| RenderSettings {
-        thick_cooldown_borders: thick_cooldown_borders.get(),
-        suppress_cooldown_visuals: false,
-        cooldown_display: cooldown_display.get(),
+    let render_settings = Memo::new(move |_| {
         // History's clock can stand still or race; the urgency of a cooldown ending is live.
-        cooldown_pulse: map_mode.get() == MapMode::Live && !reduced_motion.get(),
-        resource_highlight: resource_highlight.get(),
-        resource_highlight_opacity: resource_highlight_opacity.get() as f32,
-        defense_highlight: defense_highlight.get(),
-        fill_alpha_boost: 0.0,
-        territory_opacity: territory_opacity.get() as f32,
-        show_connections: show_connections.get(),
-        connection_style: connection_style.get(),
-        bold_connections: bold_connections.get(),
-        connection_opacity_scale: connection_opacity_scale.get() as f32,
-        connection_solid_opacity: connection_solid_opacity.get() as f32,
-        connection_thickness_scale: connection_thickness_scale.get() as f32,
-        connection_zoom_fade: (0.15, 0.45),
-        show_names: show_names.get(),
-        abbreviate_names: abbreviate_names.get(),
-        show_claim_labels: show_claim_labels.get(),
-        show_far_zoom_territory_tags: show_far_zoom_territory_tags.get(),
-        name_color: name_color.get(),
-        tag_color: tag_color.get(),
-        readable_font: readable_font.get(),
-        show_countdown: show_countdown.get(),
-        granular_map_time: show_granular_map_time.get(),
-        compound_map_time: show_compound_map_time.get(),
-        show_resource_icons: show_resource_icons.get(),
-        show_territory_ornaments: show_territory_ornaments.get(),
-        hq_crown_style: hq_crown_style.get(),
-        hq_crown_scale: hq_crown_scale.get() as f32,
-        war_outline: war_outline.get(),
-        label_scales: LabelScales {
-            master: label_scale_master.get() as f32,
-            static_tag: label_scale_static.get() as f32,
-            static_name: label_scale_static_name.get() as f32,
-            dynamic: label_scale_dynamic.get() as f32,
-            icons: label_scale_icons.get() as f32,
-        },
+        let cooldown_pulse = map_mode.get() == MapMode::Live && !reduced_motion.get();
+        settings.with(|s| RenderSettings {
+            thick_cooldown_borders: s.thick_cooldown_borders,
+            suppress_cooldown_visuals: false,
+            cooldown_display: s.cooldown_display,
+            cooldown_pulse,
+            resource_highlight: s.overlay == Overlay::Resources,
+            resource_highlight_opacity: s.resource_highlight_opacity as f32,
+            defense_highlight: s.overlay == Overlay::Defense,
+            fill_alpha_boost: 0.0,
+            territory_opacity: s.territory_fill_opacity as f32,
+            show_connections: s.show_connections,
+            connection_style: s.connection_style,
+            bold_connections: s.bold_connections,
+            connection_opacity_scale: s.connection_opacity_scale as f32,
+            connection_solid_opacity: s.connection_solid_opacity as f32,
+            connection_thickness_scale: s.connection_thickness_scale as f32,
+            connection_zoom_fade: (0.15, 0.45),
+            show_names: s.show_names,
+            abbreviate_names: s.abbreviate_names,
+            show_claim_labels: s.show_claim_labels,
+            show_far_zoom_territory_tags: s.show_far_zoom_territory_tags,
+            name_color: s.name_color,
+            tag_color: s.tag_color,
+            readable_font: s.readable_font,
+            show_countdown: s.show_countdown,
+            granular_map_time: s.granular_map_time,
+            compound_map_time: s.compound_map_time,
+            show_resource_icons: s.show_resource_icons,
+            show_territory_ornaments: s.show_territory_ornaments,
+            hq_crown_style: s.hq_crown_style,
+            hq_crown_scale: s.hq_crown_scale as f32,
+            war_outline: s.war_outline,
+            label_scales: LabelScales {
+                master: s.label_scale_master as f32,
+                static_tag: s.label_scale_static as f32,
+                static_name: s.label_scale_static_name as f32,
+                dynamic: s.label_scale_dynamic as f32,
+                icons: s.label_scale_icons as f32,
+            },
+        })
     });
-    // Timers count against the time of the territories drawn, not a seek still loading.
     let map_clock = Memo::new(move |_| match map_mode.get() {
         MapMode::History => history_map_time.get().unwrap_or_else(|| tick.get()),
         MapMode::Live => tick.get(),
@@ -1397,65 +584,20 @@ pub fn MapPage() -> impl IntoView {
     provide_context(search_query);
     provide_context(connection);
     provide_context(tick);
-    provide_context(show_connections);
-    provide_context(AbbreviateNames(abbreviate_names));
-    provide_context(ShowCountdown(show_countdown));
-    provide_context(ShowGranularMapTime(show_granular_map_time));
-    provide_context(ShowCompoundMapTime(show_compound_map_time));
-    provide_context(ShowNames(show_names));
-    provide_context(ShowClaimLabels(show_claim_labels));
-    provide_context(ShowFarZoomTerritoryTags(show_far_zoom_territory_tags));
-    provide_context(ThickCooldownBorders(thick_cooldown_borders));
-    provide_context(BoldConnections(bold_connections));
-    provide_context(ConnectionStyleSetting(connection_style));
-    provide_context(ConnectionOpacityScale(connection_opacity_scale));
-    provide_context(ConnectionSolidOpacity(connection_solid_opacity));
-    provide_context(ConnectionThicknessScale(connection_thickness_scale));
-    provide_context(ResourceHighlight(resource_highlight));
-    provide_context(ResourceHighlightOpacity(resource_highlight_opacity));
-    provide_context(TerritoryOpacity(territory_opacity));
     provide_context(KeybindHelpOpen(keybind_help_open));
-    provide_context(DefenseHighlight(defense_highlight));
-    provide_context(MapIntelModeEnabled(map_intel_enabled));
-    provide_context(ShowResourceIcons(show_resource_icons));
-    provide_context(ShowTerritoryOrnaments(show_territory_ornaments));
-    provide_context(HqCrownStyleSetting(hq_crown_style));
-    provide_context(CooldownDisplaySetting(cooldown_display));
-    provide_context(HqCrownScale(hq_crown_scale));
-    provide_context(war_outline);
-    provide_context(ManualSrScalar(manual_sr_scalar));
-    provide_context(AutoSrScalarEnabled(auto_sr_scalar_enabled));
-    provide_context(ShowLeaderboardSrGain(show_leaderboard_sr_gain));
-    provide_context(ShowLeaderboardSrValue(show_leaderboard_sr_value));
-    provide_context(NameColorSetting(name_color));
-    provide_context(TagColorSetting(tag_color));
-    provide_context(ReadableFont(readable_font));
-    provide_context(ShowMinimap(show_minimap));
-    provide_context(LabelScaleMaster(label_scale_master));
-    provide_context(LabelScaleStatic(label_scale_static));
-    provide_context(LabelScaleStaticName(label_scale_static_name));
-    provide_context(LabelScaleDynamic(label_scale_dynamic));
-    provide_context(LabelScaleIcons(label_scale_icons));
     provide_context(SidebarOpen(sidebar_open));
     provide_context(WarPanelOpen(war_panel_open));
     provide_context(WarPanelWidth(war_panel_width));
-    provide_context(ShowWarPanel(show_war_panel));
-    provide_context(ShowWarMarkers(show_war_markers));
-    provide_context(ActivityIncludeUnconfirmed(activity_include_unconfirmed));
-    provide_context(ShowPlayerHeads(show_player_heads));
-    provide_context(PlayerHeadRenderHead(player_head_render_head));
-    provide_context(PlayerHeadRenderLabel(player_head_render_label));
-    provide_context(PlayerHeadSize(player_head_size));
     provide_context(SidebarWidth(sidebar_width));
     provide_context(SidebarTransient(sidebar_transient));
     provide_context(SidebarIndex(sidebar_index));
     provide_context(SidebarItems(sidebar_items));
-    provide_context(ResetSettingsTrigger(reset_settings_trigger));
+    provide_context(settings);
     provide_context(ShowSettings(show_settings));
-    provide_context(ShowDebugInfo(show_debug_info));
     provide_context(CurrentMode(map_mode));
     provide_context(HistoryTimestamp(history_timestamp));
     provide_context(HistoryMapTime(history_map_time));
+    provide_context(MapClock(map_clock));
     provide_context(HistoryBarHeight(history_bar_height));
     provide_context(PlaybackActive(playback_active));
     provide_context(PlaybackSpeed(playback_speed));
@@ -1573,121 +715,14 @@ pub fn MapPage() -> impl IntoView {
     provide_context(PeekTerritory(peek_territory));
     provide_context(SelectedGuild(selected_guild));
     provide_context(DetailReturnGuild(detail_return_guild));
+    let open_entry = OpenEntry::from_context();
     provide_context(GuildOnlineData(guild_online_data));
-    provide_context(ShowLeaderboardTerritoryCount(
-        show_leaderboard_territory_count,
-    ));
-    provide_context(ShowLeaderboardOnline(show_leaderboard_online));
     provide_context(LeaderboardSortBySr(leaderboard_sort_by_sr));
-    provide_context(HeatModeEnabled(heat_mode_enabled));
-    provide_context(HeatLiveSourceSetting(heat_live_source));
-    provide_context(HeatHistoryBasisSetting(heat_history_basis));
-    provide_context(HeatSelectedSeasonId(heat_selected_season_id));
     provide_context(HeatEntriesByTerritory(heat_entries_by_territory));
     provide_context(HeatScaleSignal(heat_layer.scale()));
     provide_context(HeatFallbackApplied(heat_fallback_applied));
     provide_context(HeatWindowLabel(heat_window_label));
     provide_context(HeatMetaState(heat_meta));
-
-    Effect::new(move || {
-        if reset_settings_trigger.get() == 0 {
-            return;
-        }
-
-        let defaults = SettingsV2::default();
-        show_connections.set(defaults.show_connections);
-        abbreviate_names.set(defaults.abbreviate_names);
-        show_countdown.set(defaults.show_countdown);
-        show_granular_map_time.set(defaults.granular_map_time);
-        show_compound_map_time.set(defaults.compound_map_time);
-        show_names.set(defaults.show_names);
-        show_claim_labels.set(defaults.show_claim_labels);
-        show_far_zoom_territory_tags.set(defaults.show_far_zoom_territory_tags);
-        thick_cooldown_borders.set(defaults.thick_cooldown_borders);
-        bold_connections.set(defaults.bold_connections);
-        connection_style.set(defaults.connection_style);
-        connection_opacity_scale.set(clamp_connection_opacity_scale(
-            defaults.connection_opacity_scale,
-        ));
-        connection_solid_opacity.set(clamp_connection_solid_opacity(
-            defaults.connection_solid_opacity,
-        ));
-        connection_thickness_scale.set(clamp_connection_thickness_scale(
-            defaults.connection_thickness_scale,
-        ));
-        resource_highlight.set(defaults.resource_highlight);
-        resource_highlight_opacity.set(clamp_resource_highlight_opacity(
-            defaults.resource_highlight_opacity,
-        ));
-        territory_opacity.set(clamp_territory_opacity(defaults.territory_fill_opacity));
-        defense_highlight.set(defaults.defense_highlight);
-        map_intel_enabled.set(defaults.map_intel_enabled);
-        show_resource_icons.set(defaults.show_resource_icons);
-        show_territory_ornaments.set(defaults.show_territory_ornaments);
-        hq_crown_style.set(defaults.hq_crown_style);
-        cooldown_display.set(defaults.cooldown_display);
-        hq_crown_scale.set(clamp_hq_crown_scale(defaults.hq_crown_scale));
-        war_outline.set(defaults.war_outline);
-        manual_sr_scalar.set(season_scalar::clamp_manual_scalar(
-            defaults.manual_sr_scalar,
-        ));
-        auto_sr_scalar_enabled.set(defaults.auto_sr_scalar_enabled);
-        show_leaderboard_sr_gain.set(defaults.show_leaderboard_sr_gain);
-        show_leaderboard_sr_value.set(defaults.show_leaderboard_sr_value);
-        show_leaderboard_territory_count.set(defaults.show_leaderboard_territory_count);
-        show_leaderboard_online.set(defaults.show_leaderboard_online);
-        leaderboard_sort_by_sr.set(defaults.leaderboard_sort_by_sr);
-        heat_mode_enabled.set(defaults.heat_mode_enabled);
-        heat_live_source.set(defaults.heat_live_source);
-        heat_history_basis.set(defaults.heat_history_basis);
-        heat_selected_season_id.set(defaults.heat_selected_season_id);
-        readable_font.set(defaults.readable_font);
-        show_minimap.set(defaults.show_minimap);
-        show_war_panel.set(defaults.show_war_queue);
-        show_war_markers.set(defaults.show_war_markers);
-        activity_include_unconfirmed.set(defaults.activity_include_unconfirmed);
-        show_player_heads.set(defaults.show_player_heads);
-        player_head_render_head.set(defaults.player_head_render_head);
-        player_head_render_label.set(defaults.player_head_render_label);
-        player_head_size.set(clamp_player_head_size(defaults.player_head_size));
-        name_color.set(defaults.name_color);
-        tag_color.set(defaults.tag_color);
-        label_scale_master.set(clamp_label_scale_master(defaults.label_scale_master));
-        label_scale_static.set(clamp_label_scale_group(defaults.label_scale_static));
-        label_scale_static_name.set(clamp_label_scale_group(
-            defaults
-                .label_scale_static_name
-                .unwrap_or(defaults.label_scale_static),
-        ));
-        label_scale_dynamic.set(clamp_label_scale_group(defaults.label_scale_dynamic));
-        label_scale_icons.set(clamp_label_scale_group(defaults.label_scale_icons));
-        show_debug_info.set(defaults.show_debug_info);
-    });
-
-    Effect::new(move || {
-        if resource_highlight.get() && defense_highlight.get_untracked() {
-            defense_highlight.set(false);
-        }
-        if resource_highlight.get() && map_intel_enabled.get_untracked() {
-            map_intel_enabled.set(false);
-        }
-    });
-    Effect::new(move || {
-        if defense_highlight.get() && resource_highlight.get_untracked() {
-            resource_highlight.set(false);
-        }
-        if defense_highlight.get() && map_intel_enabled.get_untracked() {
-            map_intel_enabled.set(false);
-        }
-    });
-    Effect::new(move || {
-        if map_intel_enabled.get() && resource_highlight.get_untracked() {
-            resource_highlight.set(false);
-        }
-        if map_intel_enabled.get() && defense_highlight.get_untracked() {
-            defense_highlight.set(false);
-        }
-    });
 
     // Closing the mobile sheet on a territory's details falls back to its peek card.
     {
@@ -1842,18 +877,18 @@ pub fn MapPage() -> impl IntoView {
             }
 
             let mode_now = map_mode.get_untracked();
-            let (source, at) = if mode_now == MapMode::History {
-                let source = match heat_history_basis.get_untracked() {
-                    HeatHistoryBasis::SeasonCumulative => HistoryHeatSource::Season,
-                    HeatHistoryBasis::AllTimeCumulative => HistoryHeatSource::AllTime,
-                };
-                (source, at_override.or(history_timestamp.get_untracked()))
+            let (season_wide, at) = if mode_now == MapMode::History {
+                (
+                    heat_history_season.get_untracked(),
+                    at_override.or(history_timestamp.get_untracked()),
+                )
             } else {
-                let source = match heat_live_source.get_untracked() {
-                    HeatLiveSource::Season => HistoryHeatSource::Season,
-                    HeatLiveSource::AllTime => HistoryHeatSource::AllTime,
-                };
-                (source, None)
+                (heat_live_season.get_untracked(), None)
+            };
+            let source = if season_wide {
+                HistoryHeatSource::Season
+            } else {
+                HistoryHeatSource::AllTime
             };
 
             let season_id = if source == HistoryHeatSource::Season {
@@ -1898,6 +933,18 @@ pub fn MapPage() -> impl IntoView {
             });
         }
     });
+    // Once the server's seasons are known, a saved season it no longer has becomes Latest, in
+    // the settings and everywhere Undo and Redo can reach.
+    Effect::new(move || {
+        heat_meta.with(|meta| {
+            if let Some(meta) = meta {
+                settings.correct(|s| {
+                    s.heat_selected_season_id =
+                        normalize_heat_selected_season_id(meta, s.heat_selected_season_id);
+                });
+            }
+        });
+    });
     // History heat fetch throttling state (leading + trailing calls).
     let heat_history_refresh_timeout =
         Rc::new(RefCell::new(None::<gloo_timers::callback::Timeout>));
@@ -1920,14 +967,10 @@ pub fn MapPage() -> impl IntoView {
             wasm_bindgen_futures::spawn_local(async move {
                 match heat::fetch_heat_meta().await {
                     Ok(meta) => {
-                        let selected_before = heat_selected_season_id.get_untracked();
-                        let selected_after =
-                            normalize_heat_selected_season_id(&meta, selected_before);
+                        let selected = heat_selected_season_id.get_untracked();
                         heat_meta.set(Some(meta));
-                        if selected_after != selected_before {
-                            heat_selected_season_id.set(selected_after);
-                        } else if selected_before.is_none() {
-                            // No valid season id to set; refresh so season mode can fall back server-side.
+                        // A season corrected below refreshes as it changes; Latest asks now.
+                        if selected.is_none() {
                             request_heat_refresh(None);
                         }
                     }
@@ -1954,8 +997,8 @@ pub fn MapPage() -> impl IntoView {
             }
 
             let mode_now = map_mode.get();
-            heat_live_source.track();
-            heat_history_basis.track();
+            heat_live_season.track();
+            heat_history_season.track();
             heat_selected_season_id.track();
             let history_at = history_timestamp.get();
 
@@ -2040,23 +1083,26 @@ pub fn MapPage() -> impl IntoView {
     });
 
     // Poll shared server-side scalar estimate while in live mode.
+    let estimate_sr_scalar = settings.value(settings::ESTIMATE_SR_SCALAR);
+    let mut scalar_gate =
+        PollGate::new(move || map_mode.get() == MapMode::Live && estimate_sr_scalar.get());
     wasm_bindgen_futures::spawn_local(async move {
         loop {
-            if map_mode.get_untracked() == MapMode::Live && auto_sr_scalar_enabled.get_untracked() {
-                match season_scalar::fetch_current_scalar_sample().await {
-                    Ok(sample) => live_season_scalar_sample.set(sample),
-                    Err(e) => {
-                        web_sys::console::warn_1(
-                            &format!("season scalar fetch failed: {e}").into(),
-                        );
-                    }
+            scalar_gate.open().await;
+            match season_scalar::fetch_current_scalar_sample().await {
+                Ok(sample) => live_season_scalar_sample.set(sample),
+                Err(e) => {
+                    web_sys::console::warn_1(&format!("season scalar fetch failed: {e}").into());
                 }
             }
-            gloo_timers::future::sleep(std::time::Duration::from_secs(60)).await;
+            scalar_gate.sleep(std::time::Duration::from_secs(60)).await;
         }
     });
 
     // Poll guild online data (online counts + season ratings) while in live mode.
+    let mut online_gate = PollGate::new(move || {
+        map_mode.get() == MapMode::Live && territories.with(|map| !map.is_empty())
+    });
     wasm_bindgen_futures::spawn_local(async move {
         fn parse_online_response(
             raw: HashMap<String, serde_json::Value>,
@@ -2112,114 +1158,55 @@ pub fn MapPage() -> impl IntoView {
         }
 
         loop {
-            let mut next_sleep_secs = GUILD_ONLINE_POLL_INTERVAL_SECS;
-            if map_mode.get_untracked() == MapMode::Live {
-                let map = territories.get_untracked();
-                let mut guild_counts: HashMap<String, usize> = HashMap::new();
+            online_gate.open().await;
+            let mut guild_counts: HashMap<String, usize> = HashMap::new();
+            territories.with_untracked(|map| {
                 for ct in map.values() {
                     *guild_counts
                         .entry(ct.territory.guild.name.clone())
                         .or_default() += 1;
                 }
-                let mut sorted: Vec<_> = guild_counts.into_iter().collect();
-                sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                sorted.truncate(20);
-                let names: Vec<String> = sorted.into_iter().map(|(name, _)| name).collect();
-                if !names.is_empty() {
-                    let query = encoded_names_query(names);
-                    let url = format!("/api/guilds/online?names={query}");
-                    match gloo_net::http::Request::get(&url).send().await {
-                        Ok(resp) if resp.ok() => {
-                            if let Ok(raw) = resp.json::<HashMap<String, serde_json::Value>>().await
-                            {
-                                guild_online_data.set(parse_online_response(raw));
-                            }
-                        }
-                        _ => {
-                            next_sleep_secs = GUILD_ONLINE_ERROR_RETRY_SECS;
-                        }
+            });
+            let mut sorted: Vec<_> = guild_counts.into_iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            sorted.truncate(20);
+            let names: Vec<String> = sorted.into_iter().map(|(name, _)| name).collect();
+            let query = encoded_names_query(names);
+            let url = format!("/api/guilds/online?names={query}");
+            let mut next_sleep_secs = GUILD_ONLINE_POLL_INTERVAL_SECS;
+            match gloo_net::http::Request::get(&url).send().await {
+                Ok(resp) if resp.ok() => {
+                    // The server asks sooner when a better answer is due, such as ratings it could not place.
+                    if let Some(retry_after) = resp
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|secs| secs.trim().parse::<u64>().ok())
+                    {
+                        next_sleep_secs = retry_after.clamp(
+                            GUILD_ONLINE_ERROR_RETRY_SECS,
+                            GUILD_ONLINE_POLL_INTERVAL_SECS,
+                        );
                     }
-                } else {
-                    // Territories may not be hydrated yet right after boot/reload.
-                    next_sleep_secs = GUILD_ONLINE_BOOTSTRAP_RETRY_SECS;
+                    if let Ok(raw) = resp.json::<HashMap<String, serde_json::Value>>().await {
+                        guild_online_data.set(parse_online_response(raw));
+                    }
+                }
+                _ => {
+                    next_sleep_secs = GUILD_ONLINE_ERROR_RETRY_SECS;
                 }
             }
-            gloo_timers::future::sleep(std::time::Duration::from_secs(next_sleep_secs)).await;
+            online_gate
+                .sleep(std::time::Duration::from_secs(next_sleep_secs))
+                .await;
         }
     });
 
-    // Persist settings to localStorage on any change
-    Effect::new(move || {
-        let settings = SettingsV2 {
-            defaults_version: SETTINGS_DEFAULTS_VERSION,
-            show_connections: show_connections.get(),
-            abbreviate_names: abbreviate_names.get(),
-            show_countdown: show_countdown.get(),
-            granular_map_time: show_granular_map_time.get(),
-            compound_map_time: show_compound_map_time.get(),
-            show_names: show_names.get(),
-            show_claim_labels: show_claim_labels.get(),
-            show_far_zoom_territory_tags: show_far_zoom_territory_tags.get(),
-            thick_cooldown_borders: thick_cooldown_borders.get(),
-            bold_connections: bold_connections.get(),
-            connection_style: connection_style.get(),
-            connection_opacity_scale: clamp_connection_opacity_scale(
-                connection_opacity_scale.get(),
-            ),
-            connection_solid_opacity: clamp_connection_solid_opacity(
-                connection_solid_opacity.get(),
-            ),
-            connection_thickness_scale: clamp_connection_thickness_scale(
-                connection_thickness_scale.get(),
-            ),
-            sidebar_open: sidebar_open.get(),
-            war_panel_open: war_panel_open.get(),
-            war_panel_width: clamp_war_panel_width(war_panel_width.get()),
-            show_war_queue: show_war_panel.get(),
-            show_war_markers: show_war_markers.get(),
-            activity_include_unconfirmed: activity_include_unconfirmed.get(),
-            show_player_heads: show_player_heads.get(),
-            player_head_render_head: player_head_render_head.get(),
-            player_head_render_label: player_head_render_label.get(),
-            player_head_size: clamp_player_head_size(player_head_size.get()),
-            resource_highlight: resource_highlight.get(),
-            resource_highlight_opacity: clamp_resource_highlight_opacity(
-                resource_highlight_opacity.get(),
-            ),
-            territory_opacity: None,
-            territory_fill_opacity: clamp_territory_opacity(territory_opacity.get()),
-            defense_highlight: defense_highlight.get(),
-            map_intel_enabled: map_intel_enabled.get(),
-            show_resource_icons: show_resource_icons.get(),
-            show_territory_ornaments: show_territory_ornaments.get(),
-            hq_crown_style: hq_crown_style.get(),
-            cooldown_display: cooldown_display.get(),
-            hq_crown_scale: clamp_hq_crown_scale(hq_crown_scale.get()),
-            war_outline: war_outline.get(),
-            manual_sr_scalar: season_scalar::clamp_manual_scalar(manual_sr_scalar.get()),
-            auto_sr_scalar_enabled: auto_sr_scalar_enabled.get(),
-            show_leaderboard_sr_gain: show_leaderboard_sr_gain.get(),
-            show_leaderboard_sr_value: show_leaderboard_sr_value.get(),
-            show_leaderboard_territory_count: show_leaderboard_territory_count.get(),
-            show_leaderboard_online: show_leaderboard_online.get(),
-            leaderboard_sort_by_sr: leaderboard_sort_by_sr.get(),
-            heat_mode_enabled: heat_mode_enabled.get(),
-            heat_live_source: heat_live_source.get(),
-            heat_history_basis: heat_history_basis.get(),
-            heat_selected_season_id: heat_selected_season_id.get(),
-            readable_font: readable_font.get(),
-            show_minimap: show_minimap.get(),
-            name_color: name_color.get(),
-            tag_color: tag_color.get(),
-            label_scale_master: clamp_label_scale_master(label_scale_master.get()),
-            label_scale_static: clamp_label_scale_group(label_scale_static.get()),
-            label_scale_static_name: Some(clamp_label_scale_group(label_scale_static_name.get())),
-            label_scale_dynamic: clamp_label_scale_group(label_scale_dynamic.get()),
-            label_scale_icons: clamp_label_scale_group(label_scale_icons.get()),
-            sidebar_width: clamp_sidebar_width(sidebar_width.get()),
-            show_debug_info: show_debug_info.get(),
-        };
-        let _ = gloo_storage::LocalStorage::set("sequoia_settings_v2", &settings);
+    settings.persist(move || Layout {
+        sidebar_open: sidebar_open.get(),
+        sidebar_width: clamp_sidebar_width(sidebar_width.get()),
+        war_panel_open: war_panel_open.get(),
+        war_panel_width: clamp_war_panel_width(war_panel_width.get()),
+        leaderboard_sort_by_sr: leaderboard_sort_by_sr.get(),
     });
 
     // Enable sidebar transitions only after initial mount to avoid first-paint animation flash.
@@ -2424,6 +1411,12 @@ pub fn MapPage() -> impl IntoView {
     });
 
     // Global keyboard shortcuts
+    let toggle_overlay = move |overlay: Overlay| {
+        settings.edit(
+            settings::OVERLAY,
+            settings.get_untracked(settings::OVERLAY).toggled(overlay),
+        )
+    };
     Effect::new(move || {
         use wasm_bindgen::JsCast;
         use wasm_bindgen::prelude::*;
@@ -2449,6 +1442,20 @@ pub fn MapPage() -> impl IntoView {
                     || e.default_prevented()
                     || war_room.handle_stray_key(&e)
                 {
+                    return;
+                }
+                // Undo and redo a settings change while the menu is open. A text field keeps
+                // its own undo.
+                if show_settings.get_untracked()
+                    && let Some(redo) = settings_undo_key(&e)
+                    && !edits_text(e.target())
+                {
+                    e.prevent_default();
+                    if redo {
+                        settings.redo();
+                    } else {
+                        settings.undo();
+                    }
                     return;
                 }
                 let key = e.key();
@@ -2528,50 +1535,16 @@ pub fn MapPage() -> impl IntoView {
                             input.focus().ok();
                         }
                     }
-                    Shortcut::AbbreviateNames => {
-                        abbreviate_names.update(|v| *v = !*v);
-                    }
-                    Shortcut::ShowNames => {
-                        show_names.update(|v| *v = !*v);
-                    }
-                    Shortcut::Countdown => {
-                        show_countdown.update(|v| *v = !*v);
-                    }
-                    Shortcut::Connections => {
-                        show_connections.update(|v| *v = !*v);
-                    }
-                    Shortcut::BoldConnections => {
-                        bold_connections.update(|v| *v = !*v);
-                    }
-                    Shortcut::ReadableFont => {
-                        readable_font.update(|v| *v = !*v);
-                    }
-                    Shortcut::ResourceHighlight => {
-                        let next = !resource_highlight.get_untracked();
-                        resource_highlight.set(next);
-                        if next {
-                            defense_highlight.set(false);
-                        }
-                    }
-                    Shortcut::DefenseHighlight => {
-                        let next = !defense_highlight.get_untracked();
-                        defense_highlight.set(next);
-                        if next {
-                            resource_highlight.set(false);
-                            map_intel_enabled.set(false);
-                        }
-                    }
-                    Shortcut::MapIntel => {
-                        let next = !map_intel_enabled.get_untracked();
-                        map_intel_enabled.set(next);
-                        if next {
-                            resource_highlight.set(false);
-                            defense_highlight.set(false);
-                        }
-                    }
-                    Shortcut::Minimap => {
-                        show_minimap.update(|v| *v = !*v);
-                    }
+                    Shortcut::AbbreviateNames => settings.toggle(settings::ABBREVIATE_NAMES),
+                    Shortcut::ShowNames => settings.toggle(settings::TERRITORY_NAMES),
+                    Shortcut::Countdown => settings.toggle(settings::COOLDOWN_COUNTDOWN),
+                    Shortcut::Connections => settings.toggle(settings::CONNECTIONS),
+                    Shortcut::BoldConnections => settings.toggle(settings::BOLD_CONNECTIONS),
+                    Shortcut::ReadableFont => settings.toggle(settings::READABLE_FONT),
+                    Shortcut::ResourceHighlight => toggle_overlay(Overlay::Resources),
+                    Shortcut::DefenseHighlight => toggle_overlay(Overlay::Defense),
+                    Shortcut::MapIntel => toggle_overlay(Overlay::Intel),
+                    Shortcut::Minimap => settings.toggle(settings::MINIMAP),
                     Shortcut::History => {
                         let mode = map_mode.get_untracked();
                         match mode {
@@ -2697,27 +1670,11 @@ pub fn MapPage() -> impl IntoView {
                         }
                     }
                     Shortcut::OpenListItem => {
-                        let items = sidebar_items.get_untracked();
-                        let idx = sidebar_index.get_untracked();
-                        if let Some(name) = items.get(idx) {
-                            let map = territories.get_untracked();
-                            let has_active_search = !search_query.get_untracked().trim().is_empty();
-                            if has_active_search {
-                                // Search results are territory names.
-                                detail_return_guild.set(None);
-                                selected.set(Some(name.clone()));
-                                if let Some(ct) = map.get(name) {
-                                    camera.focus(&ct.territory.location);
-                                }
-                            } else {
-                                // Guild name (from leaderboard) — open guild panel
-                                selected_guild.set(Some(name.clone()));
-                            }
-                            if map_mode.get_untracked() == MapMode::Live
-                                && !sidebar_open.get_untracked()
-                            {
-                                sidebar_open.set(true);
-                            }
+                        let index = sidebar_index.get_untracked();
+                        if let Some(entry) =
+                            sidebar_items.with_untracked(|items| items.get(index).cloned())
+                        {
+                            open_entry.run(&entry);
                         }
                     }
                     Shortcut::PanLeft => {
@@ -2926,7 +1883,7 @@ pub fn MapPage() -> impl IntoView {
 /// territories, which are not evenly spaced counts, each under the colour it renders.
 #[component]
 fn HeatLegend() -> impl IntoView {
-    let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let heat_mode_enabled = expect_context::<ViewerSettings>().value(settings::HEAT_MAP);
     let HeatScaleSignal(heat_scale) = expect_context();
     let HeatWindowLabel(heat_window_label) = expect_context();
 
@@ -3378,7 +2335,8 @@ struct TooltipInfo {
 
 #[component]
 fn DefenseLegend() -> impl IntoView {
-    let DefenseHighlight(defense_highlight) = expect_context();
+    let settings = expect_context::<ViewerSettings>();
+    let defense_highlight = Memo::new(move |_| settings.with(|s| s.overlay == Overlay::Defense));
     let IsMobile(is_mobile) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
     let SidebarWidth(sidebar_width) = expect_context();
@@ -3420,18 +2378,12 @@ fn Tooltip() -> impl IntoView {
     let Hovered(hovered) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let pointer = expect_context::<BrowserMap>().pointer();
-    let tick: RwSignal<i64> = expect_context();
-    let CurrentMode(mode) = expect_context();
-    let HistoryMapTime(history_map_time) = expect_context();
-    let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let MapClock(map_clock) = expect_context();
+    let heat_mode_enabled = expect_context::<ViewerSettings>().value(settings::HEAT_MAP);
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
 
     let tooltip_info = Memo::new(move |_| {
-        let reference_secs = if mode.get() == MapMode::History {
-            history_map_time.get().unwrap_or_else(|| tick.get())
-        } else {
-            tick.get()
-        };
+        let reference_secs = map_clock.get();
         let name = hovered.get()?;
         let map = territories.get();
         let ct = map.get(&name)?;
@@ -3540,23 +2492,18 @@ fn Tooltip() -> impl IntoView {
 fn TerritoryPeekCard() -> impl IntoView {
     let PeekTerritory(peek_territory) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
-    let tick: RwSignal<i64> = expect_context();
+    let MapClock(map_clock) = expect_context();
     let CurrentMode(mode) = expect_context();
-    let HistoryMapTime(history_map_time) = expect_context();
     let HistoryBarHeight(history_bar_height) = expect_context();
     let Selected(selected) = expect_context();
     let DetailReturnGuild(detail_return_guild) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
     let ShowSettings(show_settings) = expect_context();
-    let HeatModeEnabled(heat_mode_enabled) = expect_context();
+    let heat_mode_enabled = expect_context::<ViewerSettings>().value(settings::HEAT_MAP);
     let HeatEntriesByTerritory(heat_entries_by_territory) = expect_context();
 
     let peek_info = Memo::new(move |_| {
-        let reference_secs = if mode.get() == MapMode::History {
-            history_map_time.get().unwrap_or_else(|| tick.get())
-        } else {
-            tick.get()
-        };
+        let reference_secs = map_clock.get();
         let name = peek_territory.get()?;
         let map = territories.get();
         let ct = map.get(&name)?;
@@ -3650,324 +2597,14 @@ fn TerritoryPeekCard() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::{
-        CONNECTION_SOLID_OPACITY_MAX, CONNECTION_SOLID_OPACITY_MIN, CONNECTION_THICKNESS_SCALE_MAX,
-        ConnectionStyle, DEFAULT_CONNECTION_OPACITY_SCALE, DEFAULT_CONNECTION_SOLID_OPACITY,
-        DEFAULT_CONNECTION_THICKNESS_SCALE, clamp_connection_opacity_scale,
-        clamp_connection_solid_opacity, clamp_connection_thickness_scale,
-    };
-    use super::{
-        CooldownDisplay, DEFAULT_HQ_CROWN_SCALE, HQ_CROWN_SCALE_MAX, HqCrownStyle,
-        clamp_hq_crown_scale,
-    };
-    use super::{
-        DEFAULT_PLAYER_HEAD_SIZE, DEFAULT_RESOURCE_HIGHLIGHT_OPACITY, DEFAULT_SIDEBAR_WIDTH,
-        DEFAULT_WAR_PANEL_WIDTH, LegacySettings, MapMode, NameColor, PLAYER_HEAD_SIZE_MAX,
-        PLAYER_HEAD_SIZE_MIN, RESOURCE_HIGHLIGHT_OPACITY_MAX, RESOURCE_HIGHLIGHT_OPACITY_MIN,
-        SETTINGS_DEFAULTS_VERSION, SettingsV2, canonical_path_for_mode, clamp_player_head_size,
-        clamp_resource_highlight_opacity, map_mode_from_path, normalize_heat_selected_season_id,
-        should_wait_for_history_probe,
-    };
-    use super::{
-        DEFAULT_TERRITORY_OPACITY, TERRITORY_OPACITY_MAX, TERRITORY_OPACITY_MIN,
-        clamp_territory_opacity,
-    };
-    use super::{
         HEAT_LEGEND_BAR_CHARS, HeatScale, format_heat_count, heat_legend_rows, heat_legend_stops,
+    };
+    use super::{
+        MapMode, canonical_path_for_mode, map_mode_from_path, normalize_heat_selected_season_id,
+        should_wait_for_history_probe,
     };
     use super::{SHEET_DISMISS_DRAG_PX, SheetDrag, sidebar_transform};
     use sequoia_shared::history::{HistoryHeatMeta, HistoryHeatSeasonWindow};
-
-    #[test]
-    fn settings_without_a_war_panel_open_the_overview_by_default() {
-        // Everyone's saved settings predate the war panel, so its defaults have to come
-        // from serde rather than from a defaults-version migration.
-        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert!(parsed.war_panel_open);
-        assert_eq!(parsed.war_panel_width, DEFAULT_WAR_PANEL_WIDTH);
-    }
-
-    #[test]
-    fn territory_opacity_starts_at_the_usual_look_and_keeps_a_saved_choice() {
-        let unset: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(
-            unset.with_current_defaults().territory_fill_opacity,
-            DEFAULT_TERRITORY_OPACITY
-        );
-        assert_eq!(
-            SettingsV2::default().territory_fill_opacity,
-            DEFAULT_TERRITORY_OPACITY
-        );
-        assert_eq!(
-            DEFAULT_TERRITORY_OPACITY as f32,
-            sequoia_map_engine::settings::DEFAULT_TERRITORY_OPACITY
-        );
-
-        let saved = SettingsV2 {
-            territory_fill_opacity: 0.9,
-            ..SettingsV2::default()
-        };
-        let round_trip: SettingsV2 =
-            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-        assert_eq!(
-            round_trip.with_current_defaults().territory_fill_opacity,
-            0.9
-        );
-        assert_eq!(clamp_territory_opacity(f64::NAN), DEFAULT_TERRITORY_OPACITY);
-        assert_eq!(clamp_territory_opacity(-0.5), TERRITORY_OPACITY_MIN);
-        assert_eq!(clamp_territory_opacity(3.0), TERRITORY_OPACITY_MAX);
-        assert_eq!(TERRITORY_OPACITY_MAX, 1.0);
-    }
-
-    #[test]
-    fn a_faded_overlay_saved_by_the_fade_only_slider_keeps_its_look() {
-        let faded: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "defaults_version": 3,
-            "territory_opacity": 0.5,
-            "show_minimap": false,
-        }))
-        .unwrap();
-        let migrated = faded.with_current_defaults();
-        assert_eq!(
-            migrated.territory_fill_opacity,
-            0.5 * DEFAULT_TERRITORY_OPACITY
-        );
-        assert!(!migrated.show_minimap);
-        let written = serde_json::to_value(&migrated).unwrap();
-        assert!(written.get("territory_opacity").is_none());
-        assert_eq!(written["defaults_version"], SETTINGS_DEFAULTS_VERSION);
-
-        let full: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "defaults_version": 3,
-            "territory_opacity": 1.0,
-        }))
-        .unwrap();
-        assert_eq!(
-            full.with_current_defaults().territory_fill_opacity,
-            DEFAULT_TERRITORY_OPACITY
-        );
-    }
-
-    #[test]
-    fn the_cooldown_display_defaults_to_the_fill_and_keeps_a_saved_bar() {
-        let unset: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(unset.cooldown_display, CooldownDisplay::Fill);
-        assert_eq!(
-            SettingsV2::default().cooldown_display,
-            CooldownDisplay::Fill
-        );
-
-        let saved = SettingsV2 {
-            cooldown_display: CooldownDisplay::Bar,
-            ..SettingsV2::default()
-        };
-        let round_trip: SettingsV2 =
-            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-        assert_eq!(round_trip.cooldown_display, CooldownDisplay::Bar);
-
-        let future: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "cooldown_display": "Ring",
-            "show_countdown": true,
-        }))
-        .unwrap();
-        assert_eq!(future.cooldown_display, CooldownDisplay::Fill);
-        assert!(future.show_countdown);
-    }
-
-    #[test]
-    fn hq_crown_settings_default_to_name_below_and_round_trip() {
-        let old: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(old.hq_crown_style, HqCrownStyle::NameBelow);
-        assert_eq!(old.hq_crown_scale, DEFAULT_HQ_CROWN_SCALE);
-
-        let saved = SettingsV2 {
-            hq_crown_style: HqCrownStyle::Fill,
-            hq_crown_scale: 1.4,
-            ..SettingsV2::default()
-        };
-        let round_trip: SettingsV2 =
-            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-        assert_eq!(round_trip.hq_crown_style, HqCrownStyle::Fill);
-        assert_eq!(round_trip.hq_crown_scale, 1.4);
-        assert_eq!(clamp_hq_crown_scale(f64::NAN), DEFAULT_HQ_CROWN_SCALE);
-        assert_eq!(clamp_hq_crown_scale(9.0), HQ_CROWN_SCALE_MAX);
-
-        let future: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "hq_crown_style": "Banner",
-            "show_names": true,
-        }))
-        .unwrap();
-        assert_eq!(future.hq_crown_style, HqCrownStyle::NameBelow);
-        assert!(future.show_names);
-    }
-
-    #[test]
-    fn settings_without_war_visibility_show_the_panel_and_markers() {
-        // Same reasoning as the war panel above: these post-date every saved blob, so on
-        // is a serde default rather than a defaults-version migration.
-        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert!(parsed.show_war_queue);
-        assert!(parsed.show_war_markers);
-
-        let defaults = SettingsV2::default();
-        assert!(defaults.show_war_queue);
-        assert!(defaults.show_war_markers);
-    }
-
-    #[test]
-    fn recent_activity_shows_only_confirmed_results_until_asked_otherwise() {
-        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert!(!parsed.activity_include_unconfirmed);
-        assert!(!SettingsV2::default().activity_include_unconfirmed);
-
-        let saved = SettingsV2 {
-            activity_include_unconfirmed: true,
-            ..SettingsV2::default()
-        };
-        let round_trip: SettingsV2 =
-            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-        assert!(round_trip.activity_include_unconfirmed);
-    }
-
-    #[test]
-    fn saved_settings_keep_or_default_the_resource_highlight_opacity() {
-        let old: SettingsV2 =
-            serde_json::from_value(serde_json::json!({ "resource_highlight": true })).unwrap();
-        assert!(old.resource_highlight);
-        assert_eq!(
-            old.resource_highlight_opacity,
-            DEFAULT_RESOURCE_HIGHLIGHT_OPACITY
-        );
-        let legacy = SettingsV2::from(LegacySettings::default());
-        assert_eq!(
-            legacy.resource_highlight_opacity,
-            DEFAULT_RESOURCE_HIGHLIGHT_OPACITY
-        );
-
-        let saved = SettingsV2 {
-            resource_highlight_opacity: 0.8,
-            ..SettingsV2::default()
-        };
-        let round_trip: SettingsV2 =
-            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-        assert_eq!(round_trip.resource_highlight_opacity, 0.8);
-    }
-
-    #[test]
-    fn saved_connection_preferences_keep_the_classic_look() {
-        // Saved before connection styles existed: classic, with the old choices intact.
-        let old: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "bold_connections": true,
-            "connection_opacity_scale": 1.8,
-            "connection_thickness_scale": 0.9,
-        }))
-        .unwrap();
-        assert_eq!(old.connection_style, ConnectionStyle::Classic);
-        assert!(old.bold_connections);
-        assert_eq!(old.connection_opacity_scale, 1.8);
-        assert_eq!(old.connection_thickness_scale, 0.9);
-        assert_eq!(
-            old.connection_solid_opacity,
-            DEFAULT_CONNECTION_SOLID_OPACITY
-        );
-        assert_eq!(
-            SettingsV2::from(LegacySettings::default()).connection_style,
-            ConnectionStyle::Classic
-        );
-
-        let saved = SettingsV2 {
-            connection_style: ConnectionStyle::Guild,
-            connection_solid_opacity: 0.6,
-            ..SettingsV2::default()
-        };
-        let json = serde_json::to_value(&saved).unwrap();
-        assert_eq!(json["connection_style"], "Guild");
-        let round_trip: SettingsV2 = serde_json::from_value(json).unwrap();
-        assert_eq!(round_trip.connection_style, ConnectionStyle::Guild);
-        assert_eq!(round_trip.connection_solid_opacity, 0.6);
-    }
-
-    #[test]
-    fn connection_clamps_hold_their_bounds_and_survive_nan() {
-        assert_eq!(
-            clamp_connection_solid_opacity(f64::NAN),
-            DEFAULT_CONNECTION_SOLID_OPACITY
-        );
-        assert_eq!(
-            clamp_connection_solid_opacity(0.0),
-            CONNECTION_SOLID_OPACITY_MIN
-        );
-        assert_eq!(
-            clamp_connection_solid_opacity(3.0),
-            CONNECTION_SOLID_OPACITY_MAX
-        );
-        assert_eq!(
-            clamp_connection_opacity_scale(f64::NAN),
-            DEFAULT_CONNECTION_OPACITY_SCALE
-        );
-        assert_eq!(
-            clamp_connection_thickness_scale(f64::NAN),
-            DEFAULT_CONNECTION_THICKNESS_SCALE
-        );
-        assert_eq!(
-            clamp_connection_thickness_scale(9.0),
-            CONNECTION_THICKNESS_SCALE_MAX
-        );
-    }
-
-    #[test]
-    fn resource_highlight_opacity_bounds_match_the_renderer() {
-        use sequoia_map_engine::settings;
-        for (host, renderer) in [
-            (
-                DEFAULT_RESOURCE_HIGHLIGHT_OPACITY,
-                settings::DEFAULT_RESOURCE_HIGHLIGHT_OPACITY,
-            ),
-            (
-                RESOURCE_HIGHLIGHT_OPACITY_MIN,
-                settings::RESOURCE_HIGHLIGHT_OPACITY_MIN,
-            ),
-            (
-                RESOURCE_HIGHLIGHT_OPACITY_MAX,
-                settings::RESOURCE_HIGHLIGHT_OPACITY_MAX,
-            ),
-        ] {
-            assert_eq!(host as f32, renderer);
-        }
-    }
-
-    #[test]
-    fn clamp_resource_highlight_opacity_enforces_limits() {
-        assert_eq!(
-            clamp_resource_highlight_opacity(0.0),
-            RESOURCE_HIGHLIGHT_OPACITY_MIN
-        );
-        assert_eq!(clamp_resource_highlight_opacity(0.6), 0.6);
-        assert_eq!(
-            clamp_resource_highlight_opacity(4.0),
-            RESOURCE_HIGHLIGHT_OPACITY_MAX
-        );
-        assert_eq!(
-            clamp_resource_highlight_opacity(f64::NAN),
-            DEFAULT_RESOURCE_HIGHLIGHT_OPACITY
-        );
-    }
-
-    #[test]
-    fn settings_without_player_head_fields_default_to_heads_on_labels_off() {
-        // Same reasoning as the war visibility toggles above: these post-date every saved
-        // blob, so serde defaults carry them rather than a defaults-version migration.
-        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert!(parsed.show_player_heads);
-        assert!(parsed.player_head_render_head);
-        assert!(!parsed.player_head_render_label);
-        assert_eq!(parsed.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
-
-        let defaults = SettingsV2::default();
-        assert!(defaults.show_player_heads);
-        assert!(defaults.player_head_render_head);
-        assert!(!defaults.player_head_render_label);
-        assert_eq!(defaults.player_head_size, DEFAULT_PLAYER_HEAD_SIZE);
-    }
 
     #[test]
     fn heat_legend_labels_the_uneven_quartile_counts_of_a_skewed_period() {
@@ -4107,200 +2744,6 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_minimap_on_choice_survives_loading() {
-        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({
-            "defaults_version": SETTINGS_DEFAULTS_VERSION,
-            "show_minimap": true,
-        }))
-        .unwrap();
-        assert!(parsed.with_current_defaults().show_minimap);
-    }
-
-    #[test]
-    fn a_saved_minimap_choice_survives_an_older_defaults_migration() {
-        let parsed: SettingsV2 = serde_json::from_value(
-            serde_json::json!({"defaults_version": 1, "show_minimap": true}),
-        )
-        .unwrap();
-        assert!(parsed.with_current_defaults().show_minimap);
-    }
-
-    #[test]
-    fn settings_saved_without_a_minimap_choice_start_without_the_minimap() {
-        let parsed: SettingsV2 =
-            serde_json::from_value(serde_json::json!({"defaults_version": 2})).unwrap();
-        assert!(!parsed.with_current_defaults().show_minimap);
-    }
-
-    #[test]
-    fn legacy_settings_start_without_the_minimap() {
-        let migrated: SettingsV2 = LegacySettings::default().into();
-        assert!(!migrated.show_minimap);
-    }
-
-    #[test]
-    fn player_head_size_clamps_to_its_bounds_and_survives_nan() {
-        assert_eq!(clamp_player_head_size(0.0), PLAYER_HEAD_SIZE_MIN);
-        assert_eq!(clamp_player_head_size(1000.0), PLAYER_HEAD_SIZE_MAX);
-        assert_eq!(clamp_player_head_size(24.0), 24.0);
-        // A hand-edited blob can carry `NaN`, which would draw nothing at all rather than
-        // being pinned to a bound.
-        assert_eq!(clamp_player_head_size(f64::NAN), DEFAULT_PLAYER_HEAD_SIZE);
-    }
-
-    #[test]
-    fn settings_v2_deserialization_defaults_sidebar_width() {
-        let parsed: SettingsV2 = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(parsed.defaults_version, 0);
-        assert_eq!(parsed.sidebar_width, DEFAULT_SIDEBAR_WIDTH);
-        assert!(parsed.auto_sr_scalar_enabled);
-        assert!(!parsed.defense_highlight);
-        assert!(!parsed.map_intel_enabled);
-        assert!(parsed.show_resource_icons);
-        assert!(!parsed.show_claim_labels);
-        assert!(parsed.show_far_zoom_territory_tags);
-        assert!(!parsed.show_debug_info);
-    }
-
-    #[test]
-    fn only_the_exact_old_default_outline_moves_to_solid_progress() {
-        use super::{WarOutline, WarOutlineColor, WarOutlineStyle};
-        let migrate = |version: u32, outline: serde_json::Value| {
-            serde_json::from_value::<SettingsV2>(
-                serde_json::json!({"defaults_version": version, "war_outline": outline}),
-            )
-            .unwrap()
-            .with_current_defaults()
-            .war_outline
-        };
-
-        let old_default = serde_json::json!({"style": "Dashed", "color": "Stage", "progress": false, "width": 1.0, "opacity": 0.88});
-        assert_eq!(migrate(2, old_default), WarOutline::default());
-
-        let customized = serde_json::json!({"style": "Dashed", "color": "Urgency", "progress": false, "width": 1.5, "opacity": 0.6});
-        let kept = migrate(2, customized);
-        assert_eq!(
-            (
-                kept.style,
-                kept.color,
-                kept.progress,
-                kept.width,
-                kept.opacity
-            ),
-            (
-                WarOutlineStyle::Dashed,
-                WarOutlineColor::Urgency,
-                false,
-                1.5,
-                0.6
-            )
-        );
-
-        let chosen = migrate(3, serde_json::json!({"style": "Dashed", "progress": false}));
-        assert_eq!(
-            (chosen.style, chosen.progress),
-            (WarOutlineStyle::Dashed, false)
-        );
-    }
-
-    #[test]
-    fn settings_v2_defaults_carry_current_defaults_version() {
-        let defaults = SettingsV2::default();
-        assert_eq!(defaults.defaults_version, SETTINGS_DEFAULTS_VERSION);
-        assert!(defaults.show_resource_icons);
-        assert!(!defaults.show_claim_labels);
-        assert!(defaults.show_far_zoom_territory_tags);
-    }
-
-    #[test]
-    fn settings_v1_migration_preserves_unrelated_user_choices_and_applies_label_defaults() {
-        let mut saved = SettingsV2 {
-            defaults_version: 1,
-            sidebar_width: 420.0,
-            show_minimap: false,
-            show_resource_icons: false,
-            show_claim_labels: true,
-            show_far_zoom_territory_tags: false,
-            show_territory_ornaments: true,
-            show_debug_info: true,
-            ..SettingsV2::default()
-        };
-
-        saved = saved.with_current_defaults();
-
-        assert_eq!(saved.defaults_version, SETTINGS_DEFAULTS_VERSION);
-        assert_eq!(saved.sidebar_width, 420.0);
-        assert!(!saved.show_minimap);
-        assert!(!saved.show_resource_icons);
-        assert!(!saved.show_claim_labels);
-        assert!(saved.show_far_zoom_territory_tags);
-        assert!(saved.show_territory_ornaments);
-        assert!(saved.show_debug_info);
-    }
-
-    #[test]
-    fn settings_v0_migration_keeps_previous_default_overrides() {
-        let mut saved = SettingsV2 {
-            defaults_version: 0,
-            show_resource_icons: false,
-            show_claim_labels: true,
-            show_far_zoom_territory_tags: false,
-            show_territory_ornaments: true,
-            show_debug_info: true,
-            ..SettingsV2::default()
-        };
-
-        saved = saved.with_current_defaults();
-
-        assert_eq!(saved.defaults_version, SETTINGS_DEFAULTS_VERSION);
-        assert!(saved.show_resource_icons);
-        assert!(!saved.show_claim_labels);
-        assert!(saved.show_far_zoom_territory_tags);
-        assert!(!saved.show_territory_ornaments);
-        assert!(!saved.show_debug_info);
-    }
-
-    #[test]
-    fn current_settings_preserve_user_label_choices() {
-        let mut saved = SettingsV2 {
-            defaults_version: SETTINGS_DEFAULTS_VERSION,
-            show_claim_labels: true,
-            show_far_zoom_territory_tags: false,
-            ..SettingsV2::default()
-        };
-
-        saved = saved.with_current_defaults();
-
-        assert!(saved.show_claim_labels);
-        assert!(!saved.show_far_zoom_territory_tags);
-    }
-
-    #[test]
-    fn legacy_settings_migration_preserves_old_key_choices_and_applies_current_default_overrides() {
-        let legacy = LegacySettings {
-            show_connections: false,
-            sidebar_open: true,
-            resource_highlight: true,
-            show_resource_icons: false,
-            manual_sr_scalar: 2.0,
-            name_color: NameColor::Gold,
-            ..LegacySettings::default()
-        };
-
-        let migrated = SettingsV2::from(legacy).with_current_defaults();
-
-        assert_eq!(migrated.defaults_version, SETTINGS_DEFAULTS_VERSION);
-        assert!(!migrated.show_connections);
-        assert!(migrated.sidebar_open);
-        assert!(migrated.resource_highlight);
-        assert_eq!(migrated.manual_sr_scalar, 2.0);
-        assert!(migrated.name_color == NameColor::Gold);
-        assert!(migrated.show_resource_icons);
-        assert!(!migrated.show_claim_labels);
-        assert!(migrated.show_far_zoom_territory_tags);
-    }
-
-    #[test]
     fn normalize_heat_selected_season_id_keeps_valid_saved_selection() {
         let meta = HistoryHeatMeta {
             latest_season_id: Some(31),
@@ -4341,10 +2784,9 @@ mod tests {
             season_fallback_days: 60,
         };
 
-        assert_eq!(
-            normalize_heat_selected_season_id(&meta, Some(999)),
-            Some(31)
-        );
+        assert_eq!(normalize_heat_selected_season_id(&meta, Some(999)), None);
+        // Latest stays Latest, following the next season when it starts.
+        assert_eq!(normalize_heat_selected_season_id(&meta, None), None);
     }
 
     #[test]

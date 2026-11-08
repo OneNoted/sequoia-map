@@ -37,6 +37,8 @@ pub const DEFAULT_WARCONTROLLER_MAX_STALENESS_SECS: u64 = 60;
 pub const DEFAULT_WARCONTROLLER_PATH: &str = "/internal/warcontroller";
 pub const WAR_ACTIVITY_PATH: &str = "/internal/war-activity";
 pub const WAR_POINTS_PLAYER_PATH: &str = "/internal/war-points/players";
+/// Guild members with a Sequoia mod session open now, and the versions they reported.
+pub const CONNECTED_MEMBERS_PATH: &str = "/internal/connected-members";
 /// The public community API that publishes rank profiles and their role catalog.
 pub const DEFAULT_RANK_PROFILES_BASE_URL: &str = "https://api.seqwawa.com";
 /// How long the linked rank-profile feed is reused; the feed itself allows 30 seconds.
@@ -52,7 +54,8 @@ pub const SEASON_LEADERBOARD_CACHE_TTL_SECS: i64 = 600; // 10 minutes
 pub const MAP_INTEL_CACHE_TTL_SECS: i64 = 60; // shortest public map endpoint cache
 pub const DEFAULT_GUILDS_ONLINE_CACHE_TTL_SECS: i64 = 120; // 2 minutes
 pub const DEFAULT_GUILD_SEASONS_CACHE_TTL_SECS: i64 = 130; // season definitions are near-static
-pub const DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY: usize = 8;
+/// The map asks for its 20 largest guilds at once; one wave of requests answers them all.
+pub const DEFAULT_GUILDS_ONLINE_MAX_CONCURRENCY: usize = 20;
 pub const DEFAULT_SEASON_RATING_CONTENDER_COUNT: usize = 10;
 pub const MAX_GUILD_CACHE_ENTRIES: usize = 64;
 pub const SSE_KEEPALIVE_SECS: u64 = 15;
@@ -266,6 +269,13 @@ pub fn war_activity_url() -> Option<String> {
 }
 
 /// Full URL of the backend's stored war points for one player; `None` without a backend.
+pub fn connected_members_url() -> Option<String> {
+    Some(format!(
+        "{}{CONNECTED_MEMBERS_PATH}",
+        sequoia_backend_base_url()?
+    ))
+}
+
 pub fn war_points_player_url(player_uuid: &str) -> Option<String> {
     Some(format!(
         "{}{WAR_POINTS_PLAYER_PATH}/{player_uuid}",

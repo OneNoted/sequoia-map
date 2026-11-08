@@ -19,11 +19,11 @@ use sequoia_shared::war_board::{FrontStage, Presence, RosterMember};
 
 use super::hud::{ClassIcon, MemberChip, member_key};
 use super::modal::{focus_next_frame, focused_element, restore_focus, trap_tab};
-use super::{Anchor, MapFocus, WarRoom, clock_text, whereabouts};
+use super::{Anchor, MapFocus, MemberSpot, WarRoom, clock_text, whereabouts};
 use crate::app::IsMobile;
 use crate::member_war::{MemberGlance, MemberWar, PlayercardLink, RankTitle};
 use crate::territory::ClientTerritoryMap;
-use crate::ui::MapPinIcon;
+use crate::ui::{CloseIcon, MapPinIcon};
 
 const FACE_PX: u32 = 64;
 /// Space between the popover and the name it belongs to, and kept clear of the window edge.
@@ -338,12 +338,12 @@ fn PlayerDialogContent(
     let more_companions =
         Memo::new(move |_| companions.with(|list| list.len().saturating_sub(COMPANIONS_SHOWN)));
     let has_more = Memo::new(move |_| more_companions.get() != 0);
-    let can_show = Memo::new(move |_| territory.get().is_some() || position.get().is_some());
+    let spot = Memo::new(move |_| focus_map.spot(&member()?));
     let show = move |_| {
-        if let Some(territory) = territory.get_untracked() {
-            focus_map.territory(&territory);
-        } else if let Some(position) = position.get_untracked() {
-            focus_map.position(position);
+        match spot.get_untracked() {
+            Some(MemberSpot::Territory(territory)) => focus_map.territory(&territory),
+            Some(MemberSpot::Position(position)) => focus_map.position(position),
+            None => {}
         }
         on_close.run(());
     };
@@ -374,7 +374,7 @@ fn PlayerDialogContent(
                 <p class="player-dialog-status" data-state=move || status.get().1>{move || status.get().0}</p>
             </div>
             <button type="button" class="ui-button ui-icon-button war-icon-button" aria-label="Close" on:click=move |_| on_close.run(())>
-                "\u{00D7}"
+                <CloseIcon />
             </button>
         </div>
         <dl class="player-dialog-facts">
@@ -424,7 +424,7 @@ fn PlayerDialogContent(
             </section>
         </Show>
         <div class="player-dialog-actions">
-            <button type="button" class="ui-text-action ui-text-action-primary mc-action" disabled=move || !can_show.get() on:click=show>
+            <button type="button" class="ui-text-action ui-text-action-primary mc-action" disabled=move || spot.with(Option::is_none) on:click=show>
                 <MapPinIcon />
                 "Locate"
             </button>

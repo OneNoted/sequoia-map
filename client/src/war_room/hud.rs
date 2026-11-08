@@ -16,16 +16,17 @@ use super::modal::{focus_next_frame, focused_element, restore_focus, trap_tab};
 use super::plates::WarPlatesLayer;
 use super::player::PlayerDetail;
 use super::{
-    MapFocus, WarRoom, clock_text, difficulty_color, difficulty_label, ending, stage_slug,
-    whereabouts,
+    MapFocus, MemberSpot, WarRoom, clock_text, difficulty_color, difficulty_label, ending,
+    stage_slug, whereabouts,
 };
 use crate::app::{
-    IsMobile, PeekTerritory, ShowWarPanel, SidebarOpen, WarPanelOpen, WarPanelWidth,
-    clamp_war_panel_width,
+    IsMobile, PeekTerritory, SidebarOpen, WarPanelOpen, WarPanelWidth, clamp_war_panel_width,
 };
 use crate::format::{local_time, local_time_seconds};
+use crate::settings::{self, ViewerSettings};
 use crate::territory::ClientTerritoryMap;
 use crate::territory_card::{QueueOrigin, original_timer};
+use crate::ui::CloseIcon;
 use crate::ui_icons::class_icon_url;
 
 /// At or below this viewport height (CSS pixels) the side panel would crowd the map, so the
@@ -40,7 +41,7 @@ const MEMBER_PREVIEW: usize = 6;
 #[component]
 pub(crate) fn WarRoomHud() -> impl IntoView {
     let room = expect_context::<WarRoom>();
-    let ShowWarPanel(show_panel) = expect_context();
+    let show_panel = expect_context::<ViewerSettings>().value(settings::WAR_PANEL);
     let IsMobile(is_mobile) = expect_context();
     let camera = expect_context::<BrowserMap>().camera();
     let visible = Memo::new(move |_| show_panel.get() && room.board.with(Option::is_some));
@@ -98,7 +99,7 @@ fn WarRoomHeader(#[prop(optional)] on_close: Option<Callback<()>>) -> impl IntoV
             </Show>
             {on_close.map(|close| view! {
                 <button type="button" class="ui-button ui-icon-button war-icon-button" aria-label="Close war panel" on:click=move |_| close.run(())>
-                    "\u{00D7}"
+                    <CloseIcon />
                 </button>
             })}
         </div>
@@ -523,17 +524,10 @@ fn RosterRow(member: RosterMember) -> impl IntoView {
             .map(whereabouts)
             .unwrap_or_default()
     });
-    // Only a territory on the map is a place to go; "Outside territories" is not.
-    let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let focus_map = MapFocus::from_context();
-    let destination = {
+    let spot = {
         let username = member.username.clone();
-        Memo::new(move |_| {
-            let territory = room.member(&username)?.territory()?.to_string();
-            territories
-                .with(|map| map.contains_key(&territory))
-                .then_some(territory)
-        })
+        Memo::new(move |_| focus_map.spot(room.member(&username).as_ref()?))
     };
     let label = member_label(&member);
     let warring = member.is_warring();
@@ -543,19 +537,21 @@ fn RosterRow(member: RosterMember) -> impl IntoView {
                 <ClassIcon class=member.class />
                 <span class="war-member-name">{member.username.clone()}</span>
             </button>
-            {move || match destination.get() {
-                Some(territory) => {
-                    let focus = territory.clone();
-                    let title = format!("Show {territory} on the map");
+            {move || match spot.get() {
+                Some(spot) => {
+                    let title = format!("Show {} on the map", place.get());
                     view! {
                         <button
                             type="button"
                             class="war-roster-place war-link"
                             class:war-roster-warring=warring
                             title=title
-                            on:click=move |_| focus_map.territory(&focus)
+                            on:click=move |_| match &spot {
+                                MemberSpot::Territory(name) => focus_map.territory(name),
+                                MemberSpot::Position(position) => focus_map.position(*position),
+                            }
                         >
-                            {territory}
+                            {move || place.get()}
                         </button>
                     }
                     .into_any()

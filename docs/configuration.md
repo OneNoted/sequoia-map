@@ -44,7 +44,7 @@ settings not listed here.
 | `TERRITORY_HISTORY_RETENTION_DAYS` | Territory history retention; the checkpoint before the cutoff is kept | `365` |
 | `SEASON_HISTORY_RETENTION_DAYS` | Scalar sample/guild observation retention | `365` |
 | `GUILDS_ONLINE_CACHE_TTL_SECS` | Online-guild cache lifetime | `120` |
-| `GUILDS_ONLINE_MAX_CONCURRENCY` | Concurrent upstream guild requests | `8` |
+| `GUILDS_ONLINE_MAX_CONCURRENCY` | Concurrent upstream guild requests | `20` |
 | `GUILD_SEASONS_CACHE_TTL_SECS` | Season-definition cache lifetime | `130` |
 | `SEQUOIA_CLIENT_ROOT` | Directory holding the built `client/dist` and `claims-client/dist`; `mise run dev` sets `.data/dev-web` | working directory |
 | `MAP_IMAGE_ASSETS_DIR` | Tiles, fonts and icons for map image exports | `client/dist` under the client root |

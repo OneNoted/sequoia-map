@@ -13,8 +13,8 @@ use sequoia_shared::war_activity::{ActivityEntry, ActivityOutcome, StartSource, 
 use sequoia_shared::war_board::format_clock;
 
 use super::{MapFocus, WarRoom, difficulty_color, difficulty_label};
-use crate::app::ActivityIncludeUnconfirmed;
 use crate::format::{ago, local_time};
+use crate::settings::{self, ViewerSettings};
 use crate::ui::Disclosure;
 
 const ENDPOINT: &str = "/api/war-activity";
@@ -241,7 +241,7 @@ pub(crate) fn ActivityFeed(
     #[prop(into)] visible: Signal<bool>,
 ) -> impl IntoView {
     let room = expect_context::<WarRoom>();
-    let ActivityIncludeUnconfirmed(everything) = expect_context();
+    let everything = expect_context::<ViewerSettings>().value(settings::UNCONFIRMED_ACTIVITY);
     let list = RwSignal::new(None::<ActivityList>);
     let load = RwSignal::new(Load::Idle);
     // The rows on show belong to a selection that has since changed; they stay, marked as
