@@ -645,8 +645,26 @@ fn SettingsSlider(
             adjusting.set_value(false);
             settings.end_adjustment(setting);
         }
+        dragging.try_set(false);
     };
     on_cleanup(finish);
+    // A drag ends when the pointer that pressed the range is released, wherever that is. A range
+    // dragged back to the value it last committed fires no change event, so that cannot end it.
+    let pressed_by = StoredValue::new(None::<i32>);
+    let release = move |e: leptos::ev::PointerEvent| {
+        if pressed_by.try_get_value().flatten() == Some(e.pointer_id()) {
+            pressed_by.set_value(None);
+            if keys_held.with_value(Vec::is_empty) {
+                finish();
+            }
+        }
+    };
+    let released = window_event_listener(leptos::ev::pointerup, release);
+    let cancelled = window_event_listener(leptos::ev::pointercancel, release);
+    on_cleanup(move || {
+        released.remove();
+        cancelled.remove();
+    });
     let on_input = move |e: leptos::ev::Event| {
         if let Some(parsed) = read(&e) {
             begin();
@@ -706,6 +724,7 @@ fn SettingsSlider(
                 value=format!("{:.2}", value.get_untracked())
                 style:--tl-filled=filled
                 aria-valuetext=move || format(value.get())
+                on:pointerdown=move |e| pressed_by.set_value(Some(e.pointer_id()))
                 on:input=on_input
                 on:change=on_change
                 on:keydown=on_keydown
