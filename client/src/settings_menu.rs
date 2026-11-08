@@ -650,14 +650,24 @@ fn SettingsSlider(
     on_cleanup(finish);
     // A drag ends when the pointer that pressed the range is released, wherever that is. A range
     // dragged back to the value it last committed fires no change event, so that cannot end it.
+    // The browser handles the release after this event, and may still set the value there (or
+    // put it back, on a cancelled touch) and fire change, so the drag ends once it has.
     let pressed_by = StoredValue::new(None::<i32>);
     let release = move |e: leptos::ev::PointerEvent| {
-        if pressed_by.try_get_value().flatten() == Some(e.pointer_id()) {
-            pressed_by.set_value(None);
-            if keys_held.with_value(Vec::is_empty) {
-                finish();
-            }
+        if pressed_by.try_get_value().flatten() != Some(e.pointer_id()) {
+            return;
         }
+        pressed_by.set_value(None);
+        set_timeout(
+            move || {
+                if pressed_by.try_get_value() == Some(None)
+                    && keys_held.try_with_value(Vec::is_empty) == Some(true)
+                {
+                    finish();
+                }
+            },
+            std::time::Duration::ZERO,
+        );
     };
     let released = window_event_listener(leptos::ev::pointerup, release);
     let cancelled = window_event_listener(leptos::ev::pointercancel, release);
