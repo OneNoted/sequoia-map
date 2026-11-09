@@ -31,8 +31,10 @@
 //! - Whenever the driving contacts change, or something else moves the camera mid-gesture, the
 //!   gesture holds on afresh from where the map shows them: the map never jumps, and a
 //!   remaining finger keeps panning without a new press. A pan released mid-drag finishes,
-//!   over its last few milliseconds of reports, where the finger lifted; a pinch finger that
-//!   lifts or is cancelled between frames first has the pinch finished where it last reported.
+//!   over its last few milliseconds of reports, where the finger lifted. A pinch that loses a
+//!   finger is finished with both fingers where they last reported, so its outcome never
+//!   depends on whether a frame ran before the finger lifted; the other finger pans on from
+//!   there.
 //! - Zoom limits clamp the scale but never the anchor, and reversing a clamped pinch responds
 //!   at once. Separations under a fingertip count as a fingertip, so nearly touching or
 //!   crossing fingers cannot zoom by an arbitrary ratio.
@@ -407,8 +409,8 @@ struct Glide {
     trail: Trail,
 }
 
-/// A pinch that lost a finger between frames, finished by the next frame with that finger
-/// where it last reported and the other where the map shows it, before the gesture goes on.
+/// A pinch that lost a finger, finished by the next frame with both fingers where they last
+/// reported, before the gesture goes on.
 #[derive(Clone, Copy, Debug)]
 struct Finish {
     grip: Grip,
@@ -765,18 +767,24 @@ impl Gestures {
         out
     }
 
-    /// Keeps, for the next frame, what a pinch finger `lifted` reported before it left, at
-    /// `last`, so its movement since the last frame is not lost.
+    /// Keeps, for the next frame, the pinch as the fingers last reported it when finger
+    /// `lifted` leaves, last at `last`: all the movement they delivered as a pinch counts as
+    /// pinch. The other finger then pans on from its own last report.
     fn finish_pinch(&mut self, lifted: i32, last: (f64, f64)) {
         let Mode::Pinch { a, b, grip } = self.mode else {
             return;
         };
         let other = if lifted == a { b } else { a };
-        if let Some(survivor) = self.contacts.iter().find(|c| c.pointer.id == other) {
+        if let Some(survivor) = self.contacts.iter_mut().find(|c| c.pointer.id == other) {
+            let newest = survivor.trail.newest();
+            let reported = (newest.x, newest.y);
+            // The pinch has used its reports; a pan must not replay them.
+            survivor.trail = Trail::new(newest.at_ms, reported);
+            survivor.shown = reported;
             self.finish = Some(Finish {
                 grip,
-                at: midpoint(last, survivor.shown),
-                span: distance(last, survivor.shown),
+                at: midpoint(last, reported),
+                span: distance(last, reported),
             });
         }
     }
@@ -1223,6 +1231,42 @@ mod tests {
             assert_close(panned.scale, spread.scale);
             assert_close(panned.offset_x - spread.offset_x, 20.0);
         }
+    }
+
+    /// Fingers at x = 100 and 200 move to 50 and 250, and finger 2 lifts, with a frame between
+    /// the moves and the lift or not; then finger 1 pans 20 px right.
+    fn pinch_then_lift(frame_before_lift: bool) -> (Viewport, Viewport) {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
+        gestures.press(touch(2, 200.0, 300.0), Press::Pan, 0.0);
+        gestures.frame(&mut cam, 30.0);
+        gestures.moved(touch(1, 50.0, 300.0), 40.0);
+        gestures.moved(touch(2, 250.0, 300.0), 41.0);
+        if frame_before_lift {
+            gestures.frame(&mut cam, 44.0);
+        }
+        gestures.released(touch(2, 250.0, 300.0), 46.0);
+        for frame_ms in [60.0, 77.0, 94.0] {
+            gestures.frame(&mut cam, frame_ms);
+        }
+        let pinched = cam;
+        drag(&mut gestures, &mut cam, touch(1, 70.0, 300.0), 100.0);
+        (pinched, cam)
+    }
+
+    #[test]
+    fn a_pinch_ends_the_same_whether_or_not_a_frame_ran_before_a_finger_lifted() {
+        let focus = camera().screen_to_world(150.0, 300.0);
+        let (framed, framed_then_panned) = pinch_then_lift(true);
+        let (lifted, lifted_then_panned) = pinch_then_lift(false);
+        for (pinched, panned) in [(framed, framed_then_panned), (lifted, lifted_then_panned)] {
+            assert_close(pinched.scale / camera().scale, 2.0);
+            assert_world_under(&pinched, focus, (150.0, 300.0));
+            assert_close(panned.scale, pinched.scale);
+            assert_close(panned.offset_x - pinched.offset_x, 20.0);
+        }
+        assert_same_camera(lifted, framed);
     }
 
     #[test]
