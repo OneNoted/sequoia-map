@@ -11,6 +11,7 @@ web-sys = { version = "0.3", features = [
     "CanvasRenderingContext2d",
     "Document",
     "DomRect",
+    "DomRectReadOnly",
     "Element",
     "EventSource",
     "FontFaceSet",
@@ -23,12 +24,17 @@ web-sys = { version = "0.3", features = [
     "Node",
     "Performance",
     "PointerEvent",
+    "ResizeObserver",
+    "ResizeObserverBoxOptions",
+    "ResizeObserverEntry",
+    "ResizeObserverOptions",
+    "ResizeObserverSize",
     "TextMetrics",
     "WebGl2RenderingContext",
     "WheelEvent",
     "Window",
 ] }
-wgpu = { version = "24.0", default-features = false, features = ["wgsl", "webgl", "webgpu"] }
+wgpu = { version = "24.0", default-features = false, features = ["wgsl", "webgl"] }
 bytemuck = { version = "1", features = ["derive"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

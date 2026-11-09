@@ -2,6 +2,7 @@
 //! [`renderer_lifecycle`] starts, rebuilds and disposes. Until a renderer runs, the canvas
 //! draws nothing rather than calling into a missing or dead context.
 
+mod geometry;
 mod renderer_lifecycle;
 
 use std::cell::RefCell;
@@ -9,15 +10,18 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use sequoia_map_engine::gesture::{Gestures, ScreenRect};
+use sequoia_map_engine::gesture::{FrameMotion, Gestures, ScreenRect};
 use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::{Rebuild, SceneChange, ScenePlanner};
 use sequoia_map_engine::spatial::SpatialGrid;
+use sequoia_map_engine::viewport::Viewport;
 use web_sys::HtmlCanvasElement;
 
+pub(crate) use geometry::CanvasBox;
+use geometry::CanvasObserver;
 use renderer_lifecycle::{Attempt, RendererLifecycle};
 
-use crate::frame::{Frame, FrameMetrics, HeatColors, RenderCapabilities};
+use crate::frame::{Frame, FrameMetrics, HeatColors};
 use crate::gpu::GpuRenderer;
 use crate::input::MapInput;
 use crate::render_loop::RenderScheduler;
@@ -39,7 +43,10 @@ pub(crate) struct MapState {
     pub(crate) territory_bounds: Option<(f64, f64, f64, f64)>,
     /// The territory the current paint stroke last reached.
     pub(crate) stroke_hit: Option<String>,
+    pub(crate) canvas_box: CanvasBox,
     pub(crate) surface: Surface,
+    /// The camera the last frame drew with.
+    drawn_camera: Option<Viewport>,
     planner: ScenePlanner,
     renderer: Option<GpuRenderer>,
     /// The camera has been fitted to the first territories that arrived.
@@ -56,7 +63,9 @@ impl MapState {
             grid: SpatialGrid::build(&HashMap::new()),
             territory_bounds: None,
             stroke_hit: None,
+            canvas_box: CanvasBox::default(),
             surface: Surface::default(),
+            drawn_camera: None,
             planner: ScenePlanner::default(),
             renderer: None,
             territory_revision: 0,
@@ -86,7 +95,6 @@ impl MapState {
 
 #[derive(Clone, Copy)]
 struct RenderStats {
-    capabilities: RenderCapabilities,
     metrics: FrameMetrics,
     rebuild: Rebuild,
     interacting: bool,
@@ -106,7 +114,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
     let scheduler = Rc::new(RenderScheduler::new({
         let state = state.clone();
         let lifecycle = lifecycle.clone();
-        move || {
+        move |frame_ms| {
             // An unmounted canvas's frame must not touch disposed signals.
             if lifecycle.is_disposed() {
                 return false;
@@ -118,7 +126,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
             let Some(canvas) = canvas_ref.get_untracked() else {
                 return false;
             };
-            let animating = render_frame(&map, &state, &canvas, render_stats);
+            let animating = render_frame(&map, &state, &canvas, render_stats, frame_ms);
             let request = state
                 .borrow()
                 .renderer
@@ -237,6 +245,19 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         }
     });
 
+    // Gestures move the camera inside the frame they draw; moves made elsewhere (keys, a
+    // focus, the minimap, the host) need a frame of their own.
+    Effect::new({
+        let state = state.clone();
+        let scheduler = scheduler.clone();
+        move || {
+            let camera = map.camera.get();
+            if state.borrow().drawn_camera != Some(camera) {
+                scheduler.mark_dirty();
+            }
+        }
+    });
+
     // Everything else only needs a repaint; the scene planner decides what is stale. The
     // animation tick never reaches the planner, so its frames only advance shader time.
     Effect::new({
@@ -244,7 +265,6 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         let lifecycle = lifecycle.clone();
         move || {
             lifecycle.track();
-            map.camera.track();
             inputs.settings.track();
             inputs.clock_secs.track();
             if let Some(tick) = inputs.animation_tick {
@@ -260,17 +280,26 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         }
     });
 
+    let observer = StoredValue::new_local(None::<CanvasObserver>);
     Effect::new({
+        let state = state.clone();
+        let scheduler = scheduler.clone();
         let lifecycle = lifecycle.clone();
         move || {
-            if canvas_ref.get().is_some() {
-                lifecycle.canvas_changed();
-            }
+            let Some(canvas) = canvas_ref.get() else {
+                return;
+            };
+            let state = state.clone();
+            let scheduler = scheduler.clone();
+            observer.set_value(CanvasObserver::new(&canvas, move |canvas_box| {
+                state.borrow_mut().canvas_box = canvas_box;
+                scheduler.mark_dirty();
+            }));
+            lifecycle.mounted();
         }
     });
 
     let failure = lifecycle.view_failure();
-    let canvas_epoch = lifecycle.canvas_epoch();
     let input = MapInput {
         map,
         on_event,
@@ -278,23 +307,14 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         scheduler,
         select_box,
     };
-    let parts = StoredValue::new_local((input, lifecycle));
-    // A canvas keeps its first context type, so the lifecycle has the element replaced,
-    // handlers and all, when another backend needs it. Keying it on the epoch makes that a
-    // new element: an unkeyed rebuild would update the old one in place.
-    let canvas = view! {
-        <For each=move || [canvas_epoch.get()] key=|epoch| *epoch let:_epoch>
-            {parts
-                .with_value(|(input, lifecycle)| {
-                    map_canvas_element(canvas_ref, input.clone(), lifecycle.clone())
-                })}
-        </For>
-    };
+    let canvas = map_canvas_element(canvas_ref, input, lifecycle.clone());
 
     // Everything else (gesture state, pending frame) is dropped with the last handler and
     // effect that holds it.
+    let lifecycle = StoredValue::new_local(lifecycle);
     on_cleanup(move || {
-        if let Some((_, lifecycle)) = parts.try_get_value() {
+        observer.try_set_value(None);
+        if let Some(lifecycle) = lifecycle.try_get_value() {
             lifecycle.dispose();
         }
     });
@@ -342,8 +362,8 @@ fn map_canvas_element(
     };
     let on_context_creation_error =
         move |event: web_sys::Event| lifecycle.context_creation_error(&event);
-    // Replacing or unmounting this element ends the contacts it held, which cannot report
-    // their own end once it is gone.
+    // Unmounting this element ends the contacts it held, which cannot report their own end
+    // once it is gone.
     let owner = StoredValue::new_local(input.clone());
     on_cleanup(move || {
         if let Some(input) = owner.try_get_value() {
@@ -370,6 +390,10 @@ fn map_canvas_element(
         let input = input.clone();
         move |event| input.pointer_cancel(&event)
     };
+    let on_pointer_enter = {
+        let input = input.clone();
+        move |event| input.pointer_enter(&event)
+    };
     let on_pointer_leave = {
         let input = input.clone();
         move |_| input.pointer_leave()
@@ -385,6 +409,7 @@ fn map_canvas_element(
             on:pointerup=on_pointer_up
             on:pointercancel=on_pointer_cancel
             on:lostpointercapture=on_lost_capture
+            on:pointerenter=on_pointer_enter
             on:pointerleave=on_pointer_leave
             on:wheel=on_wheel
             on:contextmenu=move |event| event.prevent_default()
@@ -395,36 +420,32 @@ fn map_canvas_element(
     }
 }
 
-/// Sizes the canvas, plans the frame and draws it. Returns whether to keep animating.
+/// Sizes the canvas, moves the camera for gestures, plans the frame and draws it, at the
+/// display frame time `frame_ms`. Returns whether to keep animating.
 fn render_frame(
     map: &BrowserMap,
     state: &RefCell<MapState>,
     canvas: &HtmlCanvasElement,
     render_stats: Option<RwSignal<Option<RenderStats>>>,
+    frame_ms: f64,
 ) -> bool {
     let Some(window) = web_sys::window() else {
         return false;
     };
-    if canvas.parent_element().is_none() {
+    let mut state = state.borrow_mut();
+    // Nothing to size before the canvas has been laid out once.
+    if !canvas.is_connected() || state.canvas_box.css == (0.0, 0.0) {
         return false;
     }
-    let mut state = state.borrow_mut();
     // The canvas's own CSS size, fractional where the layout is: rounding it first would
     // stretch the backing store against the pointer coordinates by up to a pixel.
-    let rect = canvas.get_bounding_client_rect();
-    let css_width = rect.width().max(1.0);
-    let css_height = rect.height().max(1.0);
-    // Fewer backing pixels per CSS pixel rather than a surface the device cannot hold.
+    let (css_width, css_height) = state.canvas_box.css;
     let max_side = state.renderer.as_ref().map_or(f64::INFINITY, |renderer| {
         f64::from(renderer.max_surface_side())
     });
-    let dpr = window
-        .device_pixel_ratio()
-        .max(1.0)
-        .min(max_side / css_width)
-        .min(max_side / css_height);
-    let width = (css_width * dpr).round().max(1.0) as u32;
-    let height = (css_height * dpr).round().max(1.0) as u32;
+    let (width, height, dpr) = state
+        .canvas_box
+        .backing(window.device_pixel_ratio(), max_side);
     if canvas.width() != width {
         canvas.set_width(width);
     }
@@ -445,6 +466,7 @@ fn render_frame(
         renderer,
         territory_bounds,
         territory_revision,
+        drawn_camera,
         ..
     } = &mut *state;
     let Some(renderer) = renderer.as_mut() else {
@@ -452,15 +474,18 @@ fn render_frame(
     };
     renderer.resize(width, height, dpr as f32);
 
+    // Pans and pinches move the camera here, once per frame, sampled for this frame's time.
+    let mut motion = FrameMotion::default();
+    map.camera.update_if(|view| {
+        motion = gestures.frame(view, frame_ms);
+        motion.moved
+    });
     let inputs = map.inputs;
     let now_ms = js_sys::Date::now();
-    // Gesture times are event time stamps, on the `performance.now()` clock.
-    let interacting = gestures.is_interacting(
-        window
-            .performance()
-            .map_or(f64::INFINITY, |performance| performance.now()),
-    );
+    // Gesture times are event time stamps, on the frame clock.
+    let interacting = gestures.is_interacting(frame_ms);
     let camera = map.camera.get_untracked();
+    *drawn_camera = Some(camera);
     let clock_secs = inputs.clock_secs.get_untracked();
     let settings = inputs.settings.get_untracked();
     let rebuild = planner.plan(&camera, &settings, clock_secs, interacting);
@@ -512,13 +537,12 @@ fn render_frame(
 
     if let Some(stats) = render_stats {
         stats.set(Some(RenderStats {
-            capabilities: renderer.capabilities(),
             metrics: renderer.frame_metrics(),
             rebuild,
             interacting,
         }));
     }
-    outcome.animating
+    outcome.animating || motion.pending
 }
 
 fn with_optional<T: Send + Sync + 'static, R>(
@@ -547,7 +571,6 @@ fn render_stats_enabled() -> bool {
 #[component]
 fn RenderStatsPanel(stats: RenderStats) -> impl IntoView {
     let RenderStats {
-        capabilities: caps,
         metrics,
         rebuild,
         interacting,
@@ -572,15 +595,10 @@ fn RenderStatsPanel(stats: RenderStats) -> impl IntoView {
         rebuild.icons,
         interacting
     );
-    let caps = format!(
-        "webgl2={} msdf={} dynamic={} fallback={}",
-        caps.webgl2, caps.gpu_text_msdf, caps.gpu_dynamic_labels, caps.compatibility_fallback
-    );
     view! {
         <div style="position: absolute; top: calc(var(--nav-height, 0px) + 10px); left: 10px; z-index: 25; pointer-events: none; background: rgba(8,10,18,0.78); border: 1px solid rgba(245,197,66,0.35); border-radius: 6px; padding: 6px 8px; color: var(--color-text-primary); font-family: var(--font-mono); font-size: 0.66rem; line-height: 1.35;">
             <div>{summary}</div>
             <div style="color: #c9c3b8;">{rebuilt}</div>
-            <div style="color: var(--color-text-secondary);">{caps}</div>
         </div>
     }
 }
