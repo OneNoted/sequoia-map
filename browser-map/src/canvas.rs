@@ -12,7 +12,7 @@ use std::rc::Rc;
 use leptos::prelude::*;
 use sequoia_map_engine::gesture::{FrameMotion, Gestures, ScreenRect};
 use sequoia_map_engine::minimap::MinimapLayout;
-use sequoia_map_engine::scene::{Rebuild, SceneChange, ScenePlanner};
+use sequoia_map_engine::scene::{Rebuild, SceneChange, ScenePlanner, TerritoryDigest};
 use sequoia_map_engine::spatial::SpatialGrid;
 use sequoia_map_engine::viewport::Viewport;
 use web_sys::HtmlCanvasElement;
@@ -51,9 +51,10 @@ pub(crate) struct MapState {
     renderer: Option<GpuRenderer>,
     /// The camera has been fitted to the first territories that arrived.
     fitted: bool,
-    /// Counts changes to the territory map, so renderer caches derived from it alone know
-    /// when they are stale.
+    /// Counts changes to what the renderer draws of the territory map, so renderer caches
+    /// derived from it alone know when they are stale.
     territory_revision: u64,
+    territory_digest: Option<TerritoryDigest>,
 }
 
 impl MapState {
@@ -69,6 +70,7 @@ impl MapState {
             planner: ScenePlanner::default(),
             renderer: None,
             territory_revision: 0,
+            territory_digest: None,
             fitted: false,
         }
     }
@@ -183,27 +185,35 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         icons::load_resource_atlas(map.icons);
     }
 
-    // Hit-testing grid, territory bounds and the initial fit follow the territory map.
+    // The renderer, the hit-testing grid, territory bounds and the initial fit follow what
+    // the territory map changed. Most live updates change none of what is drawn (treasury,
+    // stored resources) or only owners; geometry rarely changes.
     Effect::new({
         let state = state.clone();
         let scheduler = scheduler.clone();
         move || {
             let fit = inputs.territories.with(|territories| {
-                let grid = SpatialGrid::build(territories);
-                let bounds = grid.world_bounds();
+                let digest = TerritoryDigest::of(territories);
                 let mut state = state.borrow_mut();
-                state.grid = grid;
-                state.territory_bounds = bounds;
+                let change = digest.since(state.territory_digest.as_ref());
+                state.territory_digest = Some(digest);
+                if !change.any() {
+                    return None;
+                }
+                if change.geometry {
+                    state.grid = SpatialGrid::build(territories);
+                    state.territory_bounds = state.grid.world_bounds();
+                }
                 state.territory_revision = state.territory_revision.wrapping_add(1);
-                state.planner.invalidate(SceneChange::Territories);
-                let fit = bounds.filter(|_| !state.fitted);
+                state.planner.invalidate(SceneChange::Territories(change));
+                scheduler.mark_dirty();
+                let fit = state.territory_bounds.filter(|_| !state.fitted);
                 state.fitted |= fit.is_some();
                 fit
             });
             if let Some(bounds) = fit {
                 map.camera.fit(bounds);
             }
-            scheduler.mark_dirty();
         }
     });
 
