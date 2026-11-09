@@ -428,22 +428,22 @@ fn SearchResults() -> impl IntoView {
         if query.is_empty() {
             return Vec::new();
         }
-        let map = territories.get();
-        let mut results: Vec<_> = map
-            .iter()
-            .filter(|(name, ct)| {
-                name.to_lowercase().contains(&query)
-                    || ct.territory.guild.name.to_lowercase().contains(&query)
-                    || ct.territory.guild.prefix.to_lowercase().contains(&query)
-            })
-            .map(|(name, ct)| {
-                (
-                    name.clone(),
-                    ct.territory.guild.name.clone(),
-                    ct.guild_color,
-                )
-            })
-            .collect();
+        let mut results: Vec<_> = territories.with(|map| {
+            map.iter()
+                .filter(|(name, ct)| {
+                    name.to_lowercase().contains(&query)
+                        || ct.territory.guild.name.to_lowercase().contains(&query)
+                        || ct.territory.guild.prefix.to_lowercase().contains(&query)
+                })
+                .map(|(name, ct)| {
+                    (
+                        name.clone(),
+                        ct.territory.guild.name.clone(),
+                        ct.guild_color,
+                    )
+                })
+                .collect()
+        });
         results.sort_by(|a, b| a.0.cmp(&b.0));
         results.truncate(50);
         results
@@ -528,7 +528,6 @@ fn LeaderboardPanel() -> impl IntoView {
     let scalar_state = scalar_state();
 
     let leaderboard = Memo::new(move |_| {
-        let map = territories.get();
         let online_data = guild_online_data.get();
         let history_sr = history_sr_leaderboard.get().unwrap_or_default();
         let sort_sr = sort_by_sr.get();
@@ -537,22 +536,25 @@ fn LeaderboardPanel() -> impl IntoView {
             .into_iter()
             .map(|entry| (entry.guild_name, (entry.season_rating, entry.sr_gain_5m)))
             .collect();
-        let mut guilds: HashMap<&str, GuildRow> = HashMap::new();
-        for ct in map.values() {
-            let guild = &ct.territory.guild;
-            guilds
-                .entry(guild.name.as_str())
-                .or_insert_with(|| GuildRow {
-                    name: guild.name.clone(),
-                    prefix: guild.prefix.clone(),
-                    territories: 0,
-                    color: ct.guild_color,
-                    passive_sr_per_hour: 0.0,
-                    season_rating: None,
-                    sr_gain_5m: None,
-                })
-                .territories += 1;
-        }
+        let guilds = territories.with(|map| {
+            let mut guilds: HashMap<&str, GuildRow> = HashMap::new();
+            for ct in map.values() {
+                let guild = &ct.territory.guild;
+                guilds
+                    .entry(guild.name.as_str())
+                    .or_insert_with(|| GuildRow {
+                        name: guild.name.clone(),
+                        prefix: guild.prefix.clone(),
+                        territories: 0,
+                        color: ct.guild_color,
+                        passive_sr_per_hour: 0.0,
+                        season_rating: None,
+                        sr_gain_5m: None,
+                    })
+                    .territories += 1;
+            }
+            guilds.into_values().collect::<Vec<_>>()
+        });
         let rating = |name: &str| {
             if history_mode {
                 history_sr_map.get(name).map(|value| value.0)
@@ -560,7 +562,7 @@ fn LeaderboardPanel() -> impl IntoView {
                 online_data.get(name).and_then(|data| data.season_rating)
             }
         };
-        let mut sorted: Vec<GuildRow> = guilds.into_values().collect();
+        let mut sorted: Vec<GuildRow> = guilds;
         sorted.sort_by(|a, b| {
             let by_count = b
                 .territories
