@@ -31,7 +31,8 @@
 //! - Whenever the driving contacts change, or something else moves the camera mid-gesture, the
 //!   gesture holds on afresh from where the map shows them: the map never jumps, and a
 //!   remaining finger keeps panning without a new press. A pan released mid-drag finishes,
-//!   over its last few milliseconds of reports, where the finger lifted.
+//!   over its last few milliseconds of reports, where the finger lifted; a pinch finger that
+//!   lifts or is cancelled between frames first has the pinch finished where it last reported.
 //! - Zoom limits clamp the scale but never the anchor, and reversing a clamped pinch responds
 //!   at once. Separations under a fingertip count as a fingertip, so nearly touching or
 //!   crossing fingers cannot zoom by an arbitrary ratio.
@@ -406,6 +407,15 @@ struct Glide {
     trail: Trail,
 }
 
+/// A pinch that lost a finger between frames, finished by the next frame with that finger
+/// where it last reported and the other where the map shows it, before the gesture goes on.
+#[derive(Clone, Copy, Debug)]
+struct Finish {
+    grip: Grip,
+    at: (f64, f64),
+    span: f64,
+}
+
 /// Pointer bookkeeping and camera manipulation for one map canvas.
 #[derive(Debug, Default)]
 pub struct Gestures {
@@ -418,6 +428,7 @@ pub struct Gestures {
     settle_until_ms: f64,
     clock: SampleClock,
     glide: Option<Glide>,
+    finish: Option<Finish>,
     wheel: TrackpadWheelClassifier,
 }
 
@@ -430,6 +441,7 @@ impl Gestures {
         if self.contacts.is_empty() {
             self.clock = SampleClock::default();
             self.glide = None;
+            self.finish = None;
         }
         self.contacts.push(Contact {
             pointer,
@@ -535,6 +547,18 @@ impl Gestures {
     /// Moves the camera for a frame drawn at `frame_ms`: a pan or pinch follows its contacts
     /// as they were at this frame's reading time, and a released pan finishes where it lifted.
     pub fn frame(&mut self, camera: &mut Viewport, frame_ms: f64) -> FrameMotion {
+        let finished = self
+            .finish
+            .take()
+            .is_some_and(|mut finish| finish.grip.follow(camera, finish.at, Some(finish.span)));
+        let motion = self.follow(camera, frame_ms);
+        FrameMotion {
+            moved: finished || motion.moved,
+            pending: motion.pending,
+        }
+    }
+
+    fn follow(&mut self, camera: &mut Viewport, frame_ms: f64) -> FrameMotion {
         let (driving, grip): ([Option<usize>; 2], &mut Grip) = match &mut self.mode {
             Mode::Pan { id, grip, .. } => ([index_of(&self.contacts, *id), None], grip),
             Mode::Pinch { a, b, grip } => (
@@ -662,7 +686,8 @@ impl Gestures {
                         }
                     }
                 }
-                Mode::Idle | Mode::Pinch { .. } | Mode::Handled { .. } => {}
+                Mode::Pinch { .. } => self.finish_pinch(contact.pointer.id, here),
+                Mode::Idle | Mode::Handled { .. } => {}
             }
             self.rebase();
         }
@@ -715,6 +740,7 @@ impl Gestures {
         self.contacts.clear();
         self.mode = Mode::Idle;
         self.glide = None;
+        self.finish = None;
         self.spoiled = false;
         out
     }
@@ -728,14 +754,31 @@ impl Gestures {
         else {
             return out;
         };
-        self.contacts.remove(index);
+        let newest = self.contacts.remove(index).trail.newest();
         if self.mode.involves(pointer_id) {
             end_preview(self.mode, &mut out);
+            self.finish_pinch(pointer_id, (newest.x, newest.y));
             self.rebase();
         }
         // Whatever remains of this sequence must not turn into a tap.
         self.spoiled = !self.contacts.is_empty();
         out
+    }
+
+    /// Keeps, for the next frame, what a pinch finger `lifted` reported before it left, at
+    /// `last`, so its movement since the last frame is not lost.
+    fn finish_pinch(&mut self, lifted: i32, last: (f64, f64)) {
+        let Mode::Pinch { a, b, grip } = self.mode else {
+            return;
+        };
+        let other = if lifted == a { b } else { a };
+        if let Some(survivor) = self.contacts.iter().find(|c| c.pointer.id == other) {
+            self.finish = Some(Finish {
+                grip,
+                at: midpoint(last, survivor.shown),
+                span: distance(last, survivor.shown),
+            });
+        }
     }
 
     /// Hands the gesture to the remaining contacts, from where the last frame showed the ones
@@ -1143,6 +1186,42 @@ mod tests {
                 assert_close(cam.scale, before_lift.scale);
             }
             b = (a.0 + 90.0, a.1 + 5.0);
+        }
+    }
+
+    /// Two fingers 100 px apart about (150, 300); finger 2 spreads to x = 300 and leaves, by
+    /// `leave`, before any frame shows the spread. Returns the camera after the next frame,
+    /// then after finger 1 pans 20 px right.
+    fn spread_then_leave(leave: impl FnOnce(&mut Gestures)) -> (Viewport, Viewport) {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
+        gestures.press(touch(2, 200.0, 300.0), Press::Pan, 0.0);
+        gestures.frame(&mut cam, 30.0);
+        gestures.moved(touch(2, 300.0, 300.0), 40.0);
+        leave(&mut gestures);
+        gestures.frame(&mut cam, 60.0);
+        let spread = cam;
+        drag(&mut gestures, &mut cam, touch(1, 120.0, 300.0), 70.0);
+        (spread, cam)
+    }
+
+    #[test]
+    fn a_pinch_finger_that_leaves_before_the_next_frame_keeps_its_last_move() {
+        let focus = camera().screen_to_world(150.0, 300.0);
+        for (spread, panned) in [
+            spread_then_leave(|g| {
+                g.released(touch(2, 300.0, 300.0), 45.0);
+            }),
+            spread_then_leave(|g| {
+                g.cancelled(2, 45.0);
+            }),
+        ] {
+            assert_close(spread.scale / camera().scale, 2.0);
+            assert_world_under(&spread, focus, (200.0, 300.0));
+            // The remaining finger then pans on from there.
+            assert_close(panned.scale, spread.scale);
+            assert_close(panned.offset_x - spread.offset_x, 20.0);
         }
     }
 
