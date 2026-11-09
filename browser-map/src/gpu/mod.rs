@@ -5,7 +5,7 @@
 //! decided by the scene planner and passed in as a [`Rebuild`].
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use wasm_bindgen::JsCast;
@@ -52,12 +52,13 @@ use sequoia_shared::war_board::StageKind;
 use crate::frame::{Frame, FrameMetrics, FrameOutcome, InitError, InitStage};
 use crate::highlight::{InstanceIndex, NO_INSTANCE};
 use crate::icons::ResourceAtlas;
-use crate::tiles::{LoadedTile, TileQuality};
+use crate::tiles::LoadedTile;
 
 mod glyphs;
 mod markers;
 mod mipmaps;
 mod overlay;
+mod terrain;
 use glyphs::{GlyphMeta, GlyphRef, GlyphSet, TextFit, hq_caption, line_units_with_tracking};
 use markers::GpuMarkerRenderer;
 use overlay::GpuOverlayRenderer;
@@ -673,10 +674,10 @@ fn downsample_rgba8_level(src: &[u8], src_w: u32, src_h: u32) -> (u32, u32, Vec<
 /// through the canvas's WebGL2 context `gl`. With `premultiplied_alpha`, the texture holds
 /// colour multiplied by alpha, as filtering needs: averaging straight colour with transparent
 /// texels darkens it.
-pub(super) fn upload_image_data(
+pub(super) fn upload_external_image(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
-    image: web_sys::ImageData,
+    image: wgpu::ExternalImageSource,
     size: wgpu::Extent3d,
     gl: &web_sys::WebGl2RenderingContext,
     premultiplied_alpha: bool,
@@ -691,7 +692,7 @@ pub(super) fn upload_image_data(
     gl.pixel_storei(web_sys::WebGl2RenderingContext::UNPACK_IMAGE_HEIGHT, 0);
     queue.copy_external_image_to_texture(
         &wgpu::CopyExternalImageSourceInfo {
-            source: wgpu::ExternalImageSource::ImageData(image),
+            source: image,
             origin: wgpu::Origin2d::ZERO,
             flip_y: false,
         },
@@ -963,31 +964,6 @@ fn push_text_line(
     }
 }
 
-// --- Tile texture cache ---
-
-/// Identifies a tile set by id and quality, in load order.
-/// Most tile pixels uploaded in one frame. wgpu keeps a staging copy of every upload until
-/// the frame is submitted, so uploading a whole tile set at once (a renderer rebuilt after a
-/// lost context, or a start from a warm cache) briefly needed memory for all of it.
-const TILE_UPLOAD_BUDGET_BYTES: u64 = 16 << 20;
-
-fn tile_upload_signature(tiles: &[LoadedTile]) -> u64 {
-    tiles.iter().fold(0u64, |acc, tile| {
-        let quality_bits = match tile.quality {
-            TileQuality::Low => 1u64,
-            TileQuality::High => 2u64,
-        };
-        acc.wrapping_mul(1_099_511_628_211)
-            .wrapping_add(((tile.id as u64) << 2) ^ quality_bits)
-    })
-}
-
-struct TileTexture {
-    bind_group: wgpu::BindGroup,
-    rect: [f32; 4], // [x, z, width, height] in world coords
-    quality: TileQuality,
-}
-
 /// The cached minimap background and tiles, drawn once per layout and tile set.
 struct MinimapTerrain {
     layout: MinimapLayout,
@@ -1029,18 +1005,9 @@ pub struct GpuRenderer {
 
     // Tile pipeline
     tile_pipeline: wgpu::RenderPipeline,
-    tile_bind_group_layout: wgpu::BindGroupLayout,
-    tile_sampler: wgpu::Sampler,
-    tile_mips: mipmaps::MipChain,
-    tile_textures: HashMap<usize, TileTexture>,
-    /// The WebGL2 context image uploads go through (see `upload_image_data`).
+    terrain: terrain::Terrain,
+    /// The WebGL2 context image uploads go through (see `upload_external_image`).
     webgl_context: web_sys::WebGl2RenderingContext,
-    tile_upload_canvas: Option<HtmlCanvasElement>,
-    tile_upload_ctx: Option<CanvasRenderingContext2d>,
-    tile_upload_canvas_size: (u32, u32),
-    /// Identity of the uploaded tile set; `tiles_revision` counts its changes.
-    tiles_signature: Option<u64>,
-    tiles_revision: u64,
 
     // Connection line pipeline (full GPU mode only)
     connection_pipeline: wgpu::RenderPipeline,
@@ -1587,7 +1554,7 @@ impl GpuRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    // Tile textures hold premultiplied colour (see `upload_image_data`).
+                    // Tile textures hold premultiplied colour (see `terrain`).
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -1850,16 +1817,8 @@ impl GpuRenderer {
             glow_buffer_hov,
             glow_bind_group_hov,
             tile_pipeline,
-            tile_bind_group_layout,
-            tile_sampler,
-            tile_mips,
-            tile_textures: HashMap::new(),
+            terrain: terrain::Terrain::new(tile_bind_group_layout, tile_sampler, tile_mips),
             webgl_context,
-            tile_upload_canvas: None,
-            tile_upload_ctx: None,
-            tile_upload_canvas_size: (0, 0),
-            tiles_signature: None,
-            tiles_revision: 0,
             connection_pipeline,
             connection_fill_pipeline,
             connection_projection_buffer,
@@ -2781,186 +2740,6 @@ impl GpuRenderer {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
-    }
-
-    fn ensure_tile_upload_context(&mut self) -> bool {
-        if self.tile_upload_canvas.is_some() && self.tile_upload_ctx.is_some() {
-            return true;
-        }
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            web_sys::console::warn_1(
-                &"Skipping tile upload: document is unavailable for upload canvas".into(),
-            );
-            return false;
-        };
-        let Some(canvas) = document
-            .create_element("canvas")
-            .ok()
-            .and_then(|element| element.dyn_into::<HtmlCanvasElement>().ok())
-        else {
-            web_sys::console::warn_1(
-                &"Skipping tile upload: failed to create upload canvas".into(),
-            );
-            return false;
-        };
-        let Some(ctx) = get_2d_context(&canvas, true) else {
-            web_sys::console::warn_1(
-                &"Skipping tile upload: failed to create upload 2d context".into(),
-            );
-            return false;
-        };
-        self.tile_upload_canvas = Some(canvas);
-        self.tile_upload_ctx = Some(ctx);
-        self.tile_upload_canvas_size = (0, 0);
-        true
-    }
-
-    /// Uploads tiles that are new or improved since the last frame and drops tiles that
-    /// are gone, bumping `tiles_revision` when the set changes.
-    ///
-    /// Uploads at most [`TILE_UPLOAD_BUDGET_BYTES`] of pixels (and always one tile) per call;
-    /// returns whether tiles are still waiting, so the caller draws another frame.
-    fn sync_tiles(&mut self, tiles: &[LoadedTile]) -> bool {
-        let signature = tile_upload_signature(tiles);
-        if self.tiles_signature == Some(signature) || !self.ensure_tile_upload_context() {
-            return false;
-        }
-        self.tiles_signature = Some(signature);
-        self.tiles_revision = self.tiles_revision.wrapping_add(1);
-        let active_tile_ids: HashSet<usize> = tiles.iter().map(|tile| tile.id).collect();
-        self.tile_textures
-            .retain(|tile_id, _| active_tile_ids.contains(tile_id));
-
-        let Some(upload_canvas) = self.tile_upload_canvas.as_ref().cloned() else {
-            return false;
-        };
-        let Some(upload_ctx) = self.tile_upload_ctx.as_ref().cloned() else {
-            return false;
-        };
-        let mut upload_size = self.tile_upload_canvas_size;
-        let mut uploaded_bytes = 0u64;
-
-        for tile in tiles {
-            let tile_id = tile.id;
-            if let Some(existing) = self.tile_textures.get(&tile_id)
-                && existing.quality >= tile.quality
-            {
-                continue;
-            }
-
-            let img = &tile.image;
-            let w = img.natural_width();
-            let h = img.natural_height();
-            if w == 0 || h == 0 {
-                continue;
-            }
-            let bytes = 4 * u64::from(w) * u64::from(h);
-            if uploaded_bytes > 0 && uploaded_bytes + bytes > TILE_UPLOAD_BUDGET_BYTES {
-                // The rest go up over the next frames.
-                self.tiles_signature = None;
-                break;
-            }
-            // Reuse a persistent staging canvas/context to avoid per-tile DOM/context churn.
-            if upload_size != (w, h) {
-                upload_canvas.set_width(w);
-                upload_canvas.set_height(h);
-                upload_size = (w, h);
-            }
-            upload_ctx.clear_rect(0.0, 0.0, w as f64, h as f64);
-            upload_ctx
-                .draw_image_with_html_image_element(img, 0.0, 0.0)
-                .ok();
-            let image_data = match upload_ctx.get_image_data(0.0, 0.0, w as f64, h as f64) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-            // Failed reads do not stage a GPU upload. Counting them against the budget
-            // would retry the same failed prefix every frame and starve later tiles.
-            uploaded_bytes += bytes;
-
-            let size = wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            };
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("tile-tex"),
-                size,
-                mip_level_count: full_mip_level_count(w, h),
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                // External image copies, and drawing the mip levels, need a render-attachment
-                // destination.
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            // The read-back pixels go to the GPU from the browser's buffer, never as a whole
-            // tile in WASM memory, which would grow for good to hold one (see
-            // `upload_image_data`). Uploading the <img> itself instead makes browsers decode
-            // the file again, as straight alpha, synchronously: slower than this draw and
-            // read-back. Tiles are stored premultiplied, so the mip levels average colour and
-            // coverage together.
-            upload_image_data(
-                &self.queue,
-                &texture,
-                image_data,
-                size,
-                &self.webgl_context,
-                true,
-            );
-            self.tile_mips.generate(&self.device, &self.queue, &texture);
-
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-            // Pre-compute tile world rect and bake into a dedicated uniform buffer
-            let x1 = tile.x1.min(tile.x2) as f32;
-            let z1 = tile.z1.min(tile.z2) as f32;
-            // Tile bounds are inclusive — add 1 to get exclusive width/height
-            let tw = (tile.x1.max(tile.x2) - tile.x1.min(tile.x2) + 1) as f32;
-            let th = (tile.z1.max(tile.z2) - tile.z1.min(tile.z2) + 1) as f32;
-            let rect = [x1, z1, tw, th];
-
-            let rect_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("tile-rect-ubo"),
-                    contents: bytemuck::cast_slice(&[TileRectUniform { rect }]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("tile-bg"),
-                layout: &self.tile_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: rect_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&self.tile_sampler),
-                    },
-                ],
-            });
-
-            self.tile_textures.insert(
-                tile_id,
-                TileTexture {
-                    bind_group,
-                    rect,
-                    quality: tile.quality,
-                },
-            );
-        }
-        self.tile_upload_canvas_size = upload_size;
-        self.tiles_signature.is_none()
     }
 
     /// Build instance data from territories and upload to GPU.
@@ -4062,7 +3841,9 @@ impl GpuRenderer {
         let w = self.width as f32 / self.dpr;
         let h = self.height as f32 / self.dpr;
 
-        let tiles_pending = self.sync_tiles(frame.tiles);
+        let tiles_pending =
+            self.terrain
+                .sync(&self.device, &self.queue, &self.webgl_context, frame.tiles);
         let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
             // Fail closed: map rendering requires the GPU text pipeline.
             return FrameOutcome::default();
@@ -4162,7 +3943,7 @@ impl GpuRenderer {
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
                 for tile in frame.tiles {
-                    let Some(tile_tex) = self.tile_textures.get(&tile.id) else {
+                    let Some(tile_tex) = self.terrain.texture(tile.id) else {
                         continue;
                     };
 
@@ -4643,7 +4424,7 @@ impl GpuRenderer {
         stats: &mut DrawStats,
     ) {
         if self.minimap_terrain.as_ref().is_some_and(|terrain| {
-            terrain.layout == layout && terrain.tiles_revision == self.tiles_revision
+            terrain.layout == layout && terrain.tiles_revision == self.terrain.revision()
         }) {
             return;
         }
@@ -4734,7 +4515,7 @@ impl GpuRenderer {
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 for tile in tiles {
-                    let Some(tile_tex) = self.tile_textures.get(&tile.id) else {
+                    let Some(tile_tex) = self.terrain.texture(tile.id) else {
                         continue;
                     };
                     pass.set_bind_group(1, &tile_tex.bind_group, &[]);
@@ -4758,13 +4539,13 @@ impl GpuRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.tile_sampler),
+                    resource: wgpu::BindingResource::Sampler(self.terrain.sampler()),
                 },
             ],
         });
         self.minimap_terrain = Some(MinimapTerrain {
             layout,
-            tiles_revision: self.tiles_revision,
+            tiles_revision: self.terrain.revision(),
             bind_group,
         });
     }
