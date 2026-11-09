@@ -65,11 +65,12 @@ impl CanvasObserver {
                 return;
             };
             let rect = entry.content_rect();
-            let device = entry
-                .device_pixel_content_box_size()
-                .get(0)
-                .dyn_into::<ResizeObserverSize>()
+            // Browsers without device-pixel boxes (Safari) have no such property at all, and
+            // web-sys's getter would index `undefined`.
+            let device = js_sys::Reflect::get(&entry, &"devicePixelContentBoxSize".into())
                 .ok()
+                .and_then(|sizes| sizes.dyn_into::<js_sys::Array>().ok())
+                .and_then(|sizes| sizes.get(0).dyn_into::<ResizeObserverSize>().ok())
                 .map(|size| (size.inline_size() as u32, size.block_size() as u32));
             // Observers run after layout, so reading the position here costs nothing extra.
             let client = entry.target().get_bounding_client_rect();
