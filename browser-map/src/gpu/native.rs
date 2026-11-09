@@ -47,6 +47,7 @@ impl GpuRenderer {
         // Everything the browser renderer reads, so both builds agree on what is used.
         let _ = (
             frame.camera,
+            frame.label_coverage,
             frame.territories,
             frame.territory_revision,
             frame.hovered,

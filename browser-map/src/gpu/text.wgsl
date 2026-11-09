@@ -1,4 +1,5 @@
-// Dual-atlas text shader. Each pass samples one atlas (halo or fill).
+// Dual-atlas text shader. Each glyph is drawn twice from one instance: `vs_halo` with the halo
+// atlas and colour, then `vs_fill` with the fill atlas and colour.
 
 struct Viewport {
     offset: vec2<f32>,
@@ -21,7 +22,8 @@ struct VertexInput {
     @location(0) quad_pos: vec2<f32>,
     @location(1) rect: vec4<f32>,
     @location(2) uv_rect: vec4<f32>,
-    @location(3) color: vec4<f32>,
+    @location(3) fill: vec4<f32>,
+    @location(4) halo: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -31,7 +33,16 @@ struct VertexOutput {
 };
 
 @vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
+fn vs_fill(in: VertexInput) -> VertexOutput {
+    return glyph(in, in.fill);
+}
+
+@vertex
+fn vs_halo(in: VertexInput) -> VertexOutput {
+    return glyph(in, in.halo);
+}
+
+fn glyph(in: VertexInput, color: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
     let world_pos = in.rect.xy + in.quad_pos * in.rect.zw;
     let glyph_origin = in.rect.xy * vp.scale + vp.offset;
@@ -39,7 +50,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let ndc = screen / vp.resolution * 2.0 - 1.0;
     out.clip_position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
     out.uv = mix(in.uv_rect.xy, in.uv_rect.zw, in.quad_pos);
-    out.color = in.color;
+    out.color = color;
     return out;
 }
 

@@ -43,7 +43,7 @@ use sequoia_map_engine::settings::{
 };
 use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap, is_sequoia_guild};
 use sequoia_map_engine::time_format::write_hms;
-use sequoia_map_engine::viewport::Viewport;
+use sequoia_map_engine::viewport::{Viewport, WorldRect};
 use sequoia_shared::TreasuryLevel;
 use sequoia_shared::colors::hsl_to_rgb;
 use sequoia_shared::territory::Resources;
@@ -154,12 +154,15 @@ struct TileRectUniform {
     rect: [f32; 4],
 }
 
+/// One glyph of a label, drawn twice: in its halo colour from the halo atlas, then, after
+/// every halo of its layer, in its fill colour from the fill atlas.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct TextInstance {
     rect: [f32; 4],    // world x, y, w, h
     uv_rect: [f32; 4], // u0, v0, u1, v1
-    color: [f32; 4],   // rgba
+    fill: [f32; 4],    // rgba
+    halo: [f32; 4],    // rgba
 }
 
 #[repr(C)]
@@ -276,27 +279,64 @@ struct GlyphAtlas {
 }
 
 struct GpuTextRenderer {
-    pipeline: wgpu::RenderPipeline,
+    halo_pipeline: wgpu::RenderPipeline,
+    fill_pipeline: wgpu::RenderPipeline,
     fill_bind_group: wgpu::BindGroup,
     halo_bind_group: wgpu::BindGroup,
-    static_fill_buffer: wgpu::Buffer,
-    static_fill_count: u32,
-    static_fill_capacity: u32,
-    static_fill_instances: Vec<TextInstance>,
-    static_halo_buffer: wgpu::Buffer,
-    static_halo_count: u32,
-    static_halo_capacity: u32,
-    static_halo_instances: Vec<TextInstance>,
-    dynamic_fill_buffer: wgpu::Buffer,
-    dynamic_fill_count: u32,
-    dynamic_fill_capacity: u32,
-    dynamic_fill_instances: Vec<TextInstance>,
-    dynamic_halo_buffer: wgpu::Buffer,
-    dynamic_halo_count: u32,
-    dynamic_halo_capacity: u32,
-    dynamic_halo_instances: Vec<TextInstance>,
+    /// Guild tags, territory names and claim labels.
+    static_layer: TextLayer,
+    /// Held-time and cooldown timers.
+    dynamic_layer: TextLayer,
     glyphs: GlyphSet,
     line_height: f32,
+}
+
+/// A layer of label glyphs and the GPU buffer they were last uploaded to.
+struct TextLayer {
+    label: &'static str,
+    instances: Vec<TextInstance>,
+    buffer: wgpu::Buffer,
+    capacity: u32,
+    /// Glyphs in the buffer.
+    count: u32,
+}
+
+impl TextLayer {
+    const INITIAL_CAPACITY: u32 = 4096;
+
+    fn new(device: &wgpu::Device, label: &'static str) -> Self {
+        Self {
+            label,
+            instances: Vec::new(),
+            buffer: Self::allocate(device, label, Self::INITIAL_CAPACITY),
+            capacity: Self::INITIAL_CAPACITY,
+            count: 0,
+        }
+    }
+
+    fn allocate(device: &wgpu::Device, label: &'static str, capacity: u32) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: u64::from(capacity) * std::mem::size_of::<TextInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Uploads `instances`; returns the bytes uploaded.
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> u64 {
+        self.count = self.instances.len() as u32;
+        if self.count > self.capacity {
+            self.capacity = self.count.next_power_of_two();
+            self.buffer = Self::allocate(device, self.label, self.capacity);
+        }
+        if self.instances.is_empty() {
+            return 0;
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(&self.instances);
+        queue.write_buffer(&self.buffer, 0, bytes);
+        bytes.len() as u64
+    }
 }
 
 struct GpuIconRenderer {
@@ -367,6 +407,17 @@ fn resource_icons_visible_for_territory(
 }
 
 #[inline]
+/// Whether the territory reaches into `area`.
+fn in_area(area: &WorldRect, ct: &ClientTerritory) -> bool {
+    let loc = &ct.territory.location;
+    area.overlaps(&WorldRect {
+        left: f64::from(loc.left()),
+        top: f64::from(loc.top()),
+        right: f64::from(loc.right()),
+        bottom: f64::from(loc.bottom()),
+    })
+}
+
 fn hq_label_max_width_world(territory_width: f32, padding_world: f32) -> f32 {
     (territory_width - padding_world).max(1.0)
 }
@@ -850,7 +901,7 @@ fn fit_text_to_units_with_tracking<'a>(
     clippy::too_many_arguments,
     reason = "Low-level glyph emission takes borrowed atlas data, output and per-line geometry/style."
 )]
-fn push_text_line_with_tracking(
+fn push_text_line(
     out: &mut Vec<TextInstance>,
     glyphs: &GlyphSet,
     line_height: f32,
@@ -860,7 +911,8 @@ fn push_text_line_with_tracking(
     font_height_world: f32,
     max_width_world: f32,
     tracking_units: f32,
-    mut color: [f32; 4],
+    mut fill: [f32; 4],
+    mut halo: [f32; 4],
 ) {
     if text.is_empty() || font_height_world <= 0.0 || max_width_world <= 0.0 || line_height <= 0.0 {
         return;
@@ -878,7 +930,8 @@ fn push_text_line_with_tracking(
     }
     let mut cursor_x = cx - (units * scale) / 2.0;
     let line_top_y = cy - font_height_world * 0.5;
-    color[3] = color[3].clamp(0.0, 1.0);
+    fill[3] = fill[3].clamp(0.0, 1.0);
+    halo[3] = halo[3].clamp(0.0, 1.0);
     let mut prev: Option<GlyphRef<'_>> = None;
 
     for ch in text.chars() {
@@ -903,54 +956,11 @@ fn push_text_line_with_tracking(
         out.push(TextInstance {
             rect: [x_world, y_world, w_world, h_world],
             uv_rect: glyph.uv_rect,
-            color,
+            fill,
+            halo,
         });
         cursor_x += step_world;
     }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Fill and halo share line geometry but retain distinct output buffers and colors."
-)]
-fn push_text_line_dual_with_tracking(
-    fill_out: &mut Vec<TextInstance>,
-    halo_out: &mut Vec<TextInstance>,
-    glyphs: &GlyphSet,
-    line_height: f32,
-    text: &str,
-    cx: f32,
-    cy: f32,
-    font_height_world: f32,
-    max_width_world: f32,
-    tracking_units: f32,
-    fill_color: [f32; 4],
-    halo_color: [f32; 4],
-) {
-    push_text_line_with_tracking(
-        halo_out,
-        glyphs,
-        line_height,
-        text,
-        cx,
-        cy,
-        font_height_world,
-        max_width_world,
-        tracking_units,
-        halo_color,
-    );
-    push_text_line_with_tracking(
-        fill_out,
-        glyphs,
-        line_height,
-        text,
-        cx,
-        cy,
-        font_height_world,
-        max_width_world,
-        tracking_units,
-        fill_color,
-    );
 }
 
 // --- Tile texture cache ---
@@ -2019,6 +2029,11 @@ impl GpuRenderer {
                     shader_location: 3,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         };
 
@@ -2028,66 +2043,46 @@ impl GpuRenderer {
             push_constant_ranges: &[],
         });
 
-        let text_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("text-pipeline"),
-            layout: Some(&text_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &text_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[vertex_layout.clone(), text_instance_layout],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &text_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let initial_capacity = 4096u32;
-        let make_buffer = |label: &'static str| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: (initial_capacity as u64) * std::mem::size_of::<TextInstance>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+        // The same glyphs twice: halos, then fills, each from its own atlas and colour.
+        let pipeline = |entry_point: &'static str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry_point),
+                layout: Some(&text_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &text_shader,
+                    entry_point: Some(entry_point),
+                    buffers: &[vertex_layout.clone(), text_instance_layout.clone()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &text_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
             })
         };
 
         Some(GpuTextRenderer {
-            pipeline: text_pipeline,
+            halo_pipeline: pipeline("vs_halo"),
+            fill_pipeline: pipeline("vs_fill"),
             fill_bind_group,
             halo_bind_group,
-            static_fill_buffer: make_buffer("text-static-fill-buf"),
-            static_fill_count: 0,
-            static_fill_capacity: initial_capacity,
-            static_fill_instances: Vec::new(),
-            static_halo_buffer: make_buffer("text-static-halo-buf"),
-            static_halo_count: 0,
-            static_halo_capacity: initial_capacity,
-            static_halo_instances: Vec::new(),
-            dynamic_fill_buffer: make_buffer("text-dynamic-fill-buf"),
-            dynamic_fill_count: 0,
-            dynamic_fill_capacity: initial_capacity,
-            dynamic_fill_instances: Vec::new(),
-            dynamic_halo_buffer: make_buffer("text-dynamic-halo-buf"),
-            dynamic_halo_count: 0,
-            dynamic_halo_capacity: initial_capacity,
-            dynamic_halo_instances: Vec::new(),
+            static_layer: TextLayer::new(device, "text-static"),
+            dynamic_layer: TextLayer::new(device, "text-dynamic"),
             glyphs,
             line_height,
         })
@@ -3129,30 +3124,6 @@ impl GpuRenderer {
         }
     }
 
-    fn upload_text_buffer(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        label: &'static str,
-        instances: &[TextInstance],
-        buffer: &mut wgpu::Buffer,
-        count: &mut u32,
-        capacity: &mut u32,
-    ) {
-        *count = instances.len() as u32;
-        if *count > *capacity {
-            *capacity = (*count).next_power_of_two();
-            *buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: (*capacity as u64) * std::mem::size_of::<TextInstance>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        if !instances.is_empty() {
-            queue.write_buffer(buffer, 0, bytemuck::cast_slice(instances));
-        }
-    }
-
     fn upload_icon_buffer(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3192,6 +3163,7 @@ impl GpuRenderer {
         territories: &ClientTerritoryMap,
         territory_revision: u64,
         vp: &Viewport,
+        coverage: &WorldRect,
         settings: &RenderSettings,
     ) {
         self.sync_territory_name_cache(territories);
@@ -3219,16 +3191,12 @@ impl GpuRenderer {
             return;
         };
 
-        let mut fill_instances = std::mem::take(&mut text_renderer.static_fill_instances);
-        let mut halo_instances = std::mem::take(&mut text_renderer.static_halo_instances);
-        fill_instances.clear();
-        halo_instances.clear();
+        let mut instances = std::mem::take(&mut text_renderer.static_layer.instances);
+        instances.clear();
 
         if vp.scale < LABEL_VISIBILITY_MIN_SCALE {
-            text_renderer.static_fill_instances = fill_instances;
-            text_renderer.static_halo_instances = halo_instances;
-            text_renderer.static_fill_count = 0;
-            text_renderer.static_halo_count = 0;
+            text_renderer.static_layer.instances = instances;
+            text_renderer.static_layer.upload(&self.device, &self.queue);
             return;
         }
 
@@ -3259,9 +3227,8 @@ impl GpuRenderer {
                         claim.guild_color.2,
                         1.8,
                     );
-                    push_text_line_dual_with_tracking(
-                        &mut fill_instances,
-                        &mut halo_instances,
+                    push_text_line(
+                        &mut instances,
                         glyphs,
                         line_height,
                         &claim.text,
@@ -3276,7 +3243,7 @@ impl GpuRenderer {
                 }
             } else {
                 let show_far_zoom_tags = settings.show_far_zoom_territory_tags && claim_label_zoom;
-                for (name, ct) in territories {
+                for (name, ct) in territories.iter().filter(|(_, ct)| in_area(coverage, ct)) {
                     let loc = &ct.territory.location;
                     let ww = loc.width() as f32;
                     let hh = loc.height() as f32;
@@ -3352,9 +3319,8 @@ impl GpuRenderer {
                         let mut tag_color = name_color_rgba(settings.tag_color, ct.guild_color);
                         tag_color[3] = 0.92 * sizing.alpha;
                         let tag_halo_alpha = 0.68 * sizing.alpha;
-                        push_text_line_dual_with_tracking(
-                            &mut fill_instances,
-                            &mut halo_instances,
+                        push_text_line(
+                            &mut instances,
                             glyphs,
                             line_height,
                             &fitted,
@@ -3435,9 +3401,8 @@ impl GpuRenderer {
                         let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
                         let tag_halo_alpha = (0.70 - tag_halo_boost * 0.22).clamp(0.42, 0.76);
 
-                        push_text_line_dual_with_tracking(
-                            &mut fill_instances,
-                            &mut halo_instances,
+                        push_text_line(
+                            &mut instances,
                             glyphs,
                             line_height,
                             tag,
@@ -3494,9 +3459,8 @@ impl GpuRenderer {
                             * STATIC_NAME_HALO_ALPHA_MULTIPLIER
                             * detail_layout_alpha.clamp(0.0, 1.0))
                         .clamp(0.0, 0.74);
-                        push_text_line_dual_with_tracking(
-                            &mut fill_instances,
-                            &mut halo_instances,
+                        push_text_line(
+                            &mut instances,
                             glyphs,
                             line_height,
                             &fitted,
@@ -3513,27 +3477,8 @@ impl GpuRenderer {
             }
         }
 
-        text_renderer.static_fill_instances = fill_instances;
-        text_renderer.static_halo_instances = halo_instances;
-
-        Self::upload_text_buffer(
-            &self.device,
-            &self.queue,
-            "text-static-fill-buf",
-            &text_renderer.static_fill_instances,
-            &mut text_renderer.static_fill_buffer,
-            &mut text_renderer.static_fill_count,
-            &mut text_renderer.static_fill_capacity,
-        );
-        Self::upload_text_buffer(
-            &self.device,
-            &self.queue,
-            "text-static-halo-buf",
-            &text_renderer.static_halo_instances,
-            &mut text_renderer.static_halo_buffer,
-            &mut text_renderer.static_halo_count,
-            &mut text_renderer.static_halo_capacity,
-        );
+        text_renderer.static_layer.instances = instances;
+        text_renderer.static_layer.upload(&self.device, &self.queue);
     }
 
     /// Build timer glyph instances. Returns the clock second at which the text next changes.
@@ -3541,6 +3486,7 @@ impl GpuRenderer {
         &mut self,
         territories: &ClientTerritoryMap,
         vp: &Viewport,
+        coverage: &WorldRect,
         settings: &RenderSettings,
         reference_time_secs: i64,
     ) -> i64 {
@@ -3552,17 +3498,15 @@ impl GpuRenderer {
             return i64::MAX;
         };
 
-        let mut fill_instances = std::mem::take(&mut text_renderer.dynamic_fill_instances);
-        let mut halo_instances = std::mem::take(&mut text_renderer.dynamic_halo_instances);
-        fill_instances.clear();
-        halo_instances.clear();
+        let mut instances = std::mem::take(&mut text_renderer.dynamic_layer.instances);
+        instances.clear();
 
         // Hidden timers never change on their own; zooming back in rebuilds them.
         if vp.scale < LABEL_VISIBILITY_MIN_SCALE {
-            text_renderer.dynamic_fill_instances = fill_instances;
-            text_renderer.dynamic_halo_instances = halo_instances;
-            text_renderer.dynamic_fill_count = 0;
-            text_renderer.dynamic_halo_count = 0;
+            text_renderer.dynamic_layer.instances = instances;
+            text_renderer
+                .dynamic_layer
+                .upload(&self.device, &self.queue);
             return i64::MAX;
         }
 
@@ -3572,7 +3516,7 @@ impl GpuRenderer {
         {
             let glyphs = &text_renderer.glyphs;
             let line_height = text_renderer.line_height;
-            for ct in territories.values() {
+            for ct in territories.values().filter(|ct| in_area(coverage, ct)) {
                 let loc = &ct.territory.location;
                 let ww = loc.width() as f32;
                 let hh = loc.height() as f32;
@@ -3734,9 +3678,8 @@ impl GpuRenderer {
                             0.95,
                         ]
                     };
-                    push_text_line_dual_with_tracking(
-                        &mut fill_instances,
-                        &mut halo_instances,
+                    push_text_line(
+                        &mut instances,
                         glyphs,
                         line_height,
                         &text_buf,
@@ -3764,9 +3707,8 @@ impl GpuRenderer {
                     let cd_y = content_bottom_y + cooldown_size / 2.0 + cooldown_gap;
                     let (cr, cg, cb) = COOLDOWN_RGB;
                     let cd_alpha = (0.92 + small_timer_factor * 0.02).clamp(0.0, 1.0);
-                    push_text_line_dual_with_tracking(
-                        &mut fill_instances,
-                        &mut halo_instances,
+                    push_text_line(
+                        &mut instances,
                         glyphs,
                         line_height,
                         &text_buf,
@@ -3793,27 +3735,10 @@ impl GpuRenderer {
             }
         }
 
-        text_renderer.dynamic_fill_instances = fill_instances;
-        text_renderer.dynamic_halo_instances = halo_instances;
-
-        Self::upload_text_buffer(
-            &self.device,
-            &self.queue,
-            "text-dynamic-fill-buf",
-            &text_renderer.dynamic_fill_instances,
-            &mut text_renderer.dynamic_fill_buffer,
-            &mut text_renderer.dynamic_fill_count,
-            &mut text_renderer.dynamic_fill_capacity,
-        );
-        Self::upload_text_buffer(
-            &self.device,
-            &self.queue,
-            "text-dynamic-halo-buf",
-            &text_renderer.dynamic_halo_instances,
-            &mut text_renderer.dynamic_halo_buffer,
-            &mut text_renderer.dynamic_halo_count,
-            &mut text_renderer.dynamic_halo_capacity,
-        );
+        text_renderer.dynamic_layer.instances = instances;
+        text_renderer
+            .dynamic_layer
+            .upload(&self.device, &self.queue);
 
         if next_update_secs == i64::MAX {
             reference_time_secs + 1
@@ -3829,6 +3754,7 @@ impl GpuRenderer {
         &mut self,
         territories: &ClientTerritoryMap,
         vp: &Viewport,
+        coverage: &WorldRect,
         settings: &RenderSettings,
         reference_time_secs: i64,
     ) -> i64 {
@@ -3852,7 +3778,7 @@ impl GpuRenderer {
         let mut next_change_secs = i64::MAX;
 
         let scale = vp.scale as f32;
-        for ct in territories.values() {
+        for ct in territories.values().filter(|ct| in_area(coverage, ct)) {
             let loc = &ct.territory.location;
             let ww = loc.width() as f32;
             let hh = loc.height() as f32;
@@ -4326,37 +4252,23 @@ impl GpuRenderer {
             }
 
             if let Some(text_renderer) = self.text_renderer.as_ref() {
-                pass.set_pipeline(&text_renderer.pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
-                for (bind_group, buffer, count) in [
-                    (
-                        &text_renderer.halo_bind_group,
-                        &text_renderer.static_halo_buffer,
-                        text_renderer.static_halo_count,
-                    ),
-                    (
-                        &text_renderer.fill_bind_group,
-                        &text_renderer.static_fill_buffer,
-                        text_renderer.static_fill_count,
-                    ),
-                    (
-                        &text_renderer.halo_bind_group,
-                        &text_renderer.dynamic_halo_buffer,
-                        text_renderer.dynamic_halo_count,
-                    ),
-                    (
-                        &text_renderer.fill_bind_group,
-                        &text_renderer.dynamic_fill_buffer,
-                        text_renderer.dynamic_fill_count,
-                    ),
-                ] {
-                    if count > 0 {
+                // Each layer's halos under all of its fills.
+                for layer in [&text_renderer.static_layer, &text_renderer.dynamic_layer] {
+                    if layer.count == 0 {
+                        continue;
+                    }
+                    pass.set_vertex_buffer(1, layer.buffer.slice(..));
+                    for (pipeline, bind_group) in [
+                        (&text_renderer.halo_pipeline, &text_renderer.halo_bind_group),
+                        (&text_renderer.fill_pipeline, &text_renderer.fill_bind_group),
+                    ] {
+                        pass.set_pipeline(pipeline);
                         pass.set_bind_group(1, bind_group, &[]);
-                        pass.set_vertex_buffer(1, buffer.slice(..));
-                        pass.draw_indexed(0..6, 0, 0..count);
+                        pass.draw_indexed(0..6, 0, 0..layer.count);
                         stats.draw();
                     }
                 }
@@ -4441,12 +4353,7 @@ impl GpuRenderer {
         let text_instances = self
             .text_renderer
             .as_ref()
-            .map(|text| {
-                text.static_fill_count
-                    + text.static_halo_count
-                    + text.dynamic_fill_count
-                    + text.dynamic_halo_count
-            })
+            .map(|text| text.static_layer.count + text.dynamic_layer.count)
             .unwrap_or(0);
         self.frame_metrics = FrameMetrics {
             frame_cpu_ms,
@@ -4609,12 +4516,12 @@ impl GpuRenderer {
         }
         let text_bytes = |text: Option<&GpuTextRenderer>, dynamic: bool| {
             text.map_or(0, |text| {
-                let count = if dynamic {
-                    text.dynamic_fill_count + text.dynamic_halo_count
+                let layer = if dynamic {
+                    &text.dynamic_layer
                 } else {
-                    text.static_fill_count + text.static_halo_count
+                    &text.static_layer
                 };
-                u64::from(count) * std::mem::size_of::<TextInstance>() as u64
+                u64::from(layer.count) * std::mem::size_of::<TextInstance>() as u64
             })
         };
         if rebuild.static_labels {
@@ -4622,6 +4529,7 @@ impl GpuRenderer {
                 frame.territories,
                 frame.territory_revision,
                 vp,
+                &frame.label_coverage,
                 settings,
             );
             stats.bytes_uploaded += text_bytes(self.text_renderer.as_ref(), false);
@@ -4631,6 +4539,7 @@ impl GpuRenderer {
             next_refresh.dynamic_labels = Some(self.update_dynamic_text_instances(
                 frame.territories,
                 vp,
+                &frame.label_coverage,
                 settings,
                 frame.clock_secs,
             ));
@@ -4638,8 +4547,13 @@ impl GpuRenderer {
         }
         let rebuilt_icons = rebuild.icons && self.icon_renderer.is_some();
         if rebuilt_icons {
-            next_refresh.icons =
-                Some(self.update_icon_instances(frame.territories, vp, settings, frame.clock_secs));
+            next_refresh.icons = Some(self.update_icon_instances(
+                frame.territories,
+                vp,
+                &frame.label_coverage,
+                settings,
+                frame.clock_secs,
+            ));
             if let Some(icon_renderer) = self.icon_renderer.as_ref() {
                 stats.bytes_uploaded += (icon_renderer.instance_count as u64)
                     * std::mem::size_of::<IconInstance>() as u64;

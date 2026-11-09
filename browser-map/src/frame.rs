@@ -9,7 +9,7 @@ use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::NextRefresh;
 use sequoia_map_engine::settings::RenderSettings;
 use sequoia_map_engine::territory::ClientTerritoryMap;
-use sequoia_map_engine::viewport::Viewport;
+use sequoia_map_engine::viewport::{Viewport, WorldRect};
 use sequoia_shared::war_board::WarMark;
 
 use crate::icons::ResourceAtlas;
@@ -19,6 +19,8 @@ use crate::tiles::LoadedTile;
 /// One frame's view of the map, borrowed from the map's signals.
 pub struct Frame<'a> {
     pub camera: &'a Viewport,
+    /// Where label and icon layers lay out territories; nothing outside it is in view.
+    pub label_coverage: WorldRect,
     pub territories: &'a ClientTerritoryMap,
     /// Changes whenever `territories` does.
     pub territory_revision: u64,

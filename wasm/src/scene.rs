@@ -4,19 +4,28 @@
 //! names), dynamic labels (timers) and icons in GPU buffers between frames. [`ScenePlanner`]
 //! owns the decision of when each of them is stale, from what the host reports: data
 //! changes, settings, the camera and the clock. Moving the camera without zooming rebuilds
-//! nothing; the renderer only updates its projection.
+//! nothing while the view stays inside the area the labels were laid out for; the renderer
+//! only updates its projection.
+//!
+//! Labels and icons are laid out only for the territories in that area, [`ScenePlanner::
+//! coverage`]: the view with a view's width and height of margin around it. It is laid out
+//! afresh when the view leaves it, or has shrunk to a small part of it by zooming in, so
+//! a zoom costs what is near the view rather than the whole map.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::BitOrAssign;
 
 use crate::settings::{ConnectionStyle, RenderSettings};
 use crate::territory::ClientTerritoryMap;
-use crate::viewport::Viewport;
+use crate::viewport::{Viewport, WorldRect};
 
 /// Below this viewport scale per-territory timer text is hidden, keeping the overview clean.
 pub const TIMER_VISIBILITY_MIN_SCALE: f64 = 0.31;
 /// Below this viewport scale no territory labels or icons are drawn at all.
 pub const LABEL_VISIBILITY_MIN_SCALE: f64 = 0.10;
+
+/// The laid-out area is laid out afresh once the view covers less than this share of it.
+const COVERAGE_MIN_SHARE: f64 = 1.0 / 25.0;
 
 /// Static labels are re-fitted every 1/320 of scale; finer steps would not be visible.
 fn static_label_bucket(scale: f64) -> i32 {
@@ -177,6 +186,7 @@ pub struct ScenePlanner {
     icons_due_at: i64,
     /// Timer refreshes that fell due while the map was being manipulated.
     deferred: Rebuild,
+    coverage: Option<WorldRect>,
 }
 
 impl Default for ScenePlanner {
@@ -190,6 +200,7 @@ impl Default for ScenePlanner {
             labels_due_at: i64::MIN,
             icons_due_at: i64::MIN,
             deferred: Rebuild::NONE,
+            coverage: None,
         }
     }
 }
@@ -217,16 +228,30 @@ impl ScenePlanner {
         };
     }
 
-    /// The layers to rebuild for a frame drawn with this camera, settings and clock.
-    /// `interacting` postpones timer-driven rebuilds until the gesture settles.
+    /// The layers to rebuild for a frame drawn with this camera on a `view` of that many CSS
+    /// pixels, these settings and clock. `interacting` postpones timer-driven rebuilds until
+    /// the gesture settles.
     pub fn plan(
         &mut self,
         camera: &Viewport,
+        view: (f64, f64),
         settings: &RenderSettings,
         clock_secs: i64,
         interacting: bool,
     ) -> Rebuild {
         let mut rebuild = std::mem::take(&mut self.pending);
+        let visible = camera.visible(view.0, view.1);
+        let covered = self.coverage.is_some_and(|coverage| {
+            coverage.contains(&visible)
+                && visible.width() * visible.height()
+                    >= coverage.width() * coverage.height() * COVERAGE_MIN_SHARE
+        });
+        if !covered {
+            self.coverage = Some(visible.grown(visible.width(), visible.height()));
+            rebuild.static_labels = true;
+            rebuild.dynamic_labels = true;
+            rebuild.icons = true;
+        }
         if std::mem::take(&mut self.ownership_changed) && connections_follow_owners(settings) {
             rebuild.connections = true;
         }
@@ -265,6 +290,12 @@ impl ScenePlanner {
         self.deferred.dynamic_labels &= !rebuild.dynamic_labels;
         self.deferred.icons &= !rebuild.icons;
         rebuild
+    }
+
+    /// The world area the label and icon layers lay out territories in; nothing outside it
+    /// can be in view until the planner lays them out again.
+    pub fn coverage(&self) -> Option<WorldRect> {
+        self.coverage
     }
 
     /// Records when the layers just rebuilt next change on their own.
@@ -309,6 +340,8 @@ mod tests {
     use crate::settings::tests::settings;
     use crate::territory::ClientTerritory;
 
+    const VIEW: (f64, f64) = (1000.0, 800.0);
+
     fn at(scale: f64) -> Viewport {
         Viewport {
             offset_x: 0.0,
@@ -321,7 +354,7 @@ mod tests {
     fn settled(scale: f64, clock: i64, due: i64) -> ScenePlanner {
         let mut planner = ScenePlanner::default();
         assert_eq!(
-            planner.plan(&at(scale), &settings(), clock, false),
+            planner.plan(&at(scale), VIEW, &settings(), clock, false),
             Rebuild::ALL
         );
         planner.schedule(NextRefresh {
@@ -367,10 +400,10 @@ mod tests {
         settings: &RenderSettings,
     ) -> Rebuild {
         let mut planner = ScenePlanner::default();
-        planner.plan(&at(0.5), settings, 100, false);
+        planner.plan(&at(0.5), VIEW, settings, 100, false);
         let change = TerritoryDigest::of(after).since(Some(&TerritoryDigest::of(before)));
         planner.invalidate(SceneChange::Territories(change));
-        planner.plan(&at(0.5), settings, 100, false)
+        planner.plan(&at(0.5), VIEW, settings, 100, false)
     }
 
     #[test]
@@ -379,7 +412,10 @@ mod tests {
         for step in 0..60 {
             let mut camera = at(0.5);
             camera.pan(step as f64 * 7.0, step as f64 * -3.0);
-            assert_eq!(planner.plan(&camera, &settings(), 100, true), Rebuild::NONE);
+            assert_eq!(
+                planner.plan(&camera, VIEW, &settings(), 100, true),
+                Rebuild::NONE
+            );
         }
     }
 
@@ -389,9 +425,12 @@ mod tests {
         solid.connection_style = crate::settings::ConnectionStyle::White;
         for style in [settings(), solid] {
             let mut planner = ScenePlanner::default();
-            assert_eq!(planner.plan(&at(0.25), &style, 100, false), Rebuild::ALL);
+            assert_eq!(
+                planner.plan(&at(0.25), VIEW, &style, 100, false),
+                Rebuild::ALL
+            );
             for scale in [0.263, 0.277, 0.6, 2.0] {
-                let rebuild = planner.plan(&at(scale), &style, 100, true);
+                let rebuild = planner.plan(&at(scale), VIEW, &style, 100, true);
                 assert!(!rebuild.territories && !rebuild.connections, "{scale}");
                 assert!(rebuild.dynamic_labels, "{scale}");
             }
@@ -403,6 +442,7 @@ mod tests {
         let mut planner = settled(TIMER_VISIBILITY_MIN_SCALE + 1e-4, 100, 200);
         let crossed = planner.plan(
             &at(TIMER_VISIBILITY_MIN_SCALE - 1e-4),
+            VIEW,
             &settings(),
             100,
             true,
@@ -418,34 +458,40 @@ mod tests {
             icons: Some(160),
         });
         assert_eq!(
-            planner.plan(&at(0.5), &settings(), 101, false),
+            planner.plan(&at(0.5), VIEW, &settings(), 101, false),
             Rebuild::NONE
         );
         assert_eq!(
-            planner.plan(&at(0.5), &settings(), 102, false),
+            planner.plan(&at(0.5), VIEW, &settings(), 102, false),
             Rebuild::NONE
         );
         assert_eq!(
-            planner.plan(&at(0.5), &settings(), 103, false),
+            planner.plan(&at(0.5), VIEW, &settings(), 103, false),
             only(|r| r.dynamic_labels = true)
         );
         planner.schedule(NextRefresh {
             dynamic_labels: Some(104),
             icons: None,
         });
-        assert_eq!(planner.plan(&at(0.5), &settings(), 160, false), timers());
+        assert_eq!(
+            planner.plan(&at(0.5), VIEW, &settings(), 160, false),
+            timers()
+        );
     }
 
     #[test]
     fn timer_refreshes_land_once_the_map_settles() {
         let mut planner = settled(0.5, 100, 101);
         assert_eq!(
-            planner.plan(&at(0.5), &settings(), 101, true),
+            planner.plan(&at(0.5), VIEW, &settings(), 101, true),
             Rebuild::NONE
         );
-        assert_eq!(planner.plan(&at(0.5), &settings(), 101, false), timers());
         assert_eq!(
-            planner.plan(&at(0.5), &settings(), 101, false),
+            planner.plan(&at(0.5), VIEW, &settings(), 101, false),
+            timers()
+        );
+        assert_eq!(
+            planner.plan(&at(0.5), VIEW, &settings(), 101, false),
             Rebuild::NONE
         );
     }
@@ -456,18 +502,24 @@ mod tests {
         let mut planner = settled(0.5, 5_000, 5_001);
         for _ in 0..10 {
             assert_eq!(
-                planner.plan(&at(0.5), &settings(), 5_000, false),
+                planner.plan(&at(0.5), VIEW, &settings(), 5_000, false),
                 Rebuild::NONE
             );
         }
         // Scrubbing the timeline moves the clock and refreshes the timers.
-        assert_eq!(planner.plan(&at(0.5), &settings(), 5_030, false), timers());
+        assert_eq!(
+            planner.plan(&at(0.5), VIEW, &settings(), 5_030, false),
+            timers()
+        );
     }
 
     #[test]
     fn stepping_back_in_time_rebuilds_timers() {
         let mut planner = settled(0.5, 1_000, i64::MAX);
-        assert_eq!(planner.plan(&at(0.5), &settings(), 900, false), timers());
+        assert_eq!(
+            planner.plan(&at(0.5), VIEW, &settings(), 900, false),
+            timers()
+        );
     }
 
     #[test]
@@ -546,7 +598,7 @@ mod tests {
         planner.invalidate(SceneChange::Overlay);
         planner.invalidate(SceneChange::Icons);
         assert_eq!(
-            planner.plan(&at(0.5), &settings(), 100, true),
+            planner.plan(&at(0.5), VIEW, &settings(), 100, true),
             only(|r| {
                 r.territories = true;
                 r.icons = true;
@@ -560,9 +612,12 @@ mod tests {
         let mut bold = settings();
         bold.bold_connections = true;
         assert_eq!(
-            planner.plan(&at(0.5), &bold, 100, true),
+            planner.plan(&at(0.5), VIEW, &bold, 100, true),
             only(|r| r.connections = true)
         );
-        assert_eq!(planner.plan(&at(0.5), &bold, 100, true), Rebuild::NONE);
+        assert_eq!(
+            planner.plan(&at(0.5), VIEW, &bold, 100, true),
+            Rebuild::NONE
+        );
     }
 }

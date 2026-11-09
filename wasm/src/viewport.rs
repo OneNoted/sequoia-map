@@ -11,6 +11,49 @@ pub const MAX_SCALE: f64 = 8.0;
 const ZOOM_SENSITIVITY: f64 = 0.001;
 const FIT_SCALE_BOOST: f64 = 1.08;
 
+/// A world-space rectangle, `left`/`top` its least coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldRect {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+
+impl WorldRect {
+    pub fn contains(&self, other: &WorldRect) -> bool {
+        self.left <= other.left
+            && self.top <= other.top
+            && self.right >= other.right
+            && self.bottom >= other.bottom
+    }
+
+    pub fn overlaps(&self, other: &WorldRect) -> bool {
+        self.left <= other.right
+            && other.left <= self.right
+            && self.top <= other.bottom
+            && other.top <= self.bottom
+    }
+
+    pub fn width(&self) -> f64 {
+        self.right - self.left
+    }
+
+    pub fn height(&self) -> f64 {
+        self.bottom - self.top
+    }
+
+    /// Grown by `x` on the left and right and by `y` on the top and bottom.
+    pub fn grown(&self, x: f64, y: f64) -> Self {
+        Self {
+            left: self.left - x,
+            top: self.top - y,
+            right: self.right + x,
+            bottom: self.bottom + y,
+        }
+    }
+}
+
 impl Default for Viewport {
     fn default() -> Self {
         Self {
@@ -36,6 +79,18 @@ impl Viewport {
             (sx - self.offset_x) / self.scale,
             (sy - self.offset_y) / self.scale,
         )
+    }
+
+    /// The world area a `width` x `height` canvas shows.
+    pub fn visible(&self, width: f64, height: f64) -> WorldRect {
+        let (left, top) = self.screen_to_world(0.0, 0.0);
+        let (right, bottom) = self.screen_to_world(width, height);
+        WorldRect {
+            left: left.min(right),
+            top: top.min(bottom),
+            right: left.max(right),
+            bottom: top.max(bottom),
+        }
     }
 
     /// Zoom toward a focus point (screen coordinates).

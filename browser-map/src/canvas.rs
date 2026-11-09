@@ -498,7 +498,16 @@ fn render_frame(
     *drawn_camera = Some(camera);
     let clock_secs = inputs.clock_secs.get_untracked();
     let settings = inputs.settings.get_untracked();
-    let rebuild = planner.plan(&camera, &settings, clock_secs, interacting);
+    let rebuild = planner.plan(
+        &camera,
+        (css_width, css_height),
+        &settings,
+        clock_secs,
+        interacting,
+    );
+    let label_coverage = planner
+        .coverage()
+        .unwrap_or_else(|| camera.visible(css_width, css_height));
     let hovered = map.hovered.get_untracked();
     let selected = inputs.selected.get_untracked();
     let icons = map.icons.get_untracked();
@@ -516,6 +525,7 @@ fn render_frame(
                         renderer.render(
                             &Frame {
                                 camera: &camera,
+                                label_coverage,
                                 territories,
                                 territory_revision: *territory_revision,
                                 hovered: hovered.as_deref(),
