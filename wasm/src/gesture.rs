@@ -28,13 +28,14 @@
 //!   while it is still reporting; a contact that stops is shown where it stopped. Reading
 //!   times never go back, and never trail the newest report by more than
 //!   [`MAX_REPORT_DELAY_MS`]. On average the map is no later than the newest report.
-//! - Whenever the driving contacts change, or something else moves the camera mid-gesture, the
-//!   gesture holds on afresh from where the map shows them: the map never jumps, and a
-//!   remaining finger keeps panning without a new press. A pan released mid-drag finishes,
-//!   over its last few milliseconds of reports, where the finger lifted. A pinch that loses a
-//!   finger is finished with both fingers where they last reported, so its outcome never
-//!   depends on whether a frame ran before the finger lifted; the other finger pans on from
-//!   there.
+//! - Whenever the driving contacts change (a finger joins, lifts or is cancelled, or a new
+//!   press follows a release), the gesture so far is first concluded with its contacts where
+//!   they last reported, and the contacts that stay take over from there. Reports one gesture
+//!   received are never reinterpreted by the next, so where the map ends up depends on the
+//!   reports, not on when frames ran between them. A remaining finger keeps panning without a
+//!   new press, and a pan released mid-drag finishes, over its last few milliseconds of
+//!   reports, where the finger lifted. When something else moves the camera mid-gesture, the
+//!   gesture holds on afresh from there rather than undo it.
 //! - Zoom limits clamp the scale but never the anchor, and reversing a clamped pinch responds
 //!   at once. Separations under a fingertip count as a fingertip, so nearly touching or
 //!   crossing fingers cannot zoom by an arbitrary ratio.
@@ -340,16 +341,22 @@ impl Grip {
             self.take(*camera);
         }
         let base = self.base.unwrap_or(*camera);
+        let before = *camera;
+        self.at = at;
+        self.span = span;
+        if (at, span) == (self.from, self.from_span) {
+            // Where the grip was taken: the camera it was taken on, exactly, not re-derived.
+            *camera = base;
+            self.produced = Some(*camera);
+            return *camera != before;
+        }
         let scale = match (self.from_span, span) {
             (Some(from), Some(to)) => {
                 base.scale * to.max(MIN_PINCH_SPAN_PX) / from.max(MIN_PINCH_SPAN_PX)
             }
             _ => base.scale,
         };
-        let before = *camera;
         camera.anchor(base.screen_to_world(self.from.0, self.from.1), at, scale);
-        self.at = at;
-        self.span = span;
         if camera.scale != scale {
             // Clamped: re-take the grip so that reversing the pinch zooms straight away.
             self.take(*camera);
@@ -409,13 +416,13 @@ struct Glide {
     trail: Trail,
 }
 
-/// A pinch that lost a finger, finished by the next frame with both fingers where they last
-/// reported, before the gesture goes on.
+/// A gesture concluded with its contacts where they last reported, for the next frame to
+/// apply before whatever drives the camera next.
 #[derive(Clone, Copy, Debug)]
 struct Finish {
     grip: Grip,
     at: (f64, f64),
-    span: f64,
+    span: Option<f64>,
 }
 
 /// Pointer bookkeeping and camera manipulation for one map canvas.
@@ -430,7 +437,8 @@ pub struct Gestures {
     settle_until_ms: f64,
     clock: SampleClock,
     glide: Option<Glide>,
-    finish: Option<Finish>,
+    /// Concluded gestures not yet applied, oldest first.
+    finishes: Vec<Finish>,
     wheel: TrackpadWheelClassifier,
 }
 
@@ -441,9 +449,16 @@ impl Gestures {
         let mut out = self.drop_contact(pointer.id);
         self.settle(now_ms);
         if self.contacts.is_empty() {
+            // A release still gliding ends where it lifted, as it would have had frames run.
+            if let Some(glide) = self.glide.take() {
+                let newest = glide.trail.newest();
+                self.finishes.push(Finish {
+                    grip: glide.grip,
+                    at: (newest.x, newest.y),
+                    span: None,
+                });
+            }
             self.clock = SampleClock::default();
-            self.glide = None;
-            self.finish = None;
         }
         self.contacts.push(Contact {
             pointer,
@@ -485,6 +500,7 @@ impl Gestures {
             self.spoiled = true;
             if !matches!(self.mode, Mode::Pinch { .. }) {
                 end_preview(self.mode, &mut out);
+                self.conclude(None);
                 self.rebase();
             }
         }
@@ -549,10 +565,10 @@ impl Gestures {
     /// Moves the camera for a frame drawn at `frame_ms`: a pan or pinch follows its contacts
     /// as they were at this frame's reading time, and a released pan finishes where it lifted.
     pub fn frame(&mut self, camera: &mut Viewport, frame_ms: f64) -> FrameMotion {
-        let finished = self
-            .finish
-            .take()
-            .is_some_and(|mut finish| finish.grip.follow(camera, finish.at, Some(finish.span)));
+        let mut finished = false;
+        for mut finish in std::mem::take(&mut self.finishes) {
+            finished |= finish.grip.follow(camera, finish.at, finish.span);
+        }
         let motion = self.follow(camera, frame_ms);
         FrameMotion {
             moved: finished || motion.moved,
@@ -688,7 +704,7 @@ impl Gestures {
                         }
                     }
                 }
-                Mode::Pinch { .. } => self.finish_pinch(contact.pointer.id, here),
+                Mode::Pinch { .. } => self.conclude(Some((contact.pointer.id, here))),
                 Mode::Idle | Mode::Handled { .. } => {}
             }
             self.rebase();
@@ -742,7 +758,7 @@ impl Gestures {
         self.contacts.clear();
         self.mode = Mode::Idle;
         self.glide = None;
-        self.finish = None;
+        self.finishes.clear();
         self.spoiled = false;
         out
     }
@@ -759,7 +775,7 @@ impl Gestures {
         let newest = self.contacts.remove(index).trail.newest();
         if self.mode.involves(pointer_id) {
             end_preview(self.mode, &mut out);
-            self.finish_pinch(pointer_id, (newest.x, newest.y));
+            self.conclude(Some((pointer_id, (newest.x, newest.y))));
             self.rebase();
         }
         // Whatever remains of this sequence must not turn into a tap.
@@ -767,26 +783,37 @@ impl Gestures {
         out
     }
 
-    /// Keeps, for the next frame, the pinch as the fingers last reported it when finger
-    /// `lifted` leaves, last at `last`: all the movement they delivered as a pinch counts as
-    /// pinch. The other finger then pans on from its own last report.
-    fn finish_pinch(&mut self, lifted: i32, last: (f64, f64)) {
-        let Mode::Pinch { a, b, grip } = self.mode else {
-            return;
+    /// Concludes the pan or pinch driving the camera with every report its contacts delivered,
+    /// `departing` (a contact leaving, and where it last was) included, for the next frame to
+    /// apply first. The driving contacts that stay start afresh from their last reports, so
+    /// whatever drives the camera next does not reinterpret what this gesture received.
+    fn conclude(&mut self, departing: Option<(i32, (f64, f64))>) {
+        let (grip, driving) = match self.mode {
+            Mode::Pan { id, grip, .. } => (grip, [Some(id), None]),
+            Mode::Pinch { a, b, grip } => (grip, [Some(a), Some(b)]),
+            Mode::Idle | Mode::Edit { .. } | Mode::Handled { .. } => return,
         };
-        let other = if lifted == a { b } else { a };
-        if let Some(survivor) = self.contacts.iter_mut().find(|c| c.pointer.id == other) {
-            let newest = survivor.trail.newest();
-            let reported = (newest.x, newest.y);
-            // The pinch has used its reports; a pan must not replay them.
-            survivor.trail = Trail::new(newest.at_ms, reported);
-            survivor.shown = reported;
-            self.finish = Some(Finish {
-                grip,
-                at: midpoint(last, reported),
-                span: distance(last, reported),
-            });
-        }
+        let contacts = &mut self.contacts;
+        let reported = driving.map(|id| {
+            let id = id?;
+            if let Some((gone, at)) = departing
+                && gone == id
+            {
+                return Some(at);
+            }
+            let contact = contacts.iter_mut().find(|c| c.pointer.id == id)?;
+            let newest = contact.trail.newest();
+            let at = (newest.x, newest.y);
+            contact.trail = Trail::new(newest.at_ms, at);
+            contact.shown = at;
+            Some(at)
+        });
+        let (at, span) = match reported {
+            [Some(a), Some(b)] => (midpoint(a, b), Some(distance(a, b))),
+            [Some(only), None] | [None, Some(only)] => (only, None),
+            [None, None] => return,
+        };
+        self.finishes.push(Finish { grip, at, span });
     }
 
     /// Hands the gesture to the remaining contacts, from where the last frame showed the ones
@@ -1832,5 +1859,157 @@ mod tests {
             uneven <= raw_uneven,
             "{uneven} uneven frames against {raw_uneven}"
         );
+    }
+
+    #[derive(Clone, Copy)]
+    enum Ev {
+        Press(i32, f64, f64),
+        Move(i32, f64, f64),
+        Release(i32, f64, f64),
+        Cancel(i32),
+    }
+
+    /// Runs `script` (an event every `REPORT_MS`) with frames at `frames(event time)` before
+    /// each event, then frames until nothing is pending; returns the final camera.
+    fn play(script: &[Ev], frames: &dyn Fn(f64, f64) -> Vec<f64>) -> Viewport {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        let mut last = 0.0;
+        for (n, &ev) in script.iter().enumerate() {
+            let at = (n + 1) as f64 * REPORT_MS;
+            for frame_ms in frames(last, at) {
+                gestures.frame(&mut cam, frame_ms);
+            }
+            last = at;
+            match ev {
+                Ev::Press(id, x, y) => {
+                    gestures.press(touch(id, x, y), Press::Pan, at);
+                }
+                Ev::Move(id, x, y) => {
+                    gestures.moved(touch(id, x, y), at);
+                }
+                Ev::Release(id, x, y) => {
+                    gestures.released(touch(id, x, y), at);
+                }
+                Ev::Cancel(id) => {
+                    gestures.cancelled(id, at);
+                }
+            }
+        }
+        let mut frame_ms = last;
+        for _ in 0..30 {
+            frame_ms += FRAME_MS;
+            gestures.frame(&mut cam, frame_ms);
+        }
+        assert!(!gestures.frame(&mut cam, frame_ms + FRAME_MS).pending);
+        cam
+    }
+
+    #[test]
+    fn where_a_gesture_ends_depends_on_its_reports_not_on_when_frames_ran() {
+        use Ev::*;
+        let scripts: [&[Ev]; 5] = [
+            // A pan, a second finger joining mid-drag, a pinch with both moving, the first
+            // finger lifting, the second panning on.
+            &[
+                Press(1, 100.0, 300.0),
+                Move(1, 110.0, 304.0),
+                Move(1, 125.0, 310.0),
+                Press(2, 220.0, 300.0),
+                Move(1, 115.0, 305.0),
+                Move(2, 240.0, 296.0),
+                Move(1, 100.0, 300.0),
+                Move(2, 265.0, 290.0),
+                Release(1, 100.0, 300.0),
+                Move(2, 280.0, 280.0),
+                Move(2, 300.0, 275.0),
+                Release(2, 300.0, 275.0),
+            ],
+            // A pinch with both fingers moving, then one lifting.
+            &[
+                Press(1, 100.0, 300.0),
+                Press(2, 200.0, 300.0),
+                Move(1, 80.0, 300.0),
+                Move(2, 230.0, 300.0),
+                Move(1, 50.0, 302.0),
+                Move(2, 250.0, 298.0),
+                Release(2, 250.0, 298.0),
+                Move(1, 70.0, 310.0),
+                Release(1, 70.0, 310.0),
+            ],
+            // A drag cancelled by the browser.
+            &[
+                Press(1, 100.0, 300.0),
+                Move(1, 130.0, 290.0),
+                Move(1, 160.0, 280.0),
+                Cancel(1),
+            ],
+            // Three fingers: the third joins the pinch when the first lifts.
+            &[
+                Press(1, 100.0, 300.0),
+                Press(2, 200.0, 300.0),
+                Move(2, 220.0, 300.0),
+                Press(3, 300.0, 400.0),
+                Move(3, 320.0, 420.0),
+                Move(1, 90.0, 300.0),
+                Release(1, 90.0, 300.0),
+                Move(3, 350.0, 450.0),
+                Move(2, 210.0, 290.0),
+                Cancel(2),
+                Move(3, 360.0, 470.0),
+                Release(3, 360.0, 470.0),
+            ],
+            // Two quick drags, the second pressed right after the first lifts.
+            &[
+                Press(1, 100.0, 300.0),
+                Move(1, 140.0, 300.0),
+                Move(1, 180.0, 310.0),
+                Release(1, 180.0, 310.0),
+                Press(2, 400.0, 300.0),
+                Move(2, 420.0, 280.0),
+                Release(2, 420.0, 280.0),
+            ],
+        ];
+        // Frames right after every event, on a 60 Hz grid, on a jittered grid, and none until
+        // the gesture has ended.
+        let grid = |phase: f64, jitter: f64| {
+            move |from: f64, to: f64| {
+                let mut frames = Vec::new();
+                let mut k = (from / FRAME_MS).ceil() as i32;
+                loop {
+                    let t = f64::from(k) * FRAME_MS + phase + jitter * (f64::from(k) * 1.7).sin();
+                    if t >= to {
+                        break;
+                    }
+                    if t > from {
+                        frames.push(t);
+                    }
+                    k += 1;
+                }
+                frames
+            }
+        };
+        let every_event = |from: f64, _to: f64| vec![from + 1.0];
+        let none = |_from: f64, _to: f64| Vec::new();
+        let regular = grid(3.0, 0.0);
+        let jittered = grid(7.0, 5.0);
+        let schedules: [&dyn Fn(f64, f64) -> Vec<f64>; 4] =
+            [&every_event, &regular, &jittered, &none];
+        for (n, script) in scripts.into_iter().enumerate() {
+            let ends: Vec<Viewport> = schedules
+                .iter()
+                .map(|frames| play(script, *frames))
+                .collect();
+            assert_ne!(ends[0], camera(), "script {n} moves the map");
+            for end in &ends[1..] {
+                assert!(
+                    (end.scale - ends[0].scale).abs() < 1e-9
+                        && (end.offset_x - ends[0].offset_x).abs() < 1e-9
+                        && (end.offset_y - ends[0].offset_y).abs() < 1e-9,
+                    "script {n}: {end:?} against {:?}",
+                    ends[0]
+                );
+            }
+        }
     }
 }
