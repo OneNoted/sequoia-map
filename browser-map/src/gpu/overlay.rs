@@ -196,8 +196,8 @@ struct TeammateAtlasKey {
 }
 
 pub(super) struct GpuOverlayRenderer {
-    /// The WebGL2 context atlases upload through; see [`super::upload_image_data`].
-    webgl: Option<web_sys::WebGl2RenderingContext>,
+    /// The WebGL2 context atlases upload through; see [`super::upload_external_image`].
+    webgl: web_sys::WebGl2RenderingContext,
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -246,7 +246,7 @@ impl PlateGlyphs {
 impl GpuOverlayRenderer {
     pub(super) fn new(
         device: &wgpu::Device,
-        webgl: Option<web_sys::WebGl2RenderingContext>,
+        webgl: web_sys::WebGl2RenderingContext,
         format: wgpu::TextureFormat,
         viewport_bind_group_layout: &wgpu::BindGroupLayout,
         vertex_layout: &wgpu::VertexBufferLayout<'static>,
@@ -687,7 +687,14 @@ impl GpuOverlayRenderer {
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        super::upload_image_data(queue, &texture, image, size, self.webgl.as_ref(), false);
+        super::upload_external_image(
+            queue,
+            &texture,
+            wgpu::ExternalImageSource::ImageData(image),
+            size,
+            &self.webgl,
+            false,
+        );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         layer.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("overlay-bg"),

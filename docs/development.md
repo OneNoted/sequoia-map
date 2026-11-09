@@ -95,9 +95,8 @@ that touches only files the checks never read skips them (`scripts/ci-lane.sh`).
 
 For renderer changes, compare the map and claims editor at the same data, zoom and
 viewport: labels, resource icons, selection, panning and live/history transitions. Set
-`window.__SEQUOIA_GPU_DIAG__ = true` before renderer initialization for `gpu-diag`
-rebuild counters; set `window.__SEQUOIA_RENDER_STATS__ = true` before the map mounts
-for an overlay with draw calls, uploads and the layers each frame rebuilt. Touch
+`window.__SEQUOIA_RENDER_STATS__ = true` before the map mounts for an overlay with draw
+calls, uploads and the layers each frame rebuilt. Touch
 gestures need a touch device or emulated touch input. Use release builds on the same
 machine for performance comparisons, and do not commit temporary instrumentation.
 

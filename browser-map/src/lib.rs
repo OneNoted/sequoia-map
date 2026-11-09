@@ -19,7 +19,7 @@ mod icons;
 mod input;
 pub mod live_feed;
 pub mod overlay;
-pub mod render_loop;
+mod render_loop;
 mod tiles;
 
 use std::collections::HashMap;

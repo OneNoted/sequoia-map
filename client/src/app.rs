@@ -1353,7 +1353,7 @@ pub fn MapPage() -> impl IntoView {
     // static shell. The old fixed 800ms settle window made fast cached/API loads
     // feel slow even when the map was already ready to render.
     Effect::new(move || {
-        let has_territories = !territories.get().is_empty();
+        let has_territories = territories.with(|map| !map.is_empty());
         if !has_territories
             || deferred_boot_ready.get_untracked()
             || deferred_boot_timer_set.get_untracked()
@@ -1375,7 +1375,7 @@ pub fn MapPage() -> impl IntoView {
 
     // Keep shell step text tied to real startup milestones.
     Effect::new(move || {
-        let has_territories = !territories.get().is_empty();
+        let has_territories = territories.with(|map| !map.is_empty());
         if deferred_boot_ready.get() {
             set_loading_shell_step("Rendering map");
         } else if has_territories {
@@ -2385,41 +2385,42 @@ fn Tooltip() -> impl IntoView {
     let tooltip_info = Memo::new(move |_| {
         let reference_secs = map_clock.get();
         let name = hovered.get()?;
-        let map = territories.get();
-        let ct = map.get(&name)?;
-        let runtime = ct.territory.runtime.as_ref();
-        let resources = territory_resource_rows(&ct.territory.resources, runtime);
-        let defense_tier = runtime.and_then(|runtime| runtime.defense_tier.clone());
-        let is_headquarters = runtime
-            .and_then(|runtime| runtime.headquarters)
-            .unwrap_or(false);
-        let takes_in_window = if heat_mode_enabled.get() {
-            Some(
-                heat_entries_by_territory
-                    .get()
-                    .get(&name)
-                    .copied()
-                    .unwrap_or(0),
-            )
-        } else {
-            None
-        };
-        let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
-        let treasury = treasury(runtime, secs);
-        let cooldown = cooldown(secs);
+        territories.with(|map| {
+            let ct = map.get(&name)?;
+            let runtime = ct.territory.runtime.as_ref();
+            let resources = territory_resource_rows(&ct.territory.resources, runtime);
+            let defense_tier = runtime.and_then(|runtime| runtime.defense_tier.clone());
+            let is_headquarters = runtime
+                .and_then(|runtime| runtime.headquarters)
+                .unwrap_or(false);
+            let takes_in_window = if heat_mode_enabled.get() {
+                Some(
+                    heat_entries_by_territory
+                        .get()
+                        .get(&name)
+                        .copied()
+                        .unwrap_or(0),
+                )
+            } else {
+                None
+            };
+            let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
+            let treasury = treasury(runtime, secs);
+            let cooldown = cooldown(secs);
 
-        Some(TooltipInfo {
-            name,
-            guild_name: ct.territory.guild.name.clone(),
-            guild_prefix: ct.territory.guild.prefix.clone(),
-            held: format_hms(secs),
-            guild_color: ct.guild_color,
-            cooldown,
-            treasury,
-            resources,
-            defense_tier,
-            is_headquarters,
-            takes_in_window,
+            Some(TooltipInfo {
+                name,
+                guild_name: ct.territory.guild.name.clone(),
+                guild_prefix: ct.territory.guild.prefix.clone(),
+                held: format_hms(secs),
+                guild_color: ct.guild_color,
+                cooldown,
+                treasury,
+                resources,
+                defense_tier,
+                is_headquarters,
+                takes_in_window,
+            })
         })
     });
 
@@ -2432,14 +2433,15 @@ fn Tooltip() -> impl IntoView {
             let Some(info) = tooltip_info.get() else {
                 return ().into_any();
             };
-            let (x, y) = pointer.get();
             let (r, g, b) = info.guild_color;
             let territory = Signal::derive(move || hovered_name.get().unwrap_or_default());
             view! {
                 <div
                     class="tooltip-animate tcard tcard-hover"
-                    style:left=format!("{}px", x + 16.0)
-                    style:top=format!("{}px", y - 8.0)
+                    // Only the position follows the pointer; the card is rebuilt when what it
+                    // shows changes.
+                    style:left=move || format!("{}px", pointer.get().0 + 16.0)
+                    style:top=move || format!("{}px", pointer.get().1 - 8.0)
                     style:--tcard-guild=rgba_css(r, g, b, 0.9)
                 >
                     <TerritoryHead name=info.name.clone() hq=info.is_headquarters />
@@ -2505,32 +2507,33 @@ fn TerritoryPeekCard() -> impl IntoView {
     let peek_info = Memo::new(move |_| {
         let reference_secs = map_clock.get();
         let name = peek_territory.get()?;
-        let map = territories.get();
-        let ct = map.get(&name)?;
-        let (r, g, b) = ct.guild_color;
-        let takes_in_window = if heat_mode_enabled.get() {
-            Some(
-                heat_entries_by_territory
-                    .get()
-                    .get(&name)
-                    .copied()
-                    .unwrap_or(0),
-            )
-        } else {
-            None
-        };
-        let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
-        let held = format_hms(secs);
-        let treasury = treasury(ct.territory.runtime.as_ref(), secs);
-        Some((
-            name,
-            ct.territory.guild.name.clone(),
-            ct.territory.guild.prefix.clone(),
-            held,
-            (r, g, b),
-            treasury,
-            takes_in_window,
-        ))
+        territories.with(|map| {
+            let ct = map.get(&name)?;
+            let (r, g, b) = ct.guild_color;
+            let takes_in_window = if heat_mode_enabled.get() {
+                Some(
+                    heat_entries_by_territory
+                        .get()
+                        .get(&name)
+                        .copied()
+                        .unwrap_or(0),
+                )
+            } else {
+                None
+            };
+            let secs = (reference_secs - ct.territory.acquired.timestamp()).max(0);
+            let held = format_hms(secs);
+            let treasury = treasury(ct.territory.runtime.as_ref(), secs);
+            Some((
+                name,
+                ct.territory.guild.name.clone(),
+                ct.territory.guild.prefix.clone(),
+                held,
+                (r, g, b),
+                treasury,
+                takes_in_window,
+            ))
+        })
     });
 
     view! {

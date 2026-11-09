@@ -159,20 +159,21 @@ pub fn TowerCalculator() -> impl IntoView {
 
     let owned_counts = Memo::new(move |_| {
         let name = selected.get()?;
-        let map = territories.get();
-        let ct = map.get(&name)?;
-        let guild_uuid = ct.territory.guild.uuid.as_str();
-        let connections_slice = ct.territory.connections.as_slice();
+        territories.with(|map| {
+            let ct = map.get(&name)?;
+            let guild_uuid = ct.territory.guild.uuid.as_str();
+            let connections_slice = ct.territory.connections.as_slice();
 
-        let (guild_conn, _total_conn, ext) =
-            tower::count_guild_connections(&name, connections_slice, guild_uuid, |n| {
-                let ct2 = map.get(n)?;
-                Some((
-                    ct2.territory.guild.uuid.as_str(),
-                    ct2.territory.connections.as_slice(),
-                ))
-            });
-        Some((guild_conn, ext))
+            let (guild_conn, _total_conn, ext) =
+                tower::count_guild_connections(&name, connections_slice, guild_uuid, |n| {
+                    let ct2 = map.get(n)?;
+                    Some((
+                        ct2.territory.guild.uuid.as_str(),
+                        ct2.territory.connections.as_slice(),
+                    ))
+                });
+            Some((guild_conn, ext))
+        })
     });
 
     let owned_counts_for_apply = owned_counts;

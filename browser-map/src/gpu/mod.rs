@@ -5,7 +5,7 @@
 //! decided by the scene planner and passed in as a [`Rebuild`].
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use wasm_bindgen::JsCast;
@@ -43,23 +43,22 @@ use sequoia_map_engine::settings::{
 };
 use sequoia_map_engine::territory::{ClientTerritory, ClientTerritoryMap, is_sequoia_guild};
 use sequoia_map_engine::time_format::write_hms;
-use sequoia_map_engine::viewport::Viewport;
+use sequoia_map_engine::viewport::{Viewport, WorldRect};
 use sequoia_shared::TreasuryLevel;
 use sequoia_shared::colors::hsl_to_rgb;
 use sequoia_shared::territory::Resources;
 use sequoia_shared::war_board::StageKind;
 
-use crate::frame::{
-    Backend, Frame, FrameMetrics, FrameOutcome, InitError, InitStage, RenderCapabilities,
-};
+use crate::frame::{Frame, FrameMetrics, FrameOutcome, InitError, InitStage};
 use crate::highlight::{InstanceIndex, NO_INSTANCE};
 use crate::icons::ResourceAtlas;
-use crate::tiles::{LoadedTile, TileQuality};
+use crate::tiles::LoadedTile;
 
 mod glyphs;
 mod markers;
 mod mipmaps;
 mod overlay;
+mod terrain;
 use glyphs::{GlyphMeta, GlyphRef, GlyphSet, TextFit, hq_caption, line_units_with_tracking};
 use markers::GpuMarkerRenderer;
 use overlay::GpuOverlayRenderer;
@@ -156,12 +155,15 @@ struct TileRectUniform {
     rect: [f32; 4],
 }
 
+/// One glyph of a label, drawn twice: in its halo colour from the halo atlas, then, after
+/// every halo of its layer, in its fill colour from the fill atlas.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct TextInstance {
     rect: [f32; 4],    // world x, y, w, h
     uv_rect: [f32; 4], // u0, v0, u1, v1
-    color: [f32; 4],   // rgba
+    fill: [f32; 4],    // rgba
+    halo: [f32; 4],    // rgba
 }
 
 #[repr(C)]
@@ -278,27 +280,64 @@ struct GlyphAtlas {
 }
 
 struct GpuTextRenderer {
-    pipeline: wgpu::RenderPipeline,
+    halo_pipeline: wgpu::RenderPipeline,
+    fill_pipeline: wgpu::RenderPipeline,
     fill_bind_group: wgpu::BindGroup,
     halo_bind_group: wgpu::BindGroup,
-    static_fill_buffer: wgpu::Buffer,
-    static_fill_count: u32,
-    static_fill_capacity: u32,
-    static_fill_instances: Vec<TextInstance>,
-    static_halo_buffer: wgpu::Buffer,
-    static_halo_count: u32,
-    static_halo_capacity: u32,
-    static_halo_instances: Vec<TextInstance>,
-    dynamic_fill_buffer: wgpu::Buffer,
-    dynamic_fill_count: u32,
-    dynamic_fill_capacity: u32,
-    dynamic_fill_instances: Vec<TextInstance>,
-    dynamic_halo_buffer: wgpu::Buffer,
-    dynamic_halo_count: u32,
-    dynamic_halo_capacity: u32,
-    dynamic_halo_instances: Vec<TextInstance>,
+    /// Guild tags, territory names and claim labels.
+    static_layer: TextLayer,
+    /// Held-time and cooldown timers.
+    dynamic_layer: TextLayer,
     glyphs: GlyphSet,
     line_height: f32,
+}
+
+/// A layer of label glyphs and the GPU buffer they were last uploaded to.
+struct TextLayer {
+    label: &'static str,
+    instances: Vec<TextInstance>,
+    buffer: wgpu::Buffer,
+    capacity: u32,
+    /// Glyphs in the buffer.
+    count: u32,
+}
+
+impl TextLayer {
+    const INITIAL_CAPACITY: u32 = 4096;
+
+    fn new(device: &wgpu::Device, label: &'static str) -> Self {
+        Self {
+            label,
+            instances: Vec::new(),
+            buffer: Self::allocate(device, label, Self::INITIAL_CAPACITY),
+            capacity: Self::INITIAL_CAPACITY,
+            count: 0,
+        }
+    }
+
+    fn allocate(device: &wgpu::Device, label: &'static str, capacity: u32) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: u64::from(capacity) * std::mem::size_of::<TextInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// Uploads `instances`; returns the bytes uploaded.
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> u64 {
+        self.count = self.instances.len() as u32;
+        if self.count > self.capacity {
+            self.capacity = self.count.next_power_of_two();
+            self.buffer = Self::allocate(device, self.label, self.capacity);
+        }
+        if self.instances.is_empty() {
+            return 0;
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(&self.instances);
+        queue.write_buffer(&self.buffer, 0, bytes);
+        bytes.len() as u64
+    }
 }
 
 struct GpuIconRenderer {
@@ -369,6 +408,17 @@ fn resource_icons_visible_for_territory(
 }
 
 #[inline]
+/// Whether the territory reaches into `area`.
+fn in_area(area: &WorldRect, ct: &ClientTerritory) -> bool {
+    let loc = &ct.territory.location;
+    area.overlaps(&WorldRect {
+        left: f64::from(loc.left()),
+        top: f64::from(loc.top()),
+        right: f64::from(loc.right()),
+        bottom: f64::from(loc.bottom()),
+    })
+}
+
 fn hq_label_max_width_world(territory_width: f32, padding_world: f32) -> f32 {
     (territory_width - padding_world).max(1.0)
 }
@@ -620,101 +670,42 @@ fn downsample_rgba8_level(src: &[u8], src_w: u32, src_h: u32) -> (u32, u32, Vec<
     (next_w, next_h, dst)
 }
 
-/// Pixels a WebGPU image upload copies into WASM memory at a time.
-const UPLOAD_BAND_BYTES: usize = 1 << 20;
-
-/// Uploads `image` to `texture`, `size` from the origin. WebGL2 (`webgl`, the canvas's context)
-/// copies it straight from the browser's buffer. On WebGPU that copy throws once the device is
-/// lost, and wgpu turns the exception into a panic that wedges the map before the loss can be
-/// recovered, so the pixels go through `write_texture`, which a lost device ignores, a band of
-/// rows at a time to keep their copy in WASM memory small. With `premultiplied_alpha`, the texture holds colour
-/// multiplied by alpha, as filtering needs: averaging straight colour with transparent texels
-/// darkens it.
-pub(super) fn upload_image_data(
+/// Uploads `image` to `texture`, `size` from the origin, straight from the browser's buffer
+/// through the canvas's WebGL2 context `gl`. With `premultiplied_alpha`, the texture holds
+/// colour multiplied by alpha, as filtering needs: averaging straight colour with transparent
+/// texels darkens it.
+pub(super) fn upload_external_image(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
-    image: web_sys::ImageData,
+    image: wgpu::ExternalImageSource,
     size: wgpu::Extent3d,
-    webgl: Option<&web_sys::WebGl2RenderingContext>,
+    gl: &web_sys::WebGl2RenderingContext,
     premultiplied_alpha: bool,
 ) {
-    if let Some(gl) = webgl {
-        // WebGL2 has image uploads ignore the row length and image height that buffer uploads
-        // set, and wgpu leaves both at the last buffer upload's. Ladybird applies them anyway
-        // and refuses the upload, which left its terrain blank. wgpu runs queued uploads first
-        // at the next submit, so the ones queued so far run now, and this one runs with both
-        // back at their defaults.
-        queue.submit(None);
-        gl.pixel_storei(web_sys::WebGl2RenderingContext::UNPACK_ROW_LENGTH, 0);
-        gl.pixel_storei(web_sys::WebGl2RenderingContext::UNPACK_IMAGE_HEIGHT, 0);
-        queue.copy_external_image_to_texture(
-            &wgpu::CopyExternalImageSourceInfo {
-                source: wgpu::ExternalImageSource::ImageData(image),
-                origin: wgpu::Origin2d::ZERO,
-                flip_y: false,
-            },
-            wgpu::CopyExternalImageDestInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-                color_space: wgpu::PredefinedColorSpace::Srgb,
-                premultiplied_alpha,
-            },
-            size,
-        );
-        return;
-    }
-    let Ok(pixels) = js_sys::Reflect::get(&image, &"data".into()) else {
-        return;
-    };
-    let pixels = pixels.unchecked_into::<js_sys::Uint8ClampedArray>();
-    let row = 4 * image.width();
-    let rows = u32::try_from(UPLOAD_BAND_BYTES / row.max(1) as usize)
-        .unwrap_or(u32::MAX)
-        .max(1);
-    let mut band = vec![0; (row * rows.min(size.height)) as usize];
-    let mut y = 0;
-    while y < size.height {
-        let count = rows.min(size.height - y);
-        let bytes = &mut band[..(row * count) as usize];
-        pixels.subarray(y * row, (y + count) * row).copy_to(bytes);
-        if premultiplied_alpha {
-            premultiply(bytes);
-        }
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x: 0, y, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row),
-                rows_per_image: Some(count),
-            },
-            wgpu::Extent3d {
-                width: size.width,
-                height: count,
-                depth_or_array_layers: 1,
-            },
-        );
-        y += count;
-    }
-}
-
-/// Multiplies each RGBA8 pixel's colour by its alpha, rounding as browsers do.
-fn premultiply(pixels: &mut [u8]) {
-    for pixel in pixels.chunks_exact_mut(4) {
-        let alpha = u16::from(pixel[3]);
-        if alpha < 255 {
-            for channel in &mut pixel[..3] {
-                *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
-            }
-        }
-    }
+    // WebGL2 has image uploads ignore the row length and image height that buffer uploads
+    // set, and wgpu leaves both at the last buffer upload's. Ladybird applies them anyway and
+    // refuses the upload, which left its terrain blank. wgpu runs queued uploads first at the
+    // next submit, so the ones queued so far run now, and this one runs with both back at
+    // their defaults.
+    queue.submit(None);
+    gl.pixel_storei(web_sys::WebGl2RenderingContext::UNPACK_ROW_LENGTH, 0);
+    gl.pixel_storei(web_sys::WebGl2RenderingContext::UNPACK_IMAGE_HEIGHT, 0);
+    queue.copy_external_image_to_texture(
+        &wgpu::CopyExternalImageSourceInfo {
+            source: image,
+            origin: wgpu::Origin2d::ZERO,
+            flip_y: false,
+        },
+        wgpu::CopyExternalImageDestInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+            color_space: wgpu::PredefinedColorSpace::Srgb,
+            premultiplied_alpha,
+        },
+        size,
+    );
 }
 
 #[inline]
@@ -783,51 +774,6 @@ fn name_color_rgba(name_color: NameColor, guild_rgb: (u8, u8, u8)) -> [f32; 4] {
     }
 }
 
-fn gpu_console_diag_enabled() -> bool {
-    let Some(window) = web_sys::window() else {
-        return false;
-    };
-    js_sys::Reflect::get(
-        window.as_ref(),
-        &wasm_bindgen::JsValue::from_str("__SEQUOIA_GPU_DIAG__"),
-    )
-    .ok()
-    .and_then(|value| value.as_bool())
-    .unwrap_or(false)
-}
-
-fn set_claim_label_debug(scale: f64, active: bool, cluster_count: usize, rendered_count: usize) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        payload.as_ref(),
-        &wasm_bindgen::JsValue::from_str("scale"),
-        &wasm_bindgen::JsValue::from_f64(scale),
-    );
-    let _ = js_sys::Reflect::set(
-        payload.as_ref(),
-        &wasm_bindgen::JsValue::from_str("active"),
-        &wasm_bindgen::JsValue::from_bool(active),
-    );
-    let _ = js_sys::Reflect::set(
-        payload.as_ref(),
-        &wasm_bindgen::JsValue::from_str("clusterCount"),
-        &wasm_bindgen::JsValue::from_f64(cluster_count as f64),
-    );
-    let _ = js_sys::Reflect::set(
-        payload.as_ref(),
-        &wasm_bindgen::JsValue::from_str("renderedCount"),
-        &wasm_bindgen::JsValue::from_f64(rendered_count as f64),
-    );
-    let _ = js_sys::Reflect::set(
-        window.as_ref(),
-        &wasm_bindgen::JsValue::from_str("__SEQUOIA_CLAIM_LABEL_DEBUG__"),
-        payload.as_ref(),
-    );
-}
-
 /// The CSS font the glyph atlas is drawn and measured in.
 fn glyph_atlas_font(readable_font: bool) -> String {
     if readable_font {
@@ -882,117 +828,9 @@ async fn setup_error(device: &wgpu::Device) -> Option<wgpu::Error> {
     first
 }
 
-/// Checks that the browser offers a WebGPU adapter worth using before wgpu asks for one.
-/// wgpu cannot tell a software fallback adapter, which would draw more slowly than WebGL2,
-/// from a real one.
-async fn usable_webgpu_adapter(accept_fallback: bool) -> Result<(), InitError> {
-    use js_sys::{Function, Object, Promise, Reflect};
-    use wasm_bindgen::JsValue;
-
-    let unavailable =
-        |detail: &str| InitError::new(InitStage::Adapter, format!("webgpu: {detail}"));
-    let window = web_sys::window().ok_or_else(|| unavailable("no window"))?;
-    let navigator = window.navigator();
-    let gpu = Reflect::get(&navigator, &"gpu".into())
-        .ok()
-        .filter(|gpu| !gpu.is_undefined() && !gpu.is_null())
-        .ok_or_else(|| unavailable("navigator.gpu is absent"))?;
-    let options = Object::new();
-    let _ = Reflect::set(
-        &options,
-        &"powerPreference".into(),
-        &"high-performance".into(),
-    );
-    let request = Reflect::get(&gpu, &"requestAdapter".into())
-        .ok()
-        .and_then(|request| request.dyn_into::<Function>().ok())
-        .ok_or_else(|| unavailable("requestAdapter is missing"))?;
-    let promise = request
-        .call1(&gpu, &options)
-        .ok()
-        .and_then(|promise| promise.dyn_into::<Promise>().ok())
-        .ok_or_else(|| unavailable("requestAdapter threw"))?;
-    let adapter = wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .map_err(|error| unavailable(&format!("requestAdapter rejected: {error:?}")))?;
-    if adapter.is_null() || adapter.is_undefined() {
-        return Err(unavailable("no adapter"));
-    }
-    let info = Reflect::get(&adapter, &"info".into()).unwrap_or(JsValue::UNDEFINED);
-    let fallback = Reflect::get(&info, &"isFallbackAdapter".into())
-        .ok()
-        .and_then(|fallback| fallback.as_bool())
-        .or_else(|| {
-            Reflect::get(&adapter, &"isFallbackAdapter".into())
-                .ok()
-                .and_then(|fallback| fallback.as_bool())
-        })
-        .unwrap_or(false);
-    if fallback && !accept_fallback {
-        return Err(unavailable("only a software fallback adapter"));
-    }
-    // The device is watched for loss through its canvas context's configuration; without a
-    // way to read it the map would not recover from a lost device.
-    let configuration = Reflect::get(&window, &"GPUCanvasContext".into())
-        .ok()
-        .and_then(|context| Reflect::get(&context, &"prototype".into()).ok())
-        .and_then(|prototype| Reflect::get(&prototype, &"getConfiguration".into()).ok())
-        .is_some_and(|method| method.is_function());
-    if !configuration {
-        return Err(unavailable("GPUCanvasContext.getConfiguration is missing"));
-    }
-    Ok(())
-}
-
 /// What a start that is no longer wanted returns; the lifecycle drops it as stale.
 fn superseded() -> InitError {
     InitError::new(InitStage::Device, "superseded before it finished")
-}
-
-/// A WebGPU device a start made, destroyed if the start fails before a renderer owns it.
-struct FailedStartDevice(Option<wgpu::Device>);
-
-impl FailedStartDevice {
-    fn release(mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for FailedStartDevice {
-    fn drop(&mut self) {
-        if let Some(device) = &self.0 {
-            device.destroy();
-        }
-    }
-}
-
-/// The `lost` promise of the WebGPU device configured on `canvas`. wgpu 24 drops the closure
-/// its own device-lost callback would run, so the loss is read from the canvas's context.
-fn configured_device_lost(canvas: &HtmlCanvasElement) -> Option<js_sys::Promise> {
-    use js_sys::{Function, Promise, Reflect};
-
-    let context = canvas.get_context("webgpu").ok()??;
-    let configuration = Reflect::get(&context, &"getConfiguration".into())
-        .ok()?
-        .dyn_into::<Function>()
-        .ok()?
-        .call0(&context)
-        .ok()?;
-    let device = Reflect::get(&configuration, &"device".into()).ok()?;
-    Reflect::get(&device, &"lost".into())
-        .ok()?
-        .dyn_into::<Promise>()
-        .ok()
-}
-
-fn gpu_is_firefox() -> bool {
-    web_sys::window()
-        .and_then(|w| w.navigator().user_agent().ok())
-        .map(|ua| {
-            let ua = ua.to_ascii_lowercase();
-            ua.contains("firefox") || ua.contains("fxios")
-        })
-        .unwrap_or(false)
 }
 
 fn get_2d_context(
@@ -1064,7 +902,7 @@ fn fit_text_to_units_with_tracking<'a>(
     clippy::too_many_arguments,
     reason = "Low-level glyph emission takes borrowed atlas data, output and per-line geometry/style."
 )]
-fn push_text_line_with_tracking(
+fn push_text_line(
     out: &mut Vec<TextInstance>,
     glyphs: &GlyphSet,
     line_height: f32,
@@ -1074,7 +912,8 @@ fn push_text_line_with_tracking(
     font_height_world: f32,
     max_width_world: f32,
     tracking_units: f32,
-    mut color: [f32; 4],
+    mut fill: [f32; 4],
+    mut halo: [f32; 4],
 ) {
     if text.is_empty() || font_height_world <= 0.0 || max_width_world <= 0.0 || line_height <= 0.0 {
         return;
@@ -1092,7 +931,8 @@ fn push_text_line_with_tracking(
     }
     let mut cursor_x = cx - (units * scale) / 2.0;
     let line_top_y = cy - font_height_world * 0.5;
-    color[3] = color[3].clamp(0.0, 1.0);
+    fill[3] = fill[3].clamp(0.0, 1.0);
+    halo[3] = halo[3].clamp(0.0, 1.0);
     let mut prev: Option<GlyphRef<'_>> = None;
 
     for ch in text.chars() {
@@ -1117,79 +957,11 @@ fn push_text_line_with_tracking(
         out.push(TextInstance {
             rect: [x_world, y_world, w_world, h_world],
             uv_rect: glyph.uv_rect,
-            color,
+            fill,
+            halo,
         });
         cursor_x += step_world;
     }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Fill and halo share line geometry but retain distinct output buffers and colors."
-)]
-fn push_text_line_dual_with_tracking(
-    fill_out: &mut Vec<TextInstance>,
-    halo_out: &mut Vec<TextInstance>,
-    glyphs: &GlyphSet,
-    line_height: f32,
-    text: &str,
-    cx: f32,
-    cy: f32,
-    font_height_world: f32,
-    max_width_world: f32,
-    tracking_units: f32,
-    fill_color: [f32; 4],
-    halo_color: [f32; 4],
-) {
-    push_text_line_with_tracking(
-        halo_out,
-        glyphs,
-        line_height,
-        text,
-        cx,
-        cy,
-        font_height_world,
-        max_width_world,
-        tracking_units,
-        halo_color,
-    );
-    push_text_line_with_tracking(
-        fill_out,
-        glyphs,
-        line_height,
-        text,
-        cx,
-        cy,
-        font_height_world,
-        max_width_world,
-        tracking_units,
-        fill_color,
-    );
-}
-
-// --- Tile texture cache ---
-
-/// Identifies a tile set by id and quality, in load order.
-/// Most tile pixels uploaded in one frame. wgpu keeps a staging copy of every upload until
-/// the frame is submitted, so uploading a whole tile set at once (a renderer rebuilt after a
-/// lost context, or a start from a warm cache) briefly needed memory for all of it.
-const TILE_UPLOAD_BUDGET_BYTES: u64 = 16 << 20;
-
-fn tile_upload_signature(tiles: &[LoadedTile]) -> u64 {
-    tiles.iter().fold(0u64, |acc, tile| {
-        let quality_bits = match tile.quality {
-            TileQuality::Low => 1u64,
-            TileQuality::High => 2u64,
-        };
-        acc.wrapping_mul(1_099_511_628_211)
-            .wrapping_add(((tile.id as u64) << 2) ^ quality_bits)
-    })
-}
-
-struct TileTexture {
-    bind_group: wgpu::BindGroup,
-    rect: [f32; 4], // [x, z, width, height] in world coords
-    quality: TileQuality,
 }
 
 /// The cached minimap background and tiles, drawn once per layout and tile set.
@@ -1202,8 +974,6 @@ struct MinimapTerrain {
 // --- GpuRenderer ---
 
 pub struct GpuRenderer {
-    /// The WebGPU device's `lost` promise; WebGL2 loses its context through canvas events.
-    device_lost: Option<js_sys::Promise>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
@@ -1235,18 +1005,9 @@ pub struct GpuRenderer {
 
     // Tile pipeline
     tile_pipeline: wgpu::RenderPipeline,
-    tile_bind_group_layout: wgpu::BindGroupLayout,
-    tile_sampler: wgpu::Sampler,
-    tile_mips: mipmaps::MipChain,
-    tile_textures: HashMap<usize, TileTexture>,
-    /// The WebGL2 context image uploads go through (see `upload_image_data`); none on WebGPU.
-    webgl_context: Option<web_sys::WebGl2RenderingContext>,
-    tile_upload_canvas: Option<HtmlCanvasElement>,
-    tile_upload_ctx: Option<CanvasRenderingContext2d>,
-    tile_upload_canvas_size: (u32, u32),
-    /// Identity of the uploaded tile set; `tiles_revision` counts its changes.
-    tiles_signature: Option<u64>,
-    tiles_revision: u64,
+    terrain: terrain::Terrain,
+    /// The WebGL2 context image uploads go through (see `upload_external_image`).
+    webgl_context: web_sys::WebGl2RenderingContext,
 
     // Connection line pipeline (full GPU mode only)
     connection_pipeline: wgpu::RenderPipeline,
@@ -1312,26 +1073,8 @@ pub struct GpuRenderer {
     /// Where each territory sits in `instances_buf`, for the hover and selection uniform.
     instance_index: InstanceIndex,
 
-    // Diagnostics
-    diag_static_rebuilds: u32,
-    diag_dynamic_rebuilds: u32,
-    diag_icon_rebuilds: u32,
-    diag_pan_only_zero_rebuild_frames: u32,
-    diag_last_vp: (f64, f64, f64),
-    diag_console_logging: bool,
     last_render_time_ms: f64,
-    capabilities: RenderCapabilities,
     frame_metrics: FrameMetrics,
-}
-
-impl Drop for GpuRenderer {
-    fn drop(&mut self) {
-        // wgpu's WebGPU objects go only when the browser collects them; destroying the device
-        // frees its memory now.
-        if !self.capabilities.webgl2 {
-            self.device.destroy();
-        }
-    }
 }
 
 impl GpuRenderer {
@@ -1344,50 +1087,14 @@ impl GpuRenderer {
         }
     }
 
-    /// Starts a renderer on `backend`. A WebGPU start needs an adapter that is not a software
-    /// fallback, unless `accept_fallback_adapter`.
+    /// Starts a renderer on `canvas`'s WebGL2 context.
     ///
     /// The browser's own steps cannot be cancelled, so a start runs until each one settles,
-    /// asking `wanted` after every step: once it is no longer wanted, it destroys what it made
-    /// and stops.
+    /// asking `wanted` after every step: once it is no longer wanted, it stops.
     pub async fn init(
         canvas: HtmlCanvasElement,
-        backend: Backend,
-        accept_fallback_adapter: bool,
         wanted: impl Fn() -> bool,
     ) -> Result<Self, InitError> {
-        match backend {
-            Backend::WebGl2 => {
-                Self::init_with_backends(canvas, wgpu::Backends::GL, "webgl", &wanted).await
-            }
-            Backend::WebGpu => {
-                usable_webgpu_adapter(accept_fallback_adapter).await?;
-                if !wanted() {
-                    return Err(superseded());
-                }
-                Self::init_with_backends(canvas, wgpu::Backends::BROWSER_WEBGPU, "webgpu", &wanted)
-                    .await
-            }
-        }
-    }
-
-    /// Takes the promise that resolves when this renderer's WebGPU device is lost.
-    pub fn take_device_lost(&mut self) -> Option<js_sys::Promise> {
-        self.device_lost.take()
-    }
-
-    /// Core initialization parameterized by backend selection.
-    async fn init_with_backends(
-        canvas: HtmlCanvasElement,
-        backends: wgpu::Backends,
-        backend_path: &str,
-        wanted: &dyn Fn() -> bool,
-    ) -> Result<Self, InitError> {
-        let webgl = backends == wgpu::Backends::GL;
-        // The icon overlay pipeline uses the same textured-quad primitives as the text
-        // overlay path, so it can run on the active WebGL2 renderer as well. Only fall
-        // back if icon renderer initialization itself fails.
-        let supports_gpu_icons = true;
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
         let rect = canvas.get_bounding_client_rect();
@@ -1401,53 +1108,30 @@ impl GpuRenderer {
         };
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends,
+            backends: wgpu::Backends::GL,
             ..Default::default()
         });
-
-        let create_surface = |canvas| {
-            instance
-                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-                .map_err(|e| {
-                    InitError::new(InitStage::Surface, format!("wgpu ({backend_path}): {e}"))
-                })
-        };
-        // A WebGL2 adapter comes from the canvas's context. A WebGPU one needs no canvas, so
-        // the canvas is bound to WebGPU only once a device exists, and a browser without a
-        // usable device leaves it free for WebGL2.
-        let early_surface = if webgl {
-            Some(create_surface(canvas.clone())?)
-        } else {
-            None
-        };
-
+        // The WebGL2 adapter comes from the canvas's context.
+        let surface = instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+            .map_err(|e| InitError::new(InitStage::Surface, format!("wgpu: {e}")))?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: early_surface.as_ref(),
+                compatible_surface: Some(&surface),
                 ..Default::default()
             })
             .await
-            .ok_or_else(|| {
-                InitError::new(
-                    InitStage::Adapter,
-                    format!("wgpu ({backend_path}): no suitable GPU adapter found"),
-                )
-            })?;
+            .ok_or_else(|| InitError::new(InitStage::Adapter, "wgpu: no suitable GPU adapter"))?;
         if !wanted() {
             return Err(superseded());
         }
 
-        // WebGL2 adapters expose zero compute limits, so requesting the plain
-        // default limits (which include compute) fails validation.
-        let mut required_limits = if webgl {
-            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits())
-        } else {
-            wgpu::Limits::default().using_resolution(adapter.limits())
-        };
-        // Some WebGL2 adapters (for example automation/headless environments) expose
-        // lower color-attachment limits than the downlevel default profile. Clamp
-        // to adapter-reported capability so init succeeds consistently.
+        // WebGL2 adapters expose zero compute limits, so requesting the plain default limits
+        // (which include compute) fails validation. Some (automation, headless) also expose
+        // fewer colour attachments than the downlevel profile.
+        let mut required_limits =
+            wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
         required_limits.max_color_attachments = required_limits
             .max_color_attachments
             .min(adapter.limits().max_color_attachments);
@@ -1463,33 +1147,28 @@ impl GpuRenderer {
                 None,
             )
             .await
-            .map_err(|e| {
-                InitError::new(InitStage::Device, format!("wgpu ({backend_path}): {e}"))
-            })?;
-        // wgpu's default handler panics, and a panic mid-frame leaves the whole map wedged.
-        // Validation and lost-context errors are reported instead; the frame they spoil is
-        // redrawn, and a lost context is rebuilt by the canvas.
-        let device_guard = FailedStartDevice((!webgl).then(|| device.clone()));
+            .map_err(|e| InitError::new(InitStage::Device, format!("wgpu: {e}")))?;
         if !wanted() {
             return Err(superseded());
         }
+        // wgpu's default handler panics, and a panic mid-frame leaves the whole map wedged.
+        // Validation and lost-context errors are reported instead; the frame they spoil is
+        // redrawn, and a lost context is rebuilt by the canvas.
         device.on_uncaptured_error(Box::new(report_uncaptured_error));
-        let surface = match early_surface {
-            Some(surface) => surface,
-            None => create_surface(canvas.clone())?,
-        };
         // The context wgpu made the surface on; asking again returns it.
-        let webgl_context = webgl
-            .then(|| canvas.get_context("webgl2").ok().flatten())
+        let webgl_context = canvas
+            .get_context("webgl2")
+            .ok()
             .flatten()
-            .and_then(|context| context.dyn_into::<web_sys::WebGl2RenderingContext>().ok());
+            .and_then(|context| context.dyn_into::<web_sys::WebGl2RenderingContext>().ok())
+            .ok_or_else(|| InitError::new(InitStage::Surface, "wgpu made no WebGL2 context"))?;
 
         let mut surface_config = surface
             .get_default_config(&adapter, width, height)
             .ok_or_else(|| {
                 InitError::new(
                     InitStage::SurfaceConfig,
-                    format!("wgpu ({backend_path}): surface unsupported by adapter"),
+                    "wgpu: surface unsupported by adapter",
                 )
             })?;
         let caps = surface.get_capabilities(&adapter);
@@ -1509,19 +1188,12 @@ impl GpuRenderer {
         {
             surface_config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
         }
-        // Firefox tends to pace smoother with lower swapchain queue depth.
-        if gpu_is_firefox() {
-            surface_config.desired_maximum_frame_latency = 1;
-        }
         let format = surface_config.format;
 
         web_sys::console::log_1(
             &format!(
-                "wgpu init: path={backend_path} format={:?} present={:?} alpha={:?} latency={}",
-                surface_config.format,
-                surface_config.present_mode,
-                surface_config.alpha_mode,
-                surface_config.desired_maximum_frame_latency,
+                "wgpu init: format={:?} present={:?} alpha={:?}",
+                surface_config.format, surface_config.present_mode, surface_config.alpha_mode,
             )
             .into(),
         );
@@ -1530,7 +1202,7 @@ impl GpuRenderer {
         if let Some(error) = setup_error(&device).await {
             return Err(InitError::new(
                 InitStage::SurfaceConfig,
-                format!("wgpu ({backend_path}): {error}"),
+                format!("wgpu: {error}"),
             ));
         }
         if !wanted() {
@@ -1539,18 +1211,6 @@ impl GpuRenderer {
         // Without this, a pipeline that failed to build would only be logged, and the map
         // would count as running while drawing nothing.
         watch_setup_errors(&device);
-        // A WebGPU renderer that could not notice its device being lost would draw nothing
-        // after a GPU reset and never recover, so it does not start without the observer.
-        let device_lost = if webgl {
-            None
-        } else {
-            Some(configured_device_lost(&canvas).ok_or_else(|| {
-                InitError::new(
-                    InitStage::SurfaceConfig,
-                    "webgpu: the configured device cannot be watched for loss",
-                )
-            })?)
-        };
 
         // --- Shared geometry ---
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1894,7 +1554,7 @@ impl GpuRenderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    // Tile textures hold premultiplied colour (see `upload_image_data`).
+                    // Tile textures hold premultiplied colour (see `terrain`).
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -2135,9 +1795,7 @@ impl GpuRenderer {
                 cache: None,
             });
 
-        device_guard.release();
         let mut renderer = Self {
-            device_lost,
             device,
             queue,
             surface,
@@ -2159,16 +1817,8 @@ impl GpuRenderer {
             glow_buffer_hov,
             glow_bind_group_hov,
             tile_pipeline,
-            tile_bind_group_layout,
-            tile_sampler,
-            tile_mips,
-            tile_textures: HashMap::new(),
+            terrain: terrain::Terrain::new(tile_bind_group_layout, tile_sampler, tile_mips),
             webgl_context,
-            tile_upload_canvas: None,
-            tile_upload_ctx: None,
-            tile_upload_canvas_size: (0, 0),
-            tiles_signature: None,
-            tiles_revision: 0,
             connection_pipeline,
             connection_fill_pipeline,
             connection_projection_buffer,
@@ -2193,7 +1843,7 @@ impl GpuRenderer {
             territory_name_cache: HashMap::new(),
             claim_clusters: None,
             icon_renderer: None,
-            supports_gpu_icons,
+            supports_gpu_icons: true,
             marker_renderer: None,
             overlay_renderer: None,
             width,
@@ -2204,32 +1854,20 @@ impl GpuRenderer {
             start_time_ms: js_sys::Date::now(),
             instances_buf: Vec::new(),
             instance_index: InstanceIndex::default(),
-            diag_static_rebuilds: 0,
-            diag_dynamic_rebuilds: 0,
-            diag_icon_rebuilds: 0,
-            diag_pan_only_zero_rebuild_frames: 0,
-            diag_last_vp: (0.0, 0.0, 0.0),
-            diag_console_logging: gpu_console_diag_enabled(),
             last_render_time_ms: 0.0,
-            capabilities: RenderCapabilities {
-                webgl2: webgl,
-                gpu_text_msdf: true,
-                gpu_dynamic_labels: true,
-                compatibility_fallback: !supports_gpu_icons,
-            },
             frame_metrics: FrameMetrics::default(),
         };
 
         if !renderer.ensure_text_renderer() {
             return Err(InitError::new(
                 InitStage::TextRenderer,
-                format!("wgpu ({backend_path}): failed to initialize GPU text renderer"),
+                "wgpu: failed to initialize GPU text renderer",
             ));
         }
         if let Some(error) = setup_error(&renderer.device).await {
             return Err(InitError::new(
                 InitStage::Resources,
-                format!("wgpu ({backend_path}): {error}"),
+                format!("wgpu: {error}"),
             ));
         }
         if !wanted() {
@@ -2297,7 +1935,6 @@ impl GpuRenderer {
         );
         if self.icon_renderer.is_none() {
             self.supports_gpu_icons = false;
-            self.capabilities.compatibility_fallback = true;
             web_sys::console::warn_1(
                 &"GPU icon overlays disabled: failed to initialize the icon renderer".into(),
             );
@@ -2351,6 +1988,11 @@ impl GpuRenderer {
                     shader_location: 3,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 48,
+                    shader_location: 4,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         };
 
@@ -2360,66 +2002,46 @@ impl GpuRenderer {
             push_constant_ranges: &[],
         });
 
-        let text_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("text-pipeline"),
-            layout: Some(&text_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &text_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[vertex_layout.clone(), text_instance_layout],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &text_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let initial_capacity = 4096u32;
-        let make_buffer = |label: &'static str| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: (initial_capacity as u64) * std::mem::size_of::<TextInstance>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+        // The same glyphs twice: halos, then fills, each from its own atlas and colour.
+        let pipeline = |entry_point: &'static str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry_point),
+                layout: Some(&text_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &text_shader,
+                    entry_point: Some(entry_point),
+                    buffers: &[vertex_layout.clone(), text_instance_layout.clone()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &text_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
             })
         };
 
         Some(GpuTextRenderer {
-            pipeline: text_pipeline,
+            halo_pipeline: pipeline("vs_halo"),
+            fill_pipeline: pipeline("vs_fill"),
             fill_bind_group,
             halo_bind_group,
-            static_fill_buffer: make_buffer("text-static-fill-buf"),
-            static_fill_count: 0,
-            static_fill_capacity: initial_capacity,
-            static_fill_instances: Vec::new(),
-            static_halo_buffer: make_buffer("text-static-halo-buf"),
-            static_halo_count: 0,
-            static_halo_capacity: initial_capacity,
-            static_halo_instances: Vec::new(),
-            dynamic_fill_buffer: make_buffer("text-dynamic-fill-buf"),
-            dynamic_fill_count: 0,
-            dynamic_fill_capacity: initial_capacity,
-            dynamic_fill_instances: Vec::new(),
-            dynamic_halo_buffer: make_buffer("text-dynamic-halo-buf"),
-            dynamic_halo_count: 0,
-            dynamic_halo_capacity: initial_capacity,
-            dynamic_halo_instances: Vec::new(),
+            static_layer: TextLayer::new(device, "text-static"),
+            dynamic_layer: TextLayer::new(device, "text-dynamic"),
             glyphs,
             line_height,
         })
@@ -3093,10 +2715,6 @@ impl GpuRenderer {
         })
     }
 
-    pub fn capabilities(&self) -> RenderCapabilities {
-        self.capabilities
-    }
-
     pub fn frame_metrics(&self) -> FrameMetrics {
         self.frame_metrics
     }
@@ -3122,186 +2740,6 @@ impl GpuRenderer {
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
-    }
-
-    fn ensure_tile_upload_context(&mut self) -> bool {
-        if self.tile_upload_canvas.is_some() && self.tile_upload_ctx.is_some() {
-            return true;
-        }
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            web_sys::console::warn_1(
-                &"Skipping tile upload: document is unavailable for upload canvas".into(),
-            );
-            return false;
-        };
-        let Some(canvas) = document
-            .create_element("canvas")
-            .ok()
-            .and_then(|element| element.dyn_into::<HtmlCanvasElement>().ok())
-        else {
-            web_sys::console::warn_1(
-                &"Skipping tile upload: failed to create upload canvas".into(),
-            );
-            return false;
-        };
-        let Some(ctx) = get_2d_context(&canvas, true) else {
-            web_sys::console::warn_1(
-                &"Skipping tile upload: failed to create upload 2d context".into(),
-            );
-            return false;
-        };
-        self.tile_upload_canvas = Some(canvas);
-        self.tile_upload_ctx = Some(ctx);
-        self.tile_upload_canvas_size = (0, 0);
-        true
-    }
-
-    /// Uploads tiles that are new or improved since the last frame and drops tiles that
-    /// are gone, bumping `tiles_revision` when the set changes.
-    ///
-    /// Uploads at most [`TILE_UPLOAD_BUDGET_BYTES`] of pixels (and always one tile) per call;
-    /// returns whether tiles are still waiting, so the caller draws another frame.
-    fn sync_tiles(&mut self, tiles: &[LoadedTile]) -> bool {
-        let signature = tile_upload_signature(tiles);
-        if self.tiles_signature == Some(signature) || !self.ensure_tile_upload_context() {
-            return false;
-        }
-        self.tiles_signature = Some(signature);
-        self.tiles_revision = self.tiles_revision.wrapping_add(1);
-        let active_tile_ids: HashSet<usize> = tiles.iter().map(|tile| tile.id).collect();
-        self.tile_textures
-            .retain(|tile_id, _| active_tile_ids.contains(tile_id));
-
-        let Some(upload_canvas) = self.tile_upload_canvas.as_ref().cloned() else {
-            return false;
-        };
-        let Some(upload_ctx) = self.tile_upload_ctx.as_ref().cloned() else {
-            return false;
-        };
-        let mut upload_size = self.tile_upload_canvas_size;
-        let mut uploaded_bytes = 0u64;
-
-        for tile in tiles {
-            let tile_id = tile.id;
-            if let Some(existing) = self.tile_textures.get(&tile_id)
-                && existing.quality >= tile.quality
-            {
-                continue;
-            }
-
-            let img = &tile.image;
-            let w = img.natural_width();
-            let h = img.natural_height();
-            if w == 0 || h == 0 {
-                continue;
-            }
-            let bytes = 4 * u64::from(w) * u64::from(h);
-            if uploaded_bytes > 0 && uploaded_bytes + bytes > TILE_UPLOAD_BUDGET_BYTES {
-                // The rest go up over the next frames.
-                self.tiles_signature = None;
-                break;
-            }
-            // Reuse a persistent staging canvas/context to avoid per-tile DOM/context churn.
-            if upload_size != (w, h) {
-                upload_canvas.set_width(w);
-                upload_canvas.set_height(h);
-                upload_size = (w, h);
-            }
-            upload_ctx.clear_rect(0.0, 0.0, w as f64, h as f64);
-            upload_ctx
-                .draw_image_with_html_image_element(img, 0.0, 0.0)
-                .ok();
-            let image_data = match upload_ctx.get_image_data(0.0, 0.0, w as f64, h as f64) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-            // Failed reads do not stage a GPU upload. Counting them against the budget
-            // would retry the same failed prefix every frame and starve later tiles.
-            uploaded_bytes += bytes;
-
-            let size = wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            };
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("tile-tex"),
-                size,
-                mip_level_count: full_mip_level_count(w, h),
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                // External image copies, and drawing the mip levels, need a render-attachment
-                // destination.
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            // The read-back pixels go to the GPU from the browser's buffer, never as a whole
-            // tile in WASM memory, which would grow for good to hold one (see
-            // `upload_image_data`). Uploading the <img> itself instead makes browsers decode
-            // the file again, as straight alpha, synchronously: slower than this draw and
-            // read-back. Tiles are stored premultiplied, so the mip levels average colour and
-            // coverage together.
-            upload_image_data(
-                &self.queue,
-                &texture,
-                image_data,
-                size,
-                self.webgl_context.as_ref(),
-                true,
-            );
-            self.tile_mips.generate(&self.device, &self.queue, &texture);
-
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-            // Pre-compute tile world rect and bake into a dedicated uniform buffer
-            let x1 = tile.x1.min(tile.x2) as f32;
-            let z1 = tile.z1.min(tile.z2) as f32;
-            // Tile bounds are inclusive — add 1 to get exclusive width/height
-            let tw = (tile.x1.max(tile.x2) - tile.x1.min(tile.x2) + 1) as f32;
-            let th = (tile.z1.max(tile.z2) - tile.z1.min(tile.z2) + 1) as f32;
-            let rect = [x1, z1, tw, th];
-
-            let rect_buffer = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("tile-rect-ubo"),
-                    contents: bytemuck::cast_slice(&[TileRectUniform { rect }]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
-
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("tile-bg"),
-                layout: &self.tile_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: rect_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&self.tile_sampler),
-                    },
-                ],
-            });
-
-            self.tile_textures.insert(
-                tile_id,
-                TileTexture {
-                    bind_group,
-                    rect,
-                    quality: tile.quality,
-                },
-            );
-        }
-        self.tile_upload_canvas_size = upload_size;
-        self.tiles_signature.is_none()
     }
 
     /// Build instance data from territories and upload to GPU.
@@ -3465,30 +2903,6 @@ impl GpuRenderer {
         }
     }
 
-    fn upload_text_buffer(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        label: &'static str,
-        instances: &[TextInstance],
-        buffer: &mut wgpu::Buffer,
-        count: &mut u32,
-        capacity: &mut u32,
-    ) {
-        *count = instances.len() as u32;
-        if *count > *capacity {
-            *capacity = (*count).next_power_of_two();
-            *buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: (*capacity as u64) * std::mem::size_of::<TextInstance>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        if !instances.is_empty() {
-            queue.write_buffer(buffer, 0, bytemuck::cast_slice(instances));
-        }
-    }
-
     fn upload_icon_buffer(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3528,6 +2942,7 @@ impl GpuRenderer {
         territories: &ClientTerritoryMap,
         territory_revision: u64,
         vp: &Viewport,
+        coverage: &WorldRect,
         settings: &RenderSettings,
     ) {
         self.sync_territory_name_cache(territories);
@@ -3555,17 +2970,12 @@ impl GpuRenderer {
             return;
         };
 
-        let mut fill_instances = std::mem::take(&mut text_renderer.static_fill_instances);
-        let mut halo_instances = std::mem::take(&mut text_renderer.static_halo_instances);
-        fill_instances.clear();
-        halo_instances.clear();
+        let mut instances = std::mem::take(&mut text_renderer.static_layer.instances);
+        instances.clear();
 
         if vp.scale < LABEL_VISIBILITY_MIN_SCALE {
-            set_claim_label_debug(vp.scale, false, 0, 0);
-            text_renderer.static_fill_instances = fill_instances;
-            text_renderer.static_halo_instances = halo_instances;
-            text_renderer.static_fill_count = 0;
-            text_renderer.static_halo_count = 0;
+            text_renderer.static_layer.instances = instances;
+            text_renderer.static_layer.upload(&self.device, &self.queue);
             return;
         }
 
@@ -3589,7 +2999,6 @@ impl GpuRenderer {
                     line_height,
                     |text| line_units_with_tracking(text, glyphs, claim_tracking_units),
                 );
-                let rendered_claim_label_count = claim_labels.len();
                 for claim in claim_labels {
                     let (r, g, b) = brighten(
                         claim.guild_color.0,
@@ -3597,9 +3006,8 @@ impl GpuRenderer {
                         claim.guild_color.2,
                         1.8,
                     );
-                    push_text_line_dual_with_tracking(
-                        &mut fill_instances,
-                        &mut halo_instances,
+                    push_text_line(
+                        &mut instances,
                         glyphs,
                         line_height,
                         &claim.text,
@@ -3612,16 +3020,9 @@ impl GpuRenderer {
                         [0.0, 0.0, 0.0, 0.84],
                     );
                 }
-                set_claim_label_debug(
-                    vp.scale,
-                    true,
-                    claim_clusters.len(),
-                    rendered_claim_label_count,
-                );
             } else {
-                set_claim_label_debug(vp.scale, false, 0, 0);
                 let show_far_zoom_tags = settings.show_far_zoom_territory_tags && claim_label_zoom;
-                for (name, ct) in territories {
+                for (name, ct) in territories.iter().filter(|(_, ct)| in_area(coverage, ct)) {
                     let loc = &ct.territory.location;
                     let ww = loc.width() as f32;
                     let hh = loc.height() as f32;
@@ -3697,9 +3098,8 @@ impl GpuRenderer {
                         let mut tag_color = name_color_rgba(settings.tag_color, ct.guild_color);
                         tag_color[3] = 0.92 * sizing.alpha;
                         let tag_halo_alpha = 0.68 * sizing.alpha;
-                        push_text_line_dual_with_tracking(
-                            &mut fill_instances,
-                            &mut halo_instances,
+                        push_text_line(
+                            &mut instances,
                             glyphs,
                             line_height,
                             &fitted,
@@ -3780,9 +3180,8 @@ impl GpuRenderer {
                         let tag_halo_boost = 1.0 - smoothstep_f32(9.6, 13.8, tag_px);
                         let tag_halo_alpha = (0.70 - tag_halo_boost * 0.22).clamp(0.42, 0.76);
 
-                        push_text_line_dual_with_tracking(
-                            &mut fill_instances,
-                            &mut halo_instances,
+                        push_text_line(
+                            &mut instances,
                             glyphs,
                             line_height,
                             tag,
@@ -3839,9 +3238,8 @@ impl GpuRenderer {
                             * STATIC_NAME_HALO_ALPHA_MULTIPLIER
                             * detail_layout_alpha.clamp(0.0, 1.0))
                         .clamp(0.0, 0.74);
-                        push_text_line_dual_with_tracking(
-                            &mut fill_instances,
-                            &mut halo_instances,
+                        push_text_line(
+                            &mut instances,
                             glyphs,
                             line_height,
                             &fitted,
@@ -3858,29 +3256,8 @@ impl GpuRenderer {
             }
         }
 
-        text_renderer.static_fill_instances = fill_instances;
-        text_renderer.static_halo_instances = halo_instances;
-
-        Self::upload_text_buffer(
-            &self.device,
-            &self.queue,
-            "text-static-fill-buf",
-            &text_renderer.static_fill_instances,
-            &mut text_renderer.static_fill_buffer,
-            &mut text_renderer.static_fill_count,
-            &mut text_renderer.static_fill_capacity,
-        );
-        Self::upload_text_buffer(
-            &self.device,
-            &self.queue,
-            "text-static-halo-buf",
-            &text_renderer.static_halo_instances,
-            &mut text_renderer.static_halo_buffer,
-            &mut text_renderer.static_halo_count,
-            &mut text_renderer.static_halo_capacity,
-        );
-
-        self.diag_static_rebuilds = self.diag_static_rebuilds.saturating_add(1);
+        text_renderer.static_layer.instances = instances;
+        text_renderer.static_layer.upload(&self.device, &self.queue);
     }
 
     /// Build timer glyph instances. Returns the clock second at which the text next changes.
@@ -3888,6 +3265,7 @@ impl GpuRenderer {
         &mut self,
         territories: &ClientTerritoryMap,
         vp: &Viewport,
+        coverage: &WorldRect,
         settings: &RenderSettings,
         reference_time_secs: i64,
     ) -> i64 {
@@ -3899,17 +3277,15 @@ impl GpuRenderer {
             return i64::MAX;
         };
 
-        let mut fill_instances = std::mem::take(&mut text_renderer.dynamic_fill_instances);
-        let mut halo_instances = std::mem::take(&mut text_renderer.dynamic_halo_instances);
-        fill_instances.clear();
-        halo_instances.clear();
+        let mut instances = std::mem::take(&mut text_renderer.dynamic_layer.instances);
+        instances.clear();
 
         // Hidden timers never change on their own; zooming back in rebuilds them.
         if vp.scale < LABEL_VISIBILITY_MIN_SCALE {
-            text_renderer.dynamic_fill_instances = fill_instances;
-            text_renderer.dynamic_halo_instances = halo_instances;
-            text_renderer.dynamic_fill_count = 0;
-            text_renderer.dynamic_halo_count = 0;
+            text_renderer.dynamic_layer.instances = instances;
+            text_renderer
+                .dynamic_layer
+                .upload(&self.device, &self.queue);
             return i64::MAX;
         }
 
@@ -3919,7 +3295,7 @@ impl GpuRenderer {
         {
             let glyphs = &text_renderer.glyphs;
             let line_height = text_renderer.line_height;
-            for ct in territories.values() {
+            for ct in territories.values().filter(|ct| in_area(coverage, ct)) {
                 let loc = &ct.territory.location;
                 let ww = loc.width() as f32;
                 let hh = loc.height() as f32;
@@ -4081,9 +3457,8 @@ impl GpuRenderer {
                             0.95,
                         ]
                     };
-                    push_text_line_dual_with_tracking(
-                        &mut fill_instances,
-                        &mut halo_instances,
+                    push_text_line(
+                        &mut instances,
                         glyphs,
                         line_height,
                         &text_buf,
@@ -4111,9 +3486,8 @@ impl GpuRenderer {
                     let cd_y = content_bottom_y + cooldown_size / 2.0 + cooldown_gap;
                     let (cr, cg, cb) = COOLDOWN_RGB;
                     let cd_alpha = (0.92 + small_timer_factor * 0.02).clamp(0.0, 1.0);
-                    push_text_line_dual_with_tracking(
-                        &mut fill_instances,
-                        &mut halo_instances,
+                    push_text_line(
+                        &mut instances,
                         glyphs,
                         line_height,
                         &text_buf,
@@ -4140,29 +3514,11 @@ impl GpuRenderer {
             }
         }
 
-        text_renderer.dynamic_fill_instances = fill_instances;
-        text_renderer.dynamic_halo_instances = halo_instances;
+        text_renderer.dynamic_layer.instances = instances;
+        text_renderer
+            .dynamic_layer
+            .upload(&self.device, &self.queue);
 
-        Self::upload_text_buffer(
-            &self.device,
-            &self.queue,
-            "text-dynamic-fill-buf",
-            &text_renderer.dynamic_fill_instances,
-            &mut text_renderer.dynamic_fill_buffer,
-            &mut text_renderer.dynamic_fill_count,
-            &mut text_renderer.dynamic_fill_capacity,
-        );
-        Self::upload_text_buffer(
-            &self.device,
-            &self.queue,
-            "text-dynamic-halo-buf",
-            &text_renderer.dynamic_halo_instances,
-            &mut text_renderer.dynamic_halo_buffer,
-            &mut text_renderer.dynamic_halo_count,
-            &mut text_renderer.dynamic_halo_capacity,
-        );
-
-        self.diag_dynamic_rebuilds = self.diag_dynamic_rebuilds.saturating_add(1);
         if next_update_secs == i64::MAX {
             reference_time_secs + 1
         } else {
@@ -4177,6 +3533,7 @@ impl GpuRenderer {
         &mut self,
         territories: &ClientTerritoryMap,
         vp: &Viewport,
+        coverage: &WorldRect,
         settings: &RenderSettings,
         reference_time_secs: i64,
     ) -> i64 {
@@ -4200,7 +3557,7 @@ impl GpuRenderer {
         let mut next_change_secs = i64::MAX;
 
         let scale = vp.scale as f32;
-        for ct in territories.values() {
+        for ct in territories.values().filter(|ct| in_area(coverage, ct)) {
             let loc = &ct.territory.location;
             let ww = loc.width() as f32;
             let hh = loc.height() as f32;
@@ -4456,7 +3813,6 @@ impl GpuRenderer {
             &mut renderer.instance_count,
             &mut renderer.instance_capacity,
         );
-        self.diag_icon_rebuilds = self.diag_icon_rebuilds.saturating_add(1);
         next_change_secs
     }
 
@@ -4485,7 +3841,9 @@ impl GpuRenderer {
         let w = self.width as f32 / self.dpr;
         let h = self.height as f32 / self.dpr;
 
-        let tiles_pending = self.sync_tiles(frame.tiles);
+        let tiles_pending =
+            self.terrain
+                .sync(&self.device, &self.queue, &self.webgl_context, frame.tiles);
         let Some(next_refresh) = self.rebuild_layers(frame, rebuild, &mut stats) else {
             // Fail closed: map rendering requires the GPU text pipeline.
             return FrameOutcome::default();
@@ -4585,7 +3943,7 @@ impl GpuRenderer {
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
                 for tile in frame.tiles {
-                    let Some(tile_tex) = self.tile_textures.get(&tile.id) else {
+                    let Some(tile_tex) = self.terrain.texture(tile.id) else {
                         continue;
                     };
 
@@ -4675,37 +4033,23 @@ impl GpuRenderer {
             }
 
             if let Some(text_renderer) = self.text_renderer.as_ref() {
-                pass.set_pipeline(&text_renderer.pipeline);
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
-                for (bind_group, buffer, count) in [
-                    (
-                        &text_renderer.halo_bind_group,
-                        &text_renderer.static_halo_buffer,
-                        text_renderer.static_halo_count,
-                    ),
-                    (
-                        &text_renderer.fill_bind_group,
-                        &text_renderer.static_fill_buffer,
-                        text_renderer.static_fill_count,
-                    ),
-                    (
-                        &text_renderer.halo_bind_group,
-                        &text_renderer.dynamic_halo_buffer,
-                        text_renderer.dynamic_halo_count,
-                    ),
-                    (
-                        &text_renderer.fill_bind_group,
-                        &text_renderer.dynamic_fill_buffer,
-                        text_renderer.dynamic_fill_count,
-                    ),
-                ] {
-                    if count > 0 {
+                // Each layer's halos under all of its fills.
+                for layer in [&text_renderer.static_layer, &text_renderer.dynamic_layer] {
+                    if layer.count == 0 {
+                        continue;
+                    }
+                    pass.set_vertex_buffer(1, layer.buffer.slice(..));
+                    for (pipeline, bind_group) in [
+                        (&text_renderer.halo_pipeline, &text_renderer.halo_bind_group),
+                        (&text_renderer.fill_pipeline, &text_renderer.fill_bind_group),
+                    ] {
+                        pass.set_pipeline(pipeline);
                         pass.set_bind_group(1, bind_group, &[]);
-                        pass.set_vertex_buffer(1, buffer.slice(..));
-                        pass.draw_indexed(0..6, 0, 0..count);
+                        pass.draw_indexed(0..6, 0, 0..layer.count);
                         stats.draw();
                     }
                 }
@@ -4790,12 +4134,7 @@ impl GpuRenderer {
         let text_instances = self
             .text_renderer
             .as_ref()
-            .map(|text| {
-                text.static_fill_count
-                    + text.static_halo_count
-                    + text.dynamic_fill_count
-                    + text.dynamic_halo_count
-            })
+            .map(|text| text.static_layer.count + text.dynamic_layer.count)
             .unwrap_or(0);
         self.frame_metrics = FrameMetrics {
             frame_cpu_ms,
@@ -4958,12 +4297,12 @@ impl GpuRenderer {
         }
         let text_bytes = |text: Option<&GpuTextRenderer>, dynamic: bool| {
             text.map_or(0, |text| {
-                let count = if dynamic {
-                    text.dynamic_fill_count + text.dynamic_halo_count
+                let layer = if dynamic {
+                    &text.dynamic_layer
                 } else {
-                    text.static_fill_count + text.static_halo_count
+                    &text.static_layer
                 };
-                u64::from(count) * std::mem::size_of::<TextInstance>() as u64
+                u64::from(layer.count) * std::mem::size_of::<TextInstance>() as u64
             })
         };
         if rebuild.static_labels {
@@ -4971,6 +4310,7 @@ impl GpuRenderer {
                 frame.territories,
                 frame.territory_revision,
                 vp,
+                &frame.label_coverage,
                 settings,
             );
             stats.bytes_uploaded += text_bytes(self.text_renderer.as_ref(), false);
@@ -4980,6 +4320,7 @@ impl GpuRenderer {
             next_refresh.dynamic_labels = Some(self.update_dynamic_text_instances(
                 frame.territories,
                 vp,
+                &frame.label_coverage,
                 settings,
                 frame.clock_secs,
             ));
@@ -4987,47 +4328,19 @@ impl GpuRenderer {
         }
         let rebuilt_icons = rebuild.icons && self.icon_renderer.is_some();
         if rebuilt_icons {
-            next_refresh.icons =
-                Some(self.update_icon_instances(frame.territories, vp, settings, frame.clock_secs));
+            next_refresh.icons = Some(self.update_icon_instances(
+                frame.territories,
+                vp,
+                &frame.label_coverage,
+                settings,
+                frame.clock_secs,
+            ));
             if let Some(icon_renderer) = self.icon_renderer.as_ref() {
                 stats.bytes_uploaded += (icon_renderer.instance_count as u64)
                     * std::mem::size_of::<IconInstance>() as u64;
             }
         }
-
-        self.log_rebuild_diagnostics(
-            vp,
-            rebuild.static_labels || rebuild.dynamic_labels || rebuilt_icons,
-        );
         Some(next_refresh)
-    }
-
-    fn log_rebuild_diagnostics(&mut self, vp: &Viewport, rebuilt_labels: bool) {
-        let pan_only = (vp.scale - self.diag_last_vp.2).abs() < 0.000001
-            && ((vp.offset_x - self.diag_last_vp.0).abs() > 0.001
-                || (vp.offset_y - self.diag_last_vp.1).abs() > 0.001);
-        if pan_only && !rebuilt_labels {
-            self.diag_pan_only_zero_rebuild_frames =
-                self.diag_pan_only_zero_rebuild_frames.saturating_add(1);
-        }
-        self.diag_last_vp = (vp.offset_x, vp.offset_y, vp.scale);
-
-        if self.diag_console_logging && rebuilt_labels {
-            web_sys::console::log_1(
-                &format!(
-                    "gpu-diag static_rebuilds={} dynamic_rebuilds={} icon_rebuilds={} pan_zero_rebuild_frames={}",
-                    self.diag_static_rebuilds,
-                    self.diag_dynamic_rebuilds,
-                    self.diag_icon_rebuilds,
-                    self.diag_pan_only_zero_rebuild_frames
-                )
-                .into(),
-            );
-            self.diag_static_rebuilds = 0;
-            self.diag_dynamic_rebuilds = 0;
-            self.diag_icon_rebuilds = 0;
-            self.diag_pan_only_zero_rebuild_frames = 0;
-        }
     }
 
     /// Writes the selection and hover glow uniforms; returns which glows to draw.
@@ -5111,7 +4424,7 @@ impl GpuRenderer {
         stats: &mut DrawStats,
     ) {
         if self.minimap_terrain.as_ref().is_some_and(|terrain| {
-            terrain.layout == layout && terrain.tiles_revision == self.tiles_revision
+            terrain.layout == layout && terrain.tiles_revision == self.terrain.revision()
         }) {
             return;
         }
@@ -5202,7 +4515,7 @@ impl GpuRenderer {
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
                 for tile in tiles {
-                    let Some(tile_tex) = self.tile_textures.get(&tile.id) else {
+                    let Some(tile_tex) = self.terrain.texture(tile.id) else {
                         continue;
                     };
                     pass.set_bind_group(1, &tile_tex.bind_group, &[]);
@@ -5226,13 +4539,13 @@ impl GpuRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.tile_sampler),
+                    resource: wgpu::BindingResource::Sampler(self.terrain.sampler()),
                 },
             ],
         });
         self.minimap_terrain = Some(MinimapTerrain {
             layout,
-            tiles_revision: self.tiles_revision,
+            tiles_revision: self.terrain.revision(),
             bind_group,
         });
     }

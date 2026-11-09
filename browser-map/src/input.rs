@@ -3,12 +3,15 @@
 //! This is the seam between DOM events and [`Gestures`]: it converts events to canvas CSS
 //! pixels, decides what a press does (minimap jump, edit tool, pan), manages pointer capture,
 //! and turns gesture output into [`MapEvent`]s by hit-testing territories. The gesture
-//! semantics themselves live in the engine.
+//! semantics themselves live in the engine. Moves only record where the pointer is; the next
+//! frame moves the camera.
 //!
-//! Positions are `clientX`/`clientY` minus the canvas's client rect, both read as the doubles
-//! browsers report. `offsetX`/`offsetY` would do, but web-sys's stable getters truncate them
-//! to whole pixels, which turns sub-pixel finger motion into one-pixel zoom steps. Times are
-//! event time stamps (monotonic, like `performance.now()`).
+//! Positions are `clientX`/`clientY` minus the canvas's client origin, both read as the
+//! doubles browsers report. `offsetX`/`offsetY` would do, but web-sys's stable getters
+//! truncate them to whole pixels, which turns sub-pixel finger motion into one-pixel zoom
+//! steps. The origin comes from the canvas's resize observer and is read afresh when a
+//! pointer enters or presses, never on every move. Times are event time stamps (monotonic,
+//! like `performance.now()`).
 //!
 //! Touch presses are deliberately not `preventDefault`ed: `touch-action: none` already keeps
 //! the browser's own panning and zooming off the canvas, and Firefox before 159 stops
@@ -48,7 +51,8 @@ pub(crate) struct MapInput {
 
 impl MapInput {
     pub(crate) fn pointer_down(&self, event: &PointerEvent) {
-        let pointer = pointer_of(event);
+        self.refresh_origin(event);
+        let pointer = self.pointer_of(event);
         if presses_prevent_default(pointer.kind) {
             event.prevent_default();
         }
@@ -62,33 +66,21 @@ impl MapInput {
         if let Some(canvas) = event_canvas(event) {
             let _ = canvas.set_pointer_capture(pointer.id);
         }
-        self.dispatch(
-            output.events,
-            event.shift_key(),
-            self.hit_reach_px(pointer.kind),
-        );
+        self.dispatch(output, event.shift_key(), self.hit_reach_px(pointer.kind));
         self.scheduler.mark_dirty();
     }
 
     pub(crate) fn pointer_move(&self, event: &PointerEvent) {
-        let pointer = pointer_of(event);
+        let pointer = self.pointer_of(event);
         self.map.pointer.set((pointer.x, pointer.y));
-        let mut output = None;
-        self.map.camera.update_if(|view| {
-            output = self
-                .state
-                .borrow_mut()
-                .gestures
-                .moved(view, pointer, event.time_stamp());
-            output.as_ref().is_some_and(|output| output.camera_moved)
-        });
+        let output = self
+            .state
+            .borrow_mut()
+            .gestures
+            .moved(pointer, event.time_stamp());
         match output {
-            Some(output) => {
-                self.dispatch(
-                    output.events,
-                    event.shift_key(),
-                    self.hit_reach_px(pointer.kind),
-                );
+            Some(events) => {
+                self.dispatch(events, event.shift_key(), self.hit_reach_px(pointer.kind));
                 self.scheduler.mark_dirty();
             }
             None => self.hover_at(pointer.x, pointer.y, self.hit_reach_px(pointer.kind)),
@@ -96,7 +88,7 @@ impl MapInput {
     }
 
     pub(crate) fn pointer_up(&self, event: &PointerEvent) {
-        let pointer = pointer_of(event);
+        let pointer = self.pointer_of(event);
         let mut output = self
             .state
             .borrow_mut()
@@ -104,15 +96,9 @@ impl MapInput {
             .released(pointer, event.time_stamp());
         // Only the primary button taps; others just pan.
         if event.button() != 0 {
-            output
-                .events
-                .retain(|event| !matches!(event, GestureEvent::Tap { .. }));
+            output.retain(|event| !matches!(event, GestureEvent::Tap { .. }));
         }
-        self.dispatch(
-            output.events,
-            event.shift_key(),
-            self.hit_reach_px(pointer.kind),
-        );
+        self.dispatch(output, event.shift_key(), self.hit_reach_px(pointer.kind));
         self.scheduler.mark_dirty();
     }
 
@@ -124,7 +110,7 @@ impl MapInput {
             .borrow_mut()
             .gestures
             .cancelled(event.pointer_id(), event.time_stamp());
-        self.dispatch(output.events, false, 0.0);
+        self.dispatch(output, false, 0.0);
         self.scheduler.mark_dirty();
     }
 
@@ -132,8 +118,14 @@ impl MapInput {
     /// and so are its `pointercancel` and `lostpointercapture` events.
     pub(crate) fn cancel_gestures(&self) {
         let output = self.state.borrow_mut().gestures.reset();
-        self.dispatch(output.events, false, 0.0);
+        self.dispatch(output, false, 0.0);
         self.scheduler.mark_dirty();
+    }
+
+    /// A pointer came over the canvas: where the canvas is may have changed since the last
+    /// pointer was over it.
+    pub(crate) fn pointer_enter(&self, event: &PointerEvent) {
+        self.refresh_origin(event);
     }
 
     pub(crate) fn pointer_leave(&self) {
@@ -148,7 +140,7 @@ impl MapInput {
 
     pub(crate) fn wheel(&self, event: &WheelEvent) {
         event.prevent_default();
-        let at = canvas_position(event);
+        let at = self.position(event);
         self.map.pointer.set(at);
         let sample = WheelSample {
             delta_x: event.delta_x(),
@@ -262,6 +254,43 @@ impl MapInput {
         }
     }
 
+    fn pointer_of(&self, event: &PointerEvent) -> Pointer {
+        let (x, y) = self.position(event);
+        Pointer {
+            id: event.pointer_id(),
+            kind: match event.pointer_type().as_str() {
+                "touch" => PointerKind::Touch,
+                "pen" => PointerKind::Pen,
+                _ => PointerKind::Mouse,
+            },
+            x,
+            y,
+        }
+    }
+
+    /// The event's position in canvas CSS pixels. Captured pointers report positions outside
+    /// the canvas too.
+    fn position(&self, event: &MouseEvent) -> (f64, f64) {
+        let origin = self.state.borrow().canvas_box.origin;
+        let (left, top) = origin.unwrap_or_else(|| self.refresh_origin(event));
+        let precise = event.unchecked_ref::<FractionalMouseEvent>();
+        (precise.client_x() - left, precise.client_y() - top)
+    }
+
+    /// Reads where the canvas is from layout, once, and keeps it for the moves that follow.
+    fn refresh_origin(&self, event: &MouseEvent) -> (f64, f64) {
+        let origin = event
+            .current_target()
+            .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+            .map(|canvas| {
+                let rect = canvas.get_bounding_client_rect();
+                (rect.left(), rect.top())
+            })
+            .unwrap_or_default();
+        self.state.borrow_mut().canvas_box.origin = Some(origin);
+        origin
+    }
+
     fn territory_at(&self, x: f64, y: f64, reach_px: f64) -> Option<String> {
         let view = self.map.camera.get_untracked();
         let (wx, wy) = view.screen_to_world(x, y);
@@ -311,36 +340,6 @@ extern "C" {
 /// Pens keep their browser defaults too; `touch-action` covers them like fingers.
 fn presses_prevent_default(kind: PointerKind) -> bool {
     kind == PointerKind::Mouse
-}
-
-fn pointer_of(event: &PointerEvent) -> Pointer {
-    let (x, y) = canvas_position(event);
-    Pointer {
-        id: event.pointer_id(),
-        kind: match event.pointer_type().as_str() {
-            "touch" => PointerKind::Touch,
-            "pen" => PointerKind::Pen,
-            _ => PointerKind::Mouse,
-        },
-        x,
-        y,
-    }
-}
-
-/// The event's position in canvas CSS pixels. Captured pointers report positions outside
-/// the canvas too.
-fn canvas_position(event: &MouseEvent) -> (f64, f64) {
-    let precise = event.unchecked_ref::<FractionalMouseEvent>();
-    let client = (precise.client_x(), precise.client_y());
-    let origin = event
-        .current_target()
-        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-        .map(|canvas| {
-            let rect = canvas.get_bounding_client_rect();
-            (rect.left(), rect.top())
-        })
-        .unwrap_or_default();
-    (client.0 - origin.0, client.1 - origin.1)
 }
 
 fn event_canvas(event: &PointerEvent) -> Option<HtmlCanvasElement> {

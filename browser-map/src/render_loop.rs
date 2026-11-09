@@ -5,96 +5,74 @@ use wasm_bindgen::prelude::*;
 
 /// Batches render requests via `requestAnimationFrame`.
 ///
-/// Call `mark_dirty()` whenever state changes. The render function
-/// fires at most once per vsync (~16ms), coalescing all dirty marks.
-///
-/// When the render function returns `true`, the scheduler automatically
-/// schedules another frame (for animations that need continuous rendering).
+/// Call `mark_dirty()` whenever state changes. The render function runs at most once per
+/// display frame, with the frame's `requestAnimationFrame` time stamp, coalescing all dirty
+/// marks. When it returns `true` (something is still moving), another frame follows.
 pub struct RenderScheduler {
     inner: Rc<Inner>,
 }
 
+/// The `requestAnimationFrame` callback, given the frame's time stamp.
+type FrameCallback = Closure<dyn FnMut(f64)>;
+
 struct Inner {
     window: Option<web_sys::Window>,
     dirty: Cell<bool>,
-    scheduled: Cell<bool>,
     raf_id: Cell<Option<i32>>,
-    callback: RefCell<Option<Closure<dyn FnMut()>>>,
+    callback: RefCell<Option<FrameCallback>>,
+}
+
+impl Inner {
+    /// Asks for the next frame unless one is already coming.
+    fn request(&self) {
+        if self.raf_id.get().is_some() {
+            return;
+        }
+        let (Some(window), Some(callback)) = (self.window.as_ref(), &*self.callback.borrow())
+        else {
+            return;
+        };
+        if let Ok(id) = window.request_animation_frame(callback.as_ref().unchecked_ref()) {
+            self.raf_id.set(Some(id));
+        }
+    }
 }
 
 impl RenderScheduler {
-    /// Create a scheduler. `render_fn` returns `true` if animations are active
-    /// and another frame should be scheduled automatically.
-    pub fn new(render_fn: impl Fn() -> bool + 'static) -> Self {
+    pub fn new(render_fn: impl Fn(f64) -> bool + 'static) -> Self {
         let inner = Rc::new(Inner {
             window: web_sys::window(),
             dirty: Cell::new(false),
-            scheduled: Cell::new(false),
             raf_id: Cell::new(None),
             callback: RefCell::new(None),
         });
-
-        let inner_cb = inner.clone();
-        let cb = Closure::<dyn FnMut()>::new(move || {
-            inner_cb.scheduled.set(false);
-            inner_cb.raf_id.set(None);
-            if inner_cb.dirty.get() {
-                inner_cb.dirty.set(false);
-                let needs_more = render_fn();
-
-                if needs_more {
-                    inner_cb.dirty.set(true);
-                    if !inner_cb.scheduled.get() {
-                        inner_cb.scheduled.set(true);
-                        let cb_ref = inner_cb.callback.borrow();
-                        if let Some(ref cb) = *cb_ref {
-                            let Some(window) = inner_cb.window.as_ref() else {
-                                inner_cb.scheduled.set(false);
-                                return;
-                            };
-                            match window.request_animation_frame(cb.as_ref().unchecked_ref()) {
-                                Ok(id) => inner_cb.raf_id.set(Some(id)),
-                                Err(_) => inner_cb.scheduled.set(false),
-                            }
-                        }
-                    }
-                }
+        let frame = inner.clone();
+        let callback = FrameCallback::new(move |frame_ms: f64| {
+            frame.raf_id.set(None);
+            if frame.dirty.replace(false) && render_fn(frame_ms) {
+                frame.dirty.set(true);
+                frame.request();
             }
         });
-        *inner.callback.borrow_mut() = Some(cb);
-
+        *inner.callback.borrow_mut() = Some(callback);
         Self { inner }
     }
 
-    /// Mark the scene as needing a repaint. Cheap — just sets a flag
-    /// and schedules one rAF if none is pending.
+    /// Marks the scene as needing a repaint: sets a flag and asks for one frame if none is
+    /// pending.
     pub fn mark_dirty(&self) {
         self.inner.dirty.set(true);
-        if !self.inner.scheduled.get() {
-            self.inner.scheduled.set(true);
-            let cb_ref = self.inner.callback.borrow();
-            if let Some(ref cb) = *cb_ref {
-                let Some(window) = self.inner.window.as_ref() else {
-                    self.inner.scheduled.set(false);
-                    return;
-                };
-                match window.request_animation_frame(cb.as_ref().unchecked_ref()) {
-                    Ok(id) => self.inner.raf_id.set(Some(id)),
-                    Err(_) => self.inner.scheduled.set(false),
-                }
-            }
-        }
+        self.inner.request();
     }
 }
 
 impl Drop for RenderScheduler {
     fn drop(&mut self) {
-        if let Some(raf_id) = self.inner.raf_id.replace(None)
+        if let Some(raf_id) = self.inner.raf_id.take()
             && let Some(window) = self.inner.window.as_ref()
         {
             let _ = window.cancel_animation_frame(raf_id);
         }
-        self.inner.scheduled.set(false);
         self.inner.dirty.set(false);
         // Break the callback->inner reference cycle on teardown.
         self.inner.callback.borrow_mut().take();

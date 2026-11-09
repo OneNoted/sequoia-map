@@ -9,7 +9,7 @@ use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::NextRefresh;
 use sequoia_map_engine::settings::RenderSettings;
 use sequoia_map_engine::territory::ClientTerritoryMap;
-use sequoia_map_engine::viewport::Viewport;
+use sequoia_map_engine::viewport::{Viewport, WorldRect};
 use sequoia_shared::war_board::WarMark;
 
 use crate::icons::ResourceAtlas;
@@ -19,6 +19,8 @@ use crate::tiles::LoadedTile;
 /// One frame's view of the map, borrowed from the map's signals.
 pub struct Frame<'a> {
     pub camera: &'a Viewport,
+    /// Where label and icon layers lay out territories; nothing outside it is in view.
+    pub label_coverage: WorldRect,
     pub territories: &'a ClientTerritoryMap,
     /// Changes whenever `territories` does.
     pub territory_revision: u64,
@@ -58,36 +60,6 @@ pub struct FrameOutcome {
     /// Territory colour transitions are still running.
     pub animating: bool,
     pub next_refresh: NextRefresh,
-}
-
-/// The browser graphics API a renderer runs on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Backend {
-    WebGl2,
-    WebGpu,
-}
-
-impl Backend {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::WebGl2 => "webgl2",
-            Self::WebGpu => "webgpu",
-        }
-    }
-
-    /// Whether a start on this backend that failed at `stage` had already bound the canvas
-    /// to its context type, so another backend needs a fresh canvas.
-    pub fn bound_canvas(self, stage: InitStage) -> bool {
-        match self {
-            // The WebGL2 context is the first thing a start asks for.
-            Self::WebGl2 => stage != InitStage::Surface,
-            // A WebGPU start finds its adapter and device before it touches the canvas.
-            Self::WebGpu => !matches!(
-                stage,
-                InitStage::Adapter | InitStage::Device | InitStage::Surface
-            ),
-        }
-    }
 }
 
 /// The step of renderer initialization that failed.
@@ -131,15 +103,6 @@ impl InitError {
             detail: detail.to_string(),
         }
     }
-}
-
-/// Runtime renderer capabilities resolved at initialization.
-#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
-pub struct RenderCapabilities {
-    pub webgl2: bool,
-    pub gpu_text_msdf: bool,
-    pub gpu_dynamic_labels: bool,
-    pub compatibility_fallback: bool,
 }
 
 /// Per-frame metrics for perf instrumentation and telemetry.
