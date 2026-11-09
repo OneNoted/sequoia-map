@@ -419,6 +419,60 @@ mod tests {
         }
     }
 
+    fn labels() -> Rebuild {
+        only(|r| {
+            r.static_labels = true;
+            r.dynamic_labels = true;
+            r.icons = true;
+        })
+    }
+
+    #[test]
+    fn leaving_the_laid_out_area_lays_out_labels_again_and_nothing_else() {
+        let mut planner = settled(0.5, 100, i64::MAX);
+        // The view is 2000 x 1600 world units; the laid-out area reaches one view further.
+        let mut camera = at(0.5);
+        camera.pan(-1200.0, 0.0);
+        assert_eq!(
+            planner.plan(&camera, VIEW, &settings(), 100, true),
+            labels()
+        );
+        let coverage = planner.coverage().unwrap();
+        assert!(coverage.contains(&camera.visible(VIEW.0, VIEW.1)));
+        camera.pan(-400.0, 300.0);
+        assert_eq!(
+            planner.plan(&camera, VIEW, &settings(), 100, true),
+            Rebuild::NONE
+        );
+    }
+
+    #[test]
+    fn zooming_far_in_lays_labels_out_for_the_smaller_area() {
+        let mut planner = settled(0.5, 100, i64::MAX);
+        let wide = planner.coverage().unwrap();
+        let mut camera = at(0.5);
+        camera.zoom_at(-1800.0, 500.0, 400.0);
+        let rebuild = planner.plan(&camera, VIEW, &settings(), 100, true);
+        assert_eq!(rebuild, labels());
+        let close = planner.coverage().unwrap();
+        assert!(close.width() < wide.width() / 4.0);
+        assert!(close.contains(&camera.visible(VIEW.0, VIEW.1)));
+    }
+
+    #[test]
+    fn the_laid_out_area_always_holds_the_view() {
+        let mut planner = settled(0.5, 100, i64::MAX);
+        let mut camera = at(0.5);
+        for step in 0..200 {
+            let step = f64::from(step);
+            camera.pan((step * 0.37).sin() * 900.0, (step * 0.23).cos() * 700.0);
+            camera.zoom_at((step * 0.61).sin() * 400.0, 500.0, 400.0);
+            planner.plan(&camera, VIEW, &settings(), 100, true);
+            let coverage = planner.coverage().unwrap();
+            assert!(coverage.contains(&camera.visible(VIEW.0, VIEW.1)), "{step}");
+        }
+    }
+
     #[test]
     fn zooming_never_rebuilds_territories_or_connections_in_any_style() {
         let mut solid = settings();
