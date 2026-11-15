@@ -6,7 +6,10 @@ struct Viewport {
     scale: f32,
     _time: f32,
     resolution: vec2<f32>,
-    _pad1: vec2<f32>,
+    _cooldown: vec2<f32>,
+    _interaction: vec4<i32>,
+    _territory: vec2<f32>,
+    dpr: f32,
 };
 
 @group(0) @binding(0)
@@ -45,8 +48,10 @@ fn vs_halo(in: VertexInput) -> VertexOutput {
 fn glyph(in: VertexInput, color: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
     let world_pos = in.rect.xy + in.quad_pos * in.rect.zw;
-    let glyph_origin = in.rect.xy * vp.scale + vp.offset;
-    let screen = floor(glyph_origin + vec2<f32>(0.5, 0.5)) + (world_pos - in.rect.xy) * vp.scale;
+    // Each glyph starts on a whole device pixel, the grid the camera moves the map on, so labels
+    // slide with the map and keep one rasterization.
+    let glyph_origin = (in.rect.xy * vp.scale + vp.offset) * vp.dpr;
+    let screen = floor(glyph_origin + vec2<f32>(0.5, 0.5)) / vp.dpr + (world_pos - in.rect.xy) * vp.scale;
     let ndc = screen / vp.resolution * 2.0 - 1.0;
     out.clip_position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
     out.uv = mix(in.uv_rect.xy, in.uv_rect.zw, in.quad_pos);

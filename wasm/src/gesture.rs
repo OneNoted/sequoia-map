@@ -9,33 +9,26 @@
 //! Units: pointer positions and [`GestureEvent`] coordinates are canvas CSS pixels, measured
 //! from the canvas's top-left corner at full precision (fractional). The camera maps world
 //! units to the same CSS pixels; the device pixel ratio only matters to the renderer. Times
-//! are event time stamps and frame times on one monotonic clock (`performance.now()`).
+//! are event time stamps on the frame clock (`performance.now()`).
 //!
 //! Invariants:
 //! - Contacts are kept in press order. The two oldest drive the camera; a further contact is
 //!   tracked but ignored until one of them lifts.
-//! - While the driving contacts stay the same, the camera is a function of where they were at
-//!   the frame's sampling time: the world point that was under their centroid stays under it,
-//!   and a pinch scales by the ratio of finger separations. How many events it took to get
-//!   there, or which finger moved first, does not matter.
-//! - Each frame reads the contacts at its own time less the typical (median) lateness of recent
-//!   reports, between the positions they reported, rather than at whichever report last
-//!   arrived. Browsers deliver moves at their own phase relative to frames (Gecko's differs
-//!   from Blink's), so the latest report can be a frame fresher or staler from one frame to
-//!   the next; reading at a steady time moves the map by the same amount on every frame of an
-//!   even drag. A frame whose reports are later than usual carries a contact on along its
-//!   last motion, by at most [`MAX_PREDICTION_MS`] and half its report interval, and only
-//!   while it is still reporting; a contact that stops is shown where it stopped. Reading
-//!   times never go back, and never trail the newest report by more than
-//!   [`MAX_REPORT_DELAY_MS`]. On average the map is no later than the newest report.
+//! - While the driving contacts stay the same, the camera is a function of where they last
+//!   reported: the world point that was under their centroid stays under it, and a pinch
+//!   scales by the ratio of finger separations. How many events it took to get there, or which
+//!   finger moved first, does not matter.
+//! - Each frame shows the driving contacts at their newest reports. The map is never later
+//!   than the input the page has received, and never shows a position no report gave: it
+//!   cannot overshoot where a contact stopped or step back from it. Positions are not
+//!   re-timed from event time stamps, which browsers clamp and stamp on clocks of their own.
 //! - Whenever the driving contacts change (a finger joins, lifts or is cancelled, or a new
 //!   press follows a release), the gesture so far is first concluded with its contacts where
 //!   they last reported, and the contacts that stay take over from there. Reports one gesture
 //!   received are never reinterpreted by the next, so where the map ends up depends on the
 //!   reports, not on when frames ran between them. A remaining finger keeps panning without a
-//!   new press, and a pan released mid-drag finishes, over its last few milliseconds of
-//!   reports, where the finger lifted. When something else moves the camera mid-gesture, the
-//!   gesture holds on afresh from there rather than undo it.
+//!   new press, and a released pan finishes where the finger lifted. When something else
+//!   moves the camera mid-gesture, the gesture holds on afresh from there rather than undo it.
 //! - Zoom limits clamp the scale but never the anchor, and reversing a clamped pinch responds
 //!   at once. Separations under a fingertip count as a fingertip, so nearly touching or
 //!   crossing fingers cannot zoom by an arbitrary ratio.
@@ -50,11 +43,6 @@ use crate::wheel::{TrackpadWheelClassifier, WheelSample, normalize_wheel_zoom_de
 /// The map counts as "in use" for this long after the last gesture input, so timer-driven
 /// label refreshes do not land mid-gesture.
 pub const INTERACTION_SETTLE_MS: f64 = 140.0;
-/// The most a frame reads the contacts behind their newest report. Reports later than this
-/// count as a contact holding still.
-pub const MAX_REPORT_DELAY_MS: f64 = 24.0;
-/// The furthest a frame carries a contact on past its newest report.
-pub const MAX_PREDICTION_MS: f64 = 4.0;
 /// A release within this distance (CSS px) of its press is a tap rather than a drag.
 const MOUSE_TAP_SLOP_PX: f64 = 4.0;
 const TOUCH_TAP_SLOP_PX: f64 = 10.0;
@@ -63,13 +51,6 @@ const SELECT_CLICK_PX: f64 = 4.0;
 /// Two touch contacts are never meaningfully closer than a fingertip (CSS px). Smaller
 /// separations, nearly coincident or crossing fingers, zoom as if they were this far apart.
 const MIN_PINCH_SPAN_PX: f64 = 16.0;
-/// Reports kept per contact: several frames of a touchscreen's or mouse's report rate.
-const TRAIL_LEN: usize = 8;
-/// Frames with new reports whose lateness sets the reading delay: about half a second.
-const LATENESS_WINDOW: usize = 32;
-/// Reports closer together than this give no usable velocity; ones further apart are a
-/// contact that paused, not one in motion.
-const PREDICTION_INTERVALS_MS: std::ops::RangeInclusive<f64> = 2.0..=20.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerKind {
@@ -159,149 +140,6 @@ pub enum GestureEvent {
     SelectBox(ScreenRect),
     /// A rubber band was released without dragging.
     SelectTap { x: f64, y: f64 },
-}
-
-/// What one frame did to the camera.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FrameMotion {
-    pub moved: bool,
-    /// The contacts reported positions later than this frame sampled: draw another frame.
-    pub pending: bool,
-}
-
-/// One reported position.
-#[derive(Clone, Copy, Debug, Default)]
-struct Sample {
-    at_ms: f64,
-    x: f64,
-    y: f64,
-}
-
-/// A contact's recent reports, oldest first, so a frame can read where it was at any time
-/// between them.
-#[derive(Clone, Copy, Debug)]
-struct Trail {
-    samples: [Sample; TRAIL_LEN],
-    len: usize,
-}
-
-impl Trail {
-    fn new(at_ms: f64, (x, y): (f64, f64)) -> Self {
-        let mut samples = [Sample::default(); TRAIL_LEN];
-        samples[0] = Sample { at_ms, x, y };
-        Self { samples, len: 1 }
-    }
-
-    fn push(&mut self, at_ms: f64, (x, y): (f64, f64)) {
-        // A report never predates the one before it.
-        let at_ms = at_ms.max(self.newest().at_ms);
-        if self.len == TRAIL_LEN {
-            self.samples.copy_within(1.., 0);
-            self.len -= 1;
-        }
-        self.samples[self.len] = Sample { at_ms, x, y };
-        self.len += 1;
-    }
-
-    fn newest(&self) -> Sample {
-        self.samples[self.len - 1]
-    }
-
-    /// Where the contact was at `at_ms`: on the line between the reports around it, or at the
-    /// oldest report before them.
-    fn at(&self, at_ms: f64) -> (f64, f64) {
-        let samples = &self.samples[..self.len];
-        match samples.iter().position(|s| s.at_ms > at_ms) {
-            None => (samples[self.len - 1].x, samples[self.len - 1].y),
-            Some(0) => (samples[0].x, samples[0].y),
-            Some(i) => {
-                let (a, b) = (samples[i - 1], samples[i]);
-                let t = (at_ms - a.at_ms) / (b.at_ms - a.at_ms);
-                (a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
-            }
-        }
-    }
-
-    /// Where the contact is about at `at_ms` for a frame drawn at `frame_ms`: [`Self::at`],
-    /// carried on past the newest report along its last motion while the contact is still
-    /// reporting, by at most [`MAX_PREDICTION_MS`] and half its report interval.
-    fn predicted(&self, at_ms: f64, frame_ms: f64) -> (f64, f64) {
-        let newest = self.newest();
-        if at_ms <= newest.at_ms || self.len < 2 {
-            return self.at(at_ms);
-        }
-        let previous = self.samples[self.len - 2];
-        let interval = newest.at_ms - previous.at_ms;
-        let reporting = frame_ms - newest.at_ms <= 2.0 * interval;
-        if !PREDICTION_INTERVALS_MS.contains(&interval) || !reporting {
-            return (newest.x, newest.y);
-        }
-        let ahead = (at_ms - newest.at_ms)
-            .min(MAX_PREDICTION_MS)
-            .min(interval / 2.0)
-            / interval;
-        (
-            newest.x + (newest.x - previous.x) * ahead,
-            newest.y + (newest.y - previous.y) * ahead,
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Contact {
-    pointer: Pointer,
-    trail: Trail,
-    /// Where the last frame showed it, for a gesture that takes over from there.
-    shown: (f64, f64),
-}
-
-/// When each frame reads the driving contacts: the frame time less the median lateness of
-/// recent reports, so the readings are evenly spaced even when the reports are not.
-#[derive(Clone, Copy, Debug)]
-struct SampleClock {
-    /// How far the newest report trailed each recent frame that had a new move.
-    lateness: [f64; LATENESS_WINDOW],
-    recorded: usize,
-    /// The newest report time the last frame saw.
-    seen_ms: f64,
-    sampled_ms: f64,
-}
-
-impl Default for SampleClock {
-    fn default() -> Self {
-        Self {
-            lateness: [0.0; LATENESS_WINDOW],
-            recorded: 0,
-            seen_ms: f64::NEG_INFINITY,
-            sampled_ms: f64::NEG_INFINITY,
-        }
-    }
-}
-
-impl SampleClock {
-    /// The time a frame drawn at `frame_ms` reads the contacts, given until when every
-    /// driving contact's position is known; `moving` when the newest report is a move.
-    fn sample(&mut self, frame_ms: f64, known_ms: f64, moving: bool) -> f64 {
-        if known_ms > self.seen_ms {
-            self.seen_ms = known_ms;
-            // A press is not motion, and how late it arrived says nothing about moves. A report
-            // made after the frame's time stamp (before its callback ran) is early: frames
-            // then read that much after their time stamp, which is still a real report.
-            if moving {
-                self.lateness[self.recorded % LATENESS_WINDOW] =
-                    (frame_ms - known_ms).clamp(-MAX_REPORT_DELAY_MS, MAX_REPORT_DELAY_MS);
-                self.recorded += 1;
-            }
-        }
-        let mut recent = self.lateness;
-        let recent = &mut recent[..self.recorded.min(LATENESS_WINDOW)];
-        recent.sort_by(f64::total_cmp);
-        let delay = recent.get(recent.len() / 2).copied().unwrap_or(0.0);
-        self.sampled_ms = (frame_ms - delay)
-            .max(self.sampled_ms)
-            .clamp(known_ms - MAX_REPORT_DELAY_MS, known_ms + MAX_PREDICTION_MS);
-        self.sampled_ms
-    }
 }
 
 /// Holds the camera to the driving contacts: the world point that was under their centroid
@@ -409,13 +247,6 @@ impl Mode {
     }
 }
 
-/// A released pan finishing the drag its frames had not caught up with yet.
-#[derive(Clone, Copy, Debug)]
-struct Glide {
-    grip: Grip,
-    trail: Trail,
-}
-
 /// A gesture concluded with its contacts where they last reported, for the next frame to
 /// apply before whatever drives the camera next.
 #[derive(Clone, Copy, Debug)]
@@ -428,15 +259,13 @@ struct Finish {
 /// Pointer bookkeeping and camera manipulation for one map canvas.
 #[derive(Debug, Default)]
 pub struct Gestures {
-    /// Contacts currently down, in press order.
-    contacts: Vec<Contact>,
+    /// Contacts currently down, in press order, each where it last reported.
+    contacts: Vec<Pointer>,
     mode: Mode,
     /// A second contact joined (or one was cancelled) since the sequence began: releases no
     /// longer count as taps or edit commits until every contact has lifted.
     spoiled: bool,
     settle_until_ms: f64,
-    clock: SampleClock,
-    glide: Option<Glide>,
     /// Concluded gestures not yet applied, oldest first.
     finishes: Vec<Finish>,
     wheel: TrackpadWheelClassifier,
@@ -448,23 +277,7 @@ impl Gestures {
         // A press for an id that never released means its end event was lost.
         let mut out = self.drop_contact(pointer.id);
         self.settle(now_ms);
-        if self.contacts.is_empty() {
-            // A release still gliding ends where it lifted, as it would have had frames run.
-            if let Some(glide) = self.glide.take() {
-                let newest = glide.trail.newest();
-                self.finishes.push(Finish {
-                    grip: glide.grip,
-                    at: (newest.x, newest.y),
-                    span: None,
-                });
-            }
-            self.clock = SampleClock::default();
-        }
-        self.contacts.push(Contact {
-            pointer,
-            trail: Trail::new(now_ms, pointer.at()),
-            shown: pointer.at(),
-        });
+        self.contacts.push(pointer);
 
         if self.contacts.len() == 1 {
             self.spoiled = false;
@@ -510,14 +323,10 @@ impl Gestures {
     /// A contact moved. `None` when the pointer is not down (a hovering mouse). A pan or
     /// pinch follows the move in the next [`Self::frame`].
     pub fn moved(&mut self, pointer: Pointer, now_ms: f64) -> Option<Vec<GestureEvent>> {
-        let contact = self
-            .contacts
-            .iter_mut()
-            .find(|c| c.pointer.id == pointer.id)?;
-        let kind = contact.pointer.kind;
-        contact.pointer.x = pointer.x;
-        contact.pointer.y = pointer.y;
-        contact.trail.push(now_ms, pointer.at());
+        let contact = self.contacts.iter_mut().find(|c| c.id == pointer.id)?;
+        let kind = contact.kind;
+        contact.x = pointer.x;
+        contact.y = pointer.y;
         self.settle(now_ms);
 
         let here = pointer.at();
@@ -562,116 +371,50 @@ impl Gestures {
         Some(out)
     }
 
-    /// Moves the camera for a frame drawn at `frame_ms`: a pan or pinch follows its contacts
-    /// as they were at this frame's reading time, and a released pan finishes where it lifted.
-    pub fn frame(&mut self, camera: &mut Viewport, frame_ms: f64) -> FrameMotion {
-        let mut finished = false;
+    /// Moves the camera for a frame: concluded gestures finish where their contacts last
+    /// reported, then a pan or pinch follows its contacts to their newest reports. Returns
+    /// whether the camera changed.
+    pub fn frame(&mut self, camera: &mut Viewport) -> bool {
+        let mut moved = false;
         for mut finish in std::mem::take(&mut self.finishes) {
-            finished |= finish.grip.follow(camera, finish.at, finish.span);
+            moved |= finish.grip.follow(camera, finish.at, finish.span);
         }
-        let motion = self.follow(camera, frame_ms);
-        FrameMotion {
-            moved: finished || motion.moved,
-            pending: motion.pending,
-        }
-    }
-
-    fn follow(&mut self, camera: &mut Viewport, frame_ms: f64) -> FrameMotion {
-        let (driving, grip): ([Option<usize>; 2], &mut Grip) = match &mut self.mode {
-            Mode::Pan { id, grip, .. } => ([index_of(&self.contacts, *id), None], grip),
-            Mode::Pinch { a, b, grip } => (
-                [index_of(&self.contacts, *a), index_of(&self.contacts, *b)],
-                grip,
-            ),
-            Mode::Idle => match &mut self.glide {
-                Some(glide) => {
-                    // The released finger's reports are complete: no carrying on past them.
-                    let newest = glide.trail.newest().at_ms;
-                    let at_ms = self.clock.sample(frame_ms, newest, false);
-                    let at = glide.trail.at(at_ms);
-                    let moved = glide.grip.follow(camera, at, None);
-                    let pending = at_ms < newest;
-                    if !pending {
-                        self.glide = None;
-                    }
-                    return FrameMotion { moved, pending };
-                }
-                None => return FrameMotion::default(),
-            },
-            Mode::Edit { .. } | Mode::Handled { .. } => return FrameMotion::default(),
+        let contacts = &self.contacts;
+        let at = |id: i32| contacts.iter().find(|c| c.id == id).map(Pointer::at);
+        let (driving, grip) = match &mut self.mode {
+            Mode::Pan { id, grip, .. } => ([at(*id), None], grip),
+            Mode::Pinch { a, b, grip } => ([at(*a), at(*b)], grip),
+            Mode::Idle | Mode::Edit { .. } | Mode::Handled { .. } => return moved,
         };
-        let trails = driving.map(|index| index.map(|i| self.contacts[i].trail));
-        let reported = || trails.iter().flatten().map(|trail| trail.newest().at_ms);
-        let Some(newest_ms) = reported().reduce(f64::max) else {
-            return FrameMotion::default();
-        };
-        // Read no later than every contact's position is known. Reports are never later
-        // than the reading delay's limit, so one silent since before then is holding still.
-        let known_ms = reported()
-            .map(|at_ms| at_ms.max(frame_ms - MAX_REPORT_DELAY_MS))
-            .fold(newest_ms, f64::min);
-        let moving = trails.iter().flatten().any(|trail| trail.len > 1);
-        let at_ms = self.clock.sample(frame_ms, known_ms, moving);
-        let shown = trails.map(|trail| trail.map(|trail| trail.predicted(at_ms, frame_ms)));
-        let (at, span) = match shown {
-            [Some(a), Some(b)] => (midpoint(a, b), Some(distance(a, b))),
-            [Some(only), None] | [None, Some(only)] => (only, None),
-            [None, None] => return FrameMotion::default(),
-        };
-        let moved = grip.follow(camera, at, span);
-        for (index, position) in driving.into_iter().zip(shown) {
-            if let (Some(index), Some(position)) = (index, position) {
-                self.contacts[index].shown = position;
+        moved
+            | match driving {
+                [Some(a), Some(b)] => grip.follow(camera, midpoint(a, b), Some(distance(a, b))),
+                [Some(only), None] | [None, Some(only)] => grip.follow(camera, only, None),
+                [None, None] => false,
             }
-        }
-        // Another frame catches up with reports read later, or settles a contact carried on
-        // past its newest report.
-        let carried = trails.iter().zip(shown).any(|(trail, shown)| {
-            trail.zip(shown).is_some_and(|(trail, shown)| {
-                let newest = trail.newest();
-                shown != (newest.x, newest.y) && at_ms > newest.at_ms
-            })
-        });
-        let pending = at_ms < newest_ms || carried;
-        FrameMotion { moved, pending }
     }
 
     /// A contact lifted normally.
     pub fn released(&mut self, pointer: Pointer, now_ms: f64) -> Vec<GestureEvent> {
-        let Some(index) = self
-            .contacts
-            .iter()
-            .position(|c| c.pointer.id == pointer.id)
-        else {
+        let Some(index) = index_of(&self.contacts, pointer.id) else {
             return Vec::new();
         };
-        let mut contact = self.contacts.remove(index);
-        contact.trail.push(now_ms, pointer.at());
+        let contact = self.contacts.remove(index);
         self.settle(now_ms);
 
         let here = pointer.at();
         let mut out = Vec::new();
-        if self.mode.involves(contact.pointer.id) {
+        if self.mode.involves(contact.id) {
             match self.mode {
-                Mode::Pan {
-                    origin,
-                    travel,
-                    grip,
-                    ..
-                } => {
+                Mode::Pan { origin, travel, .. } => {
                     let travel = travel.max(distance(origin, here));
-                    if !self.spoiled && travel <= contact.pointer.kind.tap_slop() {
+                    if !self.spoiled && travel <= contact.kind.tap_slop() {
                         out.push(GestureEvent::Tap {
                             x: here.0,
                             y: here.1,
                         });
                     }
-                    if self.contacts.is_empty() {
-                        self.glide = Some(Glide {
-                            grip,
-                            trail: contact.trail,
-                        });
-                    }
+                    self.conclude(Some((contact.id, here)));
                 }
                 Mode::Edit {
                     press,
@@ -704,7 +447,7 @@ impl Gestures {
                         }
                     }
                 }
-                Mode::Pinch { .. } => self.conclude(Some((contact.pointer.id, here))),
+                Mode::Pinch { .. } => self.conclude(Some((contact.id, here))),
                 Mode::Idle | Mode::Handled { .. } => {}
             }
             self.rebase();
@@ -717,7 +460,7 @@ impl Gestures {
 
     /// A contact was cancelled or lost its capture. Nothing it was doing commits.
     pub fn cancelled(&mut self, pointer_id: i32, now_ms: f64) -> Vec<GestureEvent> {
-        if !self.contacts.iter().any(|c| c.pointer.id == pointer_id) {
+        if index_of(&self.contacts, pointer_id).is_none() {
             return Vec::new();
         }
         self.settle(now_ms);
@@ -757,7 +500,6 @@ impl Gestures {
         end_preview(self.mode, &mut out);
         self.contacts.clear();
         self.mode = Mode::Idle;
-        self.glide = None;
         self.finishes.clear();
         self.spoiled = false;
         out
@@ -765,17 +507,13 @@ impl Gestures {
 
     fn drop_contact(&mut self, pointer_id: i32) -> Vec<GestureEvent> {
         let mut out = Vec::new();
-        let Some(index) = self
-            .contacts
-            .iter()
-            .position(|c| c.pointer.id == pointer_id)
-        else {
+        let Some(index) = index_of(&self.contacts, pointer_id) else {
             return out;
         };
-        let newest = self.contacts.remove(index).trail.newest();
+        let last = self.contacts.remove(index).at();
         if self.mode.involves(pointer_id) {
             end_preview(self.mode, &mut out);
-            self.conclude(Some((pointer_id, (newest.x, newest.y))));
+            self.conclude(Some((pointer_id, last)));
             self.rebase();
         }
         // Whatever remains of this sequence must not turn into a tap.
@@ -785,28 +523,20 @@ impl Gestures {
 
     /// Concludes the pan or pinch driving the camera with every report its contacts delivered,
     /// `departing` (a contact leaving, and where it last was) included, for the next frame to
-    /// apply first. The driving contacts that stay start afresh from their last reports, so
-    /// whatever drives the camera next does not reinterpret what this gesture received.
+    /// apply first, so whatever drives the camera next does not reinterpret what this gesture
+    /// received.
     fn conclude(&mut self, departing: Option<(i32, (f64, f64))>) {
         let (grip, driving) = match self.mode {
             Mode::Pan { id, grip, .. } => (grip, [Some(id), None]),
             Mode::Pinch { a, b, grip } => (grip, [Some(a), Some(b)]),
             Mode::Idle | Mode::Edit { .. } | Mode::Handled { .. } => return,
         };
-        let contacts = &mut self.contacts;
         let reported = driving.map(|id| {
             let id = id?;
-            if let Some((gone, at)) = departing
-                && gone == id
-            {
-                return Some(at);
+            match departing {
+                Some((gone, at)) if gone == id => Some(at),
+                _ => self.contacts.iter().find(|c| c.id == id).map(Pointer::at),
             }
-            let contact = contacts.iter_mut().find(|c| c.pointer.id == id)?;
-            let newest = contact.trail.newest();
-            let at = (newest.x, newest.y);
-            contact.trail = Trail::new(newest.at_ms, at);
-            contact.shown = at;
-            Some(at)
         });
         let (at, span) = match reported {
             [Some(a), Some(b)] => (midpoint(a, b), Some(distance(a, b))),
@@ -816,46 +546,21 @@ impl Gestures {
         self.finishes.push(Finish { grip, at, span });
     }
 
-    /// Hands the gesture to the remaining contacts, from where the last frame showed the ones
-    /// that drove it and from where the others are now.
+    /// Hands the gesture to the remaining contacts, from where they last reported.
     fn rebase(&mut self) {
-        let was_driving = |id: i32| match self.mode {
-            Mode::Pan { id: pan, .. } => id == pan,
-            Mode::Pinch { a, b, .. } => id == a || id == b,
-            _ => false,
-        };
-        let joining: Vec<usize> = self
-            .contacts
-            .iter()
-            .take(2)
-            .enumerate()
-            .filter(|(_, contact)| !was_driving(contact.pointer.id))
-            .map(|(index, _)| index)
-            .collect();
-        for index in joining {
-            // Its earlier moves drove nothing, so the gesture must not replay them.
-            let contact = &mut self.contacts[index];
-            let newest = contact.trail.newest();
-            contact.trail = Trail::new(newest.at_ms, (newest.x, newest.y));
-            contact.shown = (newest.x, newest.y);
-        }
-        let at = |contact: &Contact| contact.shown;
         self.mode = match self.contacts.as_slice() {
             [] => Mode::Idle,
             [only] => Mode::Pan {
-                id: only.pointer.id,
-                origin: only.pointer.at(),
+                id: only.id,
+                origin: only.at(),
                 travel: 0.0,
-                grip: Grip::new(at(only), None),
+                grip: Grip::new(only.at(), None),
             },
-            [a, b, ..] => {
-                let (pa, pb) = (at(a), at(b));
-                Mode::Pinch {
-                    a: a.pointer.id,
-                    b: b.pointer.id,
-                    grip: Grip::new(midpoint(pa, pb), Some(distance(pa, pb))),
-                }
-            }
+            [a, b, ..] => Mode::Pinch {
+                a: a.id,
+                b: b.id,
+                grip: Grip::new(midpoint(a.at(), b.at()), Some(distance(a.at(), b.at()))),
+            },
         };
     }
 
@@ -864,8 +569,8 @@ impl Gestures {
     }
 }
 
-fn index_of(contacts: &[Contact], id: i32) -> Option<usize> {
-    contacts.iter().position(|c| c.pointer.id == id)
+fn index_of(contacts: &[Pointer], id: i32) -> Option<usize> {
+    contacts.iter().position(|c| c.id == id)
 }
 
 fn commit_event(press: Press, at: (f64, f64)) -> GestureEvent {
@@ -929,7 +634,7 @@ mod tests {
         }
     }
 
-    /// Moves a contact, then draws a frame late enough to show the contacts where they are.
+    /// Moves a contact, then draws a frame.
     fn drag(
         gestures: &mut Gestures,
         cam: &mut Viewport,
@@ -937,7 +642,7 @@ mod tests {
         at_ms: f64,
     ) -> Option<Vec<GestureEvent>> {
         let out = gestures.moved(pointer, at_ms);
-        gestures.frame(cam, at_ms + MAX_REPORT_DELAY_MS);
+        gestures.frame(cam);
         out
     }
 
@@ -1232,10 +937,10 @@ mod tests {
         let mut cam = camera();
         gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
         gestures.press(touch(2, 200.0, 300.0), Press::Pan, 0.0);
-        gestures.frame(&mut cam, 30.0);
+        gestures.frame(&mut cam);
         gestures.moved(touch(2, 300.0, 300.0), 40.0);
         leave(&mut gestures);
-        gestures.frame(&mut cam, 60.0);
+        gestures.frame(&mut cam);
         let spread = cam;
         drag(&mut gestures, &mut cam, touch(1, 120.0, 300.0), 70.0);
         (spread, cam)
@@ -1267,15 +972,15 @@ mod tests {
         let mut cam = camera();
         gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
         gestures.press(touch(2, 200.0, 300.0), Press::Pan, 0.0);
-        gestures.frame(&mut cam, 30.0);
+        gestures.frame(&mut cam);
         gestures.moved(touch(1, 50.0, 300.0), 40.0);
         gestures.moved(touch(2, 250.0, 300.0), 41.0);
         if frame_before_lift {
-            gestures.frame(&mut cam, 44.0);
+            gestures.frame(&mut cam);
         }
         gestures.released(touch(2, 250.0, 300.0), 46.0);
-        for frame_ms in [60.0, 77.0, 94.0] {
-            gestures.frame(&mut cam, frame_ms);
+        for _ in 0..3 {
+            gestures.frame(&mut cam);
         }
         let pinched = cam;
         drag(&mut gestures, &mut cam, touch(1, 70.0, 300.0), 100.0);
@@ -1639,226 +1344,98 @@ mod tests {
     /// some frames get two new reports and some none.
     const DELIVERY_MS: [f64; 8] = [0.5, 6.0, 2.5, 8.5, 1.0, 5.0, 3.5, 7.5];
 
-    /// A finger dragged right at `speed` px/ms from x = 100, reporting every `REPORT_MS` with
-    /// exact time stamps; the page receives each report `DELIVERY_MS` late. For each frame:
-    /// where the map shows the finger, and where the newest received report put it.
-    fn even_drag(speed: f64, frames: usize) -> Vec<(f64, f64)> {
+    /// Reports `(arrival, report time, pointer)` made every `REPORT_MS` up to `until_ms` by
+    /// `position`, reaching the page `DELIVERY_MS` late, in arrival order.
+    fn reports(
+        id: i32,
+        until_ms: f64,
+        phase_ms: f64,
+        position: impl Fn(f64) -> (f64, f64),
+    ) -> Vec<(f64, f64, Pointer)> {
+        (1..)
+            .map(|k| f64::from(k) * REPORT_MS + phase_ms)
+            .take_while(|at_ms| *at_ms <= until_ms)
+            .map(|at_ms| {
+                let late = DELIVERY_MS[(at_ms / 4.0) as usize % DELIVERY_MS.len()];
+                let (x, y) = position(at_ms);
+                (at_ms + late, at_ms, touch(id, x, y))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_frame_shows_the_newest_report_and_nothing_past_it() {
+        // A finger dragged right at 1 px/ms stops after 200 ms; frames run at 60 Hz throughout.
         let mut gestures = Gestures::default();
         let mut cam = camera();
         let world = cam.screen_to_world(100.0, 300.0);
         gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
-        let mut next = 1;
-        let mut latest_x = 100.0;
-        let mut shown = Vec::new();
-        for frame in 1..=frames {
-            let frame_ms = frame as f64 * FRAME_MS;
-            loop {
-                let at_ms = next as f64 * REPORT_MS;
-                if at_ms + DELIVERY_MS[next % DELIVERY_MS.len()] > frame_ms {
-                    break;
-                }
-                latest_x = 100.0 + speed * at_ms;
-                gestures.moved(touch(1, latest_x, 300.0), at_ms);
-                next += 1;
+        let mut arriving = reports(1, 200.0, 0.0, |at_ms| (100.0 + at_ms, 300.0))
+            .into_iter()
+            .peekable();
+        let (mut newest, mut previous) = (100.0, 100.0);
+        for frame in 1..=30 {
+            let frame_ms = f64::from(frame) * FRAME_MS;
+            while let Some((_, at_ms, pointer)) = arriving.next_if(|r| r.0 <= frame_ms) {
+                newest = pointer.x;
+                gestures.moved(pointer, at_ms);
             }
-            gestures.frame(&mut cam, frame_ms);
-            shown.push((cam.world_to_screen(world.0, world.1).0, latest_x));
+            gestures.frame(&mut cam);
+            let shown = cam.world_to_screen(world.0, world.1).0;
+            assert_close(shown, newest);
+            assert!(shown >= previous, "frame {frame} stepped back");
+            previous = shown;
         }
-        shown
-    }
-
-    fn steps(values: &[f64]) -> Vec<f64> {
-        values.windows(2).map(|w| w[1] - w[0]).collect()
-    }
-
-    /// How a drag looks frame by frame against the even step `expected`: frames that did not
-    /// move, and frames off the even step by more than a quarter.
-    fn unevenness(steps: &[f64], expected: f64) -> (usize, usize) {
-        let frozen = steps
-            .iter()
-            .filter(|step| step.abs() < expected * 0.01)
-            .count();
-        let uneven = steps
-            .iter()
-            .filter(|step| (*step / expected - 1.0).abs() > 0.25)
-            .count();
-        (frozen, uneven)
-    }
-
-    #[test]
-    fn a_drag_moves_on_every_frame_more_evenly_than_its_reports_and_no_later() {
-        let speed = 0.4;
-        let drag = even_drag(speed, 120);
-        let expected = speed * FRAME_MS;
-        let (shown, newest): (Vec<f64>, Vec<f64>) = drag[2..].iter().copied().unzip();
-        let (raw_frozen, raw_uneven) = unevenness(&steps(&newest), expected);
-        let (frozen, uneven) = unevenness(&steps(&shown), expected);
-        // Showing the newest report moves the map by a step and a half on some frames and half a
-        // step on others.
-        assert!(raw_uneven > 10, "{raw_frozen} {raw_uneven}");
-        assert_eq!(frozen, 0, "every frame of a drag moves the map");
+        assert_close(previous, 300.0);
         assert!(
-            uneven * 2 < raw_uneven,
-            "{uneven} uneven frames against {raw_uneven}"
-        );
-        // How long ago the finger was where each frame shows it, on average: no longer than
-        // for the newest report.
-        let lag = |x: &f64| (x - 100.0) / speed;
-        let behind = |positions: &[f64]| {
-            positions
-                .iter()
-                .enumerate()
-                .map(|(frame, x)| (frame + 3) as f64 * FRAME_MS - lag(x))
-                .sum::<f64>()
-                / positions.len() as f64
-        };
-        assert!(
-            behind(&shown) <= behind(&newest),
-            "{} ms behind against {} ms",
-            behind(&shown),
-            behind(&newest)
+            !gestures.frame(&mut cam),
+            "a finger holding still moves nothing"
         );
     }
 
     #[test]
-    fn a_finger_that_stops_is_shown_where_it_stopped() {
-        let speed = 1.0;
-        let mut gestures = Gestures::default();
-        let mut cam = camera();
-        let world = cam.screen_to_world(100.0, 300.0);
-        gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
-        let shown = |cam: &Viewport| cam.world_to_screen(world.0, world.1).0;
-        // Reports every 8 ms up to 96 ms, each arriving 6 ms late, then nothing.
-        let stopped_x = 100.0 + speed * 96.0;
-        let mut furthest: f64 = 0.0;
-        let mut frame_ms = 0.0;
-        let mut next = 1;
-        for _ in 0..20 {
-            frame_ms += FRAME_MS;
-            while next <= 12 && f64::from(next) * REPORT_MS + 6.0 <= frame_ms {
-                let at_ms = f64::from(next) * REPORT_MS;
-                gestures.moved(touch(1, 100.0 + speed * at_ms, 300.0), at_ms);
-                next += 1;
-            }
-            gestures.frame(&mut cam, frame_ms);
-            furthest = furthest.max(shown(&cam));
-        }
-        assert!(
-            furthest <= stopped_x + speed * MAX_PREDICTION_MS,
-            "carried {} px past the stop",
-            furthest - stopped_x
-        );
-        assert_close(shown(&cam), stopped_x);
-        assert!(!gestures.frame(&mut cam, frame_ms + FRAME_MS).pending);
-    }
-
-    #[test]
-    fn a_released_drag_glides_to_where_the_finger_lifted() {
-        let mut gestures = Gestures::default();
-        let mut cam = camera();
-        let world = cam.screen_to_world(100.0, 300.0);
-        gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
-        let mut frame_ms = 0.0;
-        for k in 1..=12 {
-            let at_ms = f64::from(k) * REPORT_MS;
-            gestures.moved(touch(1, 100.0 + at_ms, 300.0), at_ms);
-            if at_ms - frame_ms >= FRAME_MS {
-                frame_ms += FRAME_MS;
-                // Each frame starts well after the reports it gets.
-                gestures.frame(&mut cam, frame_ms + 12.0);
-            }
-        }
-        let lifted = (100.0 + 12.0 * REPORT_MS + 3.0, 300.0);
-        assert!(
-            gestures
-                .released(touch(1, lifted.0, lifted.1), 100.0)
-                .is_empty()
-        );
-        let mut previous = cam.offset_x;
-        let mut frames = 0;
-        loop {
-            frame_ms += FRAME_MS;
-            let motion = gestures.frame(&mut cam, frame_ms);
-            assert!(cam.offset_x >= previous, "the glide never backs up");
-            previous = cam.offset_x;
-            frames += 1;
-            if !motion.pending {
-                break;
-            }
-            assert!(frames < 10, "the glide ends");
-        }
-        assert_world_under(&cam, world, lifted);
-        assert_eq!(
-            gestures.frame(&mut cam, frame_ms + FRAME_MS),
-            FrameMotion::default()
-        );
-    }
-
-    #[test]
-    fn a_finger_that_holds_still_stops_asking_for_frames() {
-        let mut gestures = Gestures::default();
-        let mut cam = camera();
-        let world = cam.screen_to_world(100.0, 300.0);
-        gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
-        gestures.moved(touch(1, 130.0, 300.0), 8.0);
-        gestures.moved(touch(1, 160.0, 290.0), 16.0);
-        let mut frame_ms = 30.0;
-        let mut motion = gestures.frame(&mut cam, frame_ms);
-        let mut frames = 1;
-        while motion.pending {
-            frame_ms += FRAME_MS;
-            motion = gestures.frame(&mut cam, frame_ms);
-            frames += 1;
-            assert!(frames < 5, "a still finger settles within the report delay");
-        }
-        assert_world_under(&cam, world, (160.0, 290.0));
-        assert!(!gestures.frame(&mut cam, frame_ms + FRAME_MS).moved);
-    }
-
-    #[test]
-    fn a_pinch_reported_one_finger_at_a_time_zooms_on_every_frame_as_evenly_as_its_reports() {
+    fn a_pinch_reported_one_finger_at_a_time_shows_both_fingers_newest_reports() {
         let mut gestures = Gestures::default();
         let mut cam = camera();
         let (cx, cy) = (400.0, 300.0);
-        // Spreading at a constant rate of zoom: four times as far apart in a second.
+        // Spreading at a constant rate of zoom, the fingers reporting half a report apart.
         let half = |at_ms: f64| 40.0 * (4.0_f64.ln() * at_ms / 1000.0).exp();
         gestures.press(touch(1, cx - half(0.0), cy), Press::Pan, 0.0);
         gestures.press(touch(2, cx + half(0.0), cy), Press::Pan, 0.0);
-        // The fingers report out of step, half a report apart, and arrive late by varying
-        // amounts.
-        let mut reports: Vec<(f64, f64, Pointer)> = (1..200)
-            .flat_map(|k| {
-                let a = f64::from(k) * REPORT_MS;
-                let b = a + REPORT_MS / 2.0;
-                let late = |at: f64| DELIVERY_MS[(at / 4.0) as usize % DELIVERY_MS.len()];
-                [
-                    (a + late(a), a, touch(1, cx - half(a), cy)),
-                    (b + late(b), b, touch(2, cx + half(b), cy)),
-                ]
-            })
-            .collect();
-        reports.sort_by(|x, y| x.0.total_cmp(&y.0));
-        let mut reports = reports.into_iter().peekable();
+        let mut arriving = reports(1, 1000.0, 0.0, |at| (cx - half(at), cy));
+        arriving.extend(reports(2, 1000.0, REPORT_MS / 2.0, |at| {
+            (cx + half(at), cy)
+        }));
+        arriving.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut arriving = arriving.into_iter().peekable();
         let start = cam.scale;
-        let (mut newest, mut scales, mut raw) = ([half(0.0); 2], Vec::new(), Vec::new());
+        let focus = cam.screen_to_world(cx, cy);
+        let mut newest = [(cx - half(0.0), cy), (cx + half(0.0), cy)];
         for frame in 1..=60 {
             let frame_ms = f64::from(frame) * FRAME_MS;
-            while let Some((_, at_ms, pointer)) = reports.next_if(|r| r.0 <= frame_ms) {
-                newest[(pointer.id - 1) as usize] = (pointer.x - cx).abs();
+            while let Some((_, at_ms, pointer)) = arriving.next_if(|r| r.0 <= frame_ms) {
+                newest[(pointer.id - 1) as usize] = pointer.at();
                 gestures.moved(pointer, at_ms);
             }
-            gestures.frame(&mut cam, frame_ms);
-            scales.push(cam.scale.ln());
-            raw.push((start * (newest[0] + newest[1]) / (2.0 * half(0.0))).ln());
+            gestures.frame(&mut cam);
+            let [a, b] = newest;
+            assert_close(cam.scale / start, distance(a, b) / (2.0 * half(0.0)));
+            assert_world_under(&cam, focus, midpoint(a, b));
         }
-        let expected = 4.0_f64.ln() * FRAME_MS / 1000.0;
-        let (raw_frozen, raw_uneven) = unevenness(&steps(&raw[2..]), expected);
-        let (frozen, uneven) = unevenness(&steps(&scales[2..]), expected);
-        assert_eq!((frozen, raw_frozen), (0, 0));
-        assert!(
-            uneven <= raw_uneven,
-            "{uneven} uneven frames against {raw_uneven}"
-        );
+    }
+
+    #[test]
+    fn a_released_drag_ends_where_the_finger_lifted_in_the_next_frame() {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        let world = cam.screen_to_world(100.0, 300.0);
+        gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
+        drag(&mut gestures, &mut cam, touch(1, 150.0, 290.0), 8.0);
+        gestures.moved(touch(1, 170.0, 285.0), 16.0);
+        assert!(gestures.released(touch(1, 173.0, 284.0), 20.0).is_empty());
+        assert!(gestures.frame(&mut cam));
+        assert_world_under(&cam, world, (173.0, 284.0));
+        assert!(!gestures.frame(&mut cam), "nothing is left to show");
     }
 
     #[derive(Clone, Copy)]
@@ -1870,15 +1447,15 @@ mod tests {
     }
 
     /// Runs `script` (an event every `REPORT_MS`) with frames at `frames(event time)` before
-    /// each event, then frames until nothing is pending; returns the final camera.
+    /// each event, then one frame; returns the final camera.
     fn play(script: &[Ev], frames: &dyn Fn(f64, f64) -> Vec<f64>) -> Viewport {
         let mut gestures = Gestures::default();
         let mut cam = camera();
         let mut last = 0.0;
         for (n, &ev) in script.iter().enumerate() {
             let at = (n + 1) as f64 * REPORT_MS;
-            for frame_ms in frames(last, at) {
-                gestures.frame(&mut cam, frame_ms);
+            for _ in frames(last, at) {
+                gestures.frame(&mut cam);
             }
             last = at;
             match ev {
@@ -1896,12 +1473,8 @@ mod tests {
                 }
             }
         }
-        let mut frame_ms = last;
-        for _ in 0..30 {
-            frame_ms += FRAME_MS;
-            gestures.frame(&mut cam, frame_ms);
-        }
-        assert!(!gestures.frame(&mut cam, frame_ms + FRAME_MS).pending);
+        gestures.frame(&mut cam);
+        assert!(!gestures.frame(&mut cam), "nothing is left to show");
         cam
     }
 

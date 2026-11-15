@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use sequoia_map_engine::gesture::{FrameMotion, Gestures, ScreenRect};
+use sequoia_map_engine::gesture::{Gestures, ScreenRect};
 use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::{Rebuild, SceneChange, ScenePlanner, TerritoryDigest};
 use sequoia_map_engine::spatial::SpatialGrid;
@@ -45,7 +45,8 @@ pub(crate) struct MapState {
     pub(crate) stroke_hit: Option<String>,
     pub(crate) canvas_box: CanvasBox,
     pub(crate) surface: Surface,
-    /// The camera the last frame drew with.
+    /// The camera the last frame drew, as the gestures and host hold it: before it was rounded
+    /// onto device pixels for drawing.
     drawn_camera: Option<Viewport>,
     planner: ScenePlanner,
     renderer: Option<GpuRenderer>,
@@ -484,18 +485,16 @@ fn render_frame(
     };
     renderer.resize(width, height, dpr as f32);
 
-    // Pans and pinches move the camera here, once per frame, sampled for this frame's time.
-    let mut motion = FrameMotion::default();
-    map.camera.update_if(|view| {
-        motion = gestures.frame(view, frame_ms);
-        motion.moved
-    });
+    // Pans and pinches move the camera here, once per frame, to where their contacts last
+    // reported.
+    map.camera.update_if(|view| gestures.frame(view));
     let inputs = map.inputs;
     let now_ms = js_sys::Date::now();
     // Gesture times are event time stamps, on the frame clock.
     let interacting = gestures.is_interacting(frame_ms);
-    let camera = map.camera.get_untracked();
-    *drawn_camera = Some(camera);
+    *drawn_camera = Some(map.camera.get_untracked());
+    // Drawn on whole device pixels, so a pan slides every layer by the same pixels.
+    let camera = map.camera.get_untracked().on_device_grid(dpr);
     let clock_secs = inputs.clock_secs.get_untracked();
     let settings = inputs.settings.get_untracked();
     let rebuild = planner.plan(
@@ -562,7 +561,7 @@ fn render_frame(
             interacting,
         }));
     }
-    outcome.animating || motion.pending
+    outcome.animating
 }
 
 fn with_optional<T: Send + Sync + 'static, R>(

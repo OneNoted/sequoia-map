@@ -110,13 +110,16 @@ struct ViewportUniform {
     /// hover or selection rewrites this uniform instead of every territory instance.
     interaction: [i32; 4],
     /// How the territory opacity fades or firms the resting fill and border (see
-    /// `RenderSettings::territory_fill`), then padding. Only the territory shader reads it.
-    territory: [f32; 4],
+    /// `RenderSettings::territory_fill`). Only the territory shader reads it.
+    territory: [f32; 2],
+    /// Device pixels per CSS pixel: the text shader starts glyphs on whole device pixels.
+    dpr: f32,
+    _pad: f32,
 }
 
 const NO_INTERACTION: [i32; 4] = [NO_INSTANCE, NO_INSTANCE, 0, 0];
 /// The territory overlay as it has always been drawn: the minimap's overview, and the default.
-const FULL_TERRITORY: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+const FULL_TERRITORY: [f32; 2] = [1.0, 0.0];
 
 /// Cooling territories show the fill instead of the bar.
 const COOLDOWN_FILL: u32 = 1;
@@ -1251,6 +1254,8 @@ impl GpuRenderer {
                 cooldown: [0.0, 0.0],
                 interaction: NO_INTERACTION,
                 territory: FULL_TERRITORY,
+                dpr,
+                _pad: 0.0,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1274,6 +1279,8 @@ impl GpuRenderer {
                     cooldown: [0.0, 0.0],
                     interaction: NO_INTERACTION,
                     territory: FULL_TERRITORY,
+                    dpr,
+                    _pad: 0.0,
                 }]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -3863,8 +3870,10 @@ impl GpuRenderer {
                 interaction: self.interaction(frame),
                 territory: {
                     let (fade, solid) = frame.settings.territory_fill();
-                    [fade, solid, 0.0, 0.0]
+                    [fade, solid]
                 },
+                dpr: self.dpr,
+                _pad: 0.0,
             }]),
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
@@ -4462,6 +4471,8 @@ impl GpuRenderer {
                 cooldown: [0.0, 0.0],
                 interaction: NO_INTERACTION,
                 territory: FULL_TERRITORY,
+                dpr,
+                _pad: 0.0,
             }]),
         );
         let bg_color = [19.0 / 255.0, 22.0 / 255.0, 31.0 / 255.0, 0.88_f32];
@@ -4580,6 +4591,8 @@ impl GpuRenderer {
                 cooldown: self.cooldown_uniform(frame),
                 interaction: self.interaction(frame),
                 territory: FULL_TERRITORY,
+                dpr: self.dpr,
+                _pad: 0.0,
             }]),
         );
         // Clip-space rectangle of the minimap for the terrain blit.
