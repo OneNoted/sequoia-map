@@ -63,26 +63,13 @@ async fn run_cleanup_once(
             }
         };
 
-    let total_season_observations =
-        match sqlx::query("DELETE FROM season_guild_observations WHERE observed_at < $1")
-            .bind(season_cutoff)
-            .execute(pool)
-            .await
-        {
-            Ok(result) => result.rows_affected() as i64,
-            Err(e) => {
-                warn!("Failed to delete old season guild observations: {e}");
-                0
-            }
-        };
-    // A guild's newest observation is older than the cutoff only once all of them are gone.
-    if let Err(e) = sqlx::query("DELETE FROM season_guild_latest WHERE observed_at < $1")
-        .bind(season_cutoff)
-        .execute(pool)
-        .await
-    {
-        warn!("Failed to delete old season guild latest rows: {e}");
-    }
+    let total_season_observations = match expire_season_observations(pool, season_cutoff).await {
+        Ok(removed) => removed,
+        Err(e) => {
+            warn!("Failed to delete old season guild observations: {e}");
+            0
+        }
+    };
 
     if total_events > 0
         || total_snapshots > 0
@@ -93,6 +80,27 @@ async fn run_cleanup_once(
             "Retention cleanup: removed {total_events} events and {total_snapshots} snapshots older than {territory_retention_days}d; removed {total_scalar_samples} scalar samples and {total_season_observations} season observations older than {season_retention_days}d"
         );
     }
+}
+
+/// Delete season observations older than the cutoff, along with latest rows that no longer
+/// have one. Both happen in one transaction so a latest row never outlives its observations.
+async fn expire_season_observations(
+    pool: &sqlx::PgPool,
+    season_cutoff: chrono::DateTime<chrono::Utc>,
+) -> Result<i64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let removed = sqlx::query("DELETE FROM season_guild_observations WHERE observed_at < $1")
+        .bind(season_cutoff)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    // A guild's newest observation is older than the cutoff only once all of them are gone.
+    sqlx::query("DELETE FROM season_guild_latest WHERE observed_at < $1")
+        .bind(season_cutoff)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(removed as i64)
 }
 
 #[cfg(test)]
