@@ -44,12 +44,19 @@ REFERENCING NEW TABLE AS inserted
 FOR EACH STATEMENT
 EXECUTE FUNCTION track_season_guild_latest();
 
--- One pass over the existing history; the sort spills less with more memory.
-SET LOCAL work_mem = '64MB';
-
+-- One pass over the table finds each guild's newest timestamp per season; the primary key
+-- (observed_at, guild_name) then fetches those rows. Sorting the whole table by guild
+-- instead took over a minute on production.
 INSERT INTO season_guild_latest
     (season_id, guild_name, guild_uuid, guild_prefix, territory_count, season_rating, observed_at)
-SELECT DISTINCT ON (season_id, guild_name)
-    season_id, guild_name, guild_uuid, guild_prefix, territory_count, season_rating, observed_at
-FROM season_guild_observations
-ORDER BY season_id, guild_name, observed_at DESC;
+SELECT observation.season_id, observation.guild_name, observation.guild_uuid,
+    observation.guild_prefix, observation.territory_count, observation.season_rating,
+    observation.observed_at
+FROM (
+    SELECT season_id, guild_name, MAX(observed_at) AS observed_at
+    FROM season_guild_observations
+    GROUP BY season_id, guild_name
+) newest
+JOIN season_guild_observations observation
+    ON observation.observed_at = newest.observed_at
+   AND observation.guild_name = newest.guild_name;
