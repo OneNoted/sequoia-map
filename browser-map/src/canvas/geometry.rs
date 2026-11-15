@@ -44,6 +44,8 @@ impl CanvasBox {
         let agrees =
             |device: u32, css: f64| (f64::from(device) - css * ratio).abs() <= DEVICE_BOX_SNAP_PX;
         if let Some((width, height)) = self.device
+            && width > 0
+            && height > 0
             && agrees(width, css_width)
             && agrees(height, css_height)
             && f64::from(width.max(height)) <= max_side
@@ -165,6 +167,14 @@ mod tests {
         assert_eq!(
             sized((1000.0, 800.0), None).backing(0.8, 8192.0),
             (800, 640, 0.8)
+        );
+    }
+
+    #[test]
+    fn a_canvas_too_narrow_for_a_device_pixel_still_gets_one() {
+        assert_eq!(
+            sized((1.0, 600.0), Some((0, 180))).backing(0.3, 8192.0),
+            (1, 180, 0.3)
         );
     }
 
