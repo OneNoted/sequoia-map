@@ -26,30 +26,31 @@ const DEVICE_BOX_SNAP_PX: f64 = 1.5;
 
 impl CanvasBox {
     /// The backing store's size and its device pixels per CSS pixel: the exact device pixels
-    /// where the browser reports them in agreement with `device_pixel_ratio`, at least one
-    /// backing pixel per CSS pixel, and fewer per CSS pixel rather than a side longer than
-    /// `max_side`.
+    /// where the browser reports them in agreement with `device_pixel_ratio`, otherwise the CSS
+    /// size times that ratio, and fewer per CSS pixel rather than a side longer than
+    /// `max_side`. A page zoomed below 100% is drawn at its device pixels as well: a larger
+    /// backing store would be scaled down by the compositor on every frame, softening the map
+    /// and moving it by fractions of a screen pixel.
     pub(crate) fn backing(&self, device_pixel_ratio: f64, max_side: f64) -> (u32, u32, f64) {
         let (css_width, css_height) = (self.css.0.max(1.0), self.css.1.max(1.0));
+        let ratio = if device_pixel_ratio.is_finite() && device_pixel_ratio > 0.0 {
+            device_pixel_ratio
+        } else {
+            1.0
+        };
         // Emulated ratios (Chromium's device scale factor, Firefox's ratio override) report
         // CSS-sized device boxes; trusting one would draw the map at a pixel per CSS pixel and
         // stretch it.
-        let agrees = |device: u32, css: f64| {
-            (f64::from(device) - css * device_pixel_ratio).abs() <= DEVICE_BOX_SNAP_PX
-        };
+        let agrees =
+            |device: u32, css: f64| (f64::from(device) - css * ratio).abs() <= DEVICE_BOX_SNAP_PX;
         if let Some((width, height)) = self.device
             && agrees(width, css_width)
             && agrees(height, css_height)
-            && f64::from(width) >= css_width.floor()
-            && f64::from(height) >= css_height.floor()
             && f64::from(width.max(height)) <= max_side
         {
             return (width, height, f64::from(width) / css_width);
         }
-        let dpr = device_pixel_ratio
-            .max(1.0)
-            .min(max_side / css_width)
-            .min(max_side / css_height);
+        let dpr = ratio.min(max_side / css_width).min(max_side / css_height);
         (
             (css_width * dpr).round().max(1.0) as u32,
             (css_height * dpr).round().max(1.0) as u32,
