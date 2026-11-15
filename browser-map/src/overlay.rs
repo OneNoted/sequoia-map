@@ -1,4 +1,5 @@
-//! Text and teammate markers a host draws over the map, at a constant screen size.
+//! Text and teammate markers a host draws over the map: site names and plates at a constant
+//! screen size, teammates at a size on the map with an on-screen floor.
 //!
 //! The renderer draws them after the map and minimap with the main camera's projection, Map
 //! Intel site names first, then teammates. Hosts publish a new value when the content changes;

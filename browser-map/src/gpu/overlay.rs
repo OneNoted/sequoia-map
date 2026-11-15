@@ -37,6 +37,9 @@ const SITE_LABEL_OFFSET: (f64, f64) = (9.0, -7.0);
 const SITE_LABEL_MIN_SCALE: f32 = 0.58;
 /// Teammate names show from this scale.
 const TEAMMATE_NAME_MIN_SCALE: f32 = 0.35;
+/// Teammate names grow with the heads up to this size, CSS pixels, which keeps a long name and
+/// a full roster within the atlas at any zoom and ratio.
+const TEAMMATE_NAME_MAX_PX: f64 = 30.0;
 /// From a teammate marker's lower edge to the name's baseline, CSS pixels.
 const TEAMMATE_NAME_GAP: f64 = 11.0;
 const TEAMMATE_RGB: [u8; 3] = [0xf5, 0xc5, 0x42];
@@ -550,7 +553,10 @@ impl GpuOverlayRenderer {
         let size = f64::from(edge) / dpr;
         // How far the map has grown the markers past their floor; names grow with them.
         let grown = size / f64::from(team.head_size).max(1.0);
-        let name_px = (FONT_PX * grown * dpr).round().max(1.0) as u32;
+        // Whole CSS pixels, so a zoom re-rasterizes the names at most once per pixel of growth.
+        let name_px = ((FONT_PX * grown).min(TEAMMATE_NAME_MAX_PX).round() * dpr)
+            .round()
+            .max(1.0) as u32;
         let face_of = |index: usize| {
             team.players[index]
                 .face
@@ -658,7 +664,8 @@ impl GpuOverlayRenderer {
     }
 
     /// Rasterizes `sources` into a new atlas for `which` and records their sprites. Atlas
-    /// preparation runs on content changes only, never per frame.
+    /// preparation runs on content changes, and for teammates when a zoom changes their names'
+    /// size by a CSS pixel; never otherwise per frame.
     fn bake(
         &mut self,
         device: &wgpu::Device,
