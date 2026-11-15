@@ -2012,4 +2012,36 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn every_frame_shows_the_newest_report_and_nothing_past_it() {
+        // A finger dragged right at 1 px/ms stops after 200 ms; frames run at 60 Hz throughout,
+        // and each report reaches the page late by up to one report interval.
+        let delivery = [0.5, 6.0, 2.5, 8.5, 1.0, 5.0, 3.5, 7.5];
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        let world = cam.screen_to_world(100.0, 300.0);
+        gestures.press(touch(1, 100.0, 300.0), Press::Pan, 0.0);
+        let mut arriving = (1..=25)
+            .map(|k| {
+                let at_ms = f64::from(k) * REPORT_MS;
+                (at_ms + delivery[(at_ms / 4.0) as usize % 8], at_ms)
+            })
+            .peekable();
+        let (mut newest, mut previous) = (100.0, 100.0);
+        for frame in 1..=30 {
+            let frame_ms = f64::from(frame) * FRAME_MS;
+            while let Some((_, at_ms)) = arriving.next_if(|r| r.0 <= frame_ms) {
+                newest = 100.0 + at_ms;
+                gestures.moved(touch(1, newest, 300.0), at_ms);
+            }
+            gestures.frame(&mut cam, frame_ms);
+            let shown = cam.world_to_screen(world.0, world.1).0;
+            assert_close(shown, newest);
+            assert!(shown >= previous, "frame {frame} stepped back");
+            previous = shown;
+        }
+        assert_close(previous, 300.0);
+        assert!(!gestures.frame(&mut cam, 31.0 * FRAME_MS).moved);
+    }
 }
