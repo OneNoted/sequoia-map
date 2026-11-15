@@ -156,10 +156,14 @@ mod tests {
     }
 
     #[test]
-    fn a_zoomed_out_page_keeps_a_backing_pixel_per_css_pixel() {
+    fn a_zoomed_out_page_draws_at_its_device_pixels() {
         assert_eq!(
             sized((1600.0, 900.0), Some((1200, 675))).backing(0.75, 8192.0),
-            (1600, 900, 1.0)
+            (1200, 675, 0.75)
+        );
+        assert_eq!(
+            sized((1000.0, 800.0), None).backing(0.8, 8192.0),
+            (800, 640, 0.8)
         );
     }
 
