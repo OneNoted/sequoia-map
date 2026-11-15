@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use sequoia_map_engine::gesture::{FrameMotion, Gestures, ScreenRect};
+use sequoia_map_engine::gesture::{Gestures, ScreenRect};
 use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::{Rebuild, SceneChange, ScenePlanner, TerritoryDigest};
 use sequoia_map_engine::spatial::SpatialGrid;
@@ -484,12 +484,9 @@ fn render_frame(
     };
     renderer.resize(width, height, dpr as f32);
 
-    // Pans and pinches move the camera here, once per frame, sampled for this frame's time.
-    let mut motion = FrameMotion::default();
-    map.camera.update_if(|view| {
-        motion = gestures.frame(view, frame_ms);
-        motion.moved
-    });
+    // Pans and pinches move the camera here, once per frame, to where their contacts last
+    // reported.
+    map.camera.update_if(|view| gestures.frame(view));
     let inputs = map.inputs;
     let now_ms = js_sys::Date::now();
     // Gesture times are event time stamps, on the frame clock.
@@ -562,7 +559,7 @@ fn render_frame(
             interacting,
         }));
     }
-    outcome.animating || motion.pending
+    outcome.animating
 }
 
 fn with_optional<T: Send + Sync + 'static, R>(
