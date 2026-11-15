@@ -3,9 +3,11 @@
 //!
 //! Each layer owns one atlas of sprites: text with its shadow, rasterized by Canvas2D in the
 //! overlay font at the surface's device pixel ratio, and teammate faces. Atlases are baked
-//! only when their content, the ratio or the font changes. Instances carry world anchors and
-//! device-pixel offsets, so the camera only moves the viewport uniform; per-instance zoom
-//! thresholds are checked in the shader against the exact scale. Instances outside the view
+//! when their content, the ratio or the font changes, and the teammates' when a zoom changes
+//! their names' size. Instances carry world anchors and device-pixel offsets, so the camera
+//! only moves the viewport uniform, except that teammates, which keep their size on the map,
+//! are laid out again when a zoom changes it; per-instance zoom thresholds are checked in the
+//! shader against the exact scale. Instances outside the view
 //! are left to the rasterizer: these layers hold tens to a few hundred quads, and choosing
 //! visible ones on the CPU would cost an upload on every camera change.
 
@@ -226,6 +228,8 @@ pub(super) struct GpuOverlayRenderer {
     teammate_atlas: Option<TeammateAtlasKey>,
     /// The head edge, device pixels, the teammate layer was laid out for.
     teammate_edge: Option<u32>,
+    /// The size the teammate names were rasterized at, device pixels; `None` when none were.
+    teammate_names_px: Option<u32>,
     /// The glyphs in `plates`' atlas. Baked once per ratio and font: plate text changes every
     /// second, and only the instances follow it.
     plate_glyphs: Option<PlateGlyphs>,
@@ -373,6 +377,7 @@ impl GpuOverlayRenderer {
             teammates_from: Prepared::new(),
             teammate_atlas: None,
             teammate_edge: None,
+            teammate_names_px: None,
             plate_glyphs: None,
             dpr: 0.0,
             pending_fonts: Vec::new(),
@@ -545,6 +550,7 @@ impl GpuOverlayRenderer {
             self.teammates.clear();
             self.teammate_atlas = None;
             self.teammate_edge = None;
+            self.teammate_names_px = None;
             return 0;
         };
         let dpr = f64::from(self.dpr);
@@ -576,17 +582,39 @@ impl GpuOverlayRenderer {
         };
         let mut bytes = 0;
         if self.teammate_atlas.as_ref() != Some(&key) {
-            // Faces first, then names, one sprite per present entry.
-            let mut sources: Vec<SpriteSource> =
-                key.faces.iter().flatten().map(SpriteSource::Face).collect();
-            sources.extend(key.names.iter().map(|name| SpriteSource::Text {
-                text: name,
-                rgb: TEAMMATE_RGB,
-            }));
-            let font_px = f64::from(name_px) / dpr;
-            bytes += self.bake(device, queue, &sources, Which::Teammates, font_px);
+            // Names at their grown size, else at the base size every roster fitted at before
+            // heads grew, else none: a roster too large for the atlas never costs the faces
+            // and dots.
+            let base_px = (FONT_PX * dpr).round().max(1.0) as u32;
+            let tries = if key.names.is_empty() {
+                vec![None]
+            } else {
+                vec![Some(name_px), Some(base_px), None]
+            };
+            self.teammate_names_px = None;
+            for names_px in tries {
+                // Faces first, then names, one sprite per present entry.
+                let mut sources: Vec<SpriteSource> =
+                    key.faces.iter().flatten().map(SpriteSource::Face).collect();
+                if names_px.is_some() {
+                    sources.extend(key.names.iter().map(|name| SpriteSource::Text {
+                        text: name,
+                        rgb: TEAMMATE_RGB,
+                    }));
+                }
+                let font_px = names_px.map_or(FONT_PX, |px| f64::from(px) / dpr);
+                bytes += self.bake(device, queue, &sources, Which::Teammates, font_px);
+                if self.teammates.sprites.len() == sources.len() {
+                    self.teammate_names_px = names_px;
+                    break;
+                }
+            }
             self.teammate_atlas = Some(key.clone());
         }
+        // The gap under a head grows with the names actually drawn, not past them.
+        let name_grown = self
+            .teammate_names_px
+            .map_or(1.0, |px| f64::from(px) / (FONT_PX * dpr));
 
         let fan_radius = size * FAN_RADIUS_FACTOR * dpr;
         let face_count = key.faces.iter().flatten().count();
@@ -646,7 +674,7 @@ impl GpuOverlayRenderer {
                 let x = fan.0.round()
                     - (f64::from(name.advance) / 2.0).round()
                     - f64::from(name.origin[0]);
-                let y = (fan.1 + (below + TEAMMATE_NAME_GAP * grown) * dpr).round()
+                let y = (fan.1 + (below + TEAMMATE_NAME_GAP * name_grown) * dpr).round()
                     - f64::from(name.origin[1]);
                 instances.push(OverlayInstance {
                     world: player.world,
