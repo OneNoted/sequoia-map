@@ -343,7 +343,7 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
                 <Show when=war_heads_visible>
                     <div class="settings-subhead">"Teammate heads"</div>
                     <SettingsSlider
-                        label="Head size"
+                        label="Smallest head size"
                         setting=settings::HEAD_SIZE
                         min=PLAYER_HEAD_SIZE_MIN
                         max=PLAYER_HEAD_SIZE_MAX

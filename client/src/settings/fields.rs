@@ -182,8 +182,11 @@ pub(crate) const TEAMMATE_HEADS: Setting<bool> = setting!("Teammate Heads", show
 pub(crate) const TEAMMATE_FACES: Setting<bool> = setting!("Show Faces", player_head_render_head);
 pub(crate) const TEAMMATE_NAMES: Setting<bool> =
     setting!("Teammate names", player_head_render_label);
-pub(crate) const HEAD_SIZE: Setting<f64> =
-    setting!("Head size", player_head_size, clamp_player_head_size);
+pub(crate) const HEAD_SIZE: Setting<f64> = setting!(
+    "Smallest head size",
+    player_head_size,
+    clamp_player_head_size
+);
 
 pub(crate) const LEADERBOARD_TERRITORIES: Setting<bool> =
     setting!("Territories", show_leaderboard_territory_count);

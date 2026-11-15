@@ -282,9 +282,9 @@ pub(crate) const LABEL_SCALE_MASTER_MIN: f64 = 1.0;
 pub(crate) const LABEL_SCALE_MASTER_MAX: f64 = 2.25;
 pub(crate) const LABEL_SCALE_GROUP_MIN: f64 = 0.60;
 pub(crate) const LABEL_SCALE_GROUP_MAX: f64 = 1.80;
-/// On-screen edge length of a teammate head, in CSS pixels. Screen-space rather than
-/// world-space on purpose: the head stays legible at every zoom, the way the map intel
-/// markers do, instead of shrinking to nothing when you zoom out to the whole province.
+/// The smallest on-screen edge of a teammate head, CSS pixels. Heads keep their size on the
+/// map as it zooms in, and this floor keeps them legible when you zoom out to the whole
+/// province instead of shrinking to nothing.
 pub(crate) const PLAYER_HEAD_SIZE_MIN: f64 = 8.0;
 pub(crate) const PLAYER_HEAD_SIZE_MAX: f64 = 48.0;
 pub(crate) const DEFAULT_PLAYER_HEAD_SIZE: f64 = 20.0;

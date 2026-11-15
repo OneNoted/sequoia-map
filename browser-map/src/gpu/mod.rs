@@ -4221,14 +4221,7 @@ impl GpuRenderer {
                 &Self::quad_vertex_layout(),
             )
         });
-        stats.bytes_uploaded += overlay.sync(
-            &self.device,
-            &self.queue,
-            frame.site_labels,
-            frame.war_plates,
-            frame.teammates,
-            self.dpr,
-        );
+        stats.bytes_uploaded += overlay.sync(&self.device, &self.queue, frame, self.dpr);
         overlay.has_instances()
     }
 
