@@ -14,7 +14,7 @@ struct Viewport {
     // Instance indices of the hovered and selected territories, -1 for none.
     interaction: vec4<i32>,
     // The territory opacity: x fades the resting fill and border, y firms them toward opaque.
-    territory: vec4<f32>,
+    territory: vec2<f32>,
 };
 
 @group(0) @binding(0)

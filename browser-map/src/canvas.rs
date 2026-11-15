@@ -45,7 +45,8 @@ pub(crate) struct MapState {
     pub(crate) stroke_hit: Option<String>,
     pub(crate) canvas_box: CanvasBox,
     pub(crate) surface: Surface,
-    /// The camera the last frame drew with.
+    /// The camera the last frame drew, as the gestures and host hold it: before it was rounded
+    /// onto device pixels for drawing.
     drawn_camera: Option<Viewport>,
     planner: ScenePlanner,
     renderer: Option<GpuRenderer>,
@@ -491,8 +492,9 @@ fn render_frame(
     let now_ms = js_sys::Date::now();
     // Gesture times are event time stamps, on the frame clock.
     let interacting = gestures.is_interacting(frame_ms);
-    let camera = map.camera.get_untracked();
-    *drawn_camera = Some(camera);
+    *drawn_camera = Some(map.camera.get_untracked());
+    // Drawn on whole device pixels, so a pan slides every layer by the same pixels.
+    let camera = map.camera.get_untracked().on_device_grid(dpr);
     let clock_secs = inputs.clock_secs.get_untracked();
     let settings = inputs.settings.get_untracked();
     let rebuild = planner.plan(

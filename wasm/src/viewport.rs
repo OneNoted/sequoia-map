@@ -111,6 +111,21 @@ impl Viewport {
         self.offset_y += dy;
     }
 
+    /// This camera with its translation moved by under half a device pixel onto a whole number
+    /// of them, at `dpr` device pixels per CSS pixel. Frames drawn this way differ, while the
+    /// scale holds, by whole device pixels, so every layer slides by the same pixels instead
+    /// of each being re-filtered or re-snapped at a fraction of one.
+    pub fn on_device_grid(&self, dpr: f64) -> Self {
+        if !(dpr.is_finite() && dpr > 0.0) {
+            return *self;
+        }
+        Self {
+            offset_x: (self.offset_x * dpr).round() / dpr,
+            offset_y: (self.offset_y * dpr).round() / dpr,
+            scale: self.scale,
+        }
+    }
+
     /// Place the world point `world` under the screen point `screen` at `scale`, clamped to the
     /// zoom limits. The anchor stays put even when the requested scale is out of range.
     pub fn anchor(&mut self, world: (f64, f64), screen: (f64, f64), scale: f64) {
@@ -175,6 +190,35 @@ mod tests {
             assert_close(wx2, wx);
             assert_close(wy2, wy);
         }
+    }
+
+    #[test]
+    fn on_device_grid_moves_pans_by_whole_device_pixels() {
+        let rest = Viewport {
+            offset_x: 120.3,
+            offset_y: -48.71,
+            scale: 2.75,
+        };
+        for dpr in [1.0, 1.25, 1.5, 2.0, 2.625] {
+            let grid = rest.on_device_grid(dpr);
+            assert_eq!(grid.scale, rest.scale);
+            for (offset, snapped) in [
+                (rest.offset_x, grid.offset_x),
+                (rest.offset_y, grid.offset_y),
+            ] {
+                assert!((snapped - offset).abs() * dpr <= 0.5 + 1e-9);
+                assert_close(snapped * dpr, (snapped * dpr).round());
+            }
+            // A pan by any fraction of a pixel lands within half a device pixel of it, on the grid.
+            let mut panned = rest;
+            panned.pan(3.37, -0.61);
+            let moved = panned.on_device_grid(dpr);
+            let dx = (moved.offset_x - grid.offset_x) * dpr;
+            assert_close(dx, dx.round());
+            assert!((moved.offset_x - panned.offset_x).abs() * dpr <= 0.5 + 1e-9);
+        }
+        assert_eq!(rest.on_device_grid(0.0), rest);
+        assert_eq!(rest.on_device_grid(f64::NAN), rest);
     }
 
     #[test]
