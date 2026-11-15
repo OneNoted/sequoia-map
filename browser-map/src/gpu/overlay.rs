@@ -38,10 +38,9 @@ const TEAMMATE_NAME_MIN_SCALE: f32 = 0.35;
 /// From a teammate marker's lower edge to the name's baseline, CSS pixels.
 const TEAMMATE_NAME_GAP: f64 = 11.0;
 const TEAMMATE_RGB: [u8; 3] = [0xf5, 0xc5, 0x42];
-/// Teammate dot radius, CSS pixels (also `DOT_RADIUS` in overlay.wgsl, which adds the
-/// outline and its antialiasing within `DOT_HALF_EXTENT`).
+/// Teammate dot radius, CSS pixels (also `DOT_RADIUS` in overlay.wgsl, which adds a half
+/// pixel of outline and a device pixel of antialiasing around it).
 const DOT_RADIUS: f64 = 3.0;
-const DOT_HALF_EXTENT: f64 = DOT_RADIUS + 1.5;
 /// Radius of the ring co-located teammates are fanned onto, as a fraction of the head size.
 const FAN_RADIUS_FACTOR: f64 = 0.65;
 /// Face images are drawn into the atlas at this size, as requested from the skin renderer.
@@ -596,7 +595,9 @@ impl GpuOverlayRenderer {
                 });
                 size / 2.0
             } else {
-                let extent = DOT_HALF_EXTENT * 2.0 * dpr;
+                // The outline's outer edge, then a CSS pixel or a device pixel of antialiasing,
+                // whichever is larger, so a ratio below 1 does not clip it.
+                let extent = 2.0 * ((DOT_RADIUS + 0.5) * dpr + dpr.max(1.0));
                 let [r, g, b] = TEAMMATE_RGB;
                 instances.push(quad(
                     (-extent / 2.0, -extent / 2.0),
