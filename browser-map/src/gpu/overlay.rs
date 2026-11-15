@@ -11,10 +11,12 @@
 
 use std::sync::Arc;
 
+use sequoia_map_engine::overlay_sizing::teammate_head_px;
 use sequoia_shared::war_board::{Ending, StageKind};
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlCanvasElement, HtmlImageElement};
 
+use crate::frame::Frame;
 use crate::overlay::{PlateLabel, Prepared, SiteLabels, Teammates, WarPlates, atlas_extent};
 
 /// The canvas overlays' font, which is kept: 10 CSS pixels of the monospace UI face.
@@ -188,11 +190,20 @@ impl Layer {
     }
 }
 
-/// What a teammates atlas was baked from; positions and the head size do not change it.
+/// What a teammates atlas was baked from; positions do not change it.
 #[derive(Clone, PartialEq)]
 struct TeammateAtlasKey {
     faces: Vec<Option<HtmlImageElement>>,
     names: Vec<String>,
+    /// The names' font size, device pixels: they grow with the heads.
+    name_px: u32,
+}
+
+/// A teammate head's edge for camera `scale`, whole device pixels: its size on the map, never
+/// below the host's floor.
+fn teammate_edge(team: &Teammates, scale: f32, dpr: f32) -> u32 {
+    let css = teammate_head_px(f64::from(team.head_size), f64::from(scale));
+    (css * f64::from(dpr)).round().max(1.0) as u32
 }
 
 pub(super) struct GpuOverlayRenderer {
@@ -210,6 +221,8 @@ pub(super) struct GpuOverlayRenderer {
     plates_from: Prepared<WarPlates>,
     teammates_from: Prepared<Teammates>,
     teammate_atlas: Option<TeammateAtlasKey>,
+    /// The head edge, device pixels, the teammate layer was laid out for.
+    teammate_edge: Option<u32>,
     /// The glyphs in `plates`' atlas. Baked once per ratio and font: plate text changes every
     /// second, and only the instances follow it.
     plate_glyphs: Option<PlateGlyphs>,
@@ -356,23 +369,24 @@ impl GpuOverlayRenderer {
             plates_from: Prepared::new(),
             teammates_from: Prepared::new(),
             teammate_atlas: None,
+            teammate_edge: None,
             plate_glyphs: None,
             dpr: 0.0,
             pending_fonts: Vec::new(),
         }
     }
 
-    /// Brings every layer up to date with the host's overlays and the surface ratio; returns
-    /// the bytes uploaded. Does nothing when nothing changed.
+    /// Brings every layer up to date with the frame's overlays and camera and the surface ratio;
+    /// returns the bytes uploaded. Does nothing when nothing changed.
     pub(super) fn sync(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        sites: Option<&Arc<SiteLabels>>,
-        plates: Option<&Arc<WarPlates>>,
-        teammates: Option<&Arc<Teammates>>,
+        frame: &Frame,
         dpr: f32,
     ) -> u64 {
+        let (sites, plates, teammates) = (frame.site_labels, frame.war_plates, frame.teammates);
+        let scale = frame.camera.scale as f32;
         let mut bytes = 0;
         if self.dpr != dpr {
             self.dpr = dpr;
@@ -387,8 +401,13 @@ impl GpuOverlayRenderer {
         if let Some(plates) = self.plates_from.update(plates) {
             bytes += self.sync_plates(device, queue, plates);
         }
+        // Heads keep their size on the map, so a zoom that changes it by a device pixel lays
+        // the few teammates out again.
+        if teammates.map(|team| teammate_edge(team, scale, self.dpr)) != self.teammate_edge {
+            self.teammates_from.invalidate();
+        }
         if let Some(teammates) = self.teammates_from.update(teammates) {
-            bytes += self.sync_teammates(device, queue, teammates);
+            bytes += self.sync_teammates(device, queue, teammates, scale);
         }
         bytes
     }
@@ -437,7 +456,7 @@ impl GpuOverlayRenderer {
         for art in [&HOURGLASS, &SWORDS, &CHECK, &CROSS, &STOP] {
             sources.push(SpriteSource::Pixels(art));
         }
-        let bytes = self.bake(device, queue, &sources, Which::Plates);
+        let bytes = self.bake(device, queue, &sources, Which::Plates, PLATE_FONT_PX);
         let sprites = &self.plates.sprites;
         let [glyph_sprites @ .., hourglass, swords, check, cross, stop] = sprites.as_slice() else {
             return bytes;
@@ -488,7 +507,7 @@ impl GpuOverlayRenderer {
                 rgb: label.rgb,
             })
             .collect();
-        let mut bytes = self.bake(device, queue, &sources, Which::Sites);
+        let mut bytes = self.bake(device, queue, &sources, Which::Sites, FONT_PX);
         let dpr = f64::from(self.dpr);
         let offset = (
             (SITE_LABEL_OFFSET.0 * dpr).round() as f32,
@@ -517,12 +536,21 @@ impl GpuOverlayRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         team: Option<Arc<Teammates>>,
+        scale: f32,
     ) -> u64 {
         let Some(team) = team else {
             self.teammates.clear();
             self.teammate_atlas = None;
+            self.teammate_edge = None;
             return 0;
         };
+        let dpr = f64::from(self.dpr);
+        let edge = teammate_edge(&team, scale, self.dpr);
+        self.teammate_edge = Some(edge);
+        let size = f64::from(edge) / dpr;
+        // How far the map has grown the markers past their floor; names grow with them.
+        let grown = size / f64::from(team.head_size).max(1.0);
+        let name_px = (FONT_PX * grown * dpr).round().max(1.0) as u32;
         let face_of = |index: usize| {
             team.players[index]
                 .face
@@ -538,6 +566,7 @@ impl GpuOverlayRenderer {
             } else {
                 Vec::new()
             },
+            name_px: if team.show_names { name_px } else { 0 },
         };
         let mut bytes = 0;
         if self.teammate_atlas.as_ref() != Some(&key) {
@@ -548,12 +577,11 @@ impl GpuOverlayRenderer {
                 text: name,
                 rgb: TEAMMATE_RGB,
             }));
-            bytes += self.bake(device, queue, &sources, Which::Teammates);
+            let font_px = f64::from(name_px) / dpr;
+            bytes += self.bake(device, queue, &sources, Which::Teammates, font_px);
             self.teammate_atlas = Some(key.clone());
         }
 
-        let dpr = f64::from(self.dpr);
-        let size = f64::from(team.head_size);
         let fan_radius = size * FAN_RADIUS_FACTOR * dpr;
         let face_count = key.faces.iter().flatten().count();
         let (face_sprites, name_sprites) = self
@@ -612,8 +640,8 @@ impl GpuOverlayRenderer {
                 let x = fan.0.round()
                     - (f64::from(name.advance) / 2.0).round()
                     - f64::from(name.origin[0]);
-                let y =
-                    (fan.1 + (below + TEAMMATE_NAME_GAP) * dpr).round() - f64::from(name.origin[1]);
+                let y = (fan.1 + (below + TEAMMATE_NAME_GAP * grown) * dpr).round()
+                    - f64::from(name.origin[1]);
                 instances.push(OverlayInstance {
                     world: player.world,
                     offset: [x as f32, y as f32],
@@ -637,10 +665,11 @@ impl GpuOverlayRenderer {
         queue: &wgpu::Queue,
         sources: &[SpriteSource],
         which: Which,
+        font_px: f64,
     ) -> u64 {
-        let (font_css, font_px, font_family) = match which {
-            Which::Plates => (PLATE_FONT_CSS, PLATE_FONT_PX, PLATE_FONT_FAMILY),
-            Which::Sites | Which::Teammates => (FONT_CSS, FONT_PX, FONT_FAMILY),
+        let (font_css, font_family) = match which {
+            Which::Plates => (PLATE_FONT_CSS, PLATE_FONT_FAMILY),
+            Which::Sites | Which::Teammates => (FONT_CSS, FONT_FAMILY),
         };
         if !font_loaded(font_css) && !self.pending_fonts.contains(&font_css) {
             self.pending_fonts.push(font_css);

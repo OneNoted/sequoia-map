@@ -37,7 +37,8 @@ pub struct Teammate {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Teammates {
     pub players: Vec<Teammate>,
-    /// Face edge length, CSS pixels.
+    /// The smallest face edge, CSS pixels: heads keep their size on the map, and do not shrink
+    /// below this when zoomed out.
     pub head_size: f32,
     /// Draw faces where loaded; otherwise every teammate is a dot.
     pub show_faces: bool,
