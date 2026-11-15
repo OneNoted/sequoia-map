@@ -50,7 +50,13 @@ impl CanvasBox {
             && agrees(height, css_height)
             && f64::from(width.max(height)) <= max_side
         {
-            return (width, height, f64::from(width) / css_width);
+            // From the longer side, where the box's rounding is the smallest share.
+            let dpr = if css_width >= css_height {
+                f64::from(width) / css_width
+            } else {
+                f64::from(height) / css_height
+            };
+            return (width, height, dpr);
         }
         let dpr = ratio.min(max_side / css_width).min(max_side / css_height);
         (
@@ -138,7 +144,7 @@ mod tests {
     fn exact_device_pixels_size_the_backing_store() {
         assert_eq!(
             sized((412.5, 915.0), Some((1083, 2402))).backing(2.625, 8192.0),
-            (1083, 2402, 1083.0 / 412.5)
+            (1083, 2402, 2402.0 / 915.0)
         );
     }
 
@@ -167,6 +173,14 @@ mod tests {
         assert_eq!(
             sized((1000.0, 800.0), None).backing(0.8, 8192.0),
             (800, 640, 0.8)
+        );
+    }
+
+    #[test]
+    fn the_longer_side_gives_the_ratio() {
+        assert_eq!(
+            sized((1.0, 600.0), Some((1, 180))).backing(0.3, 8192.0),
+            (1, 180, 0.3)
         );
     }
 
