@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use serde::Deserialize;
 use sqlx::{Postgres, QueryBuilder};
+use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
 use sequoia_shared::{SeasonScalarCurrent, SeasonScalarSample};
@@ -75,6 +76,9 @@ pub async fn run(state: AppState) {
     warm_cache(&state).await;
 
     let mut interval = tokio::time::interval(Duration::from_secs(OBSERVATION_INTERVAL_SECS));
+    // The default replays every missed tick back to back. A sample that overran the interval
+    // would then be followed by samples seconds apart until the backlog was spent.
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         interval.tick().await;
