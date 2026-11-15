@@ -3180,7 +3180,7 @@ button.settings-row:hover {
 /* Territory cards (client/src/territory_card.rs): the hover glance, the phone card and the
    sidebar detail share one structure. The guild colour is the identity: a left edge and a
    swatch beside the name. Labels are sentence case in the body face at readable contrast;
-   numbers are tabular mono; only the territory name uses the pixel face. */
+   numbers are tabular mono; the territory and guild names use the pixel face. */
 .tcard {
   --tcard-rule: rgba(58, 63, 92, 0.55);
   --guild-mark-size: 12px;
