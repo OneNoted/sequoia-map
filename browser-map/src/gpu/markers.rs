@@ -237,7 +237,7 @@ impl GpuMarkerRenderer {
                 style.node_radius,
                 style.simple_node_size,
                 style.summary_size,
-                1.0 / dpr.max(1.0),
+                1.0 / dpr,
             ],
             sites: [
                 style.event_radius,

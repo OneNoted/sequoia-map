@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use sequoia_map_engine::overlay_sizing::teammate_head_px;
 use sequoia_shared::WarPlayer;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -112,14 +113,14 @@ pub(crate) fn resolve_player_points(
 }
 
 /// Indices of the `points` on or near a `width` x `height` CSS-pixel screen under `view`,
-/// for heads of `head_size` CSS pixels.
+/// for heads no smaller than `head_size` CSS pixels, which grow with the map.
 fn near_view(
     points: &[PlayerPoint],
     view: &Viewport,
     (width, height): (f64, f64),
     head_size: f64,
 ) -> Vec<usize> {
-    let margin = head_size * NEAR_VIEW_HEADS + NEAR_VIEW_PX;
+    let margin = teammate_head_px(head_size, view.scale) * NEAR_VIEW_HEADS + NEAR_VIEW_PX;
     points
         .iter()
         .enumerate()

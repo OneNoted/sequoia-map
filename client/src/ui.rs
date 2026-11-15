@@ -111,9 +111,7 @@ pub(crate) fn ViewHead(
         <div class="sb-head sb-bar">
             {back.map(|(title, back)| view! {
                 <button type="button" class="ui-button sb-nav-back" title=title aria-label=title on:click=move |_| back.run(())>
-                    // The face's own chevron, so it sits on the same pixels as the word.
-                    <span aria-hidden="true">"<"</span>
-                    <span>"Back"</span>
+                    "Back"
                 </button>
             })}
             <div class="sb-head-title">{move || title.run()}</div>

@@ -345,12 +345,22 @@ pub fn compute_territory_ornament_tint(guild_rgb: (u8, u8, u8)) -> [f32; 4] {
     ]
 }
 
+/// A teammate's head on the map, world units: a little over half the shortest side of the
+/// smallest territory (40), so a head never covers a territory, near the resource icons' size.
+pub const TEAMMATE_HEAD_SIZE_WORLD: f64 = 24.0;
+
+/// A teammate head's edge on screen, CSS pixels, at camera `scale`: the size the map gives it,
+/// and never smaller than `min_px`, so heads stay findable when zoomed out.
+pub fn teammate_head_px(min_px: f64, scale: f64) -> f64 {
+    (TEAMMATE_HEAD_SIZE_WORLD * scale).max(min_px)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         compute_dynamic_label_sizing, compute_far_zoom_tag_sizing,
         compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
-        compute_territory_ornament_sizing, compute_territory_ornament_tint,
+        compute_territory_ornament_sizing, compute_territory_ornament_tint, teammate_head_px,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -359,6 +369,21 @@ mod tests {
             diff < 1e-4,
             "expected {expected}, got {actual} (diff: {diff})"
         );
+    }
+
+    #[test]
+    fn teammate_heads_keep_their_floor_far_out_and_follow_the_map_when_close() {
+        // Far out the floor holds; once the map makes a head larger, it grows with the map.
+        assert_eq!(teammate_head_px(20.0, 0.14), 20.0);
+        assert_eq!(teammate_head_px(20.0, 0.5), 20.0);
+        assert_eq!(teammate_head_px(20.0, 2.0), 48.0);
+        assert_eq!(
+            teammate_head_px(20.0, 4.0),
+            2.0 * teammate_head_px(20.0, 2.0)
+        );
+        // A larger floor holds further in.
+        assert_eq!(teammate_head_px(48.0, 1.5), 48.0);
+        assert_eq!(teammate_head_px(48.0, 3.0), 72.0);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Text and teammate markers a host draws over the map, at a constant screen size.
+//! Text and teammate markers a host draws over the map: site names and plates at a constant
+//! screen size, teammates at a size on the map with an on-screen floor.
 //!
 //! The renderer draws them after the map and minimap with the main camera's projection, Map
 //! Intel site names first, then teammates. Hosts publish a new value when the content changes;
@@ -37,7 +38,8 @@ pub struct Teammate {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Teammates {
     pub players: Vec<Teammate>,
-    /// Face edge length, CSS pixels.
+    /// The smallest face edge, CSS pixels: heads keep their size on the map, and do not shrink
+    /// below this when zoomed out.
     pub head_size: f32,
     /// Draw faces where loaded; otherwise every teammate is a dot.
     pub show_faces: bool,
