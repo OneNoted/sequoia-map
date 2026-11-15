@@ -39,8 +39,8 @@ const SITE_LABEL_OFFSET: (f64, f64) = (9.0, -7.0);
 const SITE_LABEL_MIN_SCALE: f32 = 0.58;
 /// Teammate names show from this scale.
 const TEAMMATE_NAME_MIN_SCALE: f32 = 0.35;
-/// Teammate names grow with the heads up to this size, CSS pixels, which keeps a long name and
-/// a full roster within the atlas at any zoom and ratio.
+/// Teammate names grow with the heads up to this size, CSS pixels; a roster too large for the
+/// atlas even so falls back to base-size names, then to none (see `sync_teammates`).
 const TEAMMATE_NAME_MAX_PX: f64 = 30.0;
 /// From a teammate marker's lower edge to the name's baseline, CSS pixels.
 const TEAMMATE_NAME_GAP: f64 = 11.0;
