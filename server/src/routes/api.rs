@@ -828,13 +828,9 @@ async fn load_latest_observed_season_ratings(
 
     let rows: Vec<LatestObservedRatingRow> = sqlx::query_as(
         "SELECT guild_name, season_id, observed_at, season_rating \
-         FROM ( \
-             SELECT DISTINCT ON (guild_name) guild_name, season_id, observed_at, season_rating \
-             FROM season_guild_observations \
-             WHERE season_id = $2 \
-               AND guild_name = ANY($1) \
-             ORDER BY guild_name, observed_at DESC \
-         ) latest",
+         FROM season_guild_latest \
+         WHERE season_id = $2 \
+           AND guild_name = ANY($1)",
     )
     .bind(guild_names)
     .bind(season_id)

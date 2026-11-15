@@ -75,6 +75,14 @@ async fn run_cleanup_once(
                 0
             }
         };
+    // A guild's newest observation is older than the cutoff only once all of them are gone.
+    if let Err(e) = sqlx::query("DELETE FROM season_guild_latest WHERE observed_at < $1")
+        .bind(season_cutoff)
+        .execute(pool)
+        .await
+    {
+        warn!("Failed to delete old season guild latest rows: {e}");
+    }
 
     if total_events > 0
         || total_snapshots > 0
@@ -118,7 +126,7 @@ mod tests {
             .await
             .expect("run migrations");
         sqlx::query(
-            "TRUNCATE TABLE season_scalar_samples, season_guild_observations, guild_color_cache RESTART IDENTITY",
+            "TRUNCATE TABLE season_scalar_samples, season_guild_observations, season_guild_latest, guild_color_cache RESTART IDENTITY",
         )
         .execute(&pool)
         .await
