@@ -20,13 +20,26 @@ pub(crate) struct CanvasBox {
     pub(crate) origin: Option<(f64, f64)>,
 }
 
+/// How far a device-pixel box may differ from the CSS size times the device pixel ratio, from
+/// the box's edges snapping to device pixels.
+const DEVICE_BOX_SNAP_PX: f64 = 1.5;
+
 impl CanvasBox {
     /// The backing store's size and its device pixels per CSS pixel: the exact device pixels
-    /// where known, at least one backing pixel per CSS pixel, and fewer per CSS pixel rather
-    /// than a side longer than `max_side`.
+    /// where the browser reports them in agreement with `device_pixel_ratio`, at least one
+    /// backing pixel per CSS pixel, and fewer per CSS pixel rather than a side longer than
+    /// `max_side`.
     pub(crate) fn backing(&self, device_pixel_ratio: f64, max_side: f64) -> (u32, u32, f64) {
         let (css_width, css_height) = (self.css.0.max(1.0), self.css.1.max(1.0));
+        // Emulated ratios (Chromium's device scale factor, Firefox's ratio override) report
+        // CSS-sized device boxes; trusting one would draw the map at a pixel per CSS pixel and
+        // stretch it.
+        let agrees = |device: u32, css: f64| {
+            (f64::from(device) - css * device_pixel_ratio).abs() <= DEVICE_BOX_SNAP_PX
+        };
         if let Some((width, height)) = self.device
+            && agrees(width, css_width)
+            && agrees(height, css_height)
             && f64::from(width) >= css_width.floor()
             && f64::from(height) >= css_height.floor()
             && f64::from(width.max(height)) <= max_side
@@ -123,6 +136,14 @@ mod tests {
         assert_eq!(
             sized((412.5, 915.0), Some((1083, 2402))).backing(2.625, 8192.0),
             (1083, 2402, 1083.0 / 412.5)
+        );
+    }
+
+    #[test]
+    fn a_device_box_that_contradicts_the_ratio_does_not_size_it() {
+        assert_eq!(
+            sized((1440.0, 900.0), Some((1440, 900))).backing(1.5, 8192.0),
+            (2160, 1350, 1.5)
         );
     }
 
