@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use serde::Deserialize;
 use sqlx::{Postgres, QueryBuilder};
+use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
 use sequoia_shared::{SeasonScalarCurrent, SeasonScalarSample};
@@ -75,6 +76,9 @@ pub async fn run(state: AppState) {
     warm_cache(&state).await;
 
     let mut interval = tokio::time::interval(Duration::from_secs(OBSERVATION_INTERVAL_SECS));
+    // The default replays every missed tick back to back. A sample that overran the interval
+    // would then be followed by samples seconds apart until the backlog was spent.
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         interval.tick().await;
@@ -194,7 +198,7 @@ async fn persist_guild_observations(
     let guild_names: Vec<String> = snapshots.iter().map(|row| row.guild_name.clone()).collect();
     let latest_rows: Vec<(String, i32, i32)> = sqlx::query_as(
         "SELECT DISTINCT ON (guild_name) guild_name, season_id, season_rating \
-         FROM season_guild_observations \
+         FROM season_guild_latest \
          WHERE guild_name = ANY($1) \
          ORDER BY guild_name, observed_at DESC",
     )
@@ -475,12 +479,8 @@ async fn latest_top_contender_guilds(
 
     let rows: Vec<LatestObservationCandidateRow> = sqlx::query_as(
         "SELECT guild_name, COALESCE(guild_uuid, ''), COALESCE(guild_prefix, ''), territory_count \
-         FROM ( \
-             SELECT DISTINCT ON (guild_name) guild_name, guild_uuid, guild_prefix, territory_count, season_rating \
-             FROM season_guild_observations \
-             WHERE season_id = (SELECT MAX(season_id) FROM season_guild_observations) \
-             ORDER BY guild_name, observed_at DESC \
-         ) latest \
+         FROM season_guild_latest \
+         WHERE season_id = (SELECT MAX(season_id) FROM season_guild_latest) \
          ORDER BY season_rating DESC, territory_count DESC, guild_name ASC \
          LIMIT $1",
     )
@@ -505,13 +505,9 @@ async fn latest_observed_guilds_by_name(
 
     let rows: Vec<LatestObservationCandidateRow> = sqlx::query_as(
         "SELECT guild_name, COALESCE(guild_uuid, ''), COALESCE(guild_prefix, ''), territory_count \
-         FROM ( \
-             SELECT DISTINCT ON (guild_name) guild_name, guild_uuid, guild_prefix, territory_count \
-             FROM season_guild_observations \
-             WHERE season_id = (SELECT MAX(season_id) FROM season_guild_observations) \
-               AND guild_name = ANY($1) \
-             ORDER BY guild_name, observed_at DESC \
-         ) latest",
+         FROM season_guild_latest \
+         WHERE season_id = (SELECT MAX(season_id) FROM season_guild_latest) \
+           AND guild_name = ANY($1)",
     )
     .bind(guild_names)
     .fetch_all(pool)
@@ -597,10 +593,117 @@ fn latest_season_rating(season_ranks: &HashMap<String, GuildSeasonRank>) -> Opti
 mod tests {
     use super::{
         CandidateGuild, GuildSeasonRank, GuildSeasonSnapshot, accumulate_live_candidate,
-        latest_season_rating, merge_candidate, rank_snapshots,
+        latest_observed_guilds_by_name, latest_season_rating, latest_top_contender_guilds,
+        merge_candidate, persist_guild_observations, rank_snapshots,
     };
-    use chrono::Utc;
+    use chrono::{DateTime, TimeDelta, Utc};
+    use sqlx::postgres::PgPoolOptions;
     use std::collections::HashMap;
+
+    const REAL_DB_TEST_LOCK: i64 = 73_019_001;
+
+    fn snapshot(
+        guild_name: &str,
+        season_id: i32,
+        observed_at: DateTime<Utc>,
+        rating: i64,
+        territory_count: usize,
+    ) -> GuildSeasonSnapshot {
+        GuildSeasonSnapshot {
+            guild_name: guild_name.to_string(),
+            guild_uuid: format!("uuid-{guild_name}"),
+            guild_prefix: guild_name[..3].to_uppercase(),
+            observed_at,
+            season_id,
+            rating,
+            territory_count,
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_observations_follow_every_insert_per_season() {
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            eprintln!("Skipping season latest test: TEST_DATABASE_URL is not set");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await
+            .expect("connect real postgres");
+        let mut lock_conn = pool.acquire().await.expect("acquire lock connection");
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(REAL_DB_TEST_LOCK)
+            .execute(&mut *lock_conn)
+            .await
+            .expect("acquire season latest test lock");
+        crate::db_migrations::run(&pool)
+            .await
+            .expect("run migrations");
+        sqlx::query("TRUNCATE TABLE season_guild_observations, season_guild_latest")
+            .execute(&pool)
+            .await
+            .expect("truncate season observations");
+
+        let start = crate::test_support::ts("2026-09-01T00:00:00Z");
+        let minutes = |count: i64| start + TimeDelta::minutes(count);
+        let batches = [
+            vec![
+                snapshot("Alpha", 29, start, 1000, 4),
+                snapshot("Bravo", 29, start, 900, 2),
+            ],
+            vec![
+                snapshot("Alpha", 30, minutes(5), 100, 5),
+                snapshot("Bravo", 30, minutes(5), 300, 1),
+            ],
+            vec![snapshot("Alpha", 30, minutes(10), 450, 6)],
+            // A row that arrives late must not replace a newer one.
+            vec![snapshot("Alpha", 30, minutes(7), 200, 9)],
+        ];
+        for batch in &batches {
+            persist_guild_observations(&pool, batch)
+                .await
+                .expect("persist observations");
+        }
+
+        // The gain compares with the guild's previous observation, within one season only.
+        let gains: Vec<(DateTime<Utc>, Option<i32>)> = sqlx::query_as(
+            "SELECT observed_at, sr_gain_5m FROM season_guild_observations \
+             WHERE guild_name = 'Alpha' AND observed_at IN ($1, $2, $3) ORDER BY observed_at",
+        )
+        .bind(start)
+        .bind(minutes(5))
+        .bind(minutes(10))
+        .fetch_all(&pool)
+        .await
+        .expect("load gains");
+        assert_eq!(
+            gains,
+            vec![(start, None), (minutes(5), None), (minutes(10), Some(350))]
+        );
+
+        let contenders = latest_top_contender_guilds(&pool, 10)
+            .await
+            .expect("load contenders");
+        let contenders: Vec<(&str, usize)> = contenders
+            .iter()
+            .map(|guild| (guild.guild_name.as_str(), guild.territory_count))
+            .collect();
+        assert_eq!(contenders, vec![("Alpha", 6), ("Bravo", 1)]);
+
+        let by_name =
+            latest_observed_guilds_by_name(&pool, &["Bravo".to_string(), "Missing".to_string()])
+                .await
+                .expect("load guilds by name");
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name["Bravo"].territory_count, 1);
+
+        sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(REAL_DB_TEST_LOCK)
+            .execute(&mut *lock_conn)
+            .await
+            .expect("release season latest test lock");
+    }
 
     #[test]
     fn latest_season_rating_uses_highest_season_key() {

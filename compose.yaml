@@ -23,16 +23,20 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-sequoia}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       PGDATA: ${POSTGRES_PGDATA:-/var/lib/postgresql/18/docker}
-    mem_limit: 768m
-    mem_reservation: 256m
+    # 768m with the default 128MB buffer cache could not hold the working set: the kernel
+    # killed a backend, crash recovery reset the statistics, and autovacuum stopped running.
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "effective_cache_size=1536MB"]
+    mem_limit: 2g
+    mem_reservation: 512m
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
-      interval: 5s
+      interval: 30s
       timeout: 3s
       retries: 5
       start_period: 10s
+      start_interval: 2s
 
   server:
     image: ${SEQUOIA_SERVER_IMAGE:-ghcr.io/onenoted/sequoia-map-server:main}
@@ -73,10 +77,11 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
-      interval: 10s
+      interval: 30s
       timeout: 3s
       retries: 10
       start_period: 20s
+      start_interval: 2s
 
   ingest:
     image: ${SEQUOIA_INGEST_IMAGE:-ghcr.io/onenoted/sequoia-map-ingest:main}
@@ -106,10 +111,11 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3010/health >/dev/null || exit 1"]
-      interval: 10s
+      interval: 30s
       timeout: 3s
       retries: 10
       start_period: 20s
+      start_interval: 2s
 
   edge:
     image: ${SEQUOIA_EDGE_IMAGE:-ghcr.io/onenoted/sequoia-map-edge:main}
@@ -126,10 +132,11 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/api/health >/dev/null 2>&1 || exit 1"]
-      interval: 10s
+      interval: 30s
       timeout: 3s
       retries: 10
       start_period: 20s
+      start_interval: 2s
 
   postgres-backup:
     image: postgres:18.3-alpine

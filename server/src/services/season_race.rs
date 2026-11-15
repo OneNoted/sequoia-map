@@ -153,16 +153,23 @@ pub async fn build_race_response(
         .or(fallback_scalar);
 
     let latest_rows: Vec<LatestGuildRow> = sqlx::query_as(
-        "SELECT guild_name, COALESCE(guild_uuid, ''), COALESCE(guild_prefix, ''), territory_count, season_rating, observed_at \
-         FROM ( \
-             SELECT DISTINCT ON (guild_name) guild_name, guild_uuid, guild_prefix, territory_count, season_rating, observed_at \
+        // The window can end before the season's last observation, so each guild of the
+        // season is probed through (guild_name, observed_at DESC) for its newest row inside it.
+        "SELECT latest.guild_name, COALESCE(latest.guild_uuid, ''), COALESCE(latest.guild_prefix, ''), \
+                latest.territory_count, latest.season_rating, latest.observed_at \
+         FROM season_guild_latest guild \
+         CROSS JOIN LATERAL ( \
+             SELECT guild_name, guild_uuid, guild_prefix, territory_count, season_rating, observed_at \
              FROM season_guild_observations \
-             WHERE season_id = $1 \
+             WHERE guild_name = guild.guild_name \
+               AND season_id = guild.season_id \
                AND observed_at >= $2 \
                AND observed_at <= $3 \
-             ORDER BY guild_name, observed_at DESC \
+             ORDER BY observed_at DESC \
+             LIMIT 1 \
          ) latest \
-         ORDER BY season_rating DESC, territory_count DESC, guild_name ASC \
+         WHERE guild.season_id = $1 \
+         ORDER BY latest.season_rating DESC, latest.territory_count DESC, latest.guild_name ASC \
          LIMIT $4",
     )
     .bind(window.season_id)
