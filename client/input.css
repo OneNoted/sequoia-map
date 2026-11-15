@@ -1608,8 +1608,10 @@
 
 /* Every view's head is one row: Back, the title, the view's actions or status, Close. It stays
    in place while the view scrolls, so leaving is always one press away, and is one control
-   tall even where it holds none, so typing a search leaves the title where it was. The
-   content's gutter holds Back's chevron, or the title where there is no Back. */
+   tall even where it holds none, so typing a search leaves the title where it was. Back's word,
+   or the title where there is no Back, starts on the content's gutter. The row's own gap is
+   small because every control carries its padding: the word Back sits as far from a card's
+   swatch as the swatch does from the name. */
 .sb-head {
   --guild-mark-size: 16px;
   position: sticky;
@@ -1617,12 +1619,12 @@
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   min-height: calc(var(--sb-bar-control) + 2 * var(--sb-head-pad));
   padding: var(--sb-head-pad) calc(var(--sb-gutter) - var(--sb-bar-inset));
   background: var(--color-deep);
 }
-.sb-bar .sb-nav-back { padding-left: var(--sb-bar-inset); }
+.sb-bar .sb-nav-back { flex-shrink: 0; padding: 0 var(--sb-bar-inset); }
 .sb-head-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -3548,7 +3550,8 @@ a.tcard-guild:focus-visible {
 
 .tcard-sidebar-tail { padding-top: 0; }
 
-.tcard-sidebar .tcard-owner { font-size: 0.95rem; }
+/* The head above is its own bar, so the owner lines up with the card's content, not the name. */
+.tcard-sidebar .tcard-owner { margin-left: 0; font-size: 1rem; }
 .tcard-sidebar .tcard-stats dd { font-size: 0.92rem; }
 .tcard-sidebar .tcard-resources { font-size: 0.88rem; }
 
@@ -4287,6 +4290,7 @@ a.tcard-guild:focus-visible {
 .tcard-stats dt,
 .mwar-stats dt,
 .player-dialog-facts dt,
+.tcard-guild,
 .tcard-tag,
 .sb-online,
 .mwar-periods,
