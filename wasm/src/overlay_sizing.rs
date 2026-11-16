@@ -143,10 +143,14 @@ pub fn compute_far_zoom_tag_sizing(
         return None;
     }
 
-    let scaled_font_px = FAR_ZOOM_TAG_MAX_RENDERED_PX * tag_scale.clamp(0.5, 2.0);
-    let font_px = scaled_font_px
+    // The tag is the static tag's size on the map, as it is once zoomed in past this range,
+    // and never smaller than a readable floor that fits the territory. Where the map would
+    // shrink it below that floor it holds still on screen; elsewhere it zooms with the map,
+    // so it meets the static tag at the handover without changing size.
+    let floor_px = (FAR_ZOOM_TAG_MAX_RENDERED_PX * tag_scale.clamp(0.5, 2.0))
         .min(max_font_px)
         .clamp(FAR_ZOOM_TAG_MIN_RENDERED_PX, FAR_ZOOM_TAG_MAX_RENDERED_PX);
+    let font_px = (STATIC_TAG_SIZE_WORLD * tag_scale * scale).max(floor_px);
     let width_px = (sw * FAR_ZOOM_TAG_BOX_W_FRACTION).max(font_px * 1.6);
     let alpha = smoothstep_f32(8.0, 14.0, sh).min(smoothstep_f32(11.0, 22.0, sw));
 
@@ -360,7 +364,8 @@ mod tests {
     use super::{
         compute_dynamic_label_sizing, compute_far_zoom_tag_sizing,
         compute_resource_icon_center_y_world, compute_resource_icon_label_lift_world,
-        compute_territory_ornament_sizing, compute_territory_ornament_tint, teammate_head_px,
+        compute_static_label_sizing, compute_territory_ornament_sizing,
+        compute_territory_ornament_tint, teammate_head_px,
     };
 
     fn assert_close(actual: f32, expected: f32) {
@@ -387,12 +392,52 @@ mod tests {
     }
 
     #[test]
-    fn far_zoom_tag_sizing_is_screen_stable() {
-        let near = compute_far_zoom_tag_sizing(42.0, 18.0, 0.60, 1.0).expect("sizing should exist");
-        let far = compute_far_zoom_tag_sizing(42.0, 18.0, 0.30, 1.0).expect("sizing should exist");
+    fn far_zoom_tags_hold_a_readable_size_once_the_map_would_shrink_them_below_it() {
+        let near = compute_far_zoom_tag_sizing(42.0, 18.0, 0.20, 1.0).expect("sizing should exist");
+        let far = compute_far_zoom_tag_sizing(42.0, 18.0, 0.10, 1.0).expect("sizing should exist");
 
-        assert_close(near.font_height_world * 0.60, far.font_height_world * 0.30);
-        assert_close(near.max_width_world * 0.60, far.max_width_world * 0.30);
+        assert_close(near.font_height_world * 0.20, far.font_height_world * 0.10);
+        assert_close(near.max_width_world * 0.20, far.max_width_world * 0.10);
+    }
+
+    #[test]
+    fn a_tag_keeps_its_size_where_far_zoom_tags_hand_over_to_map_sized_ones() {
+        // The handover is at the top of the claim-label zoom range; the far tag there is the
+        // size the static tag is just past it, at every label size whose static tag is drawn
+        // there (the settings allow 0.6 to 4; below about 0.94 it is under the static tags'
+        // smallest drawn size at this zoom).
+        let scale = crate::claim_labels::CLAIM_LABEL_MAX_SCALE as f32;
+        let (ww, hh) = (150.0, 100.0);
+        let tag_world = compute_static_label_sizing(ww, hh)
+            .expect("a large territory has a static tag")
+            .tag_size;
+        for tag_scale in [0.94, 1.0, 1.5, 2.0, 3.0, 4.0] {
+            let far = compute_far_zoom_tag_sizing(ww * scale, hh * scale, scale, tag_scale)
+                .expect("a large territory has a far tag");
+            assert_close(far.font_height_world, tag_world * tag_scale);
+        }
+    }
+
+    #[test]
+    fn far_zoom_tags_never_shrink_on_screen_as_the_map_zooms_in() {
+        let (ww, hh) = (150.0, 60.0);
+        for tag_scale in [0.6, 1.0, 2.0, 4.0] {
+            let mut previous = 0.0;
+            for step in 10..=60 {
+                let scale = step as f32 / 100.0;
+                let Some(sizing) =
+                    compute_far_zoom_tag_sizing(ww * scale, hh * scale, scale, tag_scale)
+                else {
+                    continue;
+                };
+                let px = sizing.font_height_world * scale;
+                assert!(
+                    px + 1e-4 >= previous,
+                    "{px} after {previous} at {scale}, label size {tag_scale}"
+                );
+                previous = px;
+            }
+        }
     }
 
     #[test]
