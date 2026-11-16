@@ -1276,15 +1276,6 @@ fn DetailPanel() -> impl IntoView {
         territories.with(|map| map.get(&name).map(|ct| ct.territory.location.clone()))
     });
 
-    let back = Callback::new(move |()| {
-        let owner = info.with_untracked(|info| info.as_ref().map(|info| info.guild_name.clone()));
-        selected.set(None);
-        if let Some(guild_name) = owner {
-            selected_guild.set(Some(guild_name));
-        }
-        detail_return_guild.set(None);
-        sidebar_transient.set(false);
-    });
     let close = Callback::new(move |()| {
         // On mobile, closing the sheet hands the territory back to its peek card.
         if is_mobile.get_untracked() && detail_return_guild.get_untracked().is_none() {
@@ -1313,7 +1304,6 @@ fn DetailPanel() -> impl IntoView {
     view! {
         <div class="sb-panel panel-reveal tcard-detail" style:--tcard-guild=move || info.with(|info| info.as_ref().map(|info| guild_css(info.color)))>
             <ViewHead
-                back=("Back to guild", back)
                 title=move || info.with(|info| info.as_ref().map(|info| view! {
                     <TerritoryHead name=info.name.clone() hq=info.runtime.as_ref().and_then(|runtime| runtime.headquarters) == Some(true) heading=true />
                 }))

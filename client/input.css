@@ -1613,12 +1613,11 @@
 .sb-live[data-working="true"] .sb-live-tip { border-color: rgba(var(--accent-live-rgb),0.42); }
 .sb-live[data-working="true"] .sb-live-state { color: var(--accent-live); }
 
-/* Every view's head is one row: Back, the title, the view's actions or status, Close. It stays
-   in place while the view scrolls, so leaving is always one press away, and is one control
-   tall even where it holds none, so typing a search leaves the title where it was. Back's word,
-   or the title where there is no Back, starts on the content's gutter. The row's own gap is
-   small because every control carries its padding: the word Back sits as far from a card's
-   swatch as the swatch does from the name. */
+/* Every view's head is one row: the title, the view's actions or status, Close. It stays in
+   place while the view scrolls, so leaving is always one press away at the row's end, and is
+   one control tall even where it holds none, so typing a search leaves the title where it was.
+   The title starts on the content's gutter. The row's own gap is small because every control
+   carries its padding. */
 .sb-head {
   --guild-mark-size: var(--sb-head-mark);
   position: sticky;
@@ -1631,13 +1630,12 @@
   padding: var(--sb-head-top) calc(var(--sb-gutter) - var(--sb-bar-inset)) var(--sb-head-pad);
   background: var(--color-deep);
 }
-.sb-bar .sb-nav-back { flex-shrink: 0; padding: 0 var(--sb-bar-inset); }
 .sb-head-title {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
+  padding-left: var(--sb-bar-inset);
 }
-.sb-head-title:first-child { padding-left: var(--sb-bar-inset); }
 .sb-head-title > .tcard-head { flex: 1; }
 /* A status (a search's count, a settings notice) gives up its room before the title does.
    Nothing else in the row shrinks: every control keeps its whole target. */
@@ -4280,7 +4278,6 @@ a.tcard-guild:focus-visible {
    an online member's row and its expanded detail, which are in the Minecraft face throughout. */
 .war-member-name,
 .guild-name,
-.sb-nav-back,
 .mrow-name,
 .mrow-rank,
 .mrow-place,
