@@ -1472,7 +1472,14 @@
   overflow-y: auto;
   scrollbar-gutter: stable;
   overscroll-behavior: contain;
-  scroll-padding-top: calc(var(--sb-bar-control) + 2 * var(--sb-head-pad));
+  scroll-padding-top: calc(var(--sb-bar-control) + var(--sb-head-top) + var(--sb-head-pad));
+  --sb-head-mark: 16px;
+  --sb-head-top: var(--sb-head-pad);
+}
+/* A selected guild's swatch sits as far below the divider as the gutter sets it from the
+   panel's edge. */
+.sb-scroll:has(.sb-head h2.guild-name) {
+  --sb-head-top: max(var(--sb-head-pad), calc(var(--sb-gutter) - (var(--sb-bar-control) - var(--sb-head-mark)) / 2));
 }
 
 .sb-search {
@@ -1613,15 +1620,15 @@
    small because every control carries its padding: the word Back sits as far from a card's
    swatch as the swatch does from the name. */
 .sb-head {
-  --guild-mark-size: 16px;
+  --guild-mark-size: var(--sb-head-mark);
   position: sticky;
   top: 0;
   z-index: 2;
   display: flex;
   align-items: center;
   gap: 2px;
-  min-height: calc(var(--sb-bar-control) + 2 * var(--sb-head-pad));
-  padding: var(--sb-head-pad) calc(var(--sb-gutter) - var(--sb-bar-inset));
+  min-height: calc(var(--sb-bar-control) + var(--sb-head-top) + var(--sb-head-pad));
+  padding: var(--sb-head-top) calc(var(--sb-gutter) - var(--sb-bar-inset)) var(--sb-head-pad);
   background: var(--color-deep);
 }
 .sb-bar .sb-nav-back { flex-shrink: 0; padding: 0 var(--sb-bar-inset); }
