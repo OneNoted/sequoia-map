@@ -93,14 +93,12 @@ pub(crate) fn MapPinIcon() -> impl IntoView {
     }
 }
 
-/// The head of every sidebar view, one row that stays in place while the view scrolls: Back,
-/// the view's title, its own actions or status, and Close. Each view fills only what it has. The
+/// The head of every sidebar view, one row that stays in place while the view scrolls: the
+/// view's title, its own actions or status, and Close. Each view fills only what it has. The
 /// row is one control tall, and taller only for a name long enough to take a second line.
+/// Leaving is Close at the row's end, so no control ever pushes the title off the gutter.
 #[component]
 pub(crate) fn ViewHead(
-    /// What Back does, and what it says it goes back to.
-    #[prop(optional)]
-    back: Option<(&'static str, Callback<()>)>,
     /// The view's heading: an `h2`, after its owner's swatch for a guild or territory.
     #[prop(into)]
     title: ViewFn,
@@ -109,11 +107,6 @@ pub(crate) fn ViewHead(
 ) -> impl IntoView {
     view! {
         <div class="sb-head sb-bar">
-            {back.map(|(title, back)| view! {
-                <button type="button" class="ui-button sb-nav-back" title=title aria-label=title on:click=move |_| back.run(())>
-                    "Back"
-                </button>
-            })}
             <div class="sb-head-title">{move || title.run()}</div>
             // Items of the row itself, so no box around them can shrink narrower than they are.
             {children.map(|children| children())}

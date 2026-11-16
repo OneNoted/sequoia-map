@@ -67,8 +67,8 @@ pub(crate) fn SettingsPanel() -> impl IntoView {
     view! {
         <div class="settings-panel">
             <ViewHead
-                back=("Back from settings", Callback::new(move |()| show_settings.set(false)))
                 title=|| view! { <h2 class="sb-view-title">"Settings"</h2> }
+                close=("Close settings", Callback::new(move |()| show_settings.set(false)))
             >
                 <SettingsNotice />
                 <SettingsUndoRedo />
