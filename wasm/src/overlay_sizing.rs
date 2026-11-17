@@ -7,7 +7,10 @@ const STATIC_NAME_SIZE_WORLD: f32 = 21.5;
 const FAR_ZOOM_TAG_MIN_SCREEN_W: f32 = 11.0;
 const FAR_ZOOM_TAG_MIN_SCREEN_H: f32 = 8.0;
 const FAR_ZOOM_TAG_MIN_RENDERED_PX: f32 = 7.5;
-const FAR_ZOOM_TAG_MAX_RENDERED_PX: f32 = 12.0;
+/// Zoomed out past this, tags stop shrinking with the map and hold their size on screen.
+const FAR_ZOOM_TAG_HOLD_SCALE: f32 = 0.5;
+/// Width, in tag heights, a held tag above 100% keeps for a letter and an ellipsis.
+const FAR_ZOOM_TAG_MIN_WIDTH_EMS: f32 = 2.0;
 const FAR_ZOOM_TAG_BOX_W_FRACTION: f32 = 0.92;
 const FAR_ZOOM_TAG_BOX_H_FRACTION: f32 = 0.82;
 const DYNAMIC_TAG_SIZE_WORLD: f32 = 24.0;
@@ -143,15 +146,21 @@ pub fn compute_far_zoom_tag_sizing(
         return None;
     }
 
-    // The tag is the static tag's size on the map, as it is once zoomed in past this range,
-    // and never smaller than a readable floor that fits the territory. Where the map would
-    // shrink it below that floor it holds still on screen; elsewhere it zooms with the map,
-    // so it meets the static tag at the handover without changing size.
-    let floor_px = (FAR_ZOOM_TAG_MAX_RENDERED_PX * tag_scale.clamp(0.5, 2.0))
-        .min(max_font_px)
-        .clamp(FAR_ZOOM_TAG_MIN_RENDERED_PX, FAR_ZOOM_TAG_MAX_RENDERED_PX);
-    let font_px = (STATIC_TAG_SIZE_WORLD * tag_scale * scale).max(floor_px);
-    let width_px = (sw * FAR_ZOOM_TAG_BOX_W_FRACTION).max(font_px * 1.6);
+    // The static tag's size at the map's zoom, never smaller than its size at the hold zoom.
+    // Only that held size is fitted to the territory, so the tag zooms with the map into the
+    // static tag at the handover without changing size. Above 100% the held size grows only
+    // while the territory's width still holds a letter and an ellipsis, so a larger size never
+    // shortens a tag to nothing.
+    let box_w_px = sw * FAR_ZOOM_TAG_BOX_W_FRACTION;
+    let held_px = |tag_scale: f32| {
+        (STATIC_TAG_SIZE_WORLD * tag_scale * FAR_ZOOM_TAG_HOLD_SCALE)
+            .min(max_font_px)
+            .max(FAR_ZOOM_TAG_MIN_RENDERED_PX)
+    };
+    let held = held_px(tag_scale.min(1.0))
+        .max(held_px(tag_scale).min(box_w_px / FAR_ZOOM_TAG_MIN_WIDTH_EMS));
+    let font_px = (STATIC_TAG_SIZE_WORLD * tag_scale * scale).max(held);
+    let width_px = box_w_px.max(font_px * 1.6);
     let alpha = smoothstep_f32(8.0, 14.0, sh).min(smoothstep_f32(11.0, 22.0, sw));
 
     Some(FarZoomTagSizing {
@@ -398,6 +407,43 @@ mod tests {
 
         assert_close(near.font_height_world * 0.20, far.font_height_world * 0.10);
         assert_close(near.max_width_world * 0.20, far.max_width_world * 0.10);
+    }
+
+    #[test]
+    fn far_out_tags_follow_the_label_size_in_proportion() {
+        // A large territory at overview zoom, well past where tags stop shrinking.
+        let (ww, hh, scale) = (500.0, 250.0, 0.16);
+        let px = |tag_scale| {
+            compute_far_zoom_tag_sizing(ww * scale, hh * scale, scale, tag_scale)
+                .expect("a large territory has a far tag")
+                .font_height_world
+                * scale
+        };
+        for tag_scale in [0.7, 1.4, 1.8, 2.25] {
+            assert_close(px(tag_scale), px(1.0) * tag_scale);
+        }
+        // A size the territory cannot hold stops at what it can.
+        assert_close(px(4.0), hh * scale * 0.82);
+    }
+
+    #[test]
+    fn a_larger_label_size_grows_a_narrow_far_tag_only_while_it_keeps_room_for_a_letter() {
+        // A narrow territory, 32 px wide at this zoom.
+        let (ww, hh, scale) = (200.0, 200.0, 0.16);
+        let sizing = |tag_scale| {
+            compute_far_zoom_tag_sizing(ww * scale, hh * scale, scale, tag_scale)
+                .expect("the territory has a far tag")
+        };
+        let default = sizing(1.0);
+        let mut previous = default.font_height_world;
+        // Sizes whose tag is held here; far larger ones are map-sized at this zoom.
+        for tag_scale in [1.1, 1.4, 1.8, 2.25] {
+            let larger = sizing(tag_scale);
+            assert!(larger.font_height_world + 1e-4 >= previous);
+            assert!(larger.max_width_world >= 2.0 * larger.font_height_world * (1.0 - 1e-5));
+            previous = larger.font_height_world;
+        }
+        assert!(sizing(1.1).font_height_world > default.font_height_world);
     }
 
     #[test]
