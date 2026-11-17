@@ -862,6 +862,39 @@ pub fn MapPage() -> impl IntoView {
         }
     });
 
+    // A territory link opens the live map on that territory once the territories arrive,
+    // once: later updates, and wherever the viewer has moved the map by then, are left alone.
+    // A name the map does not have goes to the search, which shows what matches it instead.
+    if map_mode_from_path(&location.pathname.get_untracked()) == MapMode::Live
+        && let Some(name) = crate::entry_link::take_entry_territory()
+    {
+        let pending = StoredValue::new(Some(name));
+        Effect::new(move || {
+            if pending.with_value(Option::is_none) {
+                return;
+            }
+            if map_mode.get() != MapMode::Live {
+                pending.set_value(None);
+                return;
+            }
+            if territories.with(|map| map.is_empty()) {
+                return;
+            }
+            let Some(name) = pending.try_update_value(Option::take).flatten() else {
+                return;
+            };
+            show_settings.set(false);
+            if territories.with_untracked(|map| map.contains_key(&name)) {
+                open_entry.run(&SidebarEntry::Territory(name));
+            } else {
+                if search_query.with_untracked(String::is_empty) {
+                    search_query.set(name);
+                }
+                sidebar_open.set(true);
+            }
+        });
+    }
+
     // Reset history scalar snapshot when returning to live mode.
     Effect::new(move || {
         if map_mode.get() == MapMode::Live {

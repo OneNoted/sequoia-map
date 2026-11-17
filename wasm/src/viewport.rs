@@ -1,3 +1,5 @@
+use crate::gesture::ScreenRect;
+
 /// The map camera: the pan/zoom transform from world coordinates to canvas CSS pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {
@@ -150,29 +152,49 @@ impl Viewport {
         canvas_w: f64,
         canvas_h: f64,
     ) {
+        self.fit_bounds_within(
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+            ScreenRect::spanning((0.0, 0.0), (canvas_w, canvas_h)),
+        );
+    }
+
+    /// [`Self::fit_bounds`] into `area` of the canvas, such as the part no panel covers.
+    pub fn fit_bounds_within(
+        &mut self,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+        area: ScreenRect,
+    ) {
         let world_w = max_x - min_x;
         let world_h = max_y - min_y;
+        let (area_w, area_h) = (area.width(), area.height());
 
-        if world_w <= 0.0 || world_h <= 0.0 || canvas_w <= 0.0 || canvas_h <= 0.0 {
+        if world_w <= 0.0 || world_h <= 0.0 || area_w <= 0.0 || area_h <= 0.0 {
             return;
         }
 
         let padding = 0.05;
-        let scale_x = canvas_w / (world_w * (1.0 + padding * 2.0));
-        let scale_y = canvas_h / (world_h * (1.0 + padding * 2.0));
+        let scale_x = area_w / (world_w * (1.0 + padding * 2.0));
+        let scale_y = area_h / (world_h * (1.0 + padding * 2.0));
         // Slight global zoom-in so fitted views feel less distant by default.
-        self.scale = (scale_x.min(scale_y) * FIT_SCALE_BOOST).clamp(MIN_SCALE, MAX_SCALE);
-
-        let center_x = (min_x + max_x) / 2.0;
-        let center_y = (min_y + max_y) / 2.0;
-        self.offset_x = canvas_w / 2.0 - center_x * self.scale;
-        self.offset_y = canvas_h / 2.0 - center_y * self.scale;
+        let scale = (scale_x.min(scale_y) * FIT_SCALE_BOOST).clamp(MIN_SCALE, MAX_SCALE);
+        let center = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0);
+        let area_center = (
+            (area.left + area.right) / 2.0,
+            (area.top + area.bottom) / 2.0,
+        );
+        self.anchor(center, area_center, scale);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SCALE, MIN_SCALE, Viewport};
+    use super::{MAX_SCALE, MIN_SCALE, ScreenRect, Viewport};
     use crate::test_support::assert_close;
 
     #[test]
@@ -256,6 +278,30 @@ mod tests {
         let (cx, cy) = vp.world_to_screen(50.0, 100.0);
         assert_close(cx, 500.0);
         assert_close(cy, 500.0);
+    }
+
+    #[test]
+    fn fit_bounds_within_centres_in_the_area_and_fits_its_size() {
+        let area = ScreenRect {
+            left: 0.0,
+            top: 60.0,
+            right: 620.0,
+            bottom: 1000.0,
+        };
+        let mut vp = Viewport::default();
+        vp.fit_bounds_within(-100.0, -100.0, 100.0, 100.0, area);
+
+        let (cx, cy) = vp.world_to_screen(0.0, 0.0);
+        assert_close(cx, 310.0);
+        assert_close(cy, 530.0);
+        let (left, top) = vp.world_to_screen(-100.0, -100.0);
+        let (right, bottom) = vp.world_to_screen(100.0, 100.0);
+        assert!(left >= area.left && right <= area.right, "{left}..{right}");
+        assert!(top >= area.top && bottom <= area.bottom, "{top}..{bottom}");
+
+        let mut whole = Viewport::default();
+        whole.fit_bounds(-100.0, -100.0, 100.0, 100.0, 620.0, 940.0);
+        assert_close(vp.scale, whole.scale);
     }
 
     #[test]

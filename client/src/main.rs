@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod entry_link;
 mod format;
 mod heat;
 mod history;
@@ -17,6 +18,7 @@ mod settings_menu;
 mod sidebar;
 mod site_nav;
 mod territory_card;
+mod territory_focus;
 mod timeline;
 mod tower;
 mod ui;

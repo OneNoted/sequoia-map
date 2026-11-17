@@ -30,6 +30,7 @@ use crate::territory_card::{
     DefenseValue, ResourceRow, ResourceTable, TerritoryHead, TerritoryWar, TreasuryValue, cooldown,
     territory_resource_rows, treasury,
 };
+use crate::territory_focus::{SidebarAfter, focus_territory};
 use crate::tower::TowerCalculator;
 use crate::ui::{Disclosure, MapPinIcon, SCROLLER, ViewHead, clear_top};
 use crate::war_room::ActivityDisclosure;
@@ -104,6 +105,7 @@ pub(crate) struct OpenEntry {
     selected_guild: RwSignal<Option<String>>,
     detail_return_guild: RwSignal<Option<String>>,
     sidebar_open: RwSignal<bool>,
+    is_mobile: RwSignal<bool>,
 }
 
 impl OpenEntry {
@@ -113,6 +115,7 @@ impl OpenEntry {
         let SelectedGuild(selected_guild) = expect_context();
         let DetailReturnGuild(detail_return_guild) = expect_context();
         let SidebarOpen(sidebar_open) = expect_context();
+        let IsMobile(is_mobile) = expect_context();
         Self {
             territories: expect_context(),
             camera: expect_context::<BrowserMap>().camera(),
@@ -121,26 +124,30 @@ impl OpenEntry {
             selected_guild,
             detail_return_guild,
             sidebar_open,
+            is_mobile,
         }
     }
 
     /// A territory opens its detail with the map on it; a guild opens its panel. Enter can
     /// reach a row while the sidebar is closed, and on the live map the sidebar opens to show it.
     pub fn run(&self, entry: &SidebarEntry) {
+        let opens_sidebar =
+            self.mode.get_untracked() == MapMode::Live && !self.sidebar_open.get_untracked();
         match entry {
             SidebarEntry::Territory(name) => {
                 self.detail_return_guild.set(None);
                 self.selected.set(Some(name.clone()));
-                if let Some(region) = self
-                    .territories
-                    .with_untracked(|map| map.get(name).map(|ct| ct.territory.location.clone()))
-                {
-                    self.camera.focus(&region);
-                }
+                focus_territory(
+                    self.camera,
+                    self.territories,
+                    name,
+                    self.is_mobile.get_untracked(),
+                    SidebarAfter::open_if(opens_sidebar || self.sidebar_open.get_untracked()),
+                );
             }
             SidebarEntry::Guild(name) => self.selected_guild.set(Some(name.clone())),
         }
-        if self.mode.get_untracked() == MapMode::Live && !self.sidebar_open.get_untracked() {
+        if opens_sidebar {
             self.sidebar_open.set(true);
         }
     }
@@ -881,6 +888,7 @@ fn GuildPanel() -> impl IntoView {
     let DetailReturnGuild(detail_return_guild) = expect_context();
     let SidebarTransient(sidebar_transient) = expect_context();
     let SidebarOpen(sidebar_open) = expect_context();
+    let IsMobile(is_mobile) = expect_context();
     let territories: RwSignal<ClientTerritoryMap> = expect_context();
     let camera = expect_context::<BrowserMap>().camera();
     let tick: RwSignal<i64> = expect_context();
@@ -961,11 +969,13 @@ fn GuildPanel() -> impl IntoView {
     });
     let open_territory = Callback::new(move |territory: String| {
         detail_return_guild.set(selected_guild.get_untracked());
-        if let Some(region) = territories
-            .with_untracked(|map| map.get(&territory).map(|ct| ct.territory.location.clone()))
-        {
-            camera.focus(&region);
-        }
+        focus_territory(
+            camera,
+            territories,
+            &territory,
+            is_mobile.get_untracked(),
+            SidebarAfter::Open,
+        );
         selected.set(Some(territory));
         if !sidebar_open.get_untracked() {
             sidebar_open.set(true);
@@ -1271,11 +1281,6 @@ fn DetailPanel() -> impl IntoView {
             })
         })
     });
-    let region = Memo::new(move |_| {
-        let name = selected.get()?;
-        territories.with(|map| map.get(&name).map(|ct| ct.territory.location.clone()))
-    });
-
     let close = Callback::new(move |()| {
         // On mobile, closing the sheet hands the territory back to its peek card.
         if is_mobile.get_untracked() && detail_return_guild.get_untracked().is_none() {
@@ -1292,10 +1297,17 @@ fn DetailPanel() -> impl IntoView {
     });
     // The map behind the sidebar moves to the territory; a phone's sheet steps aside for it.
     let show_on_map = move |_| {
-        if let Some(region) = region.get_untracked() {
-            camera.focus(&region);
+        let mobile = is_mobile.get_untracked();
+        if let Some(name) = selected.get_untracked() {
+            focus_territory(
+                camera,
+                territories,
+                &name,
+                mobile,
+                SidebarAfter::open_if(!mobile && sidebar_open.get_untracked()),
+            );
         }
-        if is_mobile.get_untracked() {
+        if mobile {
             sidebar_transient.set(false);
             sidebar_open.set(false);
         }
