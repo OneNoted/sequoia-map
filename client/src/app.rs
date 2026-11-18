@@ -380,13 +380,24 @@ fn normalize_heat_selected_season_id(meta: &HistoryHeatMeta, selected: Option<i3
             .any(|window| window.season_id == *season_id)
     })
 }
-#[component]
-pub fn App() -> impl IntoView {
-    view! { <MapPage /> }
+/// The territory a link opened the live map on, taken off the address (see `entry_link`).
+/// Called before the router mounts, so the router's history starts from the cleaned address.
+pub(crate) fn take_live_entry_territory() -> Option<String> {
+    let path = web_sys::window()?.location().pathname().ok()?;
+    if map_mode_from_path(&path) == MapMode::Live {
+        crate::entry_link::take_entry_territory()
+    } else {
+        None
+    }
 }
 
 #[component]
-pub fn MapPage() -> impl IntoView {
+pub fn App(entry_territory: Option<String>) -> impl IntoView {
+    view! { <MapPage entry_territory /> }
+}
+
+#[component]
+pub fn MapPage(entry_territory: Option<String>) -> impl IntoView {
     let location = use_location();
     let navigate = use_navigate();
     // Global signals
@@ -865,9 +876,7 @@ pub fn MapPage() -> impl IntoView {
     // A territory link opens the live map on that territory once the territories arrive,
     // once: later updates, and wherever the viewer has moved the map by then, are left alone.
     // A name the map does not have goes to the search, which shows what matches it instead.
-    if map_mode_from_path(&location.pathname.get_untracked()) == MapMode::Live
-        && let Some(name) = crate::entry_link::take_entry_territory()
-    {
+    if let Some(name) = entry_territory {
         let pending = StoredValue::new(Some(name));
         Effect::new(move || {
             if pending.with_value(Option::is_none) {

@@ -116,6 +116,8 @@ fn main() {
         return;
     };
 
+    // Before the router reads the address, so its history starts from the cleaned one.
+    let entry_territory = app::take_live_entry_territory();
     APP_MOUNT_HANDLE.with(move |slot| {
         // If main() is re-entered (e.g. dev/hot-reload runtime quirks), drop the old mount
         // so stale effects/signals can't keep mutating app state.
@@ -123,7 +125,7 @@ fn main() {
         let handle = mount_to(target, || {
             view! {
                 <Router>
-                    <app::App />
+                    <app::App entry_territory />
                 </Router>
             }
         });

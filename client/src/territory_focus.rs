@@ -10,8 +10,9 @@ use wasm_bindgen::JsCast;
 use crate::territory::ClientTerritoryMap;
 
 /// Below this many CSS pixels of clear map in either direction, focusing uses the whole
-/// canvas: a sliver would zoom the territory out to nothing.
-const MIN_CLEAR_PX: f64 = 120.0;
+/// canvas: a sliver would zoom the territory out to nothing. A short phone's strip above the
+/// sheet (70% of the height, so under 100 px on a 500 px tall view) still shows it.
+const MIN_CLEAR_PX: f64 = 48.0;
 
 /// How far panels reach in from each edge of the map, in CSS pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -174,12 +175,33 @@ mod tests {
     }
 
     #[test]
+    fn a_short_phone_keeps_the_narrow_strip_above_its_sheet() {
+        let area = clear_area(
+            (390.0, 500.0),
+            Covers {
+                top: 56.0,
+                bottom: 350.0,
+                ..Covers::default()
+            },
+        );
+        assert_eq!(
+            area,
+            ScreenRect {
+                left: 0.0,
+                top: 56.0,
+                right: 390.0,
+                bottom: 150.0,
+            }
+        );
+    }
+
+    #[test]
     fn too_small_a_clear_area_falls_back_to_the_whole_map() {
         let area = clear_area(
             (390.0, 400.0),
             Covers {
                 top: 56.0,
-                bottom: 280.0,
+                bottom: 310.0,
                 ..Covers::default()
             },
         );
