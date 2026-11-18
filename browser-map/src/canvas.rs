@@ -50,7 +50,7 @@ pub(crate) struct MapState {
     drawn_camera: Option<Viewport>,
     planner: ScenePlanner,
     renderer: Option<GpuRenderer>,
-    /// The camera has been fitted to the first territories that arrived.
+    /// The first territories have arrived and had their chance to fit the camera.
     fitted: bool,
     /// Counts changes to what the renderer draws of the territory map, so renderer caches
     /// derived from it alone know when they are stale.
@@ -213,7 +213,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
                 fit
             });
             if let Some(bounds) = fit {
-                map.camera.fit(bounds);
+                map.camera.fit_unless_placed(bounds);
             }
         }
     });

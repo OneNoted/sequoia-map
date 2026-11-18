@@ -1,6 +1,7 @@
 //! The reactive camera handle hosts use to read and move the map view.
 
 use leptos::prelude::*;
+use sequoia_map_engine::gesture::ScreenRect;
 use sequoia_map_engine::viewport::Viewport;
 use sequoia_shared::Region;
 
@@ -13,6 +14,9 @@ const FOCUS_CONTEXT_WORLD: f64 = 200.0;
 pub struct MapCamera {
     view: RwSignal<Viewport>,
     canvas_size: RwSignal<Option<(f64, f64)>>,
+    /// The host has put the camera somewhere on purpose, so the map's own fit to the first
+    /// territories that arrive must not move it away again.
+    placed: StoredValue<bool>,
 }
 
 impl MapCamera {
@@ -20,6 +24,7 @@ impl MapCamera {
         Self {
             view: RwSignal::new(view),
             canvas_size: RwSignal::new(None),
+            placed: StoredValue::new(false),
         }
     }
 
@@ -37,6 +42,7 @@ impl MapCamera {
     }
 
     pub fn set(&self, view: Viewport) {
+        self.placed.set_value(true);
         self.view.set(view);
     }
 
@@ -56,20 +62,44 @@ impl MapCamera {
 
     /// Fits the world rectangle (min x, min z, max x, max z) into the canvas.
     pub fn fit(&self, bounds: (f64, f64, f64, f64)) {
-        let (width, height) = self.canvas_size();
-        let (min_x, min_z, max_x, max_z) = bounds;
-        self.view
-            .update(|view| view.fit_bounds(min_x, min_z, max_x, max_z, width, height));
+        self.placed.set_value(true);
+        self.fit_view(bounds, self.whole_canvas());
+    }
+
+    /// The map's first view of the territories, unless the host has already placed the camera.
+    pub(crate) fn fit_unless_placed(&self, bounds: (f64, f64, f64, f64)) {
+        if !self.placed.get_value() {
+            self.fit_view(bounds, self.whole_canvas());
+        }
     }
 
     /// Brings a territory into view with some of its surroundings.
     pub fn focus(&self, region: &Region) {
-        self.fit((
-            f64::from(region.left()) - FOCUS_CONTEXT_WORLD,
-            f64::from(region.top()) - FOCUS_CONTEXT_WORLD,
-            f64::from(region.right()) + FOCUS_CONTEXT_WORLD,
-            f64::from(region.bottom()) + FOCUS_CONTEXT_WORLD,
-        ));
+        self.focus_within(region, self.whole_canvas());
+    }
+
+    /// [`Self::focus`] into `area`, in canvas CSS pixels: the part of the map that panels
+    /// over it leave visible.
+    pub fn focus_within(&self, region: &Region, area: ScreenRect) {
+        self.placed.set_value(true);
+        self.fit_view(
+            (
+                f64::from(region.left()) - FOCUS_CONTEXT_WORLD,
+                f64::from(region.top()) - FOCUS_CONTEXT_WORLD,
+                f64::from(region.right()) + FOCUS_CONTEXT_WORLD,
+                f64::from(region.bottom()) + FOCUS_CONTEXT_WORLD,
+            ),
+            area,
+        );
+    }
+
+    fn fit_view(&self, (min_x, min_z, max_x, max_z): (f64, f64, f64, f64), area: ScreenRect) {
+        self.view
+            .update(|view| view.fit_bounds_within(min_x, min_z, max_x, max_z, area));
+    }
+
+    fn whole_canvas(&self) -> ScreenRect {
+        ScreenRect::spanning((0.0, 0.0), self.canvas_size())
     }
 
     /// Zooms about the middle of the canvas (positive `delta` zooms out).

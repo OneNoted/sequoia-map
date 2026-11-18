@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod entry_link;
 mod format;
 mod heat;
 mod history;
@@ -17,6 +18,7 @@ mod settings_menu;
 mod sidebar;
 mod site_nav;
 mod territory_card;
+mod territory_focus;
 mod timeline;
 mod tower;
 mod ui;
@@ -114,6 +116,8 @@ fn main() {
         return;
     };
 
+    // Before the router reads the address, so its history starts from the cleaned one.
+    let entry_territory = app::take_live_entry_territory();
     APP_MOUNT_HANDLE.with(move |slot| {
         // If main() is re-entered (e.g. dev/hot-reload runtime quirks), drop the old mount
         // so stale effects/signals can't keep mutating app state.
@@ -121,7 +125,7 @@ fn main() {
         let handle = mount_to(target, || {
             view! {
                 <Router>
-                    <app::App />
+                    <app::App entry_territory />
                 </Router>
             }
         });

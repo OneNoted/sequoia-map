@@ -31,6 +31,7 @@ use crate::app::{
     SidebarTransient,
 };
 use crate::territory::{ClientTerritoryMap, is_sequoia_guild};
+use crate::territory_focus::{SidebarAfter, focus_territory};
 
 pub(crate) use activity::ActivityDisclosure;
 pub(crate) use hud::{ClassIcon, WarRoomHud};
@@ -389,12 +390,14 @@ impl MapFocus {
     /// Brings a territory into view and opens it the way a tap on the map would: its card
     /// on a phone, the sidebar detail elsewhere.
     pub fn territory(&self, name: &str) {
-        if let Some(region) = self
-            .territories
-            .with_untracked(|map| map.get(name).map(|ct| ct.territory.location.clone()))
-        {
-            self.map.camera().focus(&region);
-        }
+        let mobile = self.is_mobile.get_untracked();
+        focus_territory(
+            self.map.camera(),
+            self.territories,
+            name,
+            mobile,
+            SidebarAfter::open_if(!mobile || self.sidebar_open.get_untracked()),
+        );
         self.detail_return_guild.set(None);
         self.room.sheet_open.set(false);
         if self.is_mobile.get_untracked() {
@@ -413,13 +416,15 @@ impl MapFocus {
     /// Brings a territory into view without changing what the sidebar shows, so a list being
     /// read stays where it is. A phone's sheet steps aside for the map.
     pub fn look_at_territory(&self, name: &str) {
-        if let Some(region) = self
-            .territories
-            .with_untracked(|map| map.get(name).map(|ct| ct.territory.location.clone()))
-        {
-            self.map.camera().focus(&region);
-        }
-        if self.is_mobile.get_untracked() {
+        let mobile = self.is_mobile.get_untracked();
+        focus_territory(
+            self.map.camera(),
+            self.territories,
+            name,
+            mobile,
+            SidebarAfter::open_if(!mobile && self.sidebar_open.get_untracked()),
+        );
+        if mobile {
             self.sidebar_transient.set(false);
             self.sidebar_open.set(false);
         }
