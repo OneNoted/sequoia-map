@@ -145,7 +145,10 @@ impl OpenEntry {
                     SidebarAfter::open_if(opens_sidebar || self.sidebar_open.get_untracked()),
                 );
             }
-            SidebarEntry::Guild(name) => self.selected_guild.set(Some(name.clone())),
+            SidebarEntry::Guild(name) => {
+                self.detail_return_guild.set(None);
+                self.selected_guild.set(Some(name.clone()));
+            }
         }
         if opens_sidebar {
             self.sidebar_open.set(true);
@@ -1207,6 +1210,7 @@ fn DetailPanel() -> impl IntoView {
     let camera = expect_context::<BrowserMap>().camera();
     let tower_state: crate::tower::TowerState = expect_context();
     let scalar_state = scalar_state();
+    let open_entry = OpenEntry::from_context();
 
     // The detail is rebuilt when its territory's data changes; its disclosures keep their
     // state here and close again for the next territory.
@@ -1337,9 +1341,18 @@ fn DetailPanel() -> impl IntoView {
                 view! {
                     <article class="tcard tcard-sidebar">
                         <div class="tcard-owner">
-                            <a class="tcard-guild" href=crate::guild_stats_url(&info.guild_name) target="_blank" rel="noopener noreferrer" title="Open Wynncraft guild stats">
+                            // The owner opens its guild panel here; that panel links out to the stats.
+                            <button
+                                type="button"
+                                class="tcard-guild"
+                                title="Open guild"
+                                on:click={
+                                    let guild = info.guild_name.clone();
+                                    move |_| open_entry.run(&SidebarEntry::Guild(guild.clone()))
+                                }
+                            >
                                 {info.guild_name.clone()}
-                            </a>
+                            </button>
                             <span class="tcard-tag">"[" {info.guild_prefix.clone()} "]"</span>
                         </div>
 
