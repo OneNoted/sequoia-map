@@ -2488,15 +2488,8 @@ fn Tooltip() -> impl IntoView {
                 >
                     <TerritoryHead name=info.name.clone() hq=info.is_headquarters />
                     <div class="tcard-owner">
-                        <a
-                            class="tcard-guild"
-                            href=crate::guild_stats_url(&info.guild_name)
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            title="Open Wynncraft guild stats"
-                        >
-                            {info.guild_name.clone()}
-                        </a>
+                        // The card follows the pointer, so nothing on it can be clicked.
+                        <span class="tcard-guild">{info.guild_name.clone()}</span>
                         <span class="tcard-tag">"[" {info.guild_prefix.clone()} "]"</span>
                         <span class="tcard-held" title="Held for">{info.held.clone()}</span>
                     </div>

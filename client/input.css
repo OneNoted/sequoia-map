@@ -3242,8 +3242,17 @@ button.settings-row:hover {
   text-decoration: none;
 }
 
-a.tcard-guild:hover,
-a.tcard-guild:focus-visible {
+button.tcard-guild {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.tcard-guild:hover,
+button.tcard-guild:focus-visible {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -3504,8 +3513,6 @@ a.tcard-guild:focus-visible {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   pointer-events: none;
 }
-
-.tcard-hover a { pointer-events: auto; }
 
 /* The phone card, above the bottom edge and clear of the right-hand buttons. */
 .tcard-peek {
