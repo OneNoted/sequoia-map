@@ -14,7 +14,7 @@ use sequoia_map_engine::gesture::{Gestures, ScreenRect};
 use sequoia_map_engine::minimap::MinimapLayout;
 use sequoia_map_engine::scene::{Rebuild, SceneChange, ScenePlanner, TerritoryDigest};
 use sequoia_map_engine::spatial::SpatialGrid;
-use sequoia_map_engine::viewport::Viewport;
+use sequoia_map_engine::viewport::DrawnCamera;
 use web_sys::HtmlCanvasElement;
 
 pub(crate) use geometry::CanvasBox;
@@ -45,9 +45,9 @@ pub(crate) struct MapState {
     pub(crate) stroke_hit: Option<String>,
     pub(crate) canvas_box: CanvasBox,
     pub(crate) surface: Surface,
-    /// The camera the last frame drew, as the gestures and host hold it: before it was rounded
-    /// onto device pixels for drawing.
-    drawn_camera: Option<Viewport>,
+    /// Where frames draw the camera: on whole device pixels while it pans, keeping its
+    /// sub-pixel phase while it zooms or rests. Also holds the camera the last frame drew.
+    drawn: DrawnCamera,
     planner: ScenePlanner,
     renderer: Option<GpuRenderer>,
     /// The first territories have arrived and had their chance to fit the camera.
@@ -67,7 +67,7 @@ impl MapState {
             stroke_hit: None,
             canvas_box: CanvasBox::default(),
             surface: Surface::default(),
-            drawn_camera: None,
+            drawn: DrawnCamera::default(),
             planner: ScenePlanner::default(),
             renderer: None,
             territory_revision: 0,
@@ -263,7 +263,7 @@ pub fn MapCanvas(map: BrowserMap, #[prop(into)] on_event: Callback<MapEvent>) ->
         let scheduler = scheduler.clone();
         move || {
             let camera = map.camera.get();
-            if state.borrow().drawn_camera != Some(camera) {
+            if state.borrow().drawn.camera() != Some(camera) {
                 scheduler.mark_dirty();
             }
         }
@@ -477,7 +477,7 @@ fn render_frame(
         renderer,
         territory_bounds,
         territory_revision,
-        drawn_camera,
+        drawn,
         ..
     } = &mut *state;
     let Some(renderer) = renderer.as_mut() else {
@@ -496,9 +496,9 @@ fn render_frame(
     let now_ms = js_sys::Date::now();
     // Gesture times are event time stamps, on the frame clock.
     let interacting = gestures.is_interacting(frame_ms);
-    *drawn_camera = Some(map.camera.get_untracked());
-    // Drawn on whole device pixels, so a pan slides every layer by the same pixels.
-    let camera = map.camera.get_untracked().on_device_grid(dpr);
+    // A pan slides every layer by the same whole device pixels; a zoom keeps the sub-pixel
+    // phase it started at, so the map does not jump a pixel back and forth as it scales.
+    let camera = drawn.place(map.camera.get_untracked(), dpr);
     let clock_secs = inputs.clock_secs.get_untracked();
     let settings = inputs.settings.get_untracked();
     let rebuild = planner.plan(

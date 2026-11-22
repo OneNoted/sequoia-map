@@ -56,6 +56,64 @@ impl WorldRect {
     }
 }
 
+/// Scales this close (relative) count as one: a two-finger pan recomputes the scale from the
+/// fingers' span, which roundoff can leave an ulp away from where it was.
+const SAME_SCALE: f64 = 1e-9;
+/// Offsets this close (CSS pixels) count as unmoved: a zoom held at a scale limit still
+/// recomputes the offset, which roundoff can leave a hair away from where it was.
+const UNMOVED_PX: f64 = 1e-6;
+
+/// Where each frame draws the camera, given the frames before it.
+///
+/// While the camera pans, frames are drawn on whole device pixels
+/// ([`Viewport::on_device_grid`]), so they differ by whole pixels and every layer slides by
+/// the same amount. A frame that changes the scale, and a frame at rest, keeps the sub-pixel
+/// phase the frame before it was drawn at. Rounding afresh while the scale eases would move
+/// the whole map back and forth by up to a device pixel from one frame to the next, and
+/// rounding once a zoom ends would shift it again after it stopped. The first pan after a
+/// zoom puts the camera back on the grid, while the map is moving anyway.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DrawnCamera {
+    /// The last camera placed, as the gestures and host hold it, and the device pixel ratio
+    /// it was placed at.
+    last: Option<(Viewport, f64)>,
+    /// Added to the camera's offset to draw it, in CSS pixels: at most half a device pixel.
+    phase: (f64, f64),
+}
+
+impl DrawnCamera {
+    /// The camera to draw `camera` at, `dpr` device pixels per CSS pixel.
+    pub fn place(&mut self, camera: Viewport, dpr: f64) -> Viewport {
+        let regrid = match self.last {
+            None => true,
+            Some((last, last_dpr)) => {
+                let same_scale = (camera.scale - last.scale).abs() <= SAME_SCALE * last.scale;
+                let moved = (camera.offset_x - last.offset_x).abs() > UNMOVED_PX
+                    || (camera.offset_y - last.offset_y).abs() > UNMOVED_PX;
+                last_dpr != dpr || (same_scale && moved)
+            }
+        };
+        if regrid {
+            let grid = camera.on_device_grid(dpr);
+            self.phase = (
+                grid.offset_x - camera.offset_x,
+                grid.offset_y - camera.offset_y,
+            );
+        }
+        self.last = Some((camera, dpr));
+        Viewport {
+            offset_x: camera.offset_x + self.phase.0,
+            offset_y: camera.offset_y + self.phase.1,
+            scale: camera.scale,
+        }
+    }
+
+    /// The last camera placed, before its phase was added.
+    pub fn camera(&self) -> Option<Viewport> {
+        self.last.map(|(camera, _)| camera)
+    }
+}
+
 impl Default for Viewport {
     fn default() -> Self {
         Self {
@@ -194,8 +252,154 @@ impl Viewport {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SCALE, MIN_SCALE, ScreenRect, Viewport};
+    use super::{DrawnCamera, MAX_SCALE, MIN_SCALE, ScreenRect, Viewport};
     use crate::test_support::assert_close;
+
+    const RATIOS: [f64; 6] = [1.0, 1.0 / 1.1, 1.25, 1.5, 2.0, 2.625];
+
+    fn on_grid(value: f64, dpr: f64) -> bool {
+        ((value * dpr) - (value * dpr).round()).abs() < 1e-6
+    }
+
+    #[test]
+    fn drawn_pans_move_by_whole_device_pixels() {
+        for dpr in RATIOS {
+            let mut drawn = DrawnCamera::default();
+            let mut camera = Viewport {
+                offset_x: 120.3,
+                offset_y: -48.71,
+                scale: 2.75,
+            };
+            let mut previous = drawn.place(camera, dpr);
+            for (dx, dy) in [(3.37, -0.61), (0.2, 0.2), (-5.55, 1.01), (0.0, 7.123)] {
+                camera.pan(dx, dy);
+                let now = drawn.place(camera, dpr);
+                for (a, b, exact) in [
+                    (previous.offset_x, now.offset_x, camera.offset_x),
+                    (previous.offset_y, now.offset_y, camera.offset_y),
+                ] {
+                    assert!(on_grid(b, dpr), "{b} off the grid at {dpr}");
+                    assert!(on_grid(b - a, dpr));
+                    assert!((b - exact).abs() * dpr <= 0.5 + 1e-9);
+                }
+                previous = now;
+            }
+        }
+    }
+
+    #[test]
+    fn drawn_zoom_keeps_the_anchor_where_it_started() {
+        for dpr in RATIOS {
+            let mut drawn = DrawnCamera::default();
+            let mut camera = Viewport {
+                offset_x: 333.33,
+                offset_y: -71.9,
+                scale: 0.61,
+            };
+            let start = drawn.place(camera, dpr);
+            let anchor = (512.4, 300.7);
+            let world = camera.screen_to_world(anchor.0, anchor.1);
+            let (ax, ay) = start.world_to_screen(world.0, world.1);
+            // An eased notch: many small steps, as the wheel glide applies them.
+            for step in [
+                -37.0, -21.5, -12.25, -7.0, -4.1, -2.3, -1.2, -0.6, 0.3, 9.0, 4.5,
+            ] {
+                camera.zoom_at(step, anchor.0, anchor.1);
+                let now = drawn.place(camera, dpr);
+                let (x, y) = now.world_to_screen(world.0, world.1);
+                // The world point under the cursor stays exactly where the first frame drew it.
+                assert!(
+                    (x - ax).abs() < 1e-6 && (y - ay).abs() < 1e-6,
+                    "{dpr}: moved to {x},{y}"
+                );
+                assert!((now.offset_x - camera.offset_x).abs() * dpr <= 0.5 + 1e-9);
+                assert!((now.offset_y - camera.offset_y).abs() * dpr <= 0.5 + 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn drawn_camera_holds_still_once_a_zoom_ends_and_regrids_on_the_next_pan() {
+        let dpr = 1.0 / 1.1;
+        let mut drawn = DrawnCamera::default();
+        let mut camera = Viewport {
+            offset_x: 10.0,
+            offset_y: 20.0,
+            scale: 1.0,
+        };
+        let first = drawn.place(camera, dpr);
+        let phase = (
+            first.offset_x - camera.offset_x,
+            first.offset_y - camera.offset_y,
+        );
+        camera.zoom_at(-120.0, 401.3, 233.9);
+        let zoomed = drawn.place(camera, dpr);
+        assert_close(zoomed.offset_x - camera.offset_x, phase.0);
+        assert_close(zoomed.offset_y - camera.offset_y, phase.1);
+        assert!(!on_grid(zoomed.offset_x, dpr) && !on_grid(zoomed.offset_y, dpr));
+        // Frames at rest (a hover, a label refresh) draw it exactly where the zoom left it.
+        assert_eq!(drawn.place(camera, dpr), zoomed);
+        assert_eq!(drawn.place(camera, dpr), zoomed);
+        assert_eq!(drawn.camera(), Some(camera));
+        camera.pan(0.4, -0.3);
+        let panned = drawn.place(camera, dpr);
+        assert!(on_grid(panned.offset_x, dpr) && on_grid(panned.offset_y, dpr));
+    }
+
+    #[test]
+    fn drawn_zoom_held_at_the_scale_limit_does_not_move() {
+        let mut drawn = DrawnCamera::default();
+        let mut camera = Viewport {
+            offset_x: -20.48,
+            offset_y: 5.0,
+            scale: 7.5,
+        };
+        drawn.place(camera, 1.0);
+        camera.zoom_at(-100.0, 175.0, 40.0);
+        assert_eq!(camera.scale, MAX_SCALE);
+        let at_limit = drawn.place(camera, 1.0);
+        // Further notches at the limit recompute the offset to within roundoff; the map stays
+        // (rounding afresh would move it to -34, nearly a pixel).
+        camera.zoom_at(-100.0, 225.0, 60.0);
+        let again = drawn.place(camera, 1.0);
+        assert_close(again.offset_x, at_limit.offset_x);
+        assert_close(again.offset_y, at_limit.offset_y);
+    }
+
+    #[test]
+    fn drawn_two_finger_pan_counts_as_a_pan() {
+        let dpr = 1.0 / 1.1;
+        let mut drawn = DrawnCamera::default();
+        let mut camera = Viewport {
+            offset_x: 12.34,
+            offset_y: 56.78,
+            scale: 0.61,
+        };
+        drawn.place(camera, dpr);
+        // A pinch whose span holds still recomputes the same scale, give or take an ulp or two
+        // (0.61 * 29 / 29 is 0.6100000000000001).
+        camera.scale += f64::EPSILON;
+        camera.pan(3.3, 1.7);
+        let panned = drawn.place(camera, dpr);
+        assert!(on_grid(panned.offset_x, dpr) && on_grid(panned.offset_y, dpr));
+    }
+
+    #[test]
+    fn drawn_camera_regrids_when_the_pixel_ratio_changes() {
+        let mut drawn = DrawnCamera::default();
+        let mut camera = Viewport {
+            offset_x: 10.37,
+            offset_y: 20.11,
+            scale: 1.0,
+        };
+        drawn.place(camera, 1.0);
+        camera.zoom_at(-50.0, 100.0, 100.0);
+        drawn.place(camera, 1.0);
+        let moved = drawn.place(camera, 1.5);
+        assert!(on_grid(moved.offset_x, 1.5) && on_grid(moved.offset_y, 1.5));
+        // A ratio no grid can use draws the camera as it is.
+        assert_eq!(DrawnCamera::default().place(camera, 0.0), camera);
+    }
 
     #[test]
     fn world_to_screen_and_back_roundtrip() {
