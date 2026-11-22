@@ -3,6 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use js_sys::Reflect;
 use leptos::prelude::*;
@@ -62,9 +63,13 @@ impl TileFetchContext {
 pub struct LoadedTile {
     pub id: usize,
     pub quality: TileQuality,
-    /// The encoded image. The renderer decodes it whenever it builds the tile's texture and
-    /// drops the pixels once they are uploaded, so no decoded copy outlives an upload.
-    pub image: Blob,
+    /// Where the image is, to download again when a renderer needs it a second time: tiles
+    /// are cached for a year under a versioned URL, so that comes from the browser's cache.
+    pub src: Arc<str>,
+    /// The encoded image as downloaded, until the first renderer takes it to decode. The
+    /// renderer drops the decoded pixels once they are uploaded, so after that neither copy
+    /// stays in memory.
+    pub image: Arc<Mutex<Option<Blob>>>,
     pub x1: i32,
     pub z1: i32,
     pub x2: i32,
@@ -507,7 +512,8 @@ fn load_tile_job(tiles_signal: RwSignal<Vec<LoadedTile>>, job: LoadJob, on_done:
                 LoadedTile {
                     id: job.id,
                     quality: job.quality,
-                    image,
+                    src: src.into(),
+                    image: Arc::new(Mutex::new(Some(image))),
                     x1: job.x1,
                     z1: job.z1,
                     x2: job.x2,
@@ -520,7 +526,7 @@ fn load_tile_job(tiles_signal: RwSignal<Vec<LoadedTile>>, job: LoadJob, on_done:
 }
 
 /// Downloads `src` into a blob, which keeps its bytes outside WebAssembly memory.
-async fn fetch_blob(src: &str) -> Option<Blob> {
+pub(crate) async fn fetch_blob(src: &str) -> Option<Blob> {
     let response = JsFuture::from(web_sys::window()?.fetch_with_str(src))
         .await
         .ok()?

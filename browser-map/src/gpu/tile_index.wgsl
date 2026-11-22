@@ -8,6 +8,11 @@ var source: texture_2d<f32>;
 @group(0) @binding(1)
 var palette: texture_2d<f32>;
 
+// Where the source's first texel lands in the target: x, y (zw unused). The pass draws
+// only the tile's rectangle, so a tile can be written into its place in the atlas.
+@group(0) @binding(2)
+var<uniform> origin: vec4<i32>;
+
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
 };
@@ -29,7 +34,7 @@ fn key(colour: vec4<f32>) -> u32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let wanted = key(textureLoad(source, vec2<i32>(in.clip_position.xy), 0));
+    let wanted = key(textureLoad(source, vec2<i32>(in.clip_position.xy) - origin.xy, 0));
     // The first colour not below the wanted one; every colour of the tile is in its palette.
     var low = 0u;
     var high = 255u;

@@ -6,7 +6,13 @@ struct Viewport {
     scale: f32,
     _time: f32,
     resolution: vec2<f32>,
-    _pad1: vec2<f32>,
+    // Padding up to `y_flip`: the uniform's other fields, read only by other shaders.
+    _cooldown: vec2<f32>,
+    _interaction: vec4<i32>,
+    _territory: vec2<f32>,
+    _dpr: f32,
+    // -1 when drawing into the canvas, 1 into a texture (see `ViewportUniform::y_flip`).
+    y_flip: f32,
 };
 
 @group(0) @binding(0)
@@ -71,7 +77,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     let anchor = floor((in.world * vp.scale + vp.offset) * dpr + vec2<f32>(0.5));
     let device = anchor + in.offset + in.quad_pos * in.size;
     let ndc = device / (vp.resolution * dpr) * 2.0 - 1.0;
-    out.clip_position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
+    out.clip_position = vec4<f32>(ndc.x, -ndc.y * vp.y_flip, 0.0, 1.0);
     out.uv = mix(in.uv_rect.xy, in.uv_rect.zw, in.quad_pos);
     out.local = (in.quad_pos - vec2<f32>(0.5)) * in.size;
     return out;

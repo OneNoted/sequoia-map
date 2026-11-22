@@ -6,7 +6,13 @@ struct Viewport {
     scale: f32,
     _pad0: f32,
     resolution: vec2<f32>,
-    _pad1: vec2<f32>,
+    // Padding up to `y_flip`: the uniform's other fields, read only by other shaders.
+    _cooldown: vec2<f32>,
+    _interaction: vec4<i32>,
+    _territory: vec2<f32>,
+    _dpr: f32,
+    // -1 when drawing into the canvas, 1 into a texture (see `ViewportUniform::y_flip`).
+    y_flip: f32,
 };
 
 struct GlowParams {
@@ -43,7 +49,7 @@ fn vs_main(vertex: VertexInput) -> VertexOutput {
     let world_pos = glow.rect.xy + vertex.quad_pos * glow.rect.zw;
     let screen = world_pos * vp.scale + vp.offset;
     let ndc = screen / vp.resolution * 2.0 - 1.0;
-    out.clip_position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
+    out.clip_position = vec4<f32>(ndc.x, -ndc.y * vp.y_flip, 0.0, 1.0);
     out.uv = vertex.quad_pos;
     out.size_px = glow.rect.zw * vp.scale;
 

@@ -114,7 +114,39 @@ struct ViewportUniform {
     territory: [f32; 2],
     /// Device pixels per CSS pixel: the text shader starts glyphs on whole device pixels.
     dpr: f32,
-    _pad: f32,
+    /// [`CANVAS_Y_FLIP`] when drawing into the canvas, [`TEXTURE_Y_FLIP`] into a texture.
+    y_flip: f32,
+}
+
+/// wgpu's GLSL turns clip space upside down so that textures read top row first; the canvas
+/// shows its framebuffer the other way up, so drawing straight into it turns it back.
+const CANVAS_Y_FLIP: f32 = -1.0;
+const TEXTURE_Y_FLIP: f32 = 1.0;
+/// The canvas's own framebuffer, which frames are drawn into.
+const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// The pipeline a terrain draw needs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TilePipeline {
+    Rgba,
+    Palette,
+    Atlas,
+}
+
+impl TilePipeline {
+    fn of(texture: &terrain::TileTexture) -> Self {
+        if texture.palette {
+            Self::Palette
+        } else {
+            Self::Rgba
+        }
+    }
+}
+
+/// The canvas's framebuffer as a wgpu render target, for one canvas size.
+struct CanvasTarget {
+    size: (u32, u32),
+    view: wgpu::TextureView,
 }
 
 const NO_INTERACTION: [i32; 4] = [NO_INSTANCE, NO_INSTANCE, 0, 0];
@@ -887,8 +919,11 @@ struct MinimapTerrain {
 pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
+    /// Kept with the context wgpu adapted to; never configured.
+    _surface: wgpu::Surface<'static>,
+    /// Render target format of every pipeline that draws into the canvas.
+    format: wgpu::TextureFormat,
+    canvas_target: Option<CanvasTarget>,
 
     // Shared geometry
     vertex_buffer: wgpu::Buffer,
@@ -917,6 +952,7 @@ pub struct GpuRenderer {
     // Tile pipelines: whole RGBA mip chains, and palette indices (see `terrain`).
     tile_pipeline: wgpu::RenderPipeline,
     tile_palette_pipeline: wgpu::RenderPipeline,
+    terrain_atlas_pipeline: wgpu::RenderPipeline,
     terrain: terrain::Terrain,
     /// The WebGL2 context image uploads go through (see `upload_external_image`).
     webgl_context: web_sys::WebGl2RenderingContext,
@@ -1022,10 +1058,9 @@ impl GpuRenderer {
         };
 
         // The canvas's context is made here, before wgpu asks for one, so that it gets these
-        // attributes; wgpu is handed the same context. wgpu draws into its own texture and
-        // copies it onto the canvas, so the canvas needs no depth or stencil buffer (a depth
-        // buffer is 20 MB at 3440x1440). The canvas keeps its alpha channel: Firefox
-        // presents an alpha-less WebGL canvas measurably slower.
+        // attributes; wgpu is handed the same context. Nothing draws with depth or stencil,
+        // so the canvas has neither (a depth buffer is 20 MB at 3440x1440). The canvas keeps
+        // its alpha channel: Firefox presents an alpha-less WebGL canvas measurably slower.
         let attributes = js_sys::Object::new();
         for (name, value) in [
             ("antialias", false),
@@ -1093,48 +1128,10 @@ impl GpuRenderer {
             .and_then(|context| context.dyn_into::<web_sys::WebGl2RenderingContext>().ok())
             .ok_or_else(|| InitError::new(InitStage::Surface, "wgpu made no WebGL2 context"))?;
 
-        let mut surface_config = surface
-            .get_default_config(&adapter, width, height)
-            .ok_or_else(|| {
-                InitError::new(
-                    InitStage::SurfaceConfig,
-                    "wgpu: surface unsupported by adapter",
-                )
-            })?;
-        let caps = surface.get_capabilities(&adapter);
-
-        // Prefer a non-sRGB format so tile textures (uploaded as Rgba8Unorm)
-        // pass through without double gamma correction that washes out colors.
-        if let Some(format) = caps.formats.iter().copied().find(|f| !f.is_srgb()) {
-            surface_config.format = format;
-        }
-
-        // Opaque canvases avoid compositor alpha blending on every frame.
-        if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
-            surface_config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
-        } else if caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
-        {
-            surface_config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
-        }
-        let format = surface_config.format;
-
-        web_sys::console::log_1(
-            &format!(
-                "wgpu init: format={:?} present={:?} alpha={:?}",
-                surface_config.format, surface_config.present_mode, surface_config.alpha_mode,
-            )
-            .into(),
-        );
-        watch_setup_errors(&device);
-        surface.configure(&device, &surface_config);
-        if let Some(error) = setup_error(&device).await {
-            return Err(InitError::new(
-                InitStage::SurfaceConfig,
-                format!("wgpu: {error}"),
-            ));
-        }
+        // Frames are drawn straight into the canvas's framebuffer (see `canvas_view`), so the
+        // surface is never configured: wgpu would draw into a texture of its own the size of
+        // the canvas and copy it onto the canvas every frame.
+        let format = CANVAS_FORMAT;
         if !wanted() {
             return Err(superseded());
         }
@@ -1182,7 +1179,7 @@ impl GpuRenderer {
                 interaction: NO_INTERACTION,
                 territory: FULL_TERRITORY,
                 dpr,
-                _pad: 0.0,
+                y_flip: CANVAS_Y_FLIP,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -1207,7 +1204,7 @@ impl GpuRenderer {
                     interaction: NO_INTERACTION,
                     territory: FULL_TERRITORY,
                     dpr,
-                    _pad: 0.0,
+                    y_flip: CANVAS_Y_FLIP,
                 }]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -1554,6 +1551,52 @@ impl GpuRenderer {
                 cache: None,
             });
 
+        // The terrain atlas (see `terrain`): the main tiles in one draw.
+        let terrain_atlas_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("terrain-atlas-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("terrain_atlas.wgsl").into()),
+        });
+        let terrain_atlas_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("terrain-atlas-pl"),
+                bind_group_layouts: &[
+                    &viewport_bind_group_layout,
+                    terrain.atlas_bind_group_layout(),
+                ],
+                push_constant_ranges: &[],
+            });
+        let terrain_atlas_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("terrain-atlas-pipeline"),
+                layout: Some(&terrain_atlas_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &terrain_atlas_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: std::slice::from_ref(&vertex_layout),
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &terrain_atlas_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        // Tile textures hold premultiplied colour (see `terrain`).
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
         // --- Connection pipeline ---
         let connection_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("connection-shader"),
@@ -1781,8 +1824,9 @@ impl GpuRenderer {
         let mut renderer = Self {
             device,
             queue,
-            surface,
-            surface_config,
+            _surface: surface,
+            format,
+            canvas_target: None,
             vertex_buffer,
             index_buffer,
             viewport_buffer,
@@ -1801,6 +1845,7 @@ impl GpuRenderer {
             glow_bind_group_hov,
             tile_pipeline,
             tile_palette_pipeline,
+            terrain_atlas_pipeline,
             terrain,
             webgl_context,
             connection_pipeline,
@@ -1874,7 +1919,7 @@ impl GpuRenderer {
             &self.queue,
             &self.webgl_context,
             &self.atlas_mips,
-            self.surface_config.format,
+            self.format,
             &self.viewport_bind_group_layout,
             &vertex_layout,
             self.text_readable_font,
@@ -1915,7 +1960,7 @@ impl GpuRenderer {
         self.icon_renderer = Self::init_icon_renderer(
             &self.device,
             &self.queue,
-            self.surface_config.format,
+            self.format,
             &self.viewport_bind_group_layout,
             &vertex_layout,
             icons,
@@ -2721,11 +2766,74 @@ impl GpuRenderer {
         })
     }
 
-    fn tile_pipeline_for(&self, palette: bool) -> &wgpu::RenderPipeline {
-        if palette {
-            &self.tile_palette_pipeline
-        } else {
-            &self.tile_pipeline
+    /// The canvas's own framebuffer as a render target, for the canvas's current size.
+    ///
+    /// wgpu draws a WebGL surface into a texture of its own and copies that onto the canvas
+    /// when presenting: at 3440x1440 a 20 MB texture, and a full-window read and write every
+    /// frame. Drawing into the framebuffer the browser shows avoids both. wgpu's WebGL backend
+    /// renders into a framebuffer object handed to it from outside; handed none, it binds the
+    /// canvas's own, and it sets no draw buffers for it, which WebGL forbids there. Every
+    /// pipeline drawing into it turns its output with [`CANVAS_Y_FLIP`].
+    fn canvas_view(&mut self) -> wgpu::TextureView {
+        let size = (self.width.max(1), self.height.max(1));
+        if let Some(target) = self.canvas_target.as_ref()
+            && target.size == size
+        {
+            return target.view.clone();
+        }
+        let hal_texture = wgpu::hal::gles::Texture {
+            inner: wgpu::hal::gles::TextureInner::ExternalFramebuffer {
+                inner: wasm_bindgen::JsValue::NULL.unchecked_into(),
+            },
+            drop_guard: None,
+            mip_level_count: 1,
+            array_layer_count: 1,
+            format: CANVAS_FORMAT,
+            format_desc: wgpu::hal::gles::TextureFormatDesc {
+                internal: 0,
+                external: 0,
+                data_type: 0,
+            },
+            copy_size: wgpu::hal::CopyExtent {
+                width: size.0,
+                height: size.1,
+                depth: 1,
+            },
+        };
+        // SAFETY: the texture is the canvas's framebuffer on this device's own context, the
+        // descriptor matches it, and it is cleared at the start of every frame drawn into it.
+        let texture = unsafe {
+            self.device.create_texture_from_hal::<wgpu::hal::api::Gles>(
+                hal_texture,
+                &wgpu::TextureDescriptor {
+                    label: Some("canvas-framebuffer"),
+                    size: wgpu::Extent3d {
+                        width: size.0,
+                        height: size.1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: CANVAS_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                },
+            )
+        };
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.canvas_target = Some(CanvasTarget {
+            size,
+            view: view.clone(),
+        });
+        view
+    }
+
+    fn tile_pipeline_for(&self, pipeline: TilePipeline) -> &wgpu::RenderPipeline {
+        match pipeline {
+            TilePipeline::Rgba => &self.tile_pipeline,
+            TilePipeline::Palette => &self.tile_palette_pipeline,
+            TilePipeline::Atlas => &self.terrain_atlas_pipeline,
         }
     }
 
@@ -2743,17 +2851,10 @@ impl GpuRenderer {
         if width == 0 || height == 0 {
             return;
         }
-        let size_changed =
-            self.surface_config.width != width || self.surface_config.height != height;
+        // The canvas's framebuffer follows the canvas's size; `canvas_view` follows it.
         self.width = width;
         self.height = height;
         self.dpr = dpr;
-        if !size_changed {
-            return;
-        }
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
     }
 
     /// Build instance data from territories and upload to GPU.
@@ -3880,7 +3981,7 @@ impl GpuRenderer {
                     [fade, solid]
                 },
                 dpr: self.dpr,
-                _pad: 0.0,
+                y_flip: CANVAS_Y_FLIP,
             }]),
         );
         stats.bytes_uploaded += std::mem::size_of::<ViewportUniform>() as u64;
@@ -3912,19 +4013,7 @@ impl GpuRenderer {
         let draw_overlay = self.prepare_overlay(frame, &mut stats);
         let draw_connections = self.write_connection_projection(frame, &mut stats);
 
-        // Get surface texture
-        let output = match self.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.surface_config);
-                return outcome;
-            }
-            Err(_) => return outcome,
-        };
-
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = self.canvas_view();
 
         let mut encoder = self
             .device
@@ -3957,9 +4046,22 @@ impl GpuRenderer {
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                let mut palette_pipeline = false;
+                let mut bound = TilePipeline::Rgba;
+                let mut atlas_drawn = false;
 
                 for tile in frame.tiles {
+                    // The atlas's tiles go in one draw, at the first of them in draw order.
+                    if self.terrain.in_atlas(tile.id) {
+                        if !atlas_drawn && let Some(bind_group) = self.terrain.atlas_bind_group() {
+                            atlas_drawn = true;
+                            bound = TilePipeline::Atlas;
+                            pass.set_pipeline(&self.terrain_atlas_pipeline);
+                            pass.set_bind_group(1, bind_group, &[]);
+                            pass.draw_indexed(0..6, 0, 0..1);
+                            stats.tile_draw();
+                        }
+                        continue;
+                    }
                     let Some(tile_tex) = self.terrain.texture(tile.id) else {
                         continue;
                     };
@@ -3980,7 +4082,7 @@ impl GpuRenderer {
                         }
                     }
 
-                    // Frustum cull + screen-size cull (skip tiny tiles)
+                    // Frustum cull + screen-size cull (skip tiles smaller than 4px)
                     let sx = x1 * vp.scale as f32 + vp.offset_x as f32;
                     let sy = z1 * vp.scale as f32 + vp.offset_y as f32;
                     let sw = tw * vp.scale as f32;
@@ -3994,9 +4096,10 @@ impl GpuRenderer {
                         continue;
                     }
 
-                    if tile_tex.palette != palette_pipeline {
-                        palette_pipeline = tile_tex.palette;
-                        pass.set_pipeline(self.tile_pipeline_for(palette_pipeline));
+                    let wanted = TilePipeline::of(tile_tex);
+                    if wanted != bound {
+                        bound = wanted;
+                        pass.set_pipeline(self.tile_pipeline_for(wanted));
                     }
                     pass.set_bind_group(1, &tile_tex.bind_group, &[]);
                     pass.draw_indexed(0..6, 0, 0..1);
@@ -4142,8 +4245,8 @@ impl GpuRenderer {
             }
         }
 
+        // The browser shows the canvas's framebuffer once this frame's callback returns.
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
         let frame_cpu_ms = (js_sys::Date::now() - now).max(0.0);
         let fps_estimate = if self.last_render_time_ms > 0.0 {
             let dt = (now - self.last_render_time_ms).max(0.0001);
@@ -4201,7 +4304,7 @@ impl GpuRenderer {
         let markers = self.marker_renderer.get_or_insert_with(|| {
             GpuMarkerRenderer::new(
                 &self.device,
-                self.surface_config.format,
+                self.format,
                 &self.viewport_bind_group_layout,
                 &Self::quad_vertex_layout(),
             )
@@ -4228,7 +4331,7 @@ impl GpuRenderer {
             GpuOverlayRenderer::new(
                 &self.device,
                 self.webgl_context.clone(),
-                self.surface_config.format,
+                self.format,
                 &self.viewport_bind_group_layout,
                 &Self::quad_vertex_layout(),
             )
@@ -4455,7 +4558,7 @@ impl GpuRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.surface_config.format,
+            format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -4477,7 +4580,7 @@ impl GpuRenderer {
                 interaction: NO_INTERACTION,
                 territory: FULL_TERRITORY,
                 dpr,
-                _pad: 0.0,
+                y_flip: TEXTURE_Y_FLIP,
             }]),
         );
         let bg_color = [19.0 / 255.0, 22.0 / 255.0, 31.0 / 255.0, 0.88_f32];
@@ -4530,14 +4633,27 @@ impl GpuRenderer {
                 pass.set_bind_group(0, &self.minimap_terrain_viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                let mut palette_pipeline = false;
+                let mut bound = TilePipeline::Rgba;
+                let mut atlas_drawn = false;
                 for tile in tiles {
+                    if self.terrain.in_atlas(tile.id) {
+                        if !atlas_drawn && let Some(bind_group) = self.terrain.atlas_bind_group() {
+                            atlas_drawn = true;
+                            bound = TilePipeline::Atlas;
+                            pass.set_pipeline(&self.terrain_atlas_pipeline);
+                            pass.set_bind_group(1, bind_group, &[]);
+                            pass.draw_indexed(0..6, 0, 0..1);
+                            stats.tile_draw();
+                        }
+                        continue;
+                    }
                     let Some(tile_tex) = self.terrain.texture(tile.id) else {
                         continue;
                     };
-                    if tile_tex.palette != palette_pipeline {
-                        palette_pipeline = tile_tex.palette;
-                        pass.set_pipeline(self.tile_pipeline_for(palette_pipeline));
+                    let wanted = TilePipeline::of(tile_tex);
+                    if wanted != bound {
+                        bound = wanted;
+                        pass.set_pipeline(self.tile_pipeline_for(wanted));
                     }
                     pass.set_bind_group(1, &tile_tex.bind_group, &[]);
                     pass.draw_indexed(0..6, 0, 0..1);
@@ -4602,16 +4718,17 @@ impl GpuRenderer {
                 interaction: self.interaction(frame),
                 territory: FULL_TERRITORY,
                 dpr: self.dpr,
-                _pad: 0.0,
+                y_flip: CANVAS_Y_FLIP,
             }]),
         );
-        // Clip-space rectangle of the minimap for the terrain blit.
+        // Clip-space rectangle of the minimap for the terrain blit, turned for the canvas as
+        // the other shaders turn their output (see `CANVAS_Y_FLIP`).
         let (surface_w, surface_h) = (self.width as f32, self.height as f32);
         let blit_rect = [
             scissor_x as f32 / surface_w * 2.0 - 1.0,
-            1.0 - scissor_y as f32 / surface_h * 2.0,
+            (1.0 - scissor_y as f32 / surface_h * 2.0) * CANVAS_Y_FLIP,
             (scissor_x + scissor_w) as f32 / surface_w * 2.0 - 1.0,
-            1.0 - (scissor_y + scissor_h) as f32 / surface_h * 2.0,
+            (1.0 - (scissor_y + scissor_h) as f32 / surface_h * 2.0) * CANVAS_Y_FLIP,
         ];
         self.queue.write_buffer(
             &self.minimap_blit_buffer,
@@ -4686,7 +4803,11 @@ impl GpuRenderer {
             })],
             ..Default::default()
         });
-        pass.set_scissor_rect(scissor_x, scissor_y, scissor_w, scissor_h);
+        // The canvas's framebuffer counts rows from the bottom.
+        let scissor_bottom = self
+            .height
+            .saturating_sub(scissor_y.saturating_add(scissor_h));
+        pass.set_scissor_rect(scissor_x, scissor_bottom, scissor_w, scissor_h);
 
         pass.set_pipeline(&self.minimap_blit_pipeline);
         pass.set_bind_group(0, &terrain.bind_group, &[]);

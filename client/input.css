@@ -2767,12 +2767,20 @@ button.settings-row:hover {
    (the `.seq-top-nav` … `.seq-mobile-sublink` run), so the bar is
    pixel-identical when a visitor crosses between the two sites.
 
-   One deliberate difference: every literal `rem` on the website is
+   Two deliberate differences. Every literal `rem` on the website is
    written here as the pixel value it resolves to there. The website
    leaves the root font-size at the 16px default; the map sets it to
    14px (see `html, body` above) and the rest of the map is laid out
    against that, so rems would silently shrink the whole bar by 12.5%.
    Multiply by 16 when porting a new rule across.
+
+   And the bar is opaque, in the colour its translucent tint takes over
+   the page, with no backdrop blur. Here it sits over the map's canvas,
+   which draws a new frame each display refresh while the map moves; a
+   backdrop blur makes Firefox redo the blur behind the whole width of
+   the bar for every one of those frames: without it, the map drew a
+   quarter more frames a second at 3440x1440. Over the page background
+   the two look the same, so the bar still matches the website's.
    ═══════════════════════════════════════════════════════════════════ */
 .seq-top-nav {
   position: fixed;
@@ -2780,10 +2788,8 @@ button.settings-row:hover {
   left: 0;
   right: 0;
   z-index: var(--z-nav);
-  background: rgba(12, 14, 23, 0.8);
+  background: rgb(12, 14, 23);
   border-bottom: 1px solid var(--color-border-subtle);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   /* index.html sets the pixel face on `body` for the map surface, unlayered,
      so it would otherwise win over the token default in `@layer base`. The
      size and leading are the website's `body` values, which anything in here
