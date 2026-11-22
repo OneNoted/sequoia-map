@@ -8,9 +8,8 @@ use js_sys::Reflect;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::HtmlImageElement;
+use web_sys::{Blob, Response};
 
 use sequoia_map_engine::viewport::Viewport;
 use sequoia_shared::MAP_TILES;
@@ -21,8 +20,6 @@ const HQ_CONCURRENCY: usize = 6;
 const LQ_CONCURRENCY: usize = 6;
 const HQ_UPGRADE_CONCURRENCY: usize = 2;
 const NEAR_PREFETCH_PADDING_WORLD: f64 = 1024.0;
-const ONLOAD_HANDLE_KEY: &str = "__sequoiaTileOnload";
-const ONERROR_HANDLE_KEY: &str = "__sequoiaTileOnerror";
 
 type IdleCallback = Rc<dyn Fn()>;
 type SharedIdleCallback = Rc<RefCell<Option<IdleCallback>>>;
@@ -60,12 +57,14 @@ impl TileFetchContext {
     }
 }
 
-/// A loaded map tile image with its world coordinate bounds.
+/// A downloaded map tile with its world coordinate bounds.
 #[derive(Clone)]
 pub struct LoadedTile {
     pub id: usize,
     pub quality: TileQuality,
-    pub image: HtmlImageElement,
+    /// The encoded image. The renderer decodes it whenever it builds the tile's texture and
+    /// drops the pixels once they are uploaded, so no decoded copy outlives an upload.
+    pub image: Blob,
     pub x1: i32,
     pub z1: i32,
     pub x2: i32,
@@ -483,11 +482,14 @@ fn should_skip_job(
         return true;
     }
 
-    let already_loaded = tiles_signal.with_untracked(|loaded| {
-        loaded
-            .iter()
-            .any(|tile| tile.id == job.id && tile.quality >= job.quality)
-    });
+    // A map that unmounted needs no more tiles.
+    let already_loaded = tiles_signal
+        .try_with_untracked(|loaded| {
+            loaded
+                .iter()
+                .any(|tile| tile.id == job.id && tile.quality >= job.quality)
+        })
+        .unwrap_or(true);
     if already_loaded {
         return true;
     }
@@ -498,69 +500,40 @@ fn should_skip_job(
 
 fn load_tile_job(tiles_signal: RwSignal<Vec<LoadedTile>>, job: LoadJob, on_done: Rc<dyn Fn()>) {
     let src = tile_src(job.filename, job.quality);
-    let img = match HtmlImageElement::new() {
-        Ok(img) => img,
-        Err(_) => {
-            on_done();
-            return;
-        }
-    };
-
-    let img_for_load = img.clone();
-    let on_done_load = on_done.clone();
-    let onload = Closure::<dyn FnMut()>::new(move || {
-        clear_image_handlers(&img_for_load);
-
-        let img_for_decode = img_for_load.clone();
-        let on_done_load = on_done_load.clone();
-
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = JsFuture::from(img_for_decode.decode()).await;
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Some(image) = fetch_blob(&src).await {
             upsert_tile(
                 tiles_signal,
                 LoadedTile {
                     id: job.id,
                     quality: job.quality,
-                    image: img_for_decode,
+                    image,
                     x1: job.x1,
                     z1: job.z1,
                     x2: job.x2,
                     z2: job.z2,
                 },
             );
-            on_done_load();
-        });
+        }
+        on_done();
     });
-
-    let img_for_error = img.clone();
-    let on_done_error = on_done.clone();
-    let onerror = Closure::<dyn FnMut()>::new(move || {
-        clear_image_handlers(&img_for_error);
-        on_done_error();
-    });
-
-    let onload_js = onload.into_js_value();
-    let onerror_js = onerror.into_js_value();
-    img.set_onload(Some(onload_js.unchecked_ref()));
-    img.set_onerror(Some(onerror_js.unchecked_ref()));
-    let _ = Reflect::set(
-        img.as_ref(),
-        &JsValue::from_str(ONLOAD_HANDLE_KEY),
-        &onload_js,
-    );
-    let _ = Reflect::set(
-        img.as_ref(),
-        &JsValue::from_str(ONERROR_HANDLE_KEY),
-        &onerror_js,
-    );
-    img.set_src(&src);
 }
 
-fn clear_image_handlers(img: &HtmlImageElement) {
-    img.set_onload(None);
-    img.set_onerror(None);
-    let _ = Reflect::delete_property(img.as_ref(), &JsValue::from_str(ONLOAD_HANDLE_KEY));
-    let _ = Reflect::delete_property(img.as_ref(), &JsValue::from_str(ONERROR_HANDLE_KEY));
+/// Downloads `src` into a blob, which keeps its bytes outside WebAssembly memory.
+async fn fetch_blob(src: &str) -> Option<Blob> {
+    let response = JsFuture::from(web_sys::window()?.fetch_with_str(src))
+        .await
+        .ok()?
+        .dyn_into::<Response>()
+        .ok()?;
+    if !response.ok() {
+        return None;
+    }
+    JsFuture::from(response.blob().ok()?)
+        .await
+        .ok()?
+        .dyn_into::<Blob>()
+        .ok()
 }
 
 fn tile_src(filename: &str, quality: TileQuality) -> String {
@@ -571,7 +544,8 @@ fn tile_src(filename: &str, quality: TileQuality) -> String {
 }
 
 fn upsert_tile(tiles_signal: RwSignal<Vec<LoadedTile>>, incoming: LoadedTile) {
-    tiles_signal.update(|loaded| {
+    // The map may have unmounted while the tile downloaded.
+    tiles_signal.try_update(|loaded| {
         if let Some(existing) = loaded.iter_mut().find(|tile| tile.id == incoming.id) {
             if incoming.quality >= existing.quality {
                 *existing = incoming;

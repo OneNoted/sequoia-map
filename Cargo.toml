@@ -26,8 +26,11 @@ strip = "symbols"
 [profile.release.package."*"]
 opt-level = "s"
 
+# The map client's own code is its interface; the per-frame work is in the map crates below.
+# Optimised for size, its WebAssembly is a third smaller, which the browser downloads,
+# compiles and keeps compiled in proportion, with no measured change in frame times.
 [profile.release.package."sequoia-client"]
-opt-level = 3
+opt-level = "s"
 
 [profile.release.package."sequoia-claims-client"]
 opt-level = 3

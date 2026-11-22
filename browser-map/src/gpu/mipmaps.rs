@@ -9,10 +9,21 @@ pub(super) struct MipChain {
 }
 
 impl MipChain {
+    /// Levels averaged by linear filtering.
     pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::with_shader(device, format, include_str!("mip.wgsl"))
+    }
+
+    /// Levels averaged in integer arithmetic, rounding each mean half up, the same on every
+    /// GPU (see `mip_exact.wgsl`). For 8-bit formats.
+    pub(super) fn exact(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::with_shader(device, format, include_str!("mip_exact.wgsl"))
+    }
+
+    fn with_shader(device: &wgpu::Device, format: wgpu::TextureFormat, source: &str) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mip-shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("mip.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mip-bgl"),

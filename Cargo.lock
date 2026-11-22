@@ -2836,6 +2836,7 @@ dependencies = [
  "bytemuck",
  "futures",
  "gloo-net",
+ "image-webp",
  "js-sys",
  "leptos",
  "sequoia-map-engine",

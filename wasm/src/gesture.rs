@@ -3,8 +3,9 @@
 //! The browser seam feeds pointer and wheel events in. [`Gestures`] tracks which contacts are
 //! down and what they are doing, and reports what the host has to act on (taps, edit strokes,
 //! picks and rubber-band selections) as [`GestureEvent`]s. Pans and pinches move the
-//! [`Viewport`] once per drawn frame, in [`Gestures::frame`]; wheel zoom moves it as each
-//! notch arrives.
+//! [`Viewport`] once per drawn frame, in [`Gestures::frame`]. Trackpad and pinch zoom move it
+//! as each event arrives; a mouse-wheel notch, a step of its own, eases in over about a tenth
+//! of a second in [`Gestures::glide`], so a zoom draws a new frame every display refresh.
 //!
 //! Units: pointer positions and [`GestureEvent`] coordinates are canvas CSS pixels, measured
 //! from the canvas's top-left corner at full precision (fractional). The camera maps world
@@ -38,11 +39,16 @@
 //!   so the first finger of a pinch never paints. Mouse and pen edits commit on press.
 
 use crate::viewport::Viewport;
-use crate::wheel::{TrackpadWheelClassifier, WheelSample, normalize_wheel_zoom_delta};
+use crate::wheel::{TrackpadWheelClassifier, WheelSample, wheel_zoom};
 
 /// The map counts as "in use" for this long after the last gesture input, so timer-driven
 /// label refreshes do not land mid-gesture.
 pub const INTERACTION_SETTLE_MS: f64 = 140.0;
+/// How quickly a wheel notch's zoom eases in: the part still to apply falls by a factor of e
+/// every this many milliseconds, so a notch is 95% done after three of them.
+const WHEEL_GLIDE_MS: f64 = 40.0;
+/// A glide this close to done finishes (zoom delta units: 0.05% of the scale).
+const WHEEL_GLIDE_DONE: f64 = 0.5;
 /// A release within this distance (CSS px) of its press is a tap rather than a drag.
 const MOUSE_TAP_SLOP_PX: f64 = 4.0;
 const TOUCH_TAP_SLOP_PX: f64 = 10.0;
@@ -256,6 +262,17 @@ struct Finish {
     span: Option<f64>,
 }
 
+/// Wheel-notch zoom not yet applied.
+#[derive(Clone, Copy, Debug)]
+struct Glide {
+    /// In [`Viewport::zoom_at`] delta units.
+    remaining: f64,
+    /// The latest notch's anchor: the point under the cursor stays put.
+    at: (f64, f64),
+    /// When the glide was last advanced, on the frame clock.
+    since_ms: f64,
+}
+
 /// Pointer bookkeeping and camera manipulation for one map canvas.
 #[derive(Debug, Default)]
 pub struct Gestures {
@@ -269,6 +286,7 @@ pub struct Gestures {
     /// Concluded gestures not yet applied, oldest first.
     finishes: Vec<Finish>,
     wheel: TrackpadWheelClassifier,
+    glide: Option<Glide>,
 }
 
 impl Gestures {
@@ -467,7 +485,9 @@ impl Gestures {
         self.drop_contact(pointer_id)
     }
 
-    /// Wheel or trackpad zoom anchored at `at`.
+    /// Wheel or trackpad zoom anchored at `at`. A wheel notch joins the glide that
+    /// [`Self::glide`] eases in; other input zooms at once, after any glide still under way.
+    /// Returns whether the camera changed now.
     pub fn wheel(
         &mut self,
         camera: &mut Viewport,
@@ -476,12 +496,54 @@ impl Gestures {
         viewport_height: f64,
         ctrl_pinch: bool,
     ) -> bool {
-        let delta =
-            normalize_wheel_zoom_delta(sample, viewport_height, ctrl_pinch, &mut self.wheel);
+        let (delta, notch) = wheel_zoom(sample, viewport_height, ctrl_pinch, &mut self.wheel);
         self.settle(sample.timestamp_ms);
+        if notch {
+            let glide = self.glide.get_or_insert(Glide {
+                remaining: 0.0,
+                at,
+                since_ms: sample.timestamp_ms,
+            });
+            glide.remaining += delta;
+            glide.at = at;
+            return false;
+        }
         let before = *camera;
+        if let Some(glide) = self.glide.take() {
+            camera.zoom_at(glide.remaining, glide.at.0, glide.at.1);
+        }
         camera.zoom_at(delta, at.0, at.1);
         *camera != before
+    }
+
+    /// Advances wheel-notch zoom to frame time `now_ms`. Returns whether the camera changed.
+    pub fn glide(&mut self, camera: &mut Viewport, now_ms: f64) -> bool {
+        let Some(glide) = self.glide.as_mut() else {
+            return false;
+        };
+        let elapsed = (now_ms - glide.since_ms).max(0.0);
+        glide.since_ms = glide.since_ms.max(now_ms);
+        let mut left = glide.remaining * (-elapsed / WHEEL_GLIDE_MS).exp();
+        if left.abs() < WHEEL_GLIDE_DONE {
+            left = 0.0;
+        }
+        let step = glide.remaining - left;
+        let at = glide.at;
+        if left == 0.0 {
+            self.glide = None;
+        } else {
+            glide.remaining = left;
+        }
+        // The map stays in use until the glide ends.
+        self.settle(now_ms);
+        let before = *camera;
+        camera.zoom_at(step, at.0, at.1);
+        *camera != before
+    }
+
+    /// Whether wheel-notch zoom is still easing in: keep drawing frames.
+    pub fn is_gliding(&self) -> bool {
+        self.glide.is_some()
     }
 
     /// Whether any contact is down.
@@ -501,6 +563,7 @@ impl Gestures {
         self.contacts.clear();
         self.mode = Mode::Idle;
         self.finishes.clear();
+        self.glide = None;
         self.spoiled = false;
         out
     }
@@ -1331,10 +1394,83 @@ mod tests {
             delta_mode: 0,
             timestamp_ms: 50.0,
         };
-        assert!(gestures.wheel(&mut cam, sample, (320.0, 240.0), 800.0, false));
+        // A notch eases in over the frames that follow it.
+        assert!(!gestures.wheel(&mut cam, sample, (320.0, 240.0), 800.0, false));
+        assert_eq!(cam, camera());
+        assert!(gestures.is_interacting(50.0));
+        assert!(gestures.glide(&mut cam, 60.0));
         assert!(cam.scale > camera().scale);
         assert_world_under(&cam, focus, (320.0, 240.0));
-        assert!(gestures.is_interacting(50.0));
+    }
+
+    fn notch(delta_y: f64, timestamp_ms: f64) -> WheelSample {
+        WheelSample {
+            delta_x: 0.0,
+            delta_y,
+            delta_mode: 0,
+            timestamp_ms,
+        }
+    }
+
+    #[test]
+    fn wheel_notches_glide_to_where_they_would_have_jumped() {
+        let mut immediate = camera();
+        immediate.zoom_at(-120.0, 320.0, 240.0);
+        immediate.zoom_at(-120.0, 320.0, 240.0);
+
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.wheel(&mut cam, notch(-120.0, 0.0), (320.0, 240.0), 800.0, false);
+        gestures.wheel(&mut cam, notch(-120.0, 30.0), (320.0, 240.0), 800.0, false);
+        // A new frame every 175 Hz refresh, each a little further in.
+        let mut frames = 0;
+        let mut scale = cam.scale;
+        let mut t = 30.0;
+        while gestures.is_gliding() {
+            t += 1000.0 / 175.0;
+            assert!(gestures.glide(&mut cam, t));
+            assert!(cam.scale > scale);
+            scale = cam.scale;
+            frames += 1;
+            assert!(frames < 100, "the glide never ends");
+        }
+        // Each refresh of the first tenth of a second moved the map, and it ended close after.
+        assert!(frames >= 18, "{frames} frames");
+        assert!(t - 30.0 < 300.0);
+        assert!((cam.scale / immediate.scale - 1.0).abs() < 1e-9);
+        assert!((cam.offset_x - immediate.offset_x).abs() < 1e-6);
+        assert!((cam.offset_y - immediate.offset_y).abs() < 1e-6);
+        assert!(!gestures.glide(&mut cam, t + 16.0));
+        assert!(gestures.is_interacting(t));
+    }
+
+    #[test]
+    fn trackpad_zoom_finishes_a_glide_and_applies_at_once() {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.wheel(&mut cam, notch(-120.0, 0.0), (100.0, 100.0), 800.0, false);
+        // Fractional deltas are a trackpad.
+        let trackpad = WheelSample {
+            delta_x: 0.0,
+            delta_y: -2.5,
+            delta_mode: 0,
+            timestamp_ms: 5.0,
+        };
+        assert!(gestures.wheel(&mut cam, trackpad, (100.0, 100.0), 800.0, false));
+        assert!(!gestures.is_gliding());
+        let mut expected = camera();
+        expected.zoom_at(-120.0, 100.0, 100.0);
+        assert!(cam.scale > expected.scale);
+    }
+
+    #[test]
+    fn a_reset_drops_a_glide() {
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.wheel(&mut cam, notch(120.0, 0.0), (10.0, 10.0), 800.0, false);
+        gestures.reset();
+        assert!(!gestures.glide(&mut cam, 50.0));
+        assert_eq!(cam, camera());
     }
 
     const FRAME_MS: f64 = 1000.0 / 60.0;

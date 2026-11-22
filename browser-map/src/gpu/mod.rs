@@ -634,45 +634,6 @@ fn full_mip_level_count(width: u32, height: u32) -> u32 {
     u32::BITS - width.max(height).leading_zeros()
 }
 
-#[inline]
-fn downsample_rgba8_level(src: &[u8], src_w: u32, src_h: u32) -> (u32, u32, Vec<u8>) {
-    let next_w = (src_w / 2).max(1);
-    let next_h = (src_h / 2).max(1);
-    let mut dst = vec![0u8; (next_w as usize) * (next_h as usize) * 4];
-    for y in 0..next_h {
-        for x in 0..next_w {
-            let mut sum = [0u32; 4];
-            let mut count = 0u32;
-            let src_x0 = x * 2;
-            let src_y0 = y * 2;
-            for oy in 0..2 {
-                let sy = src_y0 + oy;
-                if sy >= src_h {
-                    continue;
-                }
-                for ox in 0..2 {
-                    let sx = src_x0 + ox;
-                    if sx >= src_w {
-                        continue;
-                    }
-                    let si = ((sy * src_w + sx) * 4) as usize;
-                    sum[0] += src[si] as u32;
-                    sum[1] += src[si + 1] as u32;
-                    sum[2] += src[si + 2] as u32;
-                    sum[3] += src[si + 3] as u32;
-                    count += 1;
-                }
-            }
-            let di = ((y * next_w + x) * 4) as usize;
-            dst[di] = ((sum[0] + count / 2) / count) as u8;
-            dst[di + 1] = ((sum[1] + count / 2) / count) as u8;
-            dst[di + 2] = ((sum[2] + count / 2) / count) as u8;
-            dst[di + 3] = ((sum[3] + count / 2) / count) as u8;
-        }
-    }
-    (next_w, next_h, dst)
-}
-
 /// Uploads `image` to `texture`, `size` from the origin, straight from the browser's buffer
 /// through the canvas's WebGL2 context `gl`. With `premultiplied_alpha`, the texture holds
 /// colour multiplied by alpha, as filtering needs: averaging straight colour with transparent
@@ -709,59 +670,6 @@ pub(super) fn upload_external_image(
         },
         size,
     );
-}
-
-#[inline]
-fn write_texture_mip_chain(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    base_pixels: &[u8],
-    base_w: u32,
-    base_h: u32,
-) {
-    let mip_levels = full_mip_level_count(base_w, base_h);
-    if mip_levels == 0 {
-        return;
-    }
-
-    let write_level = |mip_level: u32, pixels: &[u8], width: u32, height: u32| {
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * width),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-    };
-
-    write_level(0, base_pixels, base_w, base_h);
-
-    if mip_levels == 1 {
-        return;
-    }
-
-    let mut src_w = base_w;
-    let mut src_h = base_h;
-    let mut src_pixels = base_pixels.to_vec();
-    for level in 1..mip_levels {
-        let (next_w, next_h, next_pixels) = downsample_rgba8_level(&src_pixels, src_w, src_h);
-        write_level(level, &next_pixels, next_w, next_h);
-        src_pixels = next_pixels;
-        src_w = next_w;
-        src_h = next_h;
-    }
 }
 
 fn name_color_rgba(name_color: NameColor, guild_rgb: (u8, u8, u8)) -> [f32; 4] {
@@ -1006,8 +914,9 @@ pub struct GpuRenderer {
     glow_buffer_hov: wgpu::Buffer,
     glow_bind_group_hov: wgpu::BindGroup,
 
-    // Tile pipeline
+    // Tile pipelines: whole RGBA mip chains, and palette indices (see `terrain`).
     tile_pipeline: wgpu::RenderPipeline,
+    tile_palette_pipeline: wgpu::RenderPipeline,
     terrain: terrain::Terrain,
     /// The WebGL2 context image uploads go through (see `upload_external_image`).
     webgl_context: web_sys::WebGl2RenderingContext,
@@ -1040,6 +949,8 @@ pub struct GpuRenderer {
 
     // Text pipelines (static + dynamic)
     text_renderer: Option<GpuTextRenderer>,
+    /// Draws the glyph atlases' mip levels.
+    atlas_mips: mipmaps::MipChain,
     /// Font the glyph atlas was built with.
     text_readable_font: bool,
     /// The atlas font, when it had not loaded yet as the atlas was drawn (fallback glyphs).
@@ -1109,6 +1020,22 @@ impl GpuRenderer {
                 .map(|w| w.device_pixel_ratio() as f32)
                 .unwrap_or(1.0)
         };
+
+        // The canvas's context is made here, before wgpu asks for one, so that it gets these
+        // attributes; wgpu is handed the same context. wgpu draws into its own texture and
+        // copies it onto the canvas, so the canvas needs no depth or stencil buffer (a depth
+        // buffer is 20 MB at 3440x1440). The canvas keeps its alpha channel: Firefox
+        // presents an alpha-less WebGL canvas measurably slower.
+        let attributes = js_sys::Object::new();
+        for (name, value) in [
+            ("antialias", false),
+            ("depth", false),
+            ("stencil", false),
+            ("preserveDrawingBuffer", false),
+        ] {
+            let _ = js_sys::Reflect::set(&attributes, &name.into(), &value.into());
+        }
+        let _ = canvas.get_context_with_context_options("webgl2", &attributes);
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::GL,
@@ -1540,10 +1467,13 @@ impl GpuRenderer {
         });
 
         let tile_mips = mipmaps::MipChain::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let atlas_mips = mipmaps::MipChain::exact(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let terrain =
+            terrain::Terrain::new(&device, tile_bind_group_layout, tile_sampler, tile_mips);
 
         let tile_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("tile-pl"),
-            bind_group_layouts: &[&viewport_bind_group_layout, &tile_bind_group_layout],
+            bind_group_layouts: &[&viewport_bind_group_layout, terrain.bind_group_layout()],
             push_constant_ranges: &[],
         });
 
@@ -1577,6 +1507,52 @@ impl GpuRenderer {
             multiview: None,
             cache: None,
         });
+
+        // Tiles kept as palette indices (see `terrain`): the same texels, from other textures.
+        let tile_palette_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("tile-palette-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("tile_palette.wgsl").into()),
+        });
+        let tile_palette_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("tile-palette-pl"),
+                bind_group_layouts: &[
+                    &viewport_bind_group_layout,
+                    terrain.palette_bind_group_layout(),
+                ],
+                push_constant_ranges: &[],
+            });
+        let tile_palette_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("tile-palette-pipeline"),
+                layout: Some(&tile_palette_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &tile_palette_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: std::slice::from_ref(&vertex_layout),
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &tile_palette_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        // Tile textures hold premultiplied colour (see `terrain`).
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
 
         // --- Connection pipeline ---
         let connection_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1824,7 +1800,8 @@ impl GpuRenderer {
             glow_buffer_hov,
             glow_bind_group_hov,
             tile_pipeline,
-            terrain: terrain::Terrain::new(tile_bind_group_layout, tile_sampler, tile_mips),
+            tile_palette_pipeline,
+            terrain,
             webgl_context,
             connection_pipeline,
             connection_fill_pipeline,
@@ -1845,6 +1822,7 @@ impl GpuRenderer {
             minimap_blit_buffer,
             minimap_terrain: None,
             text_renderer: None,
+            atlas_mips,
             text_readable_font: false,
             text_font_pending: None,
             territory_name_cache: HashMap::new(),
@@ -1894,6 +1872,8 @@ impl GpuRenderer {
         self.text_renderer = Self::init_text_renderer(
             &self.device,
             &self.queue,
+            &self.webgl_context,
+            &self.atlas_mips,
             self.surface_config.format,
             &self.viewport_bind_group_layout,
             &vertex_layout,
@@ -1949,9 +1929,12 @@ impl GpuRenderer {
         self.icon_renderer.is_some()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn init_text_renderer(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        gl: &web_sys::WebGl2RenderingContext,
+        mips: &mipmaps::MipChain,
         format: wgpu::TextureFormat,
         viewport_bind_group_layout: &wgpu::BindGroupLayout,
         vertex_layout: &wgpu::VertexBufferLayout<'_>,
@@ -1963,7 +1946,7 @@ impl GpuRenderer {
             halo_bind_group,
             glyphs,
             line_height,
-        }) = Self::build_glyph_atlas(device, queue, readable_font)
+        }) = Self::build_glyph_atlas(device, queue, gl, mips, readable_font)
         else {
             web_sys::console::warn_1(
                 &"GPU text labels disabled: failed to build dual glyph atlases".into(),
@@ -2420,9 +2403,14 @@ impl GpuRenderer {
         })
     }
 
+    /// Draws the glyphs on a 2D canvas, twice (fills, then halo strokes), and uploads each
+    /// drawing straight from the canvas, with mip levels drawn on the GPU: no pixels pass
+    /// through WebAssembly memory, which would keep the largest copy's size for good.
     fn build_glyph_atlas(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        gl: &web_sys::WebGl2RenderingContext,
+        mips: &mipmaps::MipChain,
         readable_font: bool,
     ) -> Option<GlyphAtlas> {
         let document = web_sys::window()?.document()?;
@@ -2593,6 +2581,43 @@ impl GpuRenderer {
             });
         }
 
+        let mip_levels = full_mip_level_count(atlas_w, atlas_h);
+        let size = wgpu::Extent3d {
+            width: atlas_w,
+            height: atlas_h,
+            depth_or_array_layers: 1,
+        };
+        // Canvas uploads and drawing the mip levels need a render-attachment destination.
+        let make_texture = |label: &'static str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size,
+                mip_level_count: mip_levels,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+        };
+        let fill_texture = make_texture("glyph-atlas-fill-tex");
+        let halo_texture = make_texture("glyph-atlas-halo-tex");
+        // The shader reads only coverage (alpha), which an upload keeps exactly as drawn. A
+        // copy runs at the next submit, so each is submitted before the canvas is redrawn.
+        let upload = |texture: &wgpu::Texture| {
+            upload_external_image(
+                queue,
+                texture,
+                wgpu::ExternalImageSource::HTMLCanvasElement(canvas.clone()),
+                size,
+                gl,
+                false,
+            );
+            queue.submit(None);
+        };
+
         ctx.clear_rect(0.0, 0.0, atlas_w as f64, atlas_h as f64);
         ctx.set_fill_style_str("rgba(255,255,255,1.0)");
         for (i, ch) in chars.iter().copied().enumerate() {
@@ -2604,10 +2629,7 @@ impl GpuRenderer {
             ctx.fill_text(&ch.to_string(), x + GLYPH_ATLAS_PADDING_PX, baseline_y)
                 .ok()?;
         }
-        let fill_pixels = ctx
-            .get_image_data(0.0, 0.0, atlas_w as f64, atlas_h as f64)
-            .ok()?
-            .data();
+        upload(&fill_texture);
 
         ctx.clear_rect(0.0, 0.0, atlas_w as f64, atlas_h as f64);
         ctx.set_stroke_style_str("rgba(255,255,255,1.0)");
@@ -2623,33 +2645,10 @@ impl GpuRenderer {
             ctx.stroke_text(&ch.to_string(), x + GLYPH_ATLAS_PADDING_PX, baseline_y)
                 .ok()?;
         }
-        let halo_pixels = ctx
-            .get_image_data(0.0, 0.0, atlas_w as f64, atlas_h as f64)
-            .ok()?
-            .data();
-
-        let mip_levels = full_mip_level_count(atlas_w, atlas_h);
-        let make_texture = |label: &'static str| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: atlas_w,
-                    height: atlas_h,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: mip_levels,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            })
-        };
-        let fill_texture = make_texture("glyph-atlas-fill-tex");
-        let halo_texture = make_texture("glyph-atlas-halo-tex");
-
-        write_texture_mip_chain(queue, &fill_texture, &fill_pixels, atlas_w, atlas_h);
-        write_texture_mip_chain(queue, &halo_texture, &halo_pixels, atlas_w, atlas_h);
+        upload(&halo_texture);
+        // Integer means, as the levels were made on the CPU before.
+        mips.generate(device, queue, &fill_texture);
+        mips.generate(device, queue, &halo_texture);
 
         let fill_view = fill_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let halo_view = halo_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2720,6 +2719,14 @@ impl GpuRenderer {
             glyphs: GlyphSet::new(&chars, metas, kerning),
             line_height: line_height_px as f32,
         })
+    }
+
+    fn tile_pipeline_for(&self, palette: bool) -> &wgpu::RenderPipeline {
+        if palette {
+            &self.tile_palette_pipeline
+        } else {
+            &self.tile_pipeline
+        }
     }
 
     pub fn frame_metrics(&self) -> FrameMetrics {
@@ -3950,6 +3957,7 @@ impl GpuRenderer {
                 pass.set_bind_group(0, &self.viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                let mut palette_pipeline = false;
 
                 for tile in frame.tiles {
                     let Some(tile_tex) = self.terrain.texture(tile.id) else {
@@ -3986,6 +3994,10 @@ impl GpuRenderer {
                         continue;
                     }
 
+                    if tile_tex.palette != palette_pipeline {
+                        palette_pipeline = tile_tex.palette;
+                        pass.set_pipeline(self.tile_pipeline_for(palette_pipeline));
+                    }
                     pass.set_bind_group(1, &tile_tex.bind_group, &[]);
                     pass.draw_indexed(0..6, 0, 0..1);
                     stats.tile_draw();
@@ -4518,10 +4530,15 @@ impl GpuRenderer {
                 pass.set_bind_group(0, &self.minimap_terrain_viewport_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
                 pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                let mut palette_pipeline = false;
                 for tile in tiles {
                     let Some(tile_tex) = self.terrain.texture(tile.id) else {
                         continue;
                     };
+                    if tile_tex.palette != palette_pipeline {
+                        palette_pipeline = tile_tex.palette;
+                        pass.set_pipeline(self.tile_pipeline_for(palette_pipeline));
+                    }
                     pass.set_bind_group(1, &tile_tex.bind_group, &[]);
                     pass.draw_indexed(0..6, 0, 0..1);
                     stats.tile_draw();
