@@ -8,6 +8,7 @@ sequoia-shared = { path = "../shared" }
 sequoia-map-engine = { path = "../wasm" }
 leptos = { version = "0.8.17", default-features = false, features = ["csr"] }
 web-sys = { version = "0.3", features = [
+    "Blob",
     "CanvasRenderingContext2d",
     "Document",
     "DomRect",
@@ -32,6 +33,7 @@ web-sys = { version = "0.3", features = [
     "ResizeObserverEntry",
     "ResizeObserverOptions",
     "ResizeObserverSize",
+    "Response",
     "TextMetrics",
     "WebGl2RenderingContext",
     "WheelEvent",
@@ -46,3 +48,7 @@ js-sys = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 gloo-net = "0.6"
+
+[dev-dependencies]
+# Reads the tile images to check the palettes made from them.
+image-webp = "0.2.4"

@@ -143,20 +143,35 @@ fn has_trackpad_like_ctrl_pinch_signal(sample: WheelSample) -> bool {
     fractional || small_or_mid_pixel_delta || mixed_axis_scroll
 }
 
+/// The zoom delta of one `wheel` event, and whether it is a mouse-wheel notch: a step the
+/// map eases into, where trackpad and pinch input already arrives as a continuous stream.
+pub(crate) fn wheel_zoom(
+    sample: WheelSample,
+    viewport_height: f64,
+    ctrl_pinch: bool,
+    classifier: &mut TrackpadWheelClassifier,
+) -> (f64, bool) {
+    let is_trackpad = classifier.is_trackpad(sample);
+    if ctrl_pinch && (is_trackpad || has_trackpad_like_ctrl_pinch_signal(sample)) {
+        (normalize_pinch_zoom_delta(sample, viewport_height), false)
+    } else if is_trackpad {
+        (
+            normalize_trackpad_zoom_delta(sample, viewport_height),
+            false,
+        )
+    } else {
+        (sample.delta_y, true)
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn normalize_wheel_zoom_delta(
     sample: WheelSample,
     viewport_height: f64,
     ctrl_pinch: bool,
     classifier: &mut TrackpadWheelClassifier,
 ) -> f64 {
-    let is_trackpad = classifier.is_trackpad(sample);
-    if ctrl_pinch && (is_trackpad || has_trackpad_like_ctrl_pinch_signal(sample)) {
-        normalize_pinch_zoom_delta(sample, viewport_height)
-    } else if is_trackpad {
-        normalize_trackpad_zoom_delta(sample, viewport_height)
-    } else {
-        sample.delta_y
-    }
+    wheel_zoom(sample, viewport_height, ctrl_pinch, classifier).0
 }
 
 #[cfg(test)]

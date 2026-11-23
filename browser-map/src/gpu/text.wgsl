@@ -10,6 +10,8 @@ struct Viewport {
     _interaction: vec4<i32>,
     _territory: vec2<f32>,
     dpr: f32,
+    // -1 when drawing into the canvas, 1 into a texture (see `ViewportUniform::y_flip`).
+    y_flip: f32,
 };
 
 @group(0) @binding(0)
@@ -53,7 +55,7 @@ fn glyph(in: VertexInput, color: vec4<f32>) -> VertexOutput {
     let glyph_origin = (in.rect.xy * vp.scale + vp.offset) * vp.dpr;
     let screen = floor(glyph_origin + vec2<f32>(0.5, 0.5)) / vp.dpr + (world_pos - in.rect.xy) * vp.scale;
     let ndc = screen / vp.resolution * 2.0 - 1.0;
-    out.clip_position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
+    out.clip_position = vec4<f32>(ndc.x, -ndc.y * vp.y_flip, 0.0, 1.0);
     out.uv = mix(in.uv_rect.xy, in.uv_rect.zw, in.quad_pos);
     out.color = color;
     return out;

@@ -20,6 +20,8 @@ mod input;
 pub mod live_feed;
 pub mod overlay;
 mod render_loop;
+mod terrain_layout;
+mod tile_palettes;
 mod tiles;
 
 use std::collections::HashMap;

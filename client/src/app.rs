@@ -424,8 +424,9 @@ pub fn MapPage(entry_territory: Option<String>) -> impl IntoView {
     let sidebar_items: RwSignal<Vec<SidebarEntry>> = RwSignal::new(Vec::new());
     let keybind_help_open: RwSignal<bool> = RwSignal::new(false);
     let show_settings: RwSignal<bool> = RwSignal::new(false);
-    // Live-first boot: defer non-essential work (tiles/history checks/icons)
-    // until we have initial territory data and the first frame has had a chance to commit.
+    // Live-first boot: defer non-essential work (history checks, icons) until we have
+    // initial territory data and the first frame has had a chance to commit. Tiles are not
+    // deferred: the page preloads the live data, so it does not wait on them.
     let deferred_boot_ready: RwSignal<bool> = RwSignal::new(false);
     let deferred_boot_timer_set: RwSignal<bool> = RwSignal::new(false);
     let live_bootstrap_started: RwSignal<bool> = RwSignal::new(false);
@@ -1436,11 +1437,12 @@ pub fn MapPage(entry_territory: Option<String>) -> impl IntoView {
         remove_loading_shell();
     });
 
-    // Start background tile loading as soon as the map shell is ready. The tile
-    // loader prioritizes visible tiles, so an extra idle wait delays first useful
-    // background paint without reducing startup work.
+    // Tiles start downloading with the app, alongside its first data rather than after it:
+    // the map is usable once both territories and terrain are drawn. The page preloads the
+    // live territory data, so tiles do not hold it up, and the first view shows the whole
+    // map, so every tile is needed; the loader takes them from the view's centre out.
     Effect::new(move || {
-        if !deferred_boot_ready.get() || tile_fetch_scheduled.get_untracked() {
+        if tile_fetch_scheduled.get_untracked() {
             return;
         }
         tile_fetch_scheduled.set(true);

@@ -51,7 +51,6 @@
       for (const [filename, type] of [
         ["minecraft-regular.otf", "font/otf"],
         ["minecraft-regular.woff2", "font/woff2"],
-        ["inter-variable.woff2", "font/woff2"],
       ]) {
         const preload = document.createElement("link");
         preload.rel = "preload";
@@ -83,6 +82,32 @@
         '@font-face { font-family: "Inter"; src: url("' + fontUrl("inter-variable.woff2") + '") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }',
       ].join("\n");
       document.head.appendChild(fontStyle);
+
+      // The WebGL labels are drawn once, from SilkscreenLocal, when the map's
+      // renderer starts. Loading the face now, from the preloaded file, has it
+      // ready by then; otherwise the labels start in a fallback face and are
+      // redrawn moments later.
+      document.fonts.load('96px "SilkscreenLocal"').catch(() => {});
+
+      // The live territories, fetched while the app itself downloads; the
+      // app's own request for them is answered from this one.
+      const liveState = document.createElement("link");
+      liveState.rel = "preload";
+      liveState.href = "/api/live/state";
+      liveState.as = "fetch";
+      liveState.crossOrigin = "anonymous";
+      document.head.appendChild(liveState);
+
+      // Inter (350 KB) sets only text the bar shows on demand, such as menu
+      // descriptions. Fetched at startup it would share the link with the
+      // map's own download; it is fetched once the map is up instead, well
+      // before anyone opens a menu.
+      new MutationObserver((_, observer) => {
+        if (document.getElementById("app-loading-shell") || !document.body) return;
+        observer.disconnect();
+        const later = window.requestIdleCallback || ((run) => setTimeout(run, 200));
+        later(() => document.fonts.load('400 16px "Inter"').catch(() => {}));
+      }).observe(document.documentElement, { childList: true, subtree: true });
     </script>
     <link rel="stylesheet" href="input.css" />
     <script type="application/ld+json">
