@@ -176,18 +176,6 @@ impl Viewport {
         self.scale = new_scale;
     }
 
-    /// How much of a [`Self::zoom_at`] `delta` takes effect from this scale: all of it, unless
-    /// it would pass a scale limit, which stops it there.
-    pub fn reachable_zoom(&self, delta: f64) -> f64 {
-        let wanted = self.scale * (-delta * ZOOM_SENSITIVITY).exp();
-        let scale = wanted.clamp(MIN_SCALE, MAX_SCALE);
-        if scale == wanted {
-            delta
-        } else {
-            -(scale / self.scale).ln() / ZOOM_SENSITIVITY
-        }
-    }
-
     /// Pan by screen-space delta.
     pub fn pan(&mut self, dx: f64, dy: f64) {
         self.offset_x += dx;
@@ -285,26 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn reachable_zoom_stops_at_the_scale_limits() {
-        let at_max = Viewport {
-            offset_x: 0.0,
-            offset_y: 0.0,
-            scale: MAX_SCALE,
-        };
-        assert_close(at_max.reachable_zoom(-120.0), 0.0);
-        assert_eq!(at_max.reachable_zoom(120.0), 120.0);
-        let near_min = Viewport {
-            scale: MIN_SCALE * 1.05,
-            ..at_max
-        };
-        let reach = near_min.reachable_zoom(500.0);
-        assert!(reach > 0.0 && reach < 500.0);
-        let mut zoomed = near_min;
-        zoomed.zoom_at(reach, 0.0, 0.0);
-        assert_close(zoomed.scale, MIN_SCALE);
-    }
-
-    #[test]
     fn drawn_pans_move_by_whole_device_pixels() {
         for dpr in RATIOS {
             let mut drawn = DrawnCamera::default();
@@ -333,7 +301,7 @@ mod tests {
     #[test]
     fn drawn_zoom_keeps_the_point_under_a_still_cursor() {
         let cases: [(Viewport, &[f64]); 2] = [
-            // An eased notch: many small steps, as the wheel glide applies them.
+            // A trackpad zoom: many small steps, in and back out.
             (
                 Viewport {
                     offset_x: 333.33,
