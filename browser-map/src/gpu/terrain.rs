@@ -108,7 +108,11 @@ impl Terrain {
             });
         let index_pipeline = index_pipeline(device, &index_bind_group_layout);
         let atlas_bind_group_layout = atlas_bind_group_layout(device);
+        // WebGL2 promises textures only 2048 texels on a side, and some devices stop at 4096.
+        // Where the atlas does not fit, the tiles are drawn one by one, as they fit anywhere.
+        let max_side = device.limits().max_texture_dimension_2d;
         let atlas = atlas_layout(MAP_TILES)
+            .filter(|layout| layout.size.0 <= max_side && layout.size.1 <= max_side)
             .map(|layout| WorldAtlas::new(device, &atlas_bind_group_layout, &sampler, layout));
         Self {
             bind_group_layout,
@@ -207,15 +211,14 @@ impl Terrain {
         }
 
         // Settle decodes, then start new ones up to the limit, in load order (nearest the
-        // first view first).
+        // first view first). A decoded tile waiting for its upload counts: it holds its image.
         let mut decoding = 0;
         let failed = &mut self.failed;
         self.decodes.retain(|id, slot| match &*slot.borrow() {
-            Decode::Pending => {
+            Decode::Pending | Decode::Ready(..) => {
                 decoding += 1;
                 true
             }
-            Decode::Ready(..) => true,
             Decode::Failed(quality) => {
                 failed.insert(*id, *quality);
                 false
