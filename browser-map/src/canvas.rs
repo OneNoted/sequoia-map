@@ -486,12 +486,8 @@ fn render_frame(
     renderer.resize(width, height, dpr as f32);
 
     // Pans and pinches move the camera here, once per frame, to where their contacts last
-    // reported, and wheel notches ease in.
-    map.camera.update_if(|view| {
-        let glided = gestures.glide(view, frame_ms);
-        gestures.frame(view) || glided
-    });
-    let gliding = gestures.is_gliding();
+    // reported.
+    map.camera.update_if(|view| gestures.frame(view));
     let inputs = map.inputs;
     let now_ms = js_sys::Date::now();
     // Gesture times are event time stamps, on the frame clock.
@@ -565,7 +561,7 @@ fn render_frame(
             interacting,
         }));
     }
-    outcome.animating || gliding
+    outcome.animating
 }
 
 fn with_optional<T: Send + Sync + 'static, R>(

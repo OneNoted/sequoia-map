@@ -24,7 +24,6 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 use sequoia_map_engine::gesture::{GestureEvent, Pointer, PointerKind, Press, ScreenRect};
-use sequoia_map_engine::viewport::Viewport;
 use sequoia_map_engine::wheel::WheelSample;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -160,15 +159,8 @@ impl MapInput {
         });
         // Wheels and trackpads are mouse pointers. Their reach is in screen pixels, so a still
         // pointer can reach a territory, or stop reaching one, as the scale changes under it.
-        // A notch eases in over the next frames, and a still pointer sends nothing more:
-        // hover where the zoom will end.
         if !self.state.borrow().gestures.is_pressed() {
-            let view = self
-                .state
-                .borrow()
-                .gestures
-                .glide_target(self.map.camera.get_untracked());
-            self.hover_in(view, at.0, at.1, self.hit_reach_px(PointerKind::Mouse));
+            self.hover_at(at.0, at.1, self.hit_reach_px(PointerKind::Mouse));
         }
         self.scheduler.mark_dirty();
     }
@@ -245,12 +237,7 @@ impl MapInput {
     }
 
     fn hover_at(&self, x: f64, y: f64, reach_px: f64) {
-        self.hover_in(self.map.camera.get_untracked(), x, y, reach_px);
-    }
-
-    /// Hovers what is at (`x`, `y`) with the camera at `view`.
-    fn hover_in(&self, view: Viewport, x: f64, y: f64, reach_px: f64) {
-        let hit = self.territory_in(view, x, y, reach_px);
+        let hit = self.territory_at(x, y, reach_px);
         if self.map.hovered.with_untracked(|hovered| *hovered != hit) {
             self.map.hovered.set(hit.clone());
             self.on_event.run(MapEvent::Hover(hit));
@@ -307,10 +294,7 @@ impl MapInput {
     }
 
     fn territory_at(&self, x: f64, y: f64, reach_px: f64) -> Option<String> {
-        self.territory_in(self.map.camera.get_untracked(), x, y, reach_px)
-    }
-
-    fn territory_in(&self, view: Viewport, x: f64, y: f64, reach_px: f64) -> Option<String> {
+        let view = self.map.camera.get_untracked();
         let (wx, wy) = view.screen_to_world(x, y);
         self.state
             .borrow()
