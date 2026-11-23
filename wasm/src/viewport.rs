@@ -72,6 +72,11 @@ const UNMOVED_PX: f64 = 1e-6;
 /// the whole map back and forth by up to a device pixel from one frame to the next, and
 /// rounding once a zoom ends would shift it again after it stopped. The first pan after a
 /// zoom puts the camera back on the grid, while the map is moving anyway.
+///
+/// A zoom anchored at a point on screen must anchor the camera at
+/// [`Self::camera_point`] of it: the camera zooms about its own coordinates, which the
+/// phase shifts, and anchoring at the screen point itself would slide the map under a
+/// still cursor by the phase times the zoom's ratio less one.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DrawnCamera {
     /// The last camera placed, as the gestures and host hold it, and the device pixel ratio
@@ -111,6 +116,12 @@ impl DrawnCamera {
     /// The last camera placed, before its phase was added.
     pub fn camera(&self) -> Option<Viewport> {
         self.last.map(|(camera, _)| camera)
+    }
+
+    /// Where the point the last frame drew at screen position (`x`, `y`) is in the camera's
+    /// own screen coordinates.
+    pub fn camera_point(&self, x: f64, y: f64) -> (f64, f64) {
+        (x - self.phase.0, y - self.phase.1)
     }
 }
 
@@ -163,6 +174,18 @@ impl Viewport {
         self.offset_x = screen_x - (screen_x - self.offset_x) * ratio;
         self.offset_y = screen_y - (screen_y - self.offset_y) * ratio;
         self.scale = new_scale;
+    }
+
+    /// How much of a [`Self::zoom_at`] `delta` takes effect from this scale: all of it, unless
+    /// it would pass a scale limit, which stops it there.
+    pub fn reachable_zoom(&self, delta: f64) -> f64 {
+        let wanted = self.scale * (-delta * ZOOM_SENSITIVITY).exp();
+        let scale = wanted.clamp(MIN_SCALE, MAX_SCALE);
+        if scale == wanted {
+            delta
+        } else {
+            -(scale / self.scale).ln() / ZOOM_SENSITIVITY
+        }
     }
 
     /// Pan by screen-space delta.
@@ -262,6 +285,26 @@ mod tests {
     }
 
     #[test]
+    fn reachable_zoom_stops_at_the_scale_limits() {
+        let at_max = Viewport {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            scale: MAX_SCALE,
+        };
+        assert_close(at_max.reachable_zoom(-120.0), 0.0);
+        assert_eq!(at_max.reachable_zoom(120.0), 120.0);
+        let near_min = Viewport {
+            scale: MIN_SCALE * 1.05,
+            ..at_max
+        };
+        let reach = near_min.reachable_zoom(500.0);
+        assert!(reach > 0.0 && reach < 500.0);
+        let mut zoomed = near_min;
+        zoomed.zoom_at(reach, 0.0, 0.0);
+        assert_close(zoomed.scale, MIN_SCALE);
+    }
+
+    #[test]
     fn drawn_pans_move_by_whole_device_pixels() {
         for dpr in RATIOS {
             let mut drawn = DrawnCamera::default();
@@ -288,32 +331,50 @@ mod tests {
     }
 
     #[test]
-    fn drawn_zoom_keeps_the_anchor_where_it_started() {
-        for dpr in RATIOS {
-            let mut drawn = DrawnCamera::default();
-            let mut camera = Viewport {
-                offset_x: 333.33,
-                offset_y: -71.9,
-                scale: 0.61,
-            };
-            let start = drawn.place(camera, dpr);
-            let anchor = (512.4, 300.7);
-            let world = camera.screen_to_world(anchor.0, anchor.1);
-            let (ax, ay) = start.world_to_screen(world.0, world.1);
+    fn drawn_zoom_keeps_the_point_under_a_still_cursor() {
+        let cases: [(Viewport, &[f64]); 2] = [
             // An eased notch: many small steps, as the wheel glide applies them.
-            for step in [
-                -37.0, -21.5, -12.25, -7.0, -4.1, -2.3, -1.2, -0.6, 0.3, 9.0, 4.5,
-            ] {
-                camera.zoom_at(step, anchor.0, anchor.1);
-                let now = drawn.place(camera, dpr);
-                let (x, y) = now.world_to_screen(world.0, world.1);
-                // The world point under the cursor stays exactly where the first frame drew it.
-                assert!(
-                    (x - ax).abs() < 1e-6 && (y - ay).abs() < 1e-6,
-                    "{dpr}: moved to {x},{y}"
-                );
-                assert!((now.offset_x - camera.offset_x).abs() * dpr <= 0.5 + 1e-9);
-                assert!((now.offset_y - camera.offset_y).abs() * dpr <= 0.5 + 1e-9);
+            (
+                Viewport {
+                    offset_x: 333.33,
+                    offset_y: -71.9,
+                    scale: 0.61,
+                },
+                &[
+                    -37.0, -21.5, -12.25, -7.0, -4.1, -2.3, -1.2, -0.6, 0.3, 9.0, 4.5,
+                ],
+            ),
+            // Twelve notches in from far out. Anchored at the cursor itself rather than its
+            // camera point, the first point drawn under it would end 1.6 px away at ratio 1.
+            (
+                Viewport {
+                    offset_x: 100.49,
+                    offset_y: 100.49,
+                    scale: 0.1,
+                },
+                &[-120.0; 12],
+            ),
+        ];
+        for dpr in RATIOS {
+            for (start, steps) in cases {
+                let mut drawn = DrawnCamera::default();
+                let mut camera = start;
+                let cursor = (512.4, 300.7);
+                let first = drawn.place(camera, dpr);
+                let world = first.screen_to_world(cursor.0, cursor.1);
+                for &step in steps {
+                    let (ax, ay) = drawn.camera_point(cursor.0, cursor.1);
+                    camera.zoom_at(step, ax, ay);
+                    let now = drawn.place(camera, dpr);
+                    let (x, y) = now.world_to_screen(world.0, world.1);
+                    assert!(
+                        (x - cursor.0).abs() < 1e-6 && (y - cursor.1).abs() < 1e-6,
+                        "{dpr}: moved to {x},{y}"
+                    );
+                    assert!((now.offset_x - camera.offset_x).abs() * dpr <= 0.5 + 1e-9);
+                    assert!((now.offset_y - camera.offset_y).abs() * dpr <= 0.5 + 1e-9);
+                }
+                assert!(camera.scale > start.scale);
             }
         }
     }

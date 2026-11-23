@@ -47,7 +47,7 @@ pub(crate) struct MapState {
     pub(crate) surface: Surface,
     /// Where frames draw the camera: on whole device pixels while it pans, keeping its
     /// sub-pixel phase while it zooms or rests. Also holds the camera the last frame drew.
-    drawn: DrawnCamera,
+    pub(crate) drawn: DrawnCamera,
     planner: ScenePlanner,
     renderer: Option<GpuRenderer>,
     /// The first territories have arrived and had their chance to fit the camera.

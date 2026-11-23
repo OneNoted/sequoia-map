@@ -499,14 +499,18 @@ impl Gestures {
         let (delta, notch) = wheel_zoom(sample, viewport_height, ctrl_pinch, &mut self.wheel);
         self.settle(sample.timestamp_ms);
         if notch {
+            // The glide under way eases in up to this notch, which eases in from now.
+            let moved = self.glide(camera, sample.timestamp_ms);
             let glide = self.glide.get_or_insert(Glide {
                 remaining: 0.0,
                 at,
                 since_ms: sample.timestamp_ms,
             });
-            glide.remaining += delta;
+            // Zoom past a scale limit is lost, as it was when each notch applied at once, so a
+            // notch back from the limit starts there.
+            glide.remaining = camera.reachable_zoom(glide.remaining) + delta;
             glide.at = at;
-            return false;
+            return moved;
         }
         let before = *camera;
         if let Some(glide) = self.glide.take() {
@@ -539,6 +543,15 @@ impl Gestures {
         let before = *camera;
         camera.zoom_at(step, at.0, at.1);
         *camera != before
+    }
+
+    /// `camera` as it will be once the wheel-notch zoom under way has eased in.
+    pub fn glide_target(&self, camera: Viewport) -> Viewport {
+        let mut target = camera;
+        if let Some(glide) = self.glide {
+            target.zoom_at(glide.remaining, glide.at.0, glide.at.1);
+        }
+        target
     }
 
     /// Whether wheel-notch zoom is still easing in: keep drawing frames.
@@ -1413,6 +1426,48 @@ mod tests {
     }
 
     #[test]
+    fn a_notch_eases_in_from_when_it_arrives() {
+        // Two notches before a late frame: by then the first has eased in for 35 ms and the
+        // second for 5, not both for 35.
+        let mut gestures = Gestures::default();
+        let mut cam = camera();
+        gestures.wheel(&mut cam, notch(-120.0, 0.0), (320.0, 240.0), 800.0, false);
+        assert!(gestures.wheel(&mut cam, notch(-120.0, 30.0), (320.0, 240.0), 800.0, false));
+        gestures.glide(&mut cam, 35.0);
+        let eased = |ms: f64| 120.0 * (1.0 - (-ms / WHEEL_GLIDE_MS).exp());
+        let mut expected = camera();
+        expected.zoom_at(-(eased(35.0) + eased(5.0)), 320.0, 240.0);
+        assert_close(cam.scale, expected.scale);
+    }
+
+    #[test]
+    fn a_notch_back_from_the_scale_limit_zooms_out() {
+        let start = Viewport {
+            offset_x: 10.0,
+            offset_y: -20.0,
+            scale: MAX_SCALE,
+        };
+        let mut immediate = start;
+        immediate.zoom_at(-120.0, 320.0, 240.0);
+        immediate.zoom_at(120.0, 320.0, 240.0);
+        assert!(immediate.scale < MAX_SCALE * 0.9);
+
+        let mut gestures = Gestures::default();
+        let mut cam = start;
+        gestures.wheel(&mut cam, notch(-120.0, 0.0), (320.0, 240.0), 800.0, false);
+        gestures.wheel(&mut cam, notch(120.0, 8.0), (320.0, 240.0), 800.0, false);
+        let mut t = 8.0;
+        while gestures.is_gliding() {
+            t += 1000.0 / 175.0;
+            gestures.glide(&mut cam, t);
+            assert!(t < 1000.0, "the glide never ends");
+        }
+        assert_close(cam.scale, immediate.scale);
+        assert!((cam.offset_x - immediate.offset_x).abs() < 1e-6);
+        assert!((cam.offset_y - immediate.offset_y).abs() < 1e-6);
+    }
+
+    #[test]
     fn wheel_notches_glide_to_where_they_would_have_jumped() {
         let mut immediate = camera();
         immediate.zoom_at(-120.0, 320.0, 240.0);
@@ -1422,11 +1477,15 @@ mod tests {
         let mut cam = camera();
         gestures.wheel(&mut cam, notch(-120.0, 0.0), (320.0, 240.0), 800.0, false);
         gestures.wheel(&mut cam, notch(-120.0, 30.0), (320.0, 240.0), 800.0, false);
-        // A new frame every 175 Hz refresh, each a little further in.
+        // A new frame every 175 Hz refresh, each a little further in, towards a known end.
         let mut frames = 0;
         let mut scale = cam.scale;
         let mut t = 30.0;
         while gestures.is_gliding() {
+            let target = gestures.glide_target(cam);
+            assert!((target.scale / immediate.scale - 1.0).abs() < 1e-9);
+            assert!((target.offset_x - immediate.offset_x).abs() < 1e-6);
+            assert!((target.offset_y - immediate.offset_y).abs() < 1e-6);
             t += 1000.0 / 175.0;
             assert!(gestures.glide(&mut cam, t));
             assert!(cam.scale > scale);
@@ -1434,6 +1493,7 @@ mod tests {
             frames += 1;
             assert!(frames < 100, "the glide never ends");
         }
+        assert_eq!(gestures.glide_target(cam), cam);
         // Each refresh of the first tenth of a second moved the map, and it ended close after.
         assert!(frames >= 18, "{frames} frames");
         assert!(t - 30.0 < 300.0);
